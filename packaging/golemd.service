@@ -1,0 +1,31 @@
+[Unit]
+Description=Golem fleet agent
+Documentation=https://github.com/yourname/golem
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/golemd \
+    --state-dir /var/lib/golem \
+    --trusted-keys /etc/golem/trusted-keys \
+    --node %H \
+    --listen 127.0.0.1:7474
+Restart=on-failure
+RestartSec=5s
+
+# This service legitimately needs to do almost anything (install packages,
+# write to /etc, manage units), so most sandboxing is off. We do still:
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectControlGroups=false
+NoNewPrivileges=false
+RestrictRealtime=true
+LockPersonality=true
+
+# State + journal location.
+StateDirectory=golem
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
