@@ -1,0 +1,110 @@
+---
+title: The config
+description: One Nickel file describes everything golem needs to know.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+You write one [Nickel](https://nickel-lang.org) file. It has two halves.
+
+```nickel
+let g = import "../../nickel/lib.ncl" in
+
+{
+  # ── what runs ─────────────────────────────────────
+  app.services = {
+    hello = { image = "ghcr.io/example/hello:v1" },
+  },
+
+  # ── where it goes, how it's reached ───────────────
+  nodes  = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
+  expose = [{ host = "hello.example.com", service = "hello" }],
+} | g.Deploy
+```
+
+That's everything. Three fields. The same shape scales to a full lichess
+deploy with ten services — the file gets longer, the structure doesn't change.
+
+## `app` — what runs
+
+A record of named services. Each service is a container.
+
+```nickel
+app.services = {
+  postgres = {
+    image  = "ghcr.io/postgresql/postgresql-18:latest",
+    volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
+    env    = { POSTGRES_USER = "app", POSTGRES_DB = "app" },
+  },
+  web = {
+    image = "ghcr.io/example/myapp:v1",
+    env   = {
+      DATABASE_URL = "postgres://app@%{g.ref.service "postgres"}:5432/app",
+    },
+  },
+}
+```
+
+Fields a service can carry:
+
+| Field | What it is |
+| --- | --- |
+| `image` | Container image. Required. |
+| `env` | Environment variables, as a record of strings. |
+| `volume` | Single named volume mounted into the container. `{ at = "/path", size = "5Gb" }`. |
+| `volumes` | Same shape if you need more than one. |
+| `config` | Inline file shipped with the service. `{ path = "...", content = "..." }`. |
+| `command` | Override the container's default command. |
+| `oneshot` | `true` for migrations / backfills — runs once and exits. |
+| `restart` | `'always`, `'on-failure`, or `'no`. Default `'always`. |
+
+The app graph is what *runs*. It does not know about boxes, hostnames, or
+secrets-the-values. Those live in the deploy half.
+
+## `deploy` — where it goes, how it's reached
+
+```nickel
+nodes  = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
+expose = [{ host = "hello.example.com", service = "web" }],
+```
+
+- **`nodes`** — record of boxes, keyed by name. Each has an address (LAN or
+  Nebula).
+- **`expose`** — list of public hostnames. Each names a service; golem runs
+  caddy in front and terminates TLS automatically.
+- **`place`** — optional. Service-name → list of node names. With one node,
+  every service goes there by default; only write `place` when distributing
+  across multiple boxes.
+- **`system`** — optional escape hatch for OS-level concerns the App model
+  can't express: extra apt packages, files, systemd units. Used sparingly.
+
+## Cross-service references
+
+Services don't hardcode addresses. They use placeholders the system resolves:
+
+| Helper | Produces | When to use |
+| --- | --- | --- |
+| `g.ref.service "name"` | `"{name.service}"` — the service's runtime address | "postgres" in a DATABASE_URL |
+| `g.ref.port "name" 8000` | `"{name.service}:8000"` — address with a port suffix | reverse_proxy targets in a Caddyfile |
+| `g.ref.secret "name"` | `"{secret:name}"` — operator-supplied secret value (M3) | passwords, API tokens |
+
+You can write the placeholders by hand if you prefer. `golemctl apply` checks
+them: misspell a service name, the apply rejects with a clear error before
+anything reaches the agent.
+
+## What's *not* in the config
+
+- **No version field.** Bundle versions are bookkeeping — `golemctl apply`
+  reads each node's last-applied version and bumps automatically.
+- **No `kind:`, no `spec:`, no node-claim DAG.** That's the wire format the
+  agent receives, not what you write.
+- **No port mappings between services.** Cross-service traffic goes through
+  the runtime's network DNS using `{name.service}` references.
+- **No separate `volumes:` block.** A volume belongs to the service that
+  owns it.
+
+## Where to next
+
+Now that you know what to write, see [Applying changes](/getting-started/applying/)
+for how `golemctl` turns this into something the agents act on. Or jump
+straight to a worked example: [Tier 1 — One service](/guides/hello-agent/).

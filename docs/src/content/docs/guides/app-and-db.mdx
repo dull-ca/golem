@@ -124,7 +124,7 @@ Layer 2 (`golemctl`) walks `app` + `deploy` and produces ~10 layer-3 claims:
 | `services.caddy` | `files["/etc/containers/systemd/caddy.container"]` + `files["/etc/caddy/Caddyfile"]` (the inline config) + `units["caddy.service"]` |
 | `expose[0]` | adds the `hello.example.com` block to the Caddyfile + a handler that reloads caddy on Caddyfile change + ensures port 80/443 is allowed |
 
-Every claim is a primitive [the agent already understands](/concepts/three-layers/).
+Every claim is a primitive [the agent already understands](/reference/architecture/).
 The Nickel was just a more compact way to write it down.
 
 ## Same app, different deploys

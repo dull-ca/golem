@@ -69,8 +69,8 @@ The agent is small (~3000 lines of Rust) and engineered for one property:
 **after any number of crashes, the next clean tick converges to a state
 that matches the OS.** Every claim journals its prior state before mutating;
 removing a claim restores what was there before; the
-[crash-injection smoke test](/concepts/journal/) verifies recovery at every
-window. That's the floor — necessary, not the pitch.
+[crash-injection smoke test](/reference/honest-convergence/) verifies recovery
+at every window. That's the floor — necessary, not the pitch.
 
 ## Try the deployment guides
 

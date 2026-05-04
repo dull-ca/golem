@@ -1,0 +1,112 @@
+---
+title: Applying changes
+description: golemctl reads your config, signs per-node bundles, ships them. The agents reconcile.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Two binaries do all the work.
+
+- **`golemctl`** runs on your laptop. Reads your Nickel config, computes what
+  each node should look like, signs it, ships it.
+- **`golemd`** runs on each box. Receives signed bundles, verifies them
+  against a public key in `/etc/golem/trusted-keys`, reconciles the box.
+
+You apply with one command:
+
+```bash
+golemctl apply config.ncl operator.sk node-addrs.json
+```
+
+## What `golemctl apply` does
+
+For each node listed in `node-addrs.json`, in this order:
+
+1. **Reads the agent's status.**
+   `GET /status` returns the node's last-applied version. The next bundle's
+   version is `max(last_applied) + 1` across the full apply set — every
+   node in this apply gets the same fresh number, so there's no drift if
+   you apply to a fleet.
+
+2. **Compiles the Nickel for that node.**
+   Walks the config, resolves `{name.service}` and `g.ref.*` placeholders,
+   produces a per-node bundle of low-level claims (write this file, install
+   that package, enable this unit). The compilation is deterministic — the
+   same input produces byte-identical output.
+
+3. **Signs it.**
+   With the operator's ed25519 secret key (`operator.sk`). The signature
+   covers a canonical-form serialization of the bundle, so re-signing the
+   same input gives the same signature.
+
+4. **Posts it.**
+   `POST /bundle` to the node's agent. The agent verifies the signature
+   against `/etc/golem/trusted-keys`, checks monotonicity, and accepts.
+
+If any node is unreachable during step 1, `apply` stops with a clear error.
+Push without knowing every target's last-applied version risks a partial
+deploy where some accept and some reject. Use `--force` to skip an
+unreachable node; that node picks up at the next apply.
+
+## What the agent does on the next tick
+
+Once a bundle is accepted, the agent reconciles on its periodic tick (every
+30s by default). For each claim in the bundle:
+
+- **If it's new**, the agent first reads what's already on the box (the
+  current file contents, whether the package is installed, whether the unit
+  is enabled). It records that prior state in a local SQLite journal at
+  `/var/lib/golem/state.db`.
+- **Then it mutates.** Writes the file, runs `apt-get install`, runs
+  `systemctl enable --now`. Whatever the claim says.
+
+For each claim that *was* in the previous bundle but isn't anymore, the
+agent does the reverse: reads the journal for the prior state, restores it
+(removes the file, runs `apt-get autoremove`, disables the unit). If the
+package was installed *before* golem touched the box, removal is a no-op —
+golem only undoes what golem did.
+
+This is the property that makes apply safe: removing a service from your
+config and re-applying restores the box to the state it was in before you
+added that service. No stale files, no leaked services. See
+[Honest convergence](/reference/honest-convergence/) for the full crash-recovery
+story.
+
+## Quick-reference: what the operator can see
+
+- **Status of one node:**
+  ```bash
+  curl -s http://10.42.0.1:7474/status | jq
+  # → { "bundle_version": 7, "node": "box-01", "claim_count": 12 }
+  ```
+- **What's in the journal right now:**
+  ```bash
+  ssh box-01 'sudo sqlite3 /var/lib/golem/state.db \
+      "SELECT id_kind, id_key FROM claim_state;"'
+  ```
+- **The agent's logs:**
+  ```bash
+  ssh box-01 'journalctl -u golemd -f'
+  ```
+
+## What rolling forward looks like
+
+Edit your Nickel. Re-run `apply`. The agent picks up the new bundle on the
+next tick. Image bumps, config changes, new services, removed services — all
+the same command.
+
+```bash
+# Pull a new image tag
+sed -i 's|myapp:v1|myapp:v2|' config.ncl
+golemctl apply config.ncl operator.sk node-addrs.json
+```
+
+There's no rollback flag. To undo, edit your Nickel back to the previous
+state and apply — same shape, version bumps forward.
+
+## Where to next
+
+- **A worked example:** [Tier 1 — One service](/guides/hello-agent/)
+- **The full CLI flag list:** [CLI reference](/reference/cli/)
+- **The format the agent sees:** [Bundle format](/reference/bundle-format/)
+- **Why it stays honest after a crash:** [Honest convergence](/reference/honest-convergence/)
