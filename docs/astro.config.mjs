@@ -21,7 +21,6 @@ export default defineConfig({
           items: [
             { label: "What golem is", link: "/" },
             { label: "Install", link: "/getting-started/install/" },
-            { label: "Your first bundle", link: "/getting-started/first-bundle/" },
           ],
         },
         {
@@ -35,7 +34,7 @@ export default defineConfig({
         {
           label: "Deployment guides",
           items: [
-            { label: "Tier 1 — Hello, agent", link: "/guides/hello-agent/" },
+            { label: "Tier 1 — One service", link: "/guides/hello-agent/" },
             { label: "Tier 2 — One app, one DB", link: "/guides/app-and-db/" },
             { label: "Tier 3 — Litour on a box", link: "/guides/litour/" },
           ],

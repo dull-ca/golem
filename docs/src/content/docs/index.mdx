@@ -76,12 +76,12 @@ window. That's the floor — necessary, not the pitch.
 
 Three walkthroughs, in order of how far they go:
 
-- **[Tier 1 — Hello, agent](/guides/hello-agent/)** — install caddy via apt and
-  drop a Caddyfile. Nothing fancy. **Works on M1 today.**
+- **[Tier 1 — One service](/guides/hello-agent/)** — a single container behind
+  one public hostname. Five fields of Nickel. **Targets M2.**
 - **[Tier 2 — One app, one DB](/guides/app-and-db/)** — a small Django app + a
   postgres container + an ingress. **Targets M2.**
 - **[Tier 3 — Litour on a box](/guides/litour/)** — the real
-  [lichess league software](https://github.com/lichess4545/litour) with caddy +
+  [lichess league software](https://codeberg.org/dull/litour) with caddy +
   web + api + apiworker + ui + celery + watcher + redis + postgres.
   **Targets M2 + M3 (secrets).**
 
