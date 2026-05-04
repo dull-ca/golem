@@ -27,7 +27,7 @@ is a flat record of named services that wire to each other:
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-let secret = g.ref.secret in              # M3 placeholder helper
+let secret = g.ref.secret in              # placeholder; values supplied at deploy (M3)
 let svc    = g.ref.service in
 
 let litour_image = fun name =>            # local helper, not part of golem
@@ -107,8 +107,8 @@ That's an OS-level concern, so it lives in `system.packages`:
     { host = "www.lichess4545.com", service = "caddy", tls = 'auto },
   ],
 
-  system.packages = { postgresql-16 = { name = "postgresql-16" } },
-  system.units    = { "postgresql.service" = { name = "postgresql.service" } },
+  system.packages = { postgresql-16 = {} },
+  system.units    = { "postgresql.service" = {} },
   system.files = {
     "pg-tuning" = {
       path    = "/etc/postgresql/16/main/conf.d/golem.conf",

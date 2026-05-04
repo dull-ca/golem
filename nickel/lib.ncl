@@ -36,5 +36,11 @@ let d = import "deploy.ncl" in
   ref = {
     service = fun name => "{%{name}.service}",
     port    = fun name p => "{%{name}.service}:%{std.to_string p}",
+    # Operator-supplied secret. Values stage on the operator's laptop under
+    # ~/.golem/secrets/<deploy>/<name> and decrypt to a tmpfs path on the
+    # agent. M3. The placeholder shape is reserved here so docs and configs
+    # can be written against it now; the translator currently rejects
+    # unresolved {secret:…} placeholders.
+    secret  = fun name => "{secret:%{name}}",
   },
 }

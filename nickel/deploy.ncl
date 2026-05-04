@@ -34,10 +34,17 @@ let a = import "app.ncl" in
   # Layer-3 claims declared inline at deploy time. Use sparingly — most
   # things should live in the App. This is for OS-level concerns the App
   # model can't express (kernel sysctls, custom systemd timers, etc.).
+  #
+  # The record key is the runtime name in every case:
+  #   packages.<package-name>           — apt package name
+  #   files."<key>"                     — free-form id; the actual filesystem
+  #                                       path is the `path` field
+  #   units."<unit-name>.service"       — systemd unit name (key includes
+  #                                       the `.service` suffix)
   SystemEscape = {
-    packages | { _ : { name | String } }                              | default = {},
+    packages | { _ : {} }                                                          | default = {},
     files    | { _ : { path | String, content | String, mode | Number | default = 420 } } | default = {},
-    units    | { _ : { name | String, enable | Bool | default = true, active | Bool | default = true } } | default = {},
+    units    | { _ : { enable | Bool | default = true, active | Bool | default = true } } | default = {},
   },
 
   # ── Deploy ─────────────────────────────────────────────────────────────
