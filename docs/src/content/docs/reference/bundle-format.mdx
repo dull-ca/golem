@@ -38,6 +38,11 @@ A monotonically-increasing integer. The agent rejects any bundle whose version
 is `<= last_applied_version`. There's no rollback mechanism — to undo a
 deploy, push a *newer* bundle that describes the previous state.
 
+Operators don't type version numbers. The Layer 1 `Deploy` contract has no
+`version` field; `golemctl apply` queries each target node's `/status`,
+computes `max(last_applied) + 1` across the apply set, and bakes it in
+before signing. Version numbers are bookkeeping the system owns.
+
 ## `node`
 
 The agent's identity. Must match the agent's `--node` flag (or `GOLEM_NODE`).

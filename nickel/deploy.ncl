@@ -51,8 +51,13 @@ let a = import "app.ncl" in
   # Entry point. `app` is the App to run, `nodes` is the list of boxes,
   # `place` decides which services run where (defaults to "all on the one
   # node" if there's only one), `expose` lists public hostnames.
+  #
+  # Note: there is no `version` field. Bundle versions are bookkeeping golem
+  # owns. `golemctl apply` queries each target node's last-applied version
+  # via /status and assigns the next one automatically. The wire-format
+  # Bundle (layer 3) carries a version because the agent uses it for
+  # monotonicity; the operator never types it.
   Deploy = {
-    version | Number,
     app     | a.App,
     nodes   | { _ : Node },
     # placement: service-name -> [node-name]. Missing services default to

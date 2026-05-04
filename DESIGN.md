@@ -87,13 +87,16 @@ goes through the runtime's network DNS), no `networks` block.
 
 ```nickel
 {
-  version = 1,
   app = app,
   nodes = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
   expose = [{ host = "myapp.example.com", service = "caddy" }],
-  system.packages = { postgresql-16 = { name = "postgresql-16" } },
+  system.packages = { postgresql-16 = {} },
 } | g.Deploy
 ```
+
+There's no `version` field. `golemctl apply` queries each target node's
+`/status` to read its last-applied version and bumps automatically — version
+numbers are bookkeeping golem owns, not something operators type.
 
 `expose` names the public hostnames; `system.packages`/`system.files`/
 `system.units` is the layer-3 escape hatch for things the App model can't

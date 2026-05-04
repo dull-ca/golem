@@ -37,11 +37,15 @@ golemctl keygen ./operator
 # public key: 6f93...e1c2
 ```
 
-### `golemctl eval <config.ncl> <node>`
+### `golemctl eval <config.ncl> <node> [--as-version N]`
 
 Evaluates the Nickel `Deploy` config for the named node and dumps the unsigned
 `Bundle` JSON to stdout. Useful for inspecting what the translator produces
 before signing.
+
+The Deploy itself doesn't carry a version (`golemctl apply` computes one
+automatically — see below). For `eval` alone, the bundle gets `version = 1`
+unless you pass `--as-version N`.
 
 ```bash
 golemctl eval examples/simple/config.ncl app-01 | jq '.claims | length'
@@ -92,8 +96,23 @@ names to URLs:
 }
 ```
 
-For each node listed, it evaluates, signs, pushes. If any node returns
-non-2xx, the command fails and reports which.
+For each node listed, it:
+
+1. Queries `/status` to read `bundle_version` (the last-applied version on
+   that node).
+2. Computes the next version as `max(versions) + 1` across all reachable
+   target nodes — every node in this apply gets the same fresh version.
+3. Evaluates the Nickel for that node, signs the bundle (with the computed
+   version baked in), and POSTs to `/bundle`.
+
+The operator never types a version. If a node is unreachable during the
+status query, `apply` stops and reports it — pushing without knowing every
+node's last-applied version risks a partial deploy where some nodes accept
+and some reject on monotonicity. Use `--force` to skip an unreachable node;
+that node will pick up at the next apply.
+
+If any node returns non-2xx during the push phase, the command reports which
+nodes succeeded and which failed.
 
 ## `golemd`
 

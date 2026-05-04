@@ -23,8 +23,6 @@ is that pattern at its smallest. One service. One hostname.
 let g = import "../../nickel/lib.ncl" in
 
 {
-  version = 1,
-
   app.services = {
     hello = { image = "ghcr.io/example/hello:v1" },
   },
@@ -34,7 +32,8 @@ let g = import "../../nickel/lib.ncl" in
 } | g.Deploy
 ```
 
-That's the deploy. Five fields.
+That's the deploy. Three fields. No version number — `golemctl apply` reads
+each node's last-applied version and bumps automatically.
 
 - **`app.services.hello`** — one container. The image is whatever you're
   shipping. No env, no volume, no command override; defaults are fine for a
@@ -86,11 +85,10 @@ part that makes golem worth using over a shell script.
 
 ## Take it back
 
-Push a deploy with the same `app.services` empty:
+Edit the Nickel to empty out `app.services` and `expose`, then re-apply:
 
 ```nickel
 {
-  version = 2,
   app.services = {},
   nodes  = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
   expose = [],

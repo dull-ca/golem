@@ -9,8 +9,6 @@
 let g = import "../../nickel/lib.ncl" in
 
 {
-  version = 1,
-
   app.services = {
     postgres = {
       image  = "ghcr.io/postgresql/postgresql-18:latest",

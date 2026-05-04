@@ -35,11 +35,10 @@ unchanged.
 
 ```nickel
 {
-  version = 1,
-  app     = app,
-  nodes   = { "box-01" = { ... } },
-  expose  = [{ host = "hello.example.com", service = "caddy" }],
-  system  = { packages = { postgresql-16 = { ... } } },
+  app    = app,
+  nodes  = { "box-01" = { ... } },
+  expose = [{ host = "hello.example.com", service = "caddy" }],
+  system = { packages = { postgresql-16 = { ... } } },
 } | g.Deploy
 ```
 

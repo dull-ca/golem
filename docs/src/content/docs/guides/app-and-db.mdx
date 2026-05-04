@@ -99,7 +99,6 @@ no `:ro` flag, no thinking about it.
 
 ```nickel
 {
-  version = 1,
   app = app,                                  # the record above
   nodes = {
     "box-01" = { name = "box-01", address = "10.42.0.1" },
@@ -134,7 +133,6 @@ The same `app` record deploys to staging by changing only the deploy block:
 
 ```nickel
 {
-  version = 1,
   app = app,
   nodes = { "stage-01" = { ... } },
   expose = [
@@ -147,7 +145,6 @@ Or to production with a beefier secret-bearing config (M3):
 
 ```nickel
 {
-  version = 5,
   app = app & { services.postgres.env.POSTGRES_PASSWORD = g.ref.secret "pg_password" },
   nodes = { "prod-01" = { ... } },
   expose = [
