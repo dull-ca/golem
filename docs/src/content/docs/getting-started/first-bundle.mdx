@@ -1,0 +1,129 @@
+---
+title: Your first bundle
+description: Hand-write a bundle, sign it, push it. Five minutes.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This is the shortest path to seeing golem do something real. We'll write a
+JSON bundle by hand (no Nickel yet), sign it, and push it to a running agent.
+
+<Aside type="note">
+  In M2 you'll write [Nickel](https://nickel-lang.org), and `golemctl` will
+  compile + sign + push for you. For now, hand-written JSON shows you what's
+  actually on the wire.
+</Aside>
+
+## The bundle
+
+Create `bundle.json`:
+
+```json
+{
+  "version": 1,
+  "node": "test-01",
+  "claims": [
+    {
+      "id": { "kind": "file", "key": "/tmp/golem-hello.txt" },
+      "kind": "file",
+      "spec": {
+        "path": "/tmp/golem-hello.txt",
+        "content": "hello from a signed bundle\n",
+        "mode": 420,
+        "owner": "root",
+        "group": "root",
+        "marker": "Owned"
+      },
+      "owners": ["demo/hello"],
+      "after": []
+    }
+  ],
+  "handlers": []
+}
+```
+
+Three things to notice:
+
+1. **`version`** — must monotonically increase across pushes. The agent
+   rejects anything `<= last_applied_version`.
+2. **`node`** — must match the agent's `--node` flag. Bundles are
+   per-node, not global.
+3. **`mode: 420`** — that's `0o644` in decimal. JSON has no octal literals.
+
+## Sign and push
+
+<Steps>
+1. Sign with your operator key:
+
+   ```bash
+   golemctl sign bundle.json operator.sk > signed.json
+   ```
+
+2. Push to the agent:
+
+   ```bash
+   curl -X POST -H 'content-type: application/json' \
+        --data-binary @signed.json \
+        http://127.0.0.1:7474/bundle
+   # → {"accepted_version":1}
+   ```
+
+3. Wait for the next reconcile tick (≤30s by default), then verify:
+
+   ```bash
+   cat /tmp/golem-hello.txt
+   # → hello from a signed bundle
+   ```
+</Steps>
+
+## Inspect what the agent did
+
+The agent's journal lives in SQLite. You can read it directly:
+
+```bash
+sudo sqlite3 /var/lib/golem/state.db \
+  'SELECT id_kind, id_key, last_applied FROM claim_state;'
+```
+
+You should see one row for the file claim, with a `last_applied` version of 1.
+
+For a higher-level view:
+
+```bash
+curl -s http://127.0.0.1:7474/status | jq
+# → {
+#     "bundle_version": 1,
+#     "node": "test-01",
+#     "claim_count": 1
+#   }
+```
+
+## Remove it
+
+Push a bundle with the same `version + 1` but no claims:
+
+```json
+{ "version": 2, "node": "test-01", "claims": [], "handlers": [] }
+```
+
+```bash
+golemctl sign bundle-v2.json operator.sk > signed-v2.json
+curl -X POST --data-binary @signed-v2.json http://127.0.0.1:7474/bundle
+```
+
+After the next tick, `/tmp/golem-hello.txt` is gone. The agent saw the claim
+disappear from the desired set, looked up the captured prior state ("file
+didn't exist"), and removed it. That's the orphan sweep — the same path the
+[Tier 1 guide](/guides/hello-agent/) exercises with caddy.
+
+## What you just did
+
+1. Wrote a layer-3 wire-format bundle by hand.
+2. Signed it with ed25519.
+3. The agent verified the signature, captured the prior state of
+   `/tmp/golem-hello.txt` (didn't exist), journaled that, wrote the file,
+   journaled "applied".
+4. On the remove cycle, it read the captured state from the journal and
+   restored it (deleted the file).
+
+That's the full layer-3 lifecycle. Everything else in golem is built on top.

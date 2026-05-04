@@ -1,0 +1,106 @@
+---
+title: Journal-before-mutate
+description: How golem stays honest when the agent crashes mid-tick.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The single most important property of `golemd` is this: **after any number of
+crashes, the next clean tick converges to a state that matches the OS.**
+
+Not "matches what we *think* the OS is." Matches what the OS actually is.
+
+Most orchestrators handle this by... not handling it. They either re-derive
+state by inspection on every tick (slow, racy) or they trust their journal and
+get out of sync silently when reality drifts. Golem does both — it journals,
+*and* it re-checks before unapplying.
+
+## The four-step claim lifecycle
+
+Every claim, every tick:
+
+1. **Capture** — read the OS state that this claim is about to overwrite. For
+   a file, that's the existing bytes (capped at 1 MiB) plus mode/owner. For a
+   package, that's "was it already installed when we first touched it?" For a
+   unit, that's "was it enabled and active before us?"
+2. **Journal capture** — write the captured state to SQLite *before* doing
+   anything. If we crash here, the next tick still has the prior state in the
+   journal and can decide what to do honestly.
+3. **Mutate** — actually do the thing. Write the file. Run apt-get install.
+   `systemctl enable --now`.
+4. **Journal applied** — record that the mutation succeeded. If we crash
+   between step 3 and step 4, we'll re-do step 3 on the next tick — that's
+   fine, mutations are idempotent.
+
+## Capture-once-at-first-touch
+
+When a claim is created, we capture the OS state. We *never* capture again,
+even if the OS drifts later. Why?
+
+Imagine you have a `files["/etc/caddy/Caddyfile"]` claim. The agent applied it
+last week, capturing the empty pre-existing state (file didn't exist). Today
+some operator SSHes into the box and edits the Caddyfile by hand. Tomorrow the
+claim is removed from the bundle.
+
+If we re-captured at unapply time, we'd capture *the operator's hand-edit* and
+then "restore" to that — which means the unapply leaves the file in place. That
+violates the rule that removing a claim restores the prior state.
+
+By capturing once at first touch, removal restores **what was there before
+golem started managing it**. The hand-edit is treated as drift, which is the
+right call.
+
+<Aside type="note">
+  This means hand-edits to managed files are blown away on the next tick. That's
+  on purpose. If you want golem to leave a file alone, the claim shouldn't
+  exist; if the claim exists, it owns the file.
+</Aside>
+
+## The orphan sweep
+
+When a bundle is pushed that *removes* a claim that was previously present, the
+agent enters the unapply path:
+
+1. Read the captured prior state from the journal.
+2. Apply it back. (Restore the old file bytes; `apt-get autoremove` if we
+   installed the package and nothing else needs it; `systemctl disable` if we
+   enabled the unit.)
+3. Forget the claim from the journal.
+
+The "forget" step is what makes the journal table empty out. Tests verify the
+journal is empty after a remove cycle — that's the sharpest check that the
+unapply was honest.
+
+## Crash injection
+
+Production code shouldn't have crash-injection in it. Ours does, gated on an
+environment variable, because the alternative is integration tests that "pass
+when nothing goes wrong."
+
+```rust
+// In golemd source:
+maybe_crash("capture_persisted");      // after step 2
+maybe_crash("intent_applied_false");   // after step 2 also (intent journaled)
+maybe_crash("mutate_completed");       // after step 3, before step 4
+maybe_crash("intent_applied_true");    // after step 4
+```
+
+Each `maybe_crash(label)` reads `GOLEM_CRASH_AFTER` and `std::process::abort()`s
+if the label matches. The smoke test runs the agent four times — once per
+window — kills it mid-tick, restarts it, and checks that:
+
+1. The OS converges to fully-installed state (intent satisfied).
+2. After a remove bundle, the journal empties out (unapply was honest).
+
+If the second test ever fails, it means we left dishonest state behind: the
+journal said "we own this file" while the OS said something different. That's
+the bug class this whole design exists to prevent.
+
+## Why not just `etcdctl get / set`?
+
+Because the journal isn't *coordination* state — it's *recovery* state. We
+don't need it to be globally consistent across the fleet, we need it to be
+durable on this one box. SQLite with WAL gives us that for ~zero ops cost.
+
+(If you have 30 boxes and 200 claims each, that's 6000 rows. SQLite laughs at
+that.)

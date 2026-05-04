@@ -1,0 +1,187 @@
+---
+title: Bundle format
+description: The wire format the agent verifies and applies.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+A bundle is the operator's instruction to the agent for one specific node.
+Layer 2 (`golemctl`) produces it; layer 3 (`golemd`) applies it.
+
+## Top-level shape
+
+```json
+{
+  "version": 1,
+  "node": "box-01",
+  "claims": [ ... ],
+  "handlers": [ ... ]
+}
+```
+
+Then signed:
+
+```json
+{
+  "bundle": { ... },
+  "signature": "hex-encoded ed25519 signature over canonical_json(bundle)",
+  "signer": "hex-encoded ed25519 public key"
+}
+```
+
+The agent verifies `signature` against `signer` over the canonical bytes of
+`bundle`, checks `signer` is in `/etc/golem/trusted-keys`, then applies.
+
+## `version`
+
+A monotonically-increasing integer. The agent rejects any bundle whose version
+is `<= last_applied_version`. There's no rollback mechanism — to undo a
+deploy, push a *newer* bundle that describes the previous state.
+
+## `node`
+
+The agent's identity. Must match the agent's `--node` flag (or `GOLEM_NODE`).
+Bundle for a different node → 400.
+
+## `claims`
+
+An array of declarative claims. Three kinds today:
+
+### `file`
+
+```json
+{
+  "id":   { "kind": "file", "key": "/etc/caddy/Caddyfile" },
+  "kind": "file",
+  "spec": {
+    "path":    "/etc/caddy/Caddyfile",
+    "content": "...",
+    "mode":    420,
+    "owner":   "root",
+    "group":   "root",
+    "marker":  "Owned"
+  },
+  "owners": ["app/web"],
+  "after": []
+}
+```
+
+- `mode` is decimal (`420` = `0o644`). JSON has no octal.
+- `marker` is `"Owned"` today. `"Merge"` is reserved for managing a
+  marker-delimited fragment of a file (`/etc/sysctl.conf`-style).
+- Files larger than 1 MiB at capture time are refused (the agent returns
+  `CaptureError::TooLarge` on the claim and skips it).
+
+### `apt_package`
+
+```json
+{
+  "id":   { "kind": "apt_package", "key": "caddy" },
+  "kind": "apt_package",
+  "spec": { "name": "caddy" },
+  "owners": ["app/web"],
+  "after": []
+}
+```
+
+The agent uses `apt-get install -y` with the right env to suppress prompts.
+Removal goes through `apt-get autoremove --purge` *if* the agent originally
+installed the package; if the package was preexisting, removal is a no-op.
+
+### `systemd_unit`
+
+```json
+{
+  "id":   { "kind": "systemd_unit", "key": "caddy.service" },
+  "kind": "systemd_unit",
+  "spec": {
+    "name":   "caddy.service",
+    "enable": true,
+    "active": true,
+    "scope":  "system"
+  },
+  "owners": ["app/web"],
+  "after": [{ "kind": "file", "key": "/etc/caddy/Caddyfile" }]
+}
+```
+
+- `enable` and `active` are independent: a unit can be enabled-but-stopped or
+  active-but-disabled. The agent reconciles both.
+- `scope` is `"system"` today. `"user"` (per-user units) is M3.
+- `after` lets you express "this unit must be started after that file lands."
+  Useful for handlers and ordering, see below.
+
+### `id`, `owners`, `after`
+
+- **`id`** — globally unique within a bundle. `{kind, key}` together. Two
+  claims with the same id is a bundle-rejection error.
+- **`owners`** — free-form labels saying who declared this claim. Used for
+  observability ("which workload is this for?") and for the `/v1/claims`
+  inspection API. Not security-relevant; an unspecified `owners` is allowed.
+- **`after`** — references to other claim ids that must apply first. Forms a
+  DAG; cycles are rejected at acceptance time.
+
+## `handlers`
+
+When a *source* claim's content changes, restart the *target* units:
+
+```json
+{
+  "source":  { "kind": "file", "key": "/etc/caddy/Caddyfile" },
+  "targets": ["caddy.service"]
+}
+```
+
+Handlers fire only on actual content change, not on bundle re-pushes that
+leave the source's content identical. The agent compares the canonical-form
+of the new spec to the journal's last_applied form; if they're byte-equal,
+no handler fires.
+
+## Canonical form
+
+Bundle signing is over a **canonical JSON** representation:
+
+- Object keys are sorted lexicographically at every level.
+- Numbers serialize without trailing zeros.
+- Strings are JSON-escaped using the standard rules.
+- No trailing whitespace.
+
+This is implemented in `crates/golem-types/src/canonical.rs` with an explicit
+recursive walker — *not* by relying on `serde_json/preserve_order`, which is
+a feature flag that can be enabled at the workspace level and silently break
+signature stability.
+
+If you write a bundle by hand and `golemctl sign` produces a signature that
+doesn't verify, the most likely cause is a key-ordering mismatch. The signer
+re-canonicalizes; the verifier re-canonicalizes; if they don't agree, your
+JSON has a feature you didn't expect (NaN? Comments? UTF-8 BOM?).
+
+<Aside type="note" title="Why not just protobuf?">
+  Because the bundle is also the Nickel translator's output, and Nickel's
+  natural export format is JSON. JSON-with-canonical-form is the lowest-friction
+  path. If we ever need binary efficiency, the canonical form is already the
+  bytes-on-the-wire — protobuf can wrap it later.
+</Aside>
+
+## What the agent does on receipt
+
+Pseudocode for the accept path:
+
+```
+on POST /bundle:
+  hold the bundle write-guard
+  signed = parse_signed_bundle(body)
+  verify_signature(signed)                  # → 400 if bad
+  bundle = signed.bundle
+  if bundle.node != self.node:        bail 400 "wrong node"
+  if bundle.version <= last_applied:  bail 400 "monotonicity"
+  validate_dag(bundle.claims)               # → 400 if cycle
+  swap shared bundle slot
+  return 202 { accepted_version: bundle.version }
+```
+
+The actual mutation happens on the next reconcile tick. Acceptance is a
+*pure* swap — no apt, no systemctl, just JSON validation and a SQLite write.
+That keeps the HTTP path fast and recoverable; if the agent crashes between
+accept and the next tick, the bundle is durable in SQLite and gets applied
+on restart.

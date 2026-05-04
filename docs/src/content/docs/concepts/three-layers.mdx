@@ -1,0 +1,116 @@
+---
+title: The three layers
+description: Why golem is split into input language, translation, and a small system engine.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Golem is **three layers stacked on each other**. Most orchestrators collapse
+them into one big YAML; golem keeps them separate because each one has
+different change-frequency, different audience, and a different threat model.
+
+## Layer 1 — input language
+
+What the operator (and tenants) write. Nickel, with two trust tiers:
+
+- **Tenant-trust primitives** — what an app team can declare without an
+  operator review. A team running a single web app shouldn't need a sysadmin
+  to ship a config change.
+  - `containers.<name>` — a container image to run
+  - `ingress.<name>` — public hostname → workload mapping
+  - `volumes.<name>` — named persistent volume on the box
+  - `secrets.<name>` — reference to a secret (the value is operator-supplied)
+- **Operator-trust primitives** — things that touch the host directly. These
+  require the operator's key to sign.
+  - `files.<path>` — a file at a path on the host
+  - `packages.<name>` — a Debian package
+  - `units.<name>` — a systemd unit
+
+The split is enforced at *signing time*, not at the agent. The agent just
+verifies the bundle signature and applies what's there.
+
+<Aside type="note">
+  In M1 only the operator-trust primitives are implemented; the agent literally
+  doesn't know what a "container" is yet. M2 adds the tenant-trust primitives
+  by translating each into a quadlet `.container` file + a systemd unit — both
+  of which *are* layer-3 primitives the agent already understands.
+</Aside>
+
+## Layer 2 — translation
+
+`golemctl` runs on the operator's laptop. It:
+
+1. Reads the Nickel input.
+2. Validates contracts (each `Workload` has a `name`, an `image`, a non-empty
+   `nodes` list, etc.).
+3. Translates each tenant-trust primitive into a set of layer-3 claims. A
+   `containers.api` becomes:
+   - a `files["/etc/containers/systemd/api.container"]` claim with the
+     rendered quadlet body
+   - a `packages.podman` claim
+   - a `units["api.service"]` claim that depends on the file claim
+4. Computes a per-node bundle (only the claims that node owns).
+5. Signs it with the operator's ed25519 key.
+6. Sends it to each node's `golemd` over HTTP.
+
+The translation is **deterministic** and **canonical** — the same Nickel input
+produces byte-identical bundles. That matters because the agent's monotonicity
+check rejects bundles with `version <= last_applied`, and you don't want a
+re-sign to break that.
+
+## Layer 3 — system engine
+
+The `golemd` agent. Tiny. Speaks three primitives only:
+
+- `files["/some/path"]` — write a file with given content/mode
+- `packages.<name>` — apt install / autoremove
+- `units["foo.service"]` — `systemctl enable --now`, `disable`, etc.
+
+Plus the bookkeeping every claim needs: capture prior state before mutating,
+journal it, mutate, journal "applied". When a claim is removed from a future
+bundle, *unapply* it using the captured prior state. When a previously-installed
+package was already on the box for another reason, leave it alone.
+
+The whole agent is ~3000 lines of Rust. It deliberately doesn't know about
+containers, ingress, or anything that lives at layer 1.
+
+## Why split it this way
+
+<table>
+  <thead>
+    <tr><th>Concern</th><th>Lives at</th><th>Changes</th><th>Failure mode</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>What I'm running</td>
+      <td>Layer 1 (Nickel)</td>
+      <td>Daily</td>
+      <td>Operator catches it in CI / signing review</td>
+    </tr>
+    <tr>
+      <td>How it lands on a box</td>
+      <td>Layer 2 (`golemctl`)</td>
+      <td>Per release</td>
+      <td>Bundle rejected at signing or by agent</td>
+    </tr>
+    <tr>
+      <td>What's actually on the box</td>
+      <td>Layer 3 (`golemd`)</td>
+      <td>Almost never</td>
+      <td>Crash → recover honestly on next tick</td>
+    </tr>
+  </tbody>
+</table>
+
+The layer-3 engine is the part that can corrupt your boxes. So it's the part we
+test the hardest — every journal-before-mutate window has a `GOLEM_CRASH_AFTER`
+injection point and a smoke test that aborts the agent there.
+
+## What the docs assume
+
+Most pages talk in layer-1 terms — that's what an operator writes. When a guide
+says "this becomes a quadlet file plus a systemd unit," that's the layer-2
+translation; you won't write those by hand unless you want to.
+
+The [Bundle format](/reference/bundle-format/) reference is the layer-3 wire
+format if you ever need to inspect a signed bundle directly.

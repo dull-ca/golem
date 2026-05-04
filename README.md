@@ -4,6 +4,7 @@ A small-fleet declarative orchestrator: write workloads and ingresses in Nickel,
 
 ## Documentation
 
+- **[docs/](docs/)** — public docs site (Astro Starlight). Three-tier deployment guide: Hello agent (M1) → One app + DB (M2) → Litour on a box (M2+M3). Concepts pages on the three-layer model, journal-before-mutate, and the trust model. `cd docs && bun install && bun run dev` to preview.
 - **[DESIGN.md](DESIGN.md)** — canonical design doc. Three-layer model (Nickel input → translator → system primitives), the seven correctness commitments, the corrected Provider trait that makes journal-before-mutate honest, milestone ladder M1–M5.
 - **[QUICKSTART.md](QUICKSTART.md)** — install + apply walkthrough. Reflects the M2+ Nickel-driven flow; M1 today uses hand-written JSON bundles.
 - **[REVIEW.md](REVIEW.md)** — the code review of the original scaffold that drove the M1 fixes (build-blockers, journal-before-mutate misimplementation, wire-format hazards, design landmines).

@@ -1,0 +1,107 @@
+---
+title: Status & milestones
+description: What works today, what's next, what's later.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Golem is being built in milestones. The docs site ships the full vision; this
+page tracks which features are real today vs. described aspirationally.
+
+## M1 — layer-3 engine ✅
+
+**Status:** implemented and integration-tested.
+
+What you can do today:
+
+- Run `golemd` on a Debian trixie box (or container).
+- Hand-write JSON bundles using `file`, `apt_package`, and `systemd_unit` claim
+  kinds.
+- Sign with `golemctl sign`, push with `curl` or `golemctl push`.
+- The agent reconciles, journals, captures-once-at-first-touch, and
+  honestly-unapplies.
+- Crash-recovery is tested at every journal-before-mutate window via
+  `GOLEM_CRASH_AFTER`.
+- `cargo test -p golemd --test smoke_install_remove --release -- --ignored`
+  spins up a real systemd-in-Docker container and runs the install/remove
+  cycle end-to-end in ~20s.
+
+What you can't do yet:
+
+- Use Nickel input (`golemctl apply` with `config.ncl`).
+- Declare containers, ingresses, volumes, secrets — those are layer-1
+  primitives, and the layer-2 translator that maps them to layer-3 claims is
+  M2.
+
+The [Tier 1 — Hello, agent](/guides/hello-agent/) guide is the canonical M1
+walkthrough.
+
+## M2 — input language 🚧
+
+**Status:** in progress.
+
+What it adds:
+
+- Nickel `Fleet` schema with `containers`, `ingress`, `volumes` primitives.
+- `golemctl eval` and `golemctl apply` working end-to-end.
+- Per-node bundle extraction.
+- Quadlet-based container expansion (each container → a `.container` file +
+  a generated systemd service the agent already knows how to manage).
+- `golemctl translate compose.yml > fleet.ncl` for migrations.
+
+The [Tier 2 — One app, one DB](/guides/app-and-db/) guide tracks the M2
+target. The Nickel under `nickel/` is the schema; what's missing is the
+plumbing that runs the translator inside `golemctl apply`.
+
+## M3 — production-bearing ⏳
+
+**Status:** designed, not started.
+
+What it adds:
+
+- **Secrets at rest.** `secrets.<name>` Layer 1 primitive. Operator stages
+  values locally; bundles carry encrypted blobs (likely
+  [age](https://github.com/FiloSottile/age) per-node); agent decrypts to
+  tmpfs `/run/golem/secrets/<name>` on apply.
+- **User-scoped systemd units.** `scope: "user"` for running services as a
+  non-root user without a full systemd system unit.
+- **Backup hooks.** A `backup.<name>` primitive that's a oneshot unit + a
+  timer, with an opinionated postgres-backup default.
+- **Observability.** Prometheus exporter at `/metrics`, structured tick
+  reports.
+
+The [Litour on a box](/guides/litour/) guide assumes M3 is delivered.
+
+## M4 — small fleets at scale ⏳
+
+**Status:** sketched.
+
+What it adds:
+
+- **Operator-scripted migrations.** When you change a schema in a way that
+  needs a coordinated drain — drain old workloads from `box-01`, migrate the
+  database, bring up new workloads on `box-02` — `golemctl` runs an explicit
+  imperative script that pushes a sequence of bundles. No distributed
+  coordination on the agent side; the operator orchestrates.
+- **Health-gated rollback.** Apply a new bundle; if a unit fails to start
+  within a budget, automatically push the previous bundle.
+- **Multi-key trust.** Per-tenant signing keys, with the operator's key as
+  meta-key.
+
+## M5 — managed control plane ⏳
+
+**Status:** explicitly deferred.
+
+If golem ends up needing a hosted control plane (for the "managed tail" of the
+Builder thesis), it lives at this milestone. Probably a small web UI that
+edits Nickel, runs `golemctl apply` against a small fleet, and stores the
+secrets you stage. The agent doesn't change.
+
+## What's load-bearing right now
+
+If you only have time to look at one thing, look at the **journal-before-mutate
+discipline**. The whole trust-the-agent story rests on it; everything else is
+either a way of producing layer-3 claims (M2 translator) or a way of
+operating around them (M4 migrations).
+
+The [journal concept page](/concepts/journal/) is the deepest doc on this.

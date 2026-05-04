@@ -1,0 +1,77 @@
+---
+title: Golem
+description: Small-fleet declarative orchestrator for bare-metal Debian boxes.
+template: splash
+hero:
+  tagline: |
+    A declarative orchestrator for the **3-to-30-box fleet** that doesn't need
+    Kubernetes — but does need to stay honest when something crashes mid-tick.
+  actions:
+    - text: Get started
+      link: /getting-started/install/
+      icon: right-arrow
+      variant: primary
+    - text: Read the design
+      link: /concepts/three-layers/
+      icon: open-book
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+## What it is
+
+Golem runs on each node in your fleet as a small Rust agent (`golemd`). You
+write a declarative description of the fleet in [Nickel](https://nickel-lang.org)
+— what containers run where, what files exist, what packages are installed, what
+ingress fronts what — and the operator CLI (`golemctl`) compiles that into
+**signed per-node bundles**. Every agent reconciles its node against the bundle
+on a tick.
+
+If you've felt the gap between "ssh + Ansible" (no convergence) and "Kubernetes"
+(too much), this is for that gap.
+
+## Why it's different
+
+<CardGrid>
+  <Card title="Honest unapply" icon="approve-check">
+    Every claim records what was true *before* it touched the system. Removing a
+    claim restores prior state — including the case where the package was already
+    installed for another reason.
+  </Card>
+  <Card title="Crash-safe by design" icon="warning">
+    Journal-before-mutate at every step. If `golemd` is killed mid-tick, the
+    next tick converges to a state that matches the OS — not a state that
+    *believes* it does.
+  </Card>
+  <Card title="Signed bundles, no control plane" icon="seti:lock">
+    The agent trusts an ed25519 public key, not a network. Push a bundle over
+    HTTP, a Unix socket, a Nebula tunnel — the cryptography is what makes it
+    safe.
+  </Card>
+  <Card title="Built for small fleets" icon="seti:default">
+    Operator-side migrations beat distributed coordination. 30 boxes. 200
+    workloads. One operator. No etcd.
+  </Card>
+</CardGrid>
+
+## Try the deployment guides
+
+Three walkthroughs, in order of how far they go:
+
+- **[Tier 1 — Hello, agent](/guides/hello-agent/)** — install caddy via apt and
+  drop a Caddyfile. Nothing fancy. **Works on M1 today.**
+- **[Tier 2 — One app, one DB](/guides/app-and-db/)** — a small Django app + a
+  postgres container + an ingress. **Targets M2.**
+- **[Tier 3 — Litour on a box](/guides/litour/)** — the real
+  [lichess league software](https://github.com/lichess4545/litour) with caddy +
+  web + api + apiworker + ui + celery + watcher + redis + postgres.
+  **Targets M2 + M3 (secrets).**
+
+## Status
+
+Golem is being built in milestones. M1 (the layer-3 engine — files, packages,
+systemd units) is implemented and integration-tested. M2 (the Nickel input
+language with containers, ingress, volumes, secrets) is in progress.
+
+The docs ship the full vision; pages flag which milestone covers which feature.
+See [Status & milestones](/reference/status/) for the current state.

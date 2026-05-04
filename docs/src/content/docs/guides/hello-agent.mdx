@@ -1,0 +1,173 @@
+---
+title: Tier 1 — Hello, agent
+description: Install caddy via apt, drop a Caddyfile, start the unit. The path that works on M1 today.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This guide is the **M1 happy path**. No containers, no Nickel — just files,
+packages, and systemd units. That's the layer-3 primitive set, and it's the
+part of golem that's implemented and integration-tested today.
+
+<Aside type="note" title="Works on M1">
+  The bundle in this guide is the same one the smoke test runs against a real
+  Debian trixie container in CI. If this doesn't work on your box, the test
+  isn't running, or your box isn't trixie.
+</Aside>
+
+## What we're going to do
+
+1. Install caddy from the Debian repos.
+2. Drop a Caddyfile that responds with `hello from golem`.
+3. Enable and start `caddy.service`.
+4. Push a follow-up bundle that removes everything, and watch the agent
+   honestly uninstall.
+
+## The bundle
+
+This is the actual file from `smoke-test/bundle-v1-install.json`:
+
+```json
+{
+  "version": 1,
+  "node": "test-01",
+  "claims": [
+    {
+      "id": { "kind": "apt_package", "key": "caddy" },
+      "kind": "apt_package",
+      "spec": { "name": "caddy" },
+      "owners": ["hello/caddy"],
+      "after": []
+    },
+    {
+      "id": { "kind": "file", "key": "/etc/caddy/Caddyfile" },
+      "kind": "file",
+      "spec": {
+        "path": "/etc/caddy/Caddyfile",
+        "content": ":80 {\n  respond \"hello from golem\"\n}\n",
+        "mode": 420,
+        "owner": "root",
+        "group": "root",
+        "marker": "Owned"
+      },
+      "owners": ["hello/caddy"],
+      "after": [{ "kind": "apt_package", "key": "caddy" }]
+    },
+    {
+      "id": { "kind": "systemd_unit", "key": "caddy.service" },
+      "kind": "systemd_unit",
+      "spec": {
+        "name": "caddy.service",
+        "enable": true,
+        "active": true,
+        "scope": "system"
+      },
+      "owners": ["hello/caddy"],
+      "after": [{ "kind": "file", "key": "/etc/caddy/Caddyfile" }]
+    }
+  ],
+  "handlers": [
+    {
+      "source": { "kind": "file", "key": "/etc/caddy/Caddyfile" },
+      "targets": ["caddy.service"]
+    }
+  ]
+}
+```
+
+Three claims, one handler. Worth reading slowly.
+
+### `after` — topological order
+
+Claims have `after` references to other claim IDs. The agent topologically
+sorts the desired set before mutating, so:
+
+- `caddy` package is installed first (no `after`).
+- The Caddyfile is written next (after the package — otherwise `/etc/caddy`
+  doesn't exist).
+- The unit is enabled last (after the file — otherwise caddy crashes on the
+  first start).
+
+If you mess up the `after` graph the agent doesn't crash, it just applies
+things in the wrong order and the unit fails. Cycles are rejected at bundle
+acceptance time.
+
+### `handlers` — restart on file change
+
+A handler says "if this source claim changes, restart these target units."
+On the first apply the file claim is *new*, so the handler fires when
+`caddy.service` first comes up — but on the second push of the same bundle
+nothing changes, so nothing restarts. On version 3, if you change the
+Caddyfile content, the handler fires and `caddy.service` is reloaded.
+
+This is how `nginx -s reload` ergonomics work on top of a level-triggered
+engine.
+
+### `marker: "Owned"`
+
+The marker tells the agent how aggressive to be on file capture. `"Owned"` is
+the default — golem manages this file, period. Future markers (`"Merge"`) will
+let golem manage just a section of an existing file like `/etc/sysctl.conf`.
+
+## Apply it
+
+<Steps>
+1. Sign and push:
+
+   ```bash
+   golemctl sign smoke-test/bundle-v1-install.json operator.sk > signed-v1.json
+   curl -X POST -H 'content-type: application/json' \
+        --data-binary @signed-v1.json \
+        http://127.0.0.1:7474/bundle
+   # → {"accepted_version":1}
+   ```
+
+2. Wait one tick (~30s default; smoke test uses 5s):
+
+   ```bash
+   curl -s http://127.0.0.1:7474/status | jq
+   ```
+
+3. Verify caddy is running:
+
+   ```bash
+   systemctl is-active caddy.service
+   curl -s http://127.0.0.1
+   # → hello from golem
+   ```
+</Steps>
+
+## Take it back
+
+The matching `bundle-v2-remove.json` is just an empty bundle with `version: 2`:
+
+```json
+{ "version": 2, "node": "test-01", "claims": [], "handlers": [] }
+```
+
+Sign, push, wait. After the next tick:
+
+- `caddy.service` is stopped and disabled.
+- `/etc/caddy/Caddyfile` is gone (was captured as nonexistent).
+- The `caddy` package is removed by `apt-get autoremove` — **only because** the
+  agent captured `preexisting: false` when it first ran apt-install. If caddy
+  had already been installed on the box for some other reason, the unapply
+  path would leave it alone.
+- The journal (`SELECT count(*) FROM claim_state` in SQLite) is empty.
+
+The empty journal is the proof that nothing leaked. Honest unapply is the
+property that makes golem safe to use on a box you also touch by hand for
+other things.
+
+## What this didn't cover
+
+- **Containers** — that's [Tier 2](/guides/app-and-db/), and requires M2.
+- **Ingress / TLS** — Caddy can do that itself; golem just manages its config
+  file. M2 will add `ingress.<name>` as a layer-1 primitive that translates
+  to a Caddyfile fragment.
+- **Multiple nodes** — the bundle has `"node": "test-01"`. For a real fleet,
+  `golemctl` builds a per-node bundle from a Fleet config. M2.
+- **Secrets** — there's no place to put a secret in this bundle. M3.
+
+If you can run this guide on your box, the layer-3 engine works for you.
+Everything else in golem is translation that produces this kind of bundle.

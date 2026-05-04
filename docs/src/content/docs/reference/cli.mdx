@@ -1,0 +1,168 @@
+---
+title: CLI reference
+description: golemctl and golemd flags and subcommands.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Two binaries. `golemctl` runs on the operator's laptop and produces signed
+bundles. `golemd` runs on each node and applies them.
+
+## `golemctl`
+
+```
+golem fleet operator CLI
+
+Usage: golemctl <COMMAND>
+
+Commands:
+  keygen   Generate a new ed25519 keypair
+  eval     Evaluate a Nickel Fleet config for a node, dump Bundle JSON
+  sign     Wrap a Bundle JSON into a SignedBundle JSON
+  push     POST a SignedBundle to a node's /bundle endpoint
+  apply    End-to-end: eval each node in the fleet, sign, and push
+```
+
+### `golemctl keygen <stem>`
+
+Generates an ed25519 keypair. Writes:
+
+- `<stem>.sk` — secret signing key (hex), mode `0600`.
+- `<stem>.pk` — public verifying key (hex). Distribute this to every node's
+  `/etc/golem/trusted-keys`.
+
+```bash
+golemctl keygen ./operator
+# wrote operator.sk (mode 0600) and operator.pk
+# public key: 6f93...e1c2
+```
+
+### `golemctl eval <config.ncl> <node>`
+
+Evaluates the Nickel `Fleet` config for the named node and dumps the unsigned
+`Bundle` JSON to stdout. Useful for inspecting what the translator produces
+before signing.
+
+```bash
+golemctl eval examples/simple/config.ncl app-01 | jq '.claims | length'
+# → 7
+```
+
+<Aside type="caution">
+  M2: the existing `examples/simple/config.ncl` doesn't yet evaluate cleanly
+  against the current Nickel stdlib. Until the Nickel work lands, hand-write
+  bundles like the one in `smoke-test/bundle-v1-install.json`.
+</Aside>
+
+### `golemctl sign <bundle.json> <secret_key>`
+
+Reads a `Bundle` JSON file, canonicalizes it (sorted keys, deterministic),
+signs the canonical bytes with the given secret key, and writes a
+`SignedBundle` JSON to stdout.
+
+```bash
+golemctl sign smoke-test/bundle-v1-install.json operator.sk > signed.json
+```
+
+The canonical form is *byte-stable* across re-runs — the same input produces
+the same signature. That's what lets the agent verify monotonicity without
+worrying about JSON key-ordering or whitespace.
+
+### `golemctl push <signed.json> <addr>`
+
+POSTs a signed bundle to a node:
+
+```bash
+golemctl push signed.json http://10.42.0.2:7474
+# → accepted version 1
+```
+
+Equivalent to `curl -X POST --data-binary @signed.json $addr/bundle`.
+
+### `golemctl apply <config.ncl> <secret_key> <node_addrs.json>`
+
+The end-to-end command. Reads the Nickel config and a JSON file mapping node
+names to URLs:
+
+```json
+// node-addrs.json
+{
+  "edge-01": "http://10.42.0.1:7474",
+  "app-01":  "http://10.42.0.2:7474"
+}
+```
+
+For each node listed, it evaluates, signs, pushes. If any node returns
+non-2xx, the command fails and reports which.
+
+## `golemd`
+
+```
+golem fleet agent
+
+Usage: golemd [OPTIONS] --node <NODE>
+
+Options:
+      --state-dir <STATE_DIR>          Where to keep state.db [default: /var/lib/golem]
+      --bundle <BUNDLE>                Optional bundle file to load on startup
+      --trusted-keys <TRUSTED_KEYS>    File containing newline-separated trusted ed25519 public keys (hex)
+                                       [default: /etc/golem/trusted-keys]
+      --node <NODE>                    This node's name. Must match `node` in incoming bundles
+                                       [env: GOLEM_NODE=]
+      --listen <LISTEN>                HTTP listen address [default: 127.0.0.1:7474]
+      --period-secs <PERIOD_SECS>      Reconcile period in seconds [default: 30]
+```
+
+### `--node <name>` (required)
+
+The agent's identity. Bundles whose `node` field doesn't match are rejected.
+Can also be set via `GOLEM_NODE` environment variable.
+
+### `--bundle <path>`
+
+Load a signed bundle from disk on startup, before HTTP listening begins. Lets
+you bootstrap a node before any operator pushes — useful for the very first
+deploy, or recovery scenarios.
+
+### `--trusted-keys <path>`
+
+Path to a flat file of ed25519 public keys (hex), one per line. Comments
+starting with `#` are ignored. Multiple keys are allowed; any one of them can
+sign a bundle.
+
+### `--listen <addr>`
+
+The HTTP listener. Defaults to `127.0.0.1:7474`. The agent doesn't authenticate
+the network; bind it where you trust transport.
+
+### `--period-secs <n>`
+
+How often the reconcile loop runs. Default 30s. Lower for development and
+smoke tests; for production, 30s–5min is reasonable. The agent also reconciles
+immediately after accepting a new bundle, so the period is the *idle* check
+interval, not the deploy latency.
+
+### `GOLEM_CRASH_AFTER` (env)
+
+Crash-injection for testing. Set to one of:
+
+- `capture_persisted` — abort after the prior-state capture is journaled
+- `intent_applied_false` — abort after journaling "applying"
+- `mutate_completed` — abort after the mutation succeeds, before journaling success
+- `intent_applied_true` — abort after journaling "applied"
+
+Used by the smoke test to verify crash-recovery at every journal-before-mutate
+window. Don't set this in production. (And no, the agent does not panic if
+left set — but you'll see your services flap as the agent kills itself
+mid-tick. Save yourself the embarrassment.)
+
+## HTTP endpoints
+
+The agent exposes three endpoints. They are intended for operator use, not
+fleet coordination.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/bundle` | Accept a signed bundle. Returns `202 Accepted` with `{accepted_version}` on success, or `400` with the validation error. |
+| `GET` | `/status` | Returns `{bundle_version, node, claim_count}`. |
+| `GET` | `/healthz` | Returns `ok\n`. Always 200. |
