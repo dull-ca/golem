@@ -35,10 +35,15 @@ What happens on each node:
   2. The bundle is signed with `operator.sk`.
   3. The signed bundle is POSTed to `http://<addr>:7474/bundle`.
   4. The agent verifies the signature against `/etc/golem/trusted-keys`,
-     unpacks Quadlet claims into File + SystemdUnit pairs, dedupes by
-     ClaimId, and swaps the in-memory desired set.
+     validates the layer-3 claim DAG, and swaps the in-memory desired set.
   5. On the next reconcile tick (≤30s), the agent installs podman / caddy,
-     drops the .container file, daemon-reloads, and starts the units.
+     drops the .container files (one per service in the App), daemon-reloads,
+     and starts the units.
+
+The `examples/simple/config.ncl` is the canonical small example: a Django
+app + postgres + caddy as three `app.services` entries, exposed via a single
+`expose` block. See `nickel/app.ncl` and `nickel/deploy.ncl` for the contracts
+the user fills in.
 
 Single-node test on your dev box (no remote):
 

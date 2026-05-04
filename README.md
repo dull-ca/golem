@@ -1,6 +1,6 @@
 # golem
 
-A small-fleet declarative orchestrator: write workloads and ingresses in Nickel, and per-node agents reconcile bare-metal Debian state (packages, files, systemd units, Podman quadlets) with refcounted ownership and surgical undo.
+A small-fleet declarative orchestrator. Write your services and how they're exposed in Nickel — `app` describes what runs and how services wire to each other, `deploy` says where it lives. Per-node agents reconcile bare-metal Debian state (packages, files, systemd units, Podman quadlets) with refcounted ownership and surgical undo.
 
 ## Documentation
 

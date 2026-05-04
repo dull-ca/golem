@@ -1,161 +1,167 @@
 ---
 title: Tier 2 — One app, one DB
-description: A small Django app, a postgres container, and a public ingress. The minimum interesting deploy.
+description: A Django app, a postgres backing it, a caddy ingress. The smallest interesting deploy.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 target">
-  This guide describes the M2 surface — `containers`, `volumes`, and `ingress`
-  as Layer 1 Nickel primitives. M1 doesn't yet evaluate this Nickel input;
-  the layer-2 translator is in progress. The guide is here so that what we're
-  building toward is clear, and so the example tracks the milestone.
+  This guide describes the Layer 1 input language — `app` + `deploy` —
+  that's the M2 target. M1 doesn't yet evaluate this Nickel; the layer-2
+  translator is in progress. The guide is here so the model is clear and
+  so the example tracks the milestone.
 
   If you want something that works *today*, see
   [Tier 1 — Hello, agent](/guides/hello-agent/).
 </Aside>
 
-This is the smallest deploy that's also *interesting*. One stateless web app,
-one stateful database, an ingress that fronts the app on a public hostname,
-and TLS via caddy.
+The shape of the input language is **describe the app, then describe the
+deploy**. Two layers, both small. The app says what's running and how the
+services wire to each other; the deploy says where it goes and how the world
+reaches it.
 
-We'll deploy [django-helloworld](https://github.com/example/django-helloworld)
-(or any small Django app you have handy) on a single trixie box.
-
-## What you write
-
-`fleet.ncl`:
+## Describing the app
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
+app.services = {
+  postgres = {
+    image  = "ghcr.io/postgresql/postgresql-18:latest",
+    volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
+    env    = {
+      POSTGRES_USER     = "app",
+      POSTGRES_PASSWORD = "dev-change-me",
+      POSTGRES_DB       = "app",
+    },
+  },
+
+  web = {
+    image = "ghcr.io/example/hello-django:v1",
+    env   = {
+      DATABASE_URL = "postgres://app:dev-change-me@%{g.ref.service "postgres"}:5432/app",
+    },
+  },
+
+  caddy = {
+    image  = "caddy:2",
+    config = {
+      path    = "/etc/caddy/Caddyfile",
+      content = m%"
+        hello.example.com {
+          reverse_proxy %{g.ref.port "web" 8000}
+        }
+      "%,
+    },
+  },
+}
+```
+
+Three services, twelve lines. Worth reading for what's *not* there:
+
+- **No `nodes` block.** The app doesn't know about boxes.
+- **No `containers` wrapper.** A service named `postgres` is a service named
+  `postgres`. The kind ("it's a container") is the default; you don't repeat
+  it.
+- **No `volumes` top-level.** Postgres has a volume because postgres has a
+  volume. The volume's lifecycle is tied to the service that owns it.
+- **No port-mapping.** Container-to-container traffic doesn't need host ports
+  — the runtime gives services DNS names on a shared network. Only the
+  externally-exposed service (caddy) needs a port, and that's stated in the
+  deploy block, not here.
+
+### Cross-service references
+
+`g.ref.service "postgres"` returns the literal string `{postgres.service}`,
+which is a *placeholder* the translator resolves at deploy time. It becomes
+the runtime address postgres listens on (in podman's default network, just
+`postgres`). The `g.ref.port "web" 8000` helper produces `{web.service}:8000`.
+
+You can write the placeholders by hand if you prefer:
+
+```nickel
+env = { DATABASE_URL = "postgres://app:pw@{postgres.service}:5432/app" }
+```
+
+Either form is checked: misspell a service name and `golemctl` rejects the
+deploy because the placeholder doesn't resolve. Strings without `{...}` pass
+through untouched.
+
+### Inline config files
+
+The `caddy.config` field ships a config file *with* the service. The
+translator mounts it into the container (or, for runtimes that can't bind-mount,
+bakes it into a derived image). This keeps the rendered Caddyfile next to
+the service that consumes it — no separate `volumes/caddy_config` declaration,
+no `:ro` flag, no thinking about it.
+
+## Describing the deploy
+
+```nickel
 {
   version = 1,
-
+  app = app,                                  # the record above
   nodes = {
-    "box-01" = { name = "box-01", roles = ["edge", "app"], address = "10.42.0.1" },
+    "box-01" = { name = "box-01", address = "10.42.0.1" },
   },
-
-  volumes = {
-    pgdata = { name = "pgdata", node = "box-01" },
-  },
-
-  containers = {
-    db = {
-      name  = "db",
-      image = "postgres:16",
-      nodes = ["box-01"],
-      env   = {
-        POSTGRES_USER = "app",
-        POSTGRES_PASSWORD = "dev-password-change-me",
-        POSTGRES_DB = "app",
-      },
-      volumes = [
-        { source = "pgdata", destination = "/var/lib/postgresql/data" },
-      ],
-    },
-
-    web = {
-      name  = "web",
-      image = "ghcr.io/example/django-helloworld:v1",
-      nodes = ["box-01"],
-      ports = [{ host = 8000, container = 8000 }],
-      env   = {
-        DATABASE_URL = "postgres://app:dev-password-change-me@db:5432/app",
-        DJANGO_DEBUG = "false",
-      },
-    },
-  },
-
-  ingresses = {
-    "hello.example.com" = {
-      host     = "hello.example.com",
-      workload = "web",
-    },
-  },
-} | g.Fleet
+  expose = [
+    { host = "hello.example.com", service = "caddy" },
+  ],
+} | g.Deploy
 ```
 
-That's the whole input. Twenty-five lines for a real deploy.
+That's it. One node, one public hostname. With one node defined, every service
+in the app is placed there by default; you only write a `place` block when
+some services go to different boxes.
 
-## What `golemctl` does with it
+## What the translator unfolds this into
 
-When you run:
+Layer 2 (`golemctl`) walks `app` + `deploy` and produces ~10 layer-3 claims:
 
-```bash
-golemctl apply fleet.ncl operator.sk node-addrs.json
-```
-
-The translator (layer 2) walks the Nickel and produces a layer-3 bundle for
-`box-01`. The expansion is roughly:
-
-| Layer 1 input | Layer 3 claims it produces |
+| Source | Claims produced |
 | --- | --- |
-| `containers.db` | `packages.podman` + `files["/etc/containers/systemd/db.container"]` (rendered quadlet) + `units["db.service"]` |
-| `containers.web` | (`packages.podman` already declared) + `files["/etc/containers/systemd/web.container"]` + `units["web.service"]` |
-| `volumes.pgdata` | `files["/etc/containers/systemd/pgdata.volume"]` + `units["pgdata-volume.service"]` (a one-shot oneshot to ensure the volume exists) |
-| `ingresses["hello.example.com"]` | `packages.caddy` + `files["/etc/caddy/Caddyfile"]` (with a site block routing `hello.example.com` → `127.0.0.1:8000`) + `units["caddy.service"]` + handler: Caddyfile change → reload caddy |
+| `services.postgres` | `packages.podman` + `files["/etc/containers/systemd/postgres.container"]` (rendered quadlet) + `files["/etc/containers/systemd/postgres-data.volume"]` + `units["postgres.service"]` + `units["postgres-data-volume.service"]` |
+| `services.web` | `files["/etc/containers/systemd/web.container"]` + `units["web.service"]` (with `Requires=postgres.service` because of the placeholder reference) |
+| `services.caddy` | `files["/etc/containers/systemd/caddy.container"]` + `files["/etc/caddy/Caddyfile"]` (the inline config) + `units["caddy.service"]` |
+| `expose[0]` | adds the `hello.example.com` block to the Caddyfile + a handler that reloads caddy on Caddyfile change + ensures port 80/443 is allowed |
 
-So the bundle that lands on `box-01` is ~9 claims. Every one of them is a
-layer-3 primitive the agent already understands. The Nickel is just a more
-human shape.
+Every claim is a primitive [the agent already understands](/concepts/three-layers/).
+The Nickel was just a more compact way to write it down.
 
-## Why containers go through quadlet
+## Same app, different deploys
 
-Podman's quadlet mechanism turns a `.container` file in `/etc/containers/systemd/`
-into a generated systemd `.service` at boot. That means:
+The same `app` record deploys to staging by changing only the deploy block:
 
-- The agent never has to learn Podman's API. It just writes files and pokes
-  systemd.
-- Logs, restart policy, dependencies — all of it goes through systemd, the
-  thing the agent already knows.
-- Operators can `systemctl status web.service` and get the answer they expect.
+```nickel
+{
+  version = 1,
+  app = app,
+  nodes = { "stage-01" = { ... } },
+  expose = [
+    { host = "staging.hello.example.com", service = "caddy", tls = 'auto },
+  ],
+} | g.Deploy
+```
 
-This is the layered-engine principle paying off: containers are not a new
-primitive at layer 3, they're a translation that produces existing primitives.
+Or to production with a beefier secret-bearing config (M3):
 
-## Network between containers
+```nickel
+{
+  version = 5,
+  app = app & { services.postgres.env.POSTGRES_PASSWORD = g.ref.secret "pg_password" },
+  nodes = { "prod-01" = { ... } },
+  expose = [
+    { host = "hello.example.com", service = "caddy", tls = 'auto },
+  ],
+} | g.Deploy
+```
 
-In the example above, `web` connects to `db` via `postgres://...@db:5432/...`.
-That works because podman puts containers in the same default network and
-resolves names by container ID. For more control:
+The `&` is Nickel's record merge — you compose new layers on top of the app
+without forking it.
 
-- `network: ["app-net"]` on each container puts them on a named network (golem
-  emits a `.network` quadlet).
-- `host` ports are explicitly mapped via `ports`.
-- For container-to-container traffic without exposing on the host, just leave
-  `ports` empty.
-
-## Secrets, sort of
-
-The example has `POSTGRES_PASSWORD = "dev-password-change-me"` in plain text.
-That's fine for a dev box; for anything real:
-
-- M2 introduces `secrets.<name>` as a layer-1 primitive.
-- The operator stages secret values in `~/.golem/secrets/<name>` on the laptop.
-- `golemctl apply` reads them and includes them in the signed bundle (encrypted
-  to a per-node key — design TBD; we may use age for this).
-- The agent writes them to a tmpfs at `/run/golem/secrets/<name>` and the
-  container references them via `EnvironmentFile=/run/golem/secrets/<name>`.
-
-For the hello-world app you wouldn't need any of that. For [Tier 3](/guides/litour/),
-you do.
-
-## What about the database itself
-
-This guide runs postgres in a container with a named volume. That's:
-
-- Fine for small workloads (one app, dev/staging environments, low write rate).
-- Not great for production — postgres in a container has worse defaults than
-  the OS package and the upgrade story is less smooth.
-
-For real production, run postgres as an `apt_package` + a systemd unit, with
-its data on a managed `files["/etc/postgresql/16/main/postgresql.conf"]` claim.
-That's M1-doable today; M2 just makes the container path *also* possible.
-
-## Where to go next
+## Where to next
 
 - The capstone — same shape, more services:
   **[Tier 3 — Litour on a box](/guides/litour/)**.
-- Pull apart the wire format the agent sees:
+- See exactly what gets sent to the agent:
   **[Bundle format reference](/reference/bundle-format/)**.

@@ -17,7 +17,7 @@ Usage: golemctl <COMMAND>
 
 Commands:
   keygen   Generate a new ed25519 keypair
-  eval     Evaluate a Nickel Fleet config for a node, dump Bundle JSON
+  eval     Evaluate a Nickel Deploy config for a node, dump Bundle JSON
   sign     Wrap a Bundle JSON into a SignedBundle JSON
   push     POST a SignedBundle to a node's /bundle endpoint
   apply    End-to-end: eval each node in the fleet, sign, and push
@@ -39,7 +39,7 @@ golemctl keygen ./operator
 
 ### `golemctl eval <config.ncl> <node>`
 
-Evaluates the Nickel `Fleet` config for the named node and dumps the unsigned
+Evaluates the Nickel `Deploy` config for the named node and dumps the unsigned
 `Bundle` JSON to stdout. Useful for inspecting what the translator produces
 before signing.
 

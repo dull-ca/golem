@@ -1,180 +1,129 @@
 ---
 title: Tier 3 — Litour on a box
-description: Deploy the real lichess league software (10 services, secrets, postgres, redis) to a single trixie box.
+description: Deploy the real lichess league software (web, api, ui, workers, redis, postgres) to a single trixie box.
 ---
 
-import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 + M3 target">
-  This is the capstone. It uses Layer 1 features that span M2 (containers,
-  ingress, volumes) and M3 (secrets at rest). The Nickel below is the shape
-  the docs are anchored on; the translator that compiles it is in progress.
+  This is the capstone. It uses Layer 1 features that span M2 (the App/Deploy
+  input language) and M3 (secrets at rest). The Nickel below is the shape
+  the docs are anchored on; the translator is in progress.
 </Aside>
 
-[Litour](https://github.com/lichess4545/litour) is the league management
-software that runs the [Lichess 4545 League](https://www.lichess4545.com/) and
-several other team chess leagues. It's a real, multi-service, secrets-bearing,
-publicly-routed Django app — exactly the workload that motivated golem's
-existence.
+[Litour](https://codeberg.org/dull/litour) is the league management software
+that runs the [Lichess 4545 League](https://www.lichess4545.com/) and several
+other team chess leagues. It's a real, multi-service, secrets-bearing,
+publicly-routed Django app — exactly the workload that motivated golem.
 
 This guide deploys the full stack on a single trixie box. It's not a
-hypothetical example; it's the deploy story for litour-prod.
+hypothetical example — it's the deploy story for litour-prod.
 
-## The services
+## The app
 
-Pulled from `litour/deploy/litour-prod/compose.yml`:
-
-| Service | Image | Role |
-| --- | --- | --- |
-| `caddy` | `litour-caddy` | TLS terminator, gateway |
-| `web` | `litour-web` | Django + gunicorn (the main app) |
-| `api` | `litour-api` | FastAPI live API |
-| `apiworker` | `litour-api-worker` | Lichess proxy/watcher |
-| `ui` | `litour-ui` | Next.js v2 UI |
-| `celery` | `litour-celery` | Background tasks |
-| `watcher` | `litour-watcher` | Game-result watcher |
-| `migrate` | `litour-migrate` | One-shot DB migrate |
-| `redis` | `redis:7-alpine` | Pub/sub + cache |
-| (postgres) | OS package | Stateful — runs as apt-installed package |
-
-Nine containers and one OS-managed database. The containers all sit on a
-private network; only caddy is on the host network on port 443.
-
-## The fleet config
-
-`fleet.ncl`:
+Same shape as [Tier 2](/guides/app-and-db/), more services. The app definition
+is a flat record of named services that wire to each other:
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-let services = ["web", "api", "apiworker", "ui", "celery", "watcher"] in
+let secret = g.ref.secret in              # M3 placeholder helper
+let svc    = g.ref.service in
 
-let make_app_container = fun name => {
-  name  = name,
-  image = "ghcr.io/lichess4545/litour-%{name}:latest",
-  nodes = ["box-01"],
-  env_files = ["/run/golem/secrets/litour-prod"],
-  network = ["litour"],
+let litour_image = fun name =>            # local helper, not part of golem
+  "ghcr.io/lichess4545/litour-%{name}:latest" in
+
+let litour_env = {
+  DATABASE_URL      = secret "db_url",
+  SECRET_KEY        = secret "django_secret",
+  LICHESS_API_TOKEN = secret "lichess_token",
+  EMAIL_HOST_USER   = secret "email_user",
+  EMAIL_HOST_PASS   = secret "email_pass",
 } in
 
+app.services = {
+  redis = {
+    image   = "redis:7-alpine",
+    command = "redis-server --appendonly yes",
+    volume  = { at = "/data", size = "1Gb" },
+  },
+
+  web       = { image = litour_image "web",       env = litour_env },
+  api       = { image = litour_image "api",       env = litour_env },
+  apiworker = { image = litour_image "api-worker", env = litour_env },
+  ui        = {
+    image = litour_image "ui",
+    env   = { LITOUR_API_BASE_URL = "http://%{svc "api"}:8001" },
+  },
+  celery   = { image = litour_image "celery",  env = litour_env },
+  watcher  = { image = litour_image "watcher", env = litour_env },
+
+  migrate = {
+    image   = litour_image "migrate",
+    env     = litour_env,
+    oneshot = true,                       # runs once, exits
+  },
+
+  caddy = {
+    image  = "caddy:2",
+    config = {
+      path    = "/etc/caddy/Caddyfile",
+      content = m%"
+        www.lichess4545.com {
+          handle_path /v2/api/* { reverse_proxy %{svc "api"}:8001 }
+          handle_path /v2/*     { reverse_proxy %{svc "ui"}:3000 }
+          handle                { reverse_proxy %{svc "web"}:8000 }
+        }
+      "%,
+    },
+  },
+}
+```
+
+Nine services, fifty-ish lines of Nickel. Read it: every service is a *thing
+that runs*. There's no quadlet boilerplate, no `nodes = ["box-01"]` repeated
+ten times, no separate `volumes` block, no `networks` block.
+
+The `litour_image` and `litour_env` lets are local conveniences — a litour
+operator's habit, not a golem feature. They're just Nickel functions and
+records.
+
+## The deploy
+
+Postgres is *not* in the app — for production, it runs as an apt-installed
+package on the host (better defaults, smoother upgrades than the container).
+That's an OS-level concern, so it lives in `system.packages`:
+
+```nickel
 {
   version = 1,
+  app = app,
 
   nodes = {
-    "box-01" = { name = "box-01", roles = ["edge", "app"], address = "10.42.0.1" },
+    "box-01" = { name = "box-01", address = "10.42.0.1" },
   },
 
-  packages = {
-    postgresql-16 = { name = "postgresql-16", node = "box-01" },
-  },
+  expose = [
+    { host = "www.lichess4545.com", service = "caddy", tls = 'auto },
+  ],
 
-  files = {
-    "/etc/postgresql/16/main/conf.d/golem.conf" = {
+  system.packages = { postgresql-16 = { name = "postgresql-16" } },
+  system.units    = { "postgresql.service" = { name = "postgresql.service" } },
+  system.files = {
+    "pg-tuning" = {
       path    = "/etc/postgresql/16/main/conf.d/golem.conf",
       content = m%"
         listen_addresses = '127.0.0.1'
         max_connections = 200
       "%,
-      mode = 420,
-      owner = "postgres",
-      group = "postgres",
     },
   },
-
-  units = {
-    "postgresql.service" = {
-      name = "postgresql.service",
-      enable = true,
-      active = true,
-    },
-  },
-
-  volumes = {
-    redis_data    = { name = "redis_data",    node = "box-01" },
-    caddy_data    = { name = "caddy_data",    node = "box-01" },
-    caddy_config  = { name = "caddy_config",  node = "box-01" },
-  },
-
-  containers =
-    (std.array.fold_right
-      (fun name acc => acc & { "%{name}" = make_app_container name })
-      {}
-      services)
-    & {
-      redis = {
-        name = "redis",
-        image = "redis:7-alpine",
-        nodes = ["box-01"],
-        command = "redis-server --appendonly yes",
-        volumes = [{ source = "redis_data", destination = "/data" }],
-        network = ["litour"],
-      },
-
-      migrate = {
-        name = "migrate",
-        image = "ghcr.io/lichess4545/litour-migrate:latest",
-        nodes = ["box-01"],
-        env_files = ["/run/golem/secrets/litour-prod"],
-        network = ["litour"],
-        oneshot = true,
-        run_after = "litour-network.service",
-      },
-    },
-
-  secrets = {
-    "litour-prod" = {
-      name = "litour-prod",
-      nodes = ["box-01"],
-      keys = [
-        "DATABASE_URL",
-        "SECRET_KEY",
-        "LICHESS_API_TOKEN",
-        "EMAIL_HOST_USER",
-        "EMAIL_HOST_PASSWORD",
-      ],
-    },
-  },
-
-  ingresses = {
-    "www.lichess4545.com" = {
-      host = "www.lichess4545.com",
-      tls  = 'auto,
-      routes = [
-        { path = "/v2/api/*", workload = "api" },
-        { path = "/v2/*",     workload = "ui" },
-        { path = "/*",        workload = "web" },
-      ],
-    },
-  },
-} | g.Fleet
+} | g.Deploy
 ```
 
-A real production config in roughly 80 lines. Read it line by line — every
-piece of it maps to something in the original `compose.yml` you already
-recognize.
-
-## What this unfolds into
-
-For `box-01`, the layer-2 translator produces about 35 layer-3 claims:
-
-- **9 quadlet `.container` files** (one per container service)
-- **3 quadlet `.volume` files** (redis_data, caddy_data, caddy_config)
-- **1 quadlet `.network` file** (the `litour` network)
-- **9 systemd unit claims** (one per generated container service)
-- **1 systemd unit claim** for `postgresql.service`
-- **1 file claim** for `/etc/postgresql/16/main/conf.d/golem.conf`
-- **1 apt-package claim** for `postgresql-16`
-- **1 apt-package claim** for `podman` (transitively required by every container)
-- **1 apt-package claim** for `caddy`
-- **1 file claim** for `/etc/caddy/Caddyfile` (rendered from the ingress block)
-- **1 file claim** for `/run/golem/secrets/litour-prod` (rendered tmpfs file
-  with the operator-supplied secret values)
-- **1 systemd unit claim** for `caddy.service`
-- **handlers**: Caddyfile change → reload caddy; secrets change → restart all
-  app containers
-
-Every claim is a primitive the agent already understands. The Nickel was just
-a more compact way to write all of that down.
+`system` is the layer-3 escape hatch — when the App model can't (or
+shouldn't) express something, you drop to raw `packages` / `files` / `units`
+and the agent still treats them as honestly-unappliable claims.
 
 ## Operator workflow
 
@@ -183,76 +132,65 @@ a more compact way to write all of that down.
 
    ```bash
    mkdir -p ~/.golem/secrets/litour-prod
-   echo 'postgres://litour:...@127.0.0.1/litour' > ~/.golem/secrets/litour-prod/DATABASE_URL
-   echo 's3cr3t' > ~/.golem/secrets/litour-prod/SECRET_KEY
-   # etc — one file per key
+   echo 'postgres://litour:...@127.0.0.1/litour' > ~/.golem/secrets/litour-prod/db_url
+   echo 's3cr3t' > ~/.golem/secrets/litour-prod/django_secret
+   # … one file per name referenced by g.ref.secret
    chmod -R 0600 ~/.golem/secrets
    ```
 
 2. **Apply:**
 
    ```bash
-   golemctl apply fleet.ncl operator.sk node-addrs.json
+   golemctl apply config.ncl operator.sk node-addrs.json
    ```
 
 3. **Watch the rollout:**
 
    ```bash
    ssh box-01 'curl -s http://127.0.0.1:7474/status | jq'
-   ssh box-01 'systemctl status web.service api.service'
+   ssh box-01 'systemctl status web.service api.service ui.service'
    ```
 
-4. **Roll forward.** Bump the image tag in Nickel, re-run apply. The version
-   monotonically increases; the agent does the right thing.
-
-   ```bash
-   sed -i 's|litour-web:latest|litour-web:v2.5.0|' fleet.ncl
-   golemctl apply fleet.ncl operator.sk node-addrs.json
-   ```
+4. **Roll forward.** Bump an image tag (or the whole `litour_image` helper),
+   re-apply. The version monotonically increases; the agent does the right
+   thing.
 </Steps>
-
-## What this gives you that compose doesn't
-
-- **Honest unapply.** Remove `containers.celery` from the Nickel and re-apply,
-  and the `celery.service` unit is stopped, the quadlet file removed, the
-  systemd state cleaned up. Compose can do `docker-compose down` — it can't
-  roll back a partial deploy where you also added a postgres tuning file at
-  the OS level.
-- **Operator + tenant trust separation.** A tenant team can own
-  `containers.web` without being able to touch `files["/etc/postgresql/..."]`.
-  Compose has no notion of this.
-- **Multi-node, when you outgrow one box.** Add `box-02` with `roles = ["app"]`,
-  move some `containers.<x>.nodes` references to `["box-02"]`, re-apply. The
-  same Nickel scales to a small fleet.
-- **One signing key, one CI runner.** The deploy doesn't depend on Swarm being
-  up, on Portainer being reachable, on a control plane existing.
-
-## What this *doesn't* give you
-
-- **Built-in TLS for internal traffic.** Containers talk plaintext on the
-  internal network. Run them on a Nebula tunnel if you need encrypted
-  east-west.
-- **Auto-rollback on health-check failure.** The agent applies what it's told
-  to apply; if the new web image is broken, you SSH in and roll back with a
-  re-apply. M4 may add health-gated rollback.
-- **Horizontal autoscaling.** This is for fleets where the box count changes
-  on the order of months, not seconds.
 
 ## Migrating from compose
 
-If you already have a `compose.yml`, the mechanical translation is:
+If you already run litour via `docker compose`, the mechanical translation:
 
 | compose | nickel |
 | --- | --- |
-| `services.<name>.image` | `containers.<name>.image` |
-| `services.<name>.environment` (kv) | `containers.<name>.env` |
-| `services.<name>.env_file` | `containers.<name>.env_files` |
-| `services.<name>.volumes` (`:`-separated) | `containers.<name>.volumes` (records) |
-| `services.<name>.networks` | `containers.<name>.network` |
-| `volumes.<name>` | `volumes.<name>` |
-| `secrets.<name>` (file:) | `secrets.<name>` |
-| Caddy reverse proxy block | `ingresses.<host>` |
+| `services.<name>.image` | `services.<name>.image` |
+| `services.<name>.environment` | `services.<name>.env` |
+| `services.<name>.command` | `services.<name>.command` |
+| `services.<name>.volumes: ["named:/path"]` | `services.<name>.volume = { at = "/path" }` |
+| `secrets.<name>` (file:) | `g.ref.secret "<name>"` referenced in env |
+| Caddyfile in a separate config | `services.caddy.config` (inline) |
+| `networks:` block | (gone — implicit shared network) |
+| `depends_on:` | (gone — placeholder references imply ordering) |
 
-`golemctl translate compose.yml > fleet.ncl` will be a real command in M2 —
-the input shapes are close enough that the translator is mostly tedious, not
-hard.
+`golemctl translate compose.yml > config.ncl` will be a real command in M2.
+
+## What this gives you compose doesn't
+
+- **One file describes the app, another describes the deploy.** Move the same
+  app between dev/staging/prod by swapping the deploy block.
+- **References, not stringly-typed addresses.** `{api.service}` is checked at
+  translation; `api:8001` in compose is a string the network might or might
+  not resolve.
+- **Honest unapply.** Remove `services.celery` from the app and re-apply; the
+  agent stops + disables `celery.service`, removes the quadlet file, cleans
+  the systemd state. Compose has no rollback story for the OS-level `system`
+  bits.
+- **No control plane to keep up.** The agent runs on each box; no Swarm, no
+  Portainer, no orchestrator daemon to babysit.
+
+## What it doesn't give you
+
+- **Built-in mTLS for east-west traffic.** Run on a Nebula tunnel for that.
+- **Auto-rollback on health-check failure.** M4 may add health-gated rollback;
+  for now, you SSH in and re-apply the previous config.
+- **Horizontal autoscaling.** This is for fleets where the box count changes
+  on the order of months, not seconds.

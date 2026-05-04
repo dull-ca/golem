@@ -1,18 +1,18 @@
 ---
 title: Golem
-description: Small-fleet declarative orchestrator for bare-metal Debian boxes.
+description: A simple, statically-checked language for describing what runs on your boxes — and an agent that makes it true.
 template: splash
 hero:
   tagline: |
-    A declarative orchestrator for the **3-to-30-box fleet** that doesn't need
-    Kubernetes — but does need to stay honest when something crashes mid-tick.
+    Describe what runs, where, and how it's exposed — in a **simple,
+    statically-checked language**. The agent makes it true on each box.
   actions:
     - text: Get started
       link: /getting-started/install/
       icon: right-arrow
       variant: primary
-    - text: Read the design
-      link: /concepts/three-layers/
+    - text: See an example
+      link: /guides/app-and-db/
       icon: open-book
 ---
 
@@ -20,39 +20,57 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## What it is
 
-Golem runs on each node in your fleet as a small Rust agent (`golemd`). You
-write a declarative description of the fleet in [Nickel](https://nickel-lang.org)
-— what containers run where, what files exist, what packages are installed, what
-ingress fronts what — and the operator CLI (`golemctl`) compiles that into
-**signed per-node bundles**. Every agent reconciles its node against the bundle
-on a tick.
+Golem is two things and that's it:
 
-If you've felt the gap between "ssh + Ansible" (no convergence) and "Kubernetes"
-(too much), this is for that gap.
+- **An input language** — write your services, volumes, env, and ingress as
+  records in [Nickel](https://nickel-lang.org). The smallest interesting
+  deploy (a Django app, a postgres, a caddy ingress) is *twelve lines*. No
+  YAML, no Helm chart, no ConfigMap, no operators-CRD.
+- **An agent** — `golemd` runs on each box, accepts signed per-node bundles
+  from `golemctl`, and reconciles the box's actual state against them.
+
+Most of golem's value is in what you *don't* write. You don't write port
+mappings — `{postgres.service}` resolves at translate time. You don't repeat
+node names on every container. You don't keep a separate `volumes:` block
+in sync with the container that owns the volume. You don't split your config
+into ten YAML files glued together by `kustomize` because the language is
+expressive enough to express the thing once.
 
 ## Why it's different
 
 <CardGrid>
-  <Card title="Honest unapply" icon="approve-check">
-    Every claim records what was true *before* it touched the system. Removing a
-    claim restores prior state — including the case where the package was already
-    installed for another reason.
+  <Card title="Twelve lines, not two hundred" icon="seti:default">
+    Postgres + Django + caddy in twelve lines. No deploy descriptors per
+    service, no `kind:` everywhere, no `selector:` matching `labels:` matching
+    `name:`. The language tells you everything that's running and how it's
+    wired.
   </Card>
-  <Card title="Crash-safe by design" icon="warning">
-    Journal-before-mutate at every step. If `golemd` is killed mid-tick, the
-    next tick converges to a state that matches the OS — not a state that
-    *believes* it does.
+  <Card title="Statically checked" icon="approve-check">
+    Misspell `{postgres.serice}`? Forget the `image` field on a service?
+    Reference a volume that doesn't exist? `golemctl apply` rejects it before
+    bytes leave your laptop. Errors find you in seconds, not in an outage.
   </Card>
-  <Card title="Signed bundles, no control plane" icon="seti:lock">
-    The agent trusts an ed25519 public key, not a network. Push a bundle over
-    HTTP, a Unix socket, a Nebula tunnel — the cryptography is what makes it
-    safe.
+  <Card title="Composable, not packaged" icon="puzzle">
+    The app is just a record. `app & { services.web.env.LOG_LEVEL = "debug" }`
+    overrides one env var without forking. Same app deploys to staging and
+    prod by changing only the deploy block — not the application's source of
+    truth.
   </Card>
-  <Card title="Built for small fleets" icon="seti:default">
-    Operator-side migrations beat distributed coordination. 30 boxes. 200
-    workloads. One operator. No etcd.
+  <Card title="Two binaries, no control plane" icon="seti:lock">
+    `golemctl` on your laptop, `golemd` on each box, ed25519 signatures
+    between them. No etcd, no Swarm manager, no operator pattern, no CRDs,
+    no API server to keep up.
   </Card>
 </CardGrid>
+
+## And it's correct
+
+The agent is small (~3000 lines of Rust) and engineered for one property:
+**after any number of crashes, the next clean tick converges to a state
+that matches the OS.** Every claim journals its prior state before mutating;
+removing a claim restores what was there before; the
+[crash-injection smoke test](/concepts/journal/) verifies recovery at every
+window. That's the floor — necessary, not the pitch.
 
 ## Try the deployment guides
 

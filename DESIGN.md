@@ -30,8 +30,8 @@ Golem has three layers, and they must not be conflated:
 
 | | Layer | Audience | Shape | Lifetime |
 |---|---|---|---|---|
-| 1 | **Input language** (Nickel) | tenants + operators | `containers.caddy = {…}`, `ingress.app = {…}`, `files."/etc/foo" = {…}` — high-level, statically verifiable, few lines per service | written by humans |
-| 2 | **Translation** (Nickel eval, operator-side, pre-sign) | Golem authors | Expands Container → File + SystemdUnit (Quadlet), Ingress → Caddy config, Volume → podman-volume + reservation, etc. Produces a signed bundle of layer-3 primitives. | runs on operator's laptop |
+| 1 | **Input language** (Nickel) | tenants + operators | `app.services.caddy = {…}`, `expose = [{…}]`, `system.files."/etc/foo" = {…}` — high-level, statically verifiable, few lines per service | written by humans |
+| 2 | **Translation** (Nickel eval, operator-side, pre-sign) | Golem authors | Expands each service → File + SystemdUnit (Quadlet), `expose` → Caddy config, `volume` → podman-volume + reservation, resolves `{name.service}` placeholders. Produces a signed bundle of layer-3 primitives. | runs on operator's laptop |
 | 3 | **System primitives** (wire format + agent state engine) | agent only | `AptPackage`, `SystemdUnit`, `File`, plus their reconciliation machinery | persisted on each node |
 
 **The rule:** users only see layer 1. The agent only sees layer 3. Layer 2 is a Golem implementation detail that runs *before* signing, on the operator's laptop. The wire format is layer 3.
@@ -42,51 +42,94 @@ This is not a high-level / low-level *user* split. It is a translation pipeline.
 
 ## 3. Layer 1 — input language
 
-Nickel. A few well-defined primitives, used directly. Constraints are the feature: a narrow surface that's hard to misuse.
+Nickel. **Two sub-layers**, both small. The split is the feature: `app`
+describes *what's running*; `deploy` describes *where it lives*. The same app
+deploys to staging and prod by changing only the deploy block.
 
-### Primitives — two trust tiers
+### `app` — what's running
 
-The narrow harness only works if the harness *is* narrow. Mixing arbitrary-file-write primitives into the same module that runs constrained container deployments collapses the whole value prop. So layer 1 is split into two trust tiers, distinguished by Nickel module:
-
-**Tier 1 — tenant primitives** (`Golem.Tenant`):
-
-- **`containers.<name>`** — `image`, `env`, `ports`, `volumes`, `restart`, `cmd?`, `secrets?`. The 95% case.
-- **`ingress.<name>`** — `domain`, `to` (`container:port`), TLS automatic via Caddy + Let's Encrypt.
-- **`volumes.<name>`** — named persistent disk: `mount`, `size`, optional `backup` policy.
-- **`secrets.<name>`** — value sourced from operator's secret store; injected as env or mounted file.
-
-These can write only to tenant-scoped paths (`/var/lib/golem/tenants/<id>/…`), can't manage host packages, and can't manage units outside the container-generated set. A strabs tenant who tries `files."/etc/sudoers"` gets a Nickel contract violation, not a CVE.
-
-**Tier 2 — operator primitives** (`Golem.Operator`, requires explicit import in operator config):
-
-- **`files."<path>"`** — write content to any path with mode/owner. For lichess-shaped "I just need this one config file alongside hand-bombed stuff."
-- **`packages`** — list of apt packages to ensure present.
-- **`units.<name>`** — manage a systemd unit directly. For pre-existing services Golem should adopt.
-
-Lakin-as-operator imports `Golem.Operator` in the top-level node config. Strabs tenant configs are evaluated under `Golem.Tenant` only — the operator-tier symbols don't even resolve. Lichess (single-operator fleet) imports both.
-
-### Feel
+A graph of named **services** that wire to each other. Each service is
+container-shaped: an image, optional env, optional volume(s), optional inline
+config. Services reference each other by name via placeholders the translator
+resolves.
 
 ```nickel
-let app = "myapp" in
-{
-  containers.app = {
+app.services = {
+  postgres = {
+    image  = "ghcr.io/postgresql/postgresql-18:latest",
+    volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
+    env    = { POSTGRES_USER = "app", POSTGRES_DB = "app" },
+  },
+  web = {
     image = "ghcr.io/me/myapp:1.4",
-    env = { DATABASE_URL = "postgres://app@/app" },
-    volumes = [{ name = "appdata", mount = "/data" }],
+    env   = { DATABASE_URL = "postgres://app@{postgres.service}:5432/app" },
   },
-  containers.postgres = {
-    image = "postgres:16",
-    env = { POSTGRES_DB = "app", POSTGRES_USER = "app" },
-    volumes = [{ name = "pgdata", mount = "/var/lib/postgresql/data" }],
+  caddy = {
+    image  = "caddy:2",
+    config = {
+      path    = "/etc/caddy/Caddyfile",
+      content = m%"
+        myapp.example.com {
+          reverse_proxy {web.service}:8080
+        }
+      "%,
+    },
   },
-  volumes.appdata = { size = "5G" },
-  volumes.pgdata = { size = "20G", backup = "daily" },
-  ingress.public = { domain = "myapp.example.com", to = "app:8080" },
 }
 ```
 
-That's the contract. Eight lines per service. No YAML, no Helm, no operators-CRD ceremony, no Compose-isms. Static contracts catch typos at `nickel export` time, not at apply time on the box.
+Read what's *not* there: no `nodes` block (the app doesn't know about boxes),
+no `containers` wrapper (the kind is the default), no separate top-level
+`volumes` (volumes belong to services), no port mappings (cross-service traffic
+goes through the runtime's network DNS), no `networks` block.
+
+### `deploy` — where it goes, how it's exposed
+
+```nickel
+{
+  version = 1,
+  app = app,
+  nodes = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
+  expose = [{ host = "myapp.example.com", service = "caddy" }],
+  system.packages = { postgresql-16 = { name = "postgresql-16" } },
+} | g.Deploy
+```
+
+`expose` names the public hostnames; `system.packages`/`system.files`/
+`system.units` is the layer-3 escape hatch for things the App model can't
+or shouldn't express (kernel sysctls, custom systemd timers, an apt-managed
+postgres on the host instead of a containerized one).
+
+### Cross-service references
+
+Services don't hardcode addresses. They use placeholders:
+
+- `{name.service}` — runtime address of the named service. Resolves to the
+  container DNS name on the runtime's shared network.
+- `g.ref.service "name"` — Nickel helper that emits the same placeholder
+  but is checked at translate time: misspelled service names are rejected
+  with a clear error, not silently surfaced as `getaddrinfo` failures at
+  3am.
+- `g.ref.secret "name"` — placeholder for an operator-supplied secret.
+  Values stage on the operator's laptop under `~/.golem/secrets/<deploy>/`,
+  encrypted into the bundle, decrypted to a tmpfs on the agent. (M3.)
+
+You never type a port mapping or a container name. "The postgres service" is
+how you refer to postgres.
+
+### Trust tiers map to the two sub-layers
+
+The narrow harness only works if the harness *is* narrow:
+
+- **Tenant-trust** — `app.services.*`. A team running an app can declare
+  containers, env, volumes, and references between them. Nothing in `app`
+  reaches the host directly; every service compiles to a quadlet + a unit.
+- **Operator-trust** — the rest of `deploy`, especially `system.*`. Node
+  placement, public hostnames, raw `packages`/`files`/`units`. The operator's
+  signing key is what authorizes them.
+
+A strabs tenant who writes `system.files."/etc/sudoers" = ...` gets a Nickel
+contract violation at `golemctl apply` time, not a CVE.
 
 ### Why Nickel
 
@@ -94,9 +137,9 @@ The constrained surface is the harness. Same reason a tightly-prompted LLM produ
 
 ### What layer 1 is *not*
 
-- It is not the wire format. The signed bundle does not contain `containers.*` or `ingress.*` — those are translated away.
-- It is not extensible at runtime. Adding a new layer-1 primitive means a Golem release with a new translator. This is intentional — the harness's value is its narrowness.
-- It is not a programming language. Nickel is config; logic belongs in containers.
+- It is not the wire format. The signed bundle does not contain `app.*` or `expose.*` — those are translated away.
+- It is not extensible at runtime. Adding a new layer-1 primitive (a new field on `Service`, a new `expose` shape) means a Golem release with a new translator. This is intentional — the harness's value is its narrowness.
+- It is not a programming language. Nickel is config; logic belongs in services.
 
 ---
 
@@ -108,13 +151,15 @@ The translator runs as part of `golemctl apply` on the operator's laptop. It eva
 
 | Layer 1 | Translates to (Layer 3) |
 |---|---|
-| `containers.<name>` | One `File` for `/etc/containers/systemd/<name>.container` (Quadlet body). One `SystemdUnit` for `<name>.service` (the auto-generated Quadlet unit), enabled + active. A handler so the unit restarts when the `.container` file changes. |
-| `ingress.<name>` | A `File` fragment in `/etc/caddy/Caddyfile.d/<name>.conf`. An `AptPackage` claim for `caddy` (idempotent across multiple ingresses). A `SystemdUnit` for `caddy.service` enabled + active. A handler to reload Caddy on file changes. |
-| `volumes.<name>` | A `File` for the podman-volume definition (`<name>.volume` Quadlet) or a directory + bind-mount equivalent. Volume references on containers are wired up here. |
-| `secrets.<name>` | A `File` at `/etc/golem/secrets/<name>` with mode 0600. Container env or mount references resolve to that path. |
-| `files."<path>"` | A `File` claim, 1:1. |
-| `packages = [...]` | One `AptPackage` claim per entry, 1:1. |
-| `units.<name>` | A `SystemdUnit` claim, 1:1. |
+| `app.services.<name>` | One `File` for `/etc/containers/systemd/<name>.container` (Quadlet body). One `SystemdUnit` for `<name>.service` (the auto-generated Quadlet unit), enabled + active. A handler so the unit restarts when the `.container` file changes. The first service triggers an `AptPackage` claim for `podman` (idempotent across services). |
+| `services.<name>.volume` / `volumes` | A `File` for the podman-volume definition (`<name>-<vol>.volume` Quadlet). The container's `Volume=` line references it. |
+| `services.<name>.config` | A `File` at the declared path; the container quadlet bind-mounts it in. |
+| `expose[].host` + `service` | A `File` fragment in `/etc/caddy/Caddyfile.d/<host>.conf`. An `AptPackage` claim for `caddy` (idempotent across multiple ingresses). A `SystemdUnit` for `caddy.service` enabled + active. A handler to reload caddy on file changes. |
+| `{name.service}` placeholders | Resolved at translate time to the container DNS name (or `127.0.0.1`) on the runtime's network. |
+| `g.ref.secret "name"` | A `File` at `/run/golem/secrets/<deploy>/<name>` (tmpfs, mode 0600). Container env or mount references resolve to that path. |
+| `system.files."<key>"` | A `File` claim, 1:1. |
+| `system.packages."<name>"` | An `AptPackage` claim, 1:1. |
+| `system.units."<name>"` | A `SystemdUnit` claim, 1:1. |
 
 Quadlet is podman's native systemd-integration mechanism (drop a `.container` file in `/etc/containers/systemd/`, `daemon-reload`, get a generated `.service` you can start). The agent does not need a `Quadlet` claim kind on the wire — Quadlet is just *the file format the Container translator emits*. The agent sees File + SystemdUnit and applies them with no special-casing beyond the daemon-reload-after-container-file handler.
 

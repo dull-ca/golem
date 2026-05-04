@@ -163,10 +163,10 @@ other things.
 
 - **Containers** — that's [Tier 2](/guides/app-and-db/), and requires M2.
 - **Ingress / TLS** — Caddy can do that itself; golem just manages its config
-  file. M2 will add `ingress.<name>` as a layer-1 primitive that translates
-  to a Caddyfile fragment.
+  file. M2 adds `expose = [{ host, service }]` as a layer-1 primitive that
+  translates to a Caddyfile fragment.
 - **Multiple nodes** — the bundle has `"node": "test-01"`. For a real fleet,
-  `golemctl` builds a per-node bundle from a Fleet config. M2.
+  `golemctl` builds a per-node bundle from a Deploy config. M2.
 - **Secrets** — there's no place to put a secret in this bundle. M3.
 
 If you can run this guide on your box, the layer-3 engine works for you.

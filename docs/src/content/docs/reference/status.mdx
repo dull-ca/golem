@@ -29,9 +29,9 @@ What you can do today:
 What you can't do yet:
 
 - Use Nickel input (`golemctl apply` with `config.ncl`).
-- Declare containers, ingresses, volumes, secrets — those are layer-1
-  primitives, and the layer-2 translator that maps them to layer-3 claims is
-  M2.
+- Write the Nickel `app` + `deploy` input language. Declare services,
+  volumes, ingress (`expose`), secrets — those live at layer 1, and the
+  layer-2 translator that compiles them down to layer-3 claims is M2.
 
 The [Tier 1 — Hello, agent](/guides/hello-agent/) guide is the canonical M1
 walkthrough.
@@ -42,12 +42,14 @@ walkthrough.
 
 What it adds:
 
-- Nickel `Fleet` schema with `containers`, `ingress`, `volumes` primitives.
+- Nickel `App` + `Deploy` schemas (see `nickel/app.ncl`, `nickel/deploy.ncl`).
+- A reference resolver: `{name.service}` placeholders compiled to runtime
+  addresses, with translate-time checking against the declared service set.
 - `golemctl eval` and `golemctl apply` working end-to-end.
 - Per-node bundle extraction.
-- Quadlet-based container expansion (each container → a `.container` file +
+- Quadlet-based service expansion (each service → a `.container` file +
   a generated systemd service the agent already knows how to manage).
-- `golemctl translate compose.yml > fleet.ncl` for migrations.
+- `golemctl translate compose.yml > config.ncl` for migrations.
 
 The [Tier 2 — One app, one DB](/guides/app-and-db/) guide tracks the M2
 target. The Nickel under `nickel/` is the schema; what's missing is the
