@@ -17,18 +17,12 @@ export default defineConfig({
       },
       sidebar: [
         {
-          label: "Start here",
+          label: "Get started",
           items: [
             { label: "What golem is", link: "/" },
             { label: "Install", link: "/getting-started/install/" },
-          ],
-        },
-        {
-          label: "Concepts",
-          items: [
-            { label: "The three layers", link: "/concepts/three-layers/" },
-            { label: "Journal-before-mutate", link: "/concepts/journal/" },
-            { label: "Trust model", link: "/concepts/trust/" },
+            { label: "The config", link: "/getting-started/the-config/" },
+            { label: "Applying changes", link: "/getting-started/applying/" },
           ],
         },
         {
@@ -42,8 +36,11 @@ export default defineConfig({
         {
           label: "Reference",
           items: [
-            { label: "Bundle format", link: "/reference/bundle-format/" },
             { label: "CLI", link: "/reference/cli/" },
+            { label: "Bundle format", link: "/reference/bundle-format/" },
+            { label: "Architecture", link: "/reference/architecture/" },
+            { label: "Honest convergence", link: "/reference/honest-convergence/" },
+            { label: "Trust model", link: "/reference/trust/" },
             { label: "Status & milestones", link: "/reference/status/" },
           ],
         },
