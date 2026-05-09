@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: How the inventory language compiles down to what the agent runs.
+description: How the Nickel toolkit compiles down to what the agent runs.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
@@ -10,66 +10,71 @@ You don't need to read this to use golem. The
 pages are enough. This page is for when something goes wrong and you want
 to know what's actually happening, or when you're hacking on golem itself.
 
-Internally, golem is three things stacked on each other. They're separated
-because each has different change-frequency, different audience, and a
-different failure mode.
+Internally, golem is two layers — Nickel composition on the operator
+side, and a small Rust agent on each box. They're separated because they
+change at different rates and have different failure modes.
 
-## The config (input language)
+## The Nickel toolkit (operator-side)
 
-What you write. Nickel — an `Inventory` of named `Hosts`, each carrying:
+What you write. Nickel — a library of small primitives that compose
+into per-host bundles.
 
-- **`workloads`** — containers. Image, env, volumes, command. Anything
-  that runs is a Workload (web service, mongo, postgres, fishnet, the
-  migrate oneshot — same shape, different image and env).
-- **`services`** — internal port routing. A name + a (workload, port)
-  pair + an `allow_from` firewall surface. Pure outbound workloads have
-  no Service; a workload exposing two ports has two Services with
-  different `allow_from` lists.
-- **`ingress`** — public HTTPS termination (nginx) with rate limits,
-  CORS, routes, and a `dns` flag for first-class DNS. `backend` names
-  a Service.
-- **`tags`** — host membership in cross-cutting groups for `allow_from`.
+**Primitives** (`nickel/primitives.ncl`):
 
-Plus an `Inventory.groups` map and an optional `role_deps` graph for
-migration ordering.
+- `g.file` — a file on disk.
+- `g.package` — an apt package.
+- `g.unit` — a systemd unit.
+- `g.container` — a Podman Quadlet container (expands to a `.container`
+  file + a systemd unit + a handler that restarts on change).
+- `g.firewall` — an nftables rule fragment.
+- `g.dns_record` — a DNS A/AAAA/CNAME/TXT/MX record.
+- `g.site` — an nginx site config.
 
-This layer changes daily as you ship features. It's where typos and
-contract violations get caught before bytes leave your laptop.
+Each returns a `Fragment` — a record carrying `resources` (claims) and
+`handlers` (restart-on-change triggers). Compose them with:
 
-See [The config](/getting-started/the-config/) for the user-facing
-description.
+- `g.combine` — concatenate fragments.
+- `g.own` — tag resources with a refcount key.
+- `g.bundle_for` — walk an inventory and produce a per-host bundle,
+  resolving cross-host placeholders.
 
-## The translator (operator-side)
+**Composition** (`nickel/contrib.ncl`):
 
-`golemctl` runs on your laptop. When you `apply`, it:
+Higher-level shapes built from primitives. `g.contrib.workload` is
+`package podman + container`. `g.contrib.web_service` adds a firewall.
+`g.contrib.postgres` is `web_service` with the right image, port,
+volume, env. None of this is in the schema — it's all just composed
+primitives that you can read, copy, or replace.
 
-1. Reads the Nickel input and validates contracts.
-2. Resolves all `g.ref.host`, `g.ref.service`, `g.ref.port`, and
-   `g.ref.secret` placeholders against the inventory.
-3. For each host, translates its `workloads` / `services` / `ingress`
-   into a set of agent-level claims:
-   - A `Workload` becomes a `Quadlet` claim (rendered .container body)
-     and a `SystemdUnit` claim for the generated `<name>.service`.
-   - A `Service` becomes an `NftFragment` claim materializing
-     `allow_from` into nftables rules on the host carrying the
-     workload — accept the named port from the listed hosts'
-     addresses, drop everything else.
-   - An `Ingress` becomes a `File` claim for the nginx site block, a
-     handler that reloads nginx on change, and (when `dns = true`) a
-     `DnsRecord` claim emitted on whichever host carries the DNS role
-     for the zone. Cross-host backends look up the host carrying the
-     named Service and reverse-proxy to its private address + the
-     Service's port.
-4. Computes a per-host bundle — only the claims that host owns.
-5. Reads each host's `/status` to get the last-applied version; assigns
+**Reference resolution** (`nickel/resolve.ncl`):
+
+`g.ref.service "name"` produces a placeholder string `{name.service}`.
+At `bundle_for` time the resolver walks the inventory's `services`
+declarations, finds which host owns each name, and substitutes
+`vrack_ip:port` everywhere the placeholder appeared.
+
+This whole layer changes daily as you ship features. It's where typos
+and contract violations get caught before bytes leave your laptop.
+
+## `golemctl` (the operator CLI)
+
+The CLI is small. It:
+
+1. Calls `nickel export --format json` on `(import "config.ncl").bundle_for "node-name"`,
+   producing one Bundle per host.
+2. Reads each host's `/status` to get the last-applied version; assigns
    `max(last_applied) + 1` across the apply set.
-6. Signs each bundle with the operator's ed25519 key.
-7. POSTs to each host's agent.
+3. Signs each bundle with the operator's ed25519 key.
+4. POSTs to each host's agent.
+
+Translation logic itself lives in Nickel — `golemctl` doesn't know what
+a workload, container, or firewall is. It just evaluates Nickel and
+ships the result.
 
 The translation is **deterministic** and **canonical**: the same input
 produces byte-identical bundles. The agent's monotonicity check
-(`version > last_applied`) requires this — re-signing the same input must
-not break verification.
+(`version > last_applied`) requires this — re-signing the same input
+must not break verification.
 
 ## The agent (system engine)
 
@@ -79,18 +84,17 @@ primitives:
 - **`File`** — write a file with given content / mode / owner.
 - **`AptPackage`** — apt install / autoremove.
 - **`SystemdUnit`** — `systemctl enable --now`, `disable`, etc.
-- **`Quadlet`** — a podman .container file (translated by systemd into a
-  service unit).
-- **`NftFragment`** — an nftables ruleset chunk dropped into
-  `/etc/nftables.d/<key>.nft`, applied atomically.
-- **`DnsRecord`** — an A / AAAA / CNAME / TXT / MX record on a configured
-  zone.
+- **`Quadlet`** — a podman .container file (translated by systemd into
+  a service unit).
+- **`NftFragment`** — *future*. Currently nftables fragments ride as
+  plain `File` claims with a handler that reloads `nftables.service`.
+- **`DnsRecord`** — *future* (M3).
 
 Plus the bookkeeping every claim needs: capture prior state before
-mutating, journal it, mutate, journal "applied". When a claim is removed
-from a future bundle, *unapply* it using the captured prior state. When a
-previously-installed package was already on the box for another reason,
-leave it alone.
+mutating, journal it, mutate, journal "applied". When a claim is
+removed from a future bundle, *unapply* it using the captured prior
+state. When a previously-installed package was already on the box for
+another reason, leave it alone.
 
 The agent deliberately does not know about workloads, services,
 ingress, or anything at the config-language level. That keeps it small
@@ -103,22 +107,29 @@ agent stays honest after crashes.
 
 | Concern | Lives in | Changes | Failure mode |
 | --- | --- | --- | --- |
-| What I'm running | The Inventory (Nickel) | Daily | Operator catches it at apply time |
-| How it lands on a box | `golemctl` (translator) | Per golem release | Bundle rejected at signing or by agent |
+| What I'm running | The Nickel inventory | Daily | Operator catches it at evaluation |
+| How it lands on a box | `nickel/primitives.ncl` + `contrib.ncl` | Per golem release | Bundle rejected at signing or by agent |
 | What's actually on the box | `golemd` (agent) | Almost never | Crash → recover honestly on next tick |
 
 The agent is the part that can corrupt your boxes. So it's the part we
 test the hardest — every journal-before-mutate window has a
 `GOLEM_CRASH_AFTER` injection point and a
-[smoke test](/reference/honest-convergence/) that aborts the agent there.
+[smoke test](/reference/honest-convergence/) that aborts the agent
+there.
 
 ## Where to look in the source
 
 | Component | Path |
 | --- | --- |
-| Nickel schemas | `nickel/types.ncl`, `nickel/host.ncl`, `nickel/inventory.ncl`, `nickel/lib.ncl` |
-| Wire-format claims | `nickel/claims.ncl` |
-| Translator | `crates/golemctl/` |
+| Public Nickel API | `nickel/lib.ncl` |
+| Primitives | `nickel/primitives.ncl` |
+| Composition (Fragment, combine, own) | `nickel/fragment.ncl` |
+| Template renderers (quadlet, nft, nginx) | `nickel/render.ncl` |
+| Cross-host resolution | `nickel/resolve.ncl` |
+| Bundle assembly | `nickel/bundle.ncl` |
+| Shipped contrib (workload, postgres, …) | `nickel/contrib.ncl` |
+| Wire-format claim contracts | `nickel/claims.ncl` |
+| Operator CLI | `crates/golemctl/` |
 | Agent | `crates/golemd/` |
 | Wire-format types | `crates/golem-types/` |
 | Smoke test (real Debian container) | `crates/golemd/tests/smoke_install_remove.rs` |

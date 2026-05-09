@@ -42,20 +42,23 @@ continues running the previous bundle.
 The shape of the [config](/getting-started/the-config/) maps naturally to
 two trust tiers:
 
-- **Tenant-trust** — `services` and `workloads` on a Host. A team can
-  declare what containers run, what env they need, what volumes they
-  own, how they wire to each other, and the firewall surface to siblings
-  via `allow_from`. Nothing here reaches the host directly; every
-  service compiles to a quadlet + a unit + an nft fragment.
-- **Operator-trust** — Host addresses, ingress, DNS, `role_deps`, and
-  any raw `system.*` escape-hatch claims. These touch the host or the
-  zone; the operator's signing review is what authorizes them.
+- **Tenant-trust** — fragments built from `g.container` and
+  `g.firewall`. A team can declare what containers run, what env they
+  need, what volumes they own, how they wire to each other, and the
+  firewall surface to siblings (the `allow` list). Nothing here reaches
+  the host directly; every fragment compiles to a quadlet + a unit +
+  an nft fragment file.
+- **Operator-trust** — host addresses, `g.contrib.ingress`, DNS, and
+  any raw `g.file` claims that aren't part of a sandboxed shape. These
+  touch the host or the zone; the operator's signing review is what
+  authorizes them.
 
 <Aside type="note">
-  This split lives in `golemctl` — it's enforced at signing/translation
-  time, not by the agent. M2 will add a "tenant-only signing key" mode
-  where the operator's key co-signs over a tenant-only services
-  sub-bundle, but for now the operator signs everything.
+  This split lives in operator practice and Nickel composition — it's
+  enforced at signing time, not by the agent. M2 will add a
+  "tenant-only signing key" mode where the operator's key co-signs
+  over a tenant-only sub-bundle, but for now the operator signs
+  everything.
 </Aside>
 
 ## Threat model in one paragraph

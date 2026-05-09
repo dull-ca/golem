@@ -1,182 +1,171 @@
 ---
 title: Tier 2 — Two hosts, one DB
-description: An edge box terminating ingress, an app box running a Django workload, a db box running postgres. Templates, allow_from, cross-host services.
+description: An edge box, an app box, a db box. Composable primitives, cross-host references, allow-list firewalls.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 target">
-  This guide describes the Layer 1 input language — `Inventory` of
-  `Hosts` carrying `Workloads` and `Services` — that's the M2 target. M1
-  doesn't yet evaluate this Nickel; the layer-2 translator is in
-  progress.
+  This guide describes the Nickel input language — the M2 target. M1
+  doesn't yet evaluate this Nickel; the layer-2 translation now lives
+  entirely in Nickel itself, called by `golemctl eval`.
 
   If you want something that works *today*, see
   [Tier 1 — One service](/guides/hello-agent/).
 </Aside>
 
-The shape of the input language is **describe each host, attach the
-workloads that run on it, expose them as services with a firewall.**
-This guide adds a second host and a real database. You'll see Workload
-templates, the Workload-vs-Service split, `allow_from` rules, and
-cross-host service references.
+The shape of every golem deploy: each host carries `fragments` built
+from primitives. This guide adds a second host and a real database.
+You'll see custom user-defined templates, `g.contrib` constructors,
+`allow` firewall surfaces, and cross-host service references.
 
 ## The inventory
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-# A Workload template. Plain record, no schema magic.
-let web = {
-  image = "ghcr.io/example/hello-django:v1",
-  env   = {
-    DATABASE_URL = "postgres://app:%{g.ref.secret "pg_password"}@%{g.ref.service "appdb"}/app",
-  },
+let edge_ip = "10.42.0.1" in
+let app_ip  = "10.42.0.2" in
+let db_ip   = "10.42.0.3" in
+
+# Shared env for the Django container — uses placeholders that
+# golem resolves at translate time.
+let app_env = {
+  DATABASE_URL = "postgres://app:%{g.ref.secret "pg_password"}@%{g.ref.service "appdb"}/app",
 } in
 
-# A postgres template — also just a record.
-let postgres = fun version => {
-  image  = "postgres:%{version}",
-  volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
-} in
-
-{
+let inventory = {
   hosts = {
     # Edge: public ingress, no app code.
     "edge-01" = {
-      name      = "edge-01",
       public_ip = "203.0.113.10",
-      ingress   = [
-        { host = "hello.example.com", backend = "hello",
-          dns = true, rate_limit = "100r/m", rate_limit_burst = 20 },
+      vrack_ip  = edge_ip,
+      fragments = [
+        g.contrib.ingress {
+          host             = "hello.example.com",
+          upstream         = "%{g.ref.service "hello"}",
+          dns              = true,
+          dns_ip           = "203.0.113.10",
+          rate_limit       = "100r/m",
+          rate_limit_burst = 20,
+        },
       ],
     },
 
     # App: the Django workload, fronted by edge-01.
     "app-01" = {
-      name      = "app-01",
       public_ip = "203.0.113.20",
-      vrack_ip  = "10.42.0.2",
-
-      workloads = [ web & { name = "hello" } ],
-      services  = [
-        { name = "hello", workload = "hello", port = 8000,
-          allow_from = ["edge-01"] },
+      vrack_ip  = app_ip,
+      fragments = [
+        g.contrib.web_service {
+          name  = "hello",
+          image = "ghcr.io/example/hello-django:v1",
+          port  = 8000,
+          allow = [edge_ip],
+          env   = app_env,
+        },
       ],
+      services = [{ name = "hello", port = 8000 }],
     },
 
     # DB: postgres only, locked down to app-01.
     "db-01" = {
-      name      = "db-01",
-      vrack_ip  = "10.42.0.3",
-
-      workloads = [
-        postgres "18" & {
-          name = "appdb",
-          env  = {
-            POSTGRES_USER     = "app",
-            POSTGRES_PASSWORD = g.ref.secret "pg_password",
-            POSTGRES_DB       = "app",
-          },
+      vrack_ip = db_ip,
+      fragments = [
+        g.contrib.postgres {
+          name     = "appdb",
+          db       = "app",
+          user     = "app",
+          password = g.ref.secret "pg_password",
+          allow    = [app_ip],
         },
       ],
-
-      services = [
-        { name = "appdb", workload = "appdb", port = 5432,
-          allow_from = ["app-01"] },
-      ],
+      services = [{ name = "appdb", port = 5432 }],
     },
   },
-} | g.Inventory
+} in
+
+{ bundle_for = g.bundle_for inventory }
 ```
 
-Three hosts. Worth reading for what's there:
+Three hosts, ~30 lines. Worth reading for what's there:
 
-- **Workload = the container.** `web` and `postgres "18"` are templates
-  for "thing that runs". They carry image, env, volumes — nothing about
-  who can reach them.
-- **Service = port + firewall.** `db-01`'s `appdb` service points at
-  the `appdb` workload's port 5432 and only accepts traffic from
-  `app-01`. `app-01`'s `hello` service points at the `hello` workload's
-  port 8000 and only accepts traffic from `edge-01`. The translator
-  emits nftables fragments on each host.
-- **`dns = true` on Ingress** means golem owns the A record for
-  `hello.example.com`, pointing at `edge-01.public_ip`.
-- **`g.ref.service "appdb"`** resolves to db-01's address + 5432
-  because db-01 owns the `appdb` service. Misspell the name and
-  `golemctl apply` rejects.
+- **`g.contrib.web_service`** = container + firewall + podman package.
+  Three primitives composed.
+- **`g.contrib.postgres`** = `web_service` with the right image, port
+  (5432), volume path, and env vars (`POSTGRES_USER`, `POSTGRES_DB`,
+  `POSTGRES_PASSWORD`). About ten lines of Nickel — read it in
+  `nickel/contrib.ncl`.
+- **`g.ref.service "appdb"`** is a placeholder string. At translate
+  time, `g.bundle_for` walks the inventory, finds db-01 owns the `appdb`
+  service on port 5432, and substitutes `10.42.0.3:5432` everywhere the
+  placeholder appeared.
 - **`g.ref.secret "pg_password"`** is a placeholder for an
   operator-staged secret value. M3.
+- **`allow = [app_ip]`** is the firewall rule. The translator emits an
+  nftables fragment on db-01 accepting port 5432 only from `10.42.0.2`.
 
-### Why two records, not one
+## What the Nickel produces
 
-A Workload is what podman runs. A Service is the routing surface — a
-port + a firewall + a name other workloads dial. They're separate
-because:
+`g.bundle_for inventory "db-01"` produces a Bundle with around five
+claims:
 
-- **One workload, multiple ports.** A workload exposing both an HTTP
-  port and a metrics port has two Services with different `allow_from`
-  lists.
-- **Pure outbound workloads have no service.** Background workers
-  (celery, fishnet, queue consumers) are Workloads with zero Service
-  entries — they connect out, nothing connects in.
-- **Migrations.** A Workload with `oneshot = true` runs and exits.
-  Nothing routes to it; no Service entry needed.
-
-## What the translator unfolds this into
-
-Layer 2 (`golemctl`) walks the inventory and produces three per-host
-bundles totaling around 15 layer-3 claims:
-
-| Host | Claims |
+| Claim | Why |
 | --- | --- |
-| `edge-01` | nginx site for `hello.example.com` (with rate-limit zones), nginx package + unit, nft fragment for 80/443, DNS A record `hello.example.com → 203.0.113.10` |
-| `app-01` | quadlet for `hello`, systemd unit, nft fragment allowing `8000/tcp` only from edge-01's vrack address, podman package |
-| `db-01` | quadlet for `appdb` postgres container, systemd unit, volume claim, nft fragment allowing `5432/tcp` only from app-01's vrack address, podman package |
+| `apt_package: podman` | Owned by `workload/appdb` and `service/appdb`. |
+| `file: /etc/containers/systemd/appdb.container` | Quadlet for the postgres container, with env vars rendered in. |
+| `file: /etc/containers/systemd/appdb-data.volume` | Quadlet volume definition for the data dir. |
+| `systemd_unit: appdb.service` | The generated unit, after the quadlet file. |
+| `file: /etc/nftables.d/appdb-allow.nft` | nftables rule: accept 5432 from `10.42.0.2`, with a handler that reloads `nftables.service` when the file changes. |
+
+`bundle_for "app-01"` produces similar claims for the Django container
+plus its firewall fragment. `bundle_for "edge-01"` produces the nginx
+package + site config + DNS record.
 
 Every claim is a primitive [the agent already understands](/reference/architecture/).
 The Nickel was just a more compact way to write it down.
 
 ## Same inventory, different deploys
 
-The same Nickel deploys to staging by changing host addresses and the
-ingress hostname:
+The same Nickel deploys to staging by changing the addresses and
+hostname:
 
 ```nickel
-"stage-edge" = {
-  name      = "stage-edge",
-  public_ip = "203.0.113.110",
-  ingress   = [{ host = "staging.hello.example.com", backend = "hello",
-                 dns = true, rate_limit = "100r/m" }],
-},
+let edge_ip = "10.99.0.1" in
+let app_ip  = "10.99.0.2" in
+let db_ip   = "10.99.0.3" in
+
+# ... and ingress.host = "staging.hello.example.com"
 ```
 
-Or it deploys to a single all-in-one box for development by collapsing
-all the workload onto one host:
+Or it deploys to a single all-in-one dev box by collapsing all the
+fragments onto one host:
 
 ```nickel
 "dev-01" = {
-  name      = "dev-01",
   public_ip = "127.0.0.1",
-  workloads = [
-    web & { name = "hello" },
-    postgres "18" & { name = "appdb", env = {...} },
+  vrack_ip  = "127.0.0.1",
+  fragments = [
+    g.contrib.web_service { name = "hello", image = "...", port = 8000,
+                            allow = ["127.0.0.1"], env = app_env },
+    g.contrib.postgres    { name = "appdb", db = "app", user = "app",
+                            password = "devpass",
+                            allow = ["127.0.0.1"] },
+    g.contrib.ingress     { host = "hello.test", upstream = "127.0.0.1:8000" },
   ],
-  services  = [
-    { name = "hello", workload = "hello", port = 8000,
-      allow_from = ["dev-01"] },
-    { name = "appdb", workload = "appdb", port = 5432,
-      allow_from = ["dev-01"] },
+  services = [
+    { name = "hello", port = 8000 },
+    { name = "appdb", port = 5432 },
   ],
-  ingress   = [{ host = "hello.test", backend = "hello" }],
 }
 ```
 
-Same templates, same shape, different topology.
+Same primitives, same shape, different topology. No special "dev mode"
+in the schema — just rearranged composition.
 
 ## Where to next
 
-- The capstone — same shape, more workloads:
+- The capstone — building your own domain abstractions:
   **[Tier 3 — Litour on a box](/guides/litour/)**.
 - See exactly what gets sent to the agent:
   **[Bundle format reference](/reference/bundle-format/)**.

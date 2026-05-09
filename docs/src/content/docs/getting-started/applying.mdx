@@ -28,14 +28,16 @@ For each host in the inventory, in this order:
    every host in this apply gets the same fresh number, so there's no
    drift if you apply to a fleet.
 
-2. **Compiles the Nickel for that host.**
-   Walks the inventory, resolves `g.ref.host`, `g.ref.service`, and
-   `g.ref.secret` placeholders, computes the firewall surface from
-   `allow_from`, materializes DNS records from Ingress entries with `dns =
-   true`, and produces a per-host bundle of low-level claims (write this
-   file, install that package, enable this unit, add this nft fragment,
-   create this DNS A record). The compilation is deterministic — the
-   same input produces byte-identical output.
+2. **Evaluates the Nickel for that host.**
+   Calls `(import "config.ncl").bundle_for "host-name"` via `nickel
+   export`. The Nickel toolkit resolves `g.ref.host`, `g.ref.service`,
+   and `g.ref.secret` placeholders, expands `g.contrib.ingress` into
+   nginx + DNS claims, expands `g.firewall` into nft fragments, and
+   produces a per-host bundle of low-level claims (write this file,
+   install that package, enable this unit, add this nft fragment,
+   create this DNS A record). Translation logic lives in
+   `nickel/primitives.ncl` and `nickel/contrib.ncl`. The evaluation is
+   deterministic — the same input produces byte-identical output.
 
 3. **Signs it.**
    With the operator's ed25519 secret key (`operator.sk`). The signature

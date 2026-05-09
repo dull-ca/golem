@@ -1,64 +1,74 @@
 ---
 title: Tier 1 — One service
-description: The smallest interesting deploy. One host, one workload behind one public hostname, with the DNS record golem owns.
+description: The smallest deploy. One host, one container, one public hostname, with the DNS record golem owns.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 target">
-  Like Tier 2 and Tier 3, this guide describes the Inventory input
-  language the M2 translator compiles. The agent itself runs today (M1)
-  — to exercise it now, see the smoke test and JSON wire-format
-  walkthrough in
+  This guide describes the Nickel input language the M2 translator
+  produces bundles from. The agent itself runs today (M1) — to exercise
+  it now, see the smoke test and JSON wire-format walkthrough in
   [QUICKSTART.md](https://codeberg.org/dull/golem/src/branch/main/QUICKSTART.md)
   and the [bundle format reference](/reference/bundle-format/).
 </Aside>
 
-The shape of every golem deploy is the same: an `Inventory` of `Hosts`,
-each carrying `workloads` (containers), `services` (port routing with
-firewall), and `ingress` (public HTTPS). This guide is that pattern at
-its smallest. One host. One workload. One service. One hostname. Golem
-owns the DNS record.
+The shape of every golem deploy is the same: an inventory of hosts,
+each carrying an array of `fragments` — small composable units built
+from primitives like `g.container`, `g.firewall`, `g.site`. This guide
+is that shape at its smallest. One host. One container behind one
+public hostname.
 
 ## The whole thing
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-{
+let inventory = {
   hosts = {
     "box-01" = {
-      name      = "box-01",
       public_ip = "203.0.113.10",
+      vrack_ip  = "10.42.0.1",
+      fragments = [
+        # The container — and the firewall + ingress around it.
+        g.contrib.web_service {
+          name  = "hello",
+          image = "ghcr.io/example/hello:v1",
+          port  = 8080,
+          allow = ["10.42.0.1"],
+        },
 
-      workloads = [
-        { name = "hello", image = "ghcr.io/example/hello:v1" },
+        # Public HTTPS termination. Owns the DNS record.
+        g.contrib.ingress {
+          host     = "hello.example.com",
+          upstream = "%{g.ref.service "hello"}",
+          dns      = true,
+          dns_ip   = "203.0.113.10",
+        },
       ],
-
-      services = [
-        { name = "hello", workload = "hello", port = 8080,
-          allow_from = ["box-01"] },
-      ],
-
-      ingress = [
-        { host = "hello.example.com", backend = "hello", dns = true },
-      ],
+      services = [{ name = "hello", port = 8080 }],
     },
   },
-} | g.Inventory
+} in
+
+{ bundle_for = g.bundle_for inventory }
 ```
 
-That's the deploy. One host with one workload, one service, one ingress.
+That's the deploy. One host with one workload (the container + its
+firewall + the matching service-name registration) and one ingress.
 
-- **`workloads`** — the container. The image is whatever you're shipping.
-- **`services`** — names port `8080` on the `hello` workload as the
-  service `hello`, with `allow_from = ["box-01"]` (only this box itself
-  can reach the port). The firewall is closed to the outside; nginx
-  (running on the same box) is what the world hits.
-- **`ingress`** — `hello.example.com` is fronted by nginx, terminating
-  TLS via Let's Encrypt and reverse-proxying to the `hello` *service*.
-  `dns = true` makes golem own the A record pointing
-  `hello.example.com` at `203.0.113.10`.
+- **`g.contrib.web_service`** combines `g.package "podman"` +
+  `g.container` + `g.firewall`. It's a workload that listens on a port
+  with firewall rules. Read `nickel/contrib.ncl` if you want to see how
+  it's built — it's about 12 lines.
+- **`g.contrib.ingress`** combines `g.package "nginx"` + `g.unit
+  "nginx.service"` + `g.site` + (optionally) `g.dns_record`. Public
+  HTTPS via nginx with the DNS record golem owns.
+- **`g.ref.service "hello"`** resolves to `10.42.0.1:8080` at
+  translation time — the resolver finds which host owns the `hello`
+  service (this same box) and which port it's on.
+- **`services = [{ name = "hello", port = 8080 }]`** registers the
+  service-name → port mapping for the resolver.
 
 ## Apply it
 
@@ -83,44 +93,45 @@ That's the deploy. One host with one workload, one service, one ingress.
    ```
 </Steps>
 
-## What golem did under the hood
+## What golem produced under the hood
 
-The translator unfolded those nine lines into roughly nine layer-3
-claims that the agent then applied:
+The Nickel evaluation produces a Bundle for `box-01` with roughly nine
+claims that the agent then applies:
 
 | Claim | Why |
 | --- | --- |
-| `apt_package: podman` | Required for any workload. |
-| `quadlet: hello` | Defines the `hello` container. |
-| `systemd_unit: hello.service` | Auto-generated from the quadlet, enabled and active. |
-| `nft_fragment: hello-allow.nft` | Firewall rule allowing port 8080 only from `box-01`. |
-| `apt_package: nginx` | Required because `ingress` is non-empty. |
-| `file: /etc/nginx/sites-enabled/hello.example.com.conf` | Site block routing the hostname to the `hello` service. |
-| `systemd_unit: nginx.service` | Enabled and active, with a handler that reloads on site change. |
-| `nft_fragment: nginx-allow.nft` | Firewall rule allowing 80/443 from anywhere. |
+| `apt_package: podman` | Required for any container. |
+| `file: /etc/containers/systemd/hello.container` | The Quadlet definition. |
+| `systemd_unit: hello.service` | Auto-generated by systemd from the quadlet. |
+| `file: /etc/nftables.d/hello-allow.nft` | Firewall rule allowing port 8080 only from `10.42.0.1`. |
+| `apt_package: nginx` | For the ingress. |
+| `file: /etc/nginx/sites-enabled/hello.example.com.conf` | The nginx site block routing `hello.example.com` to the `hello` service. |
+| `systemd_unit: nginx.service` | Enabled and active. |
 | `dns_record: hello.example.com A` | A record pointing at `203.0.113.10`. |
 
-You don't write any of that. The agent journals each claim's prior
-state before mutating, so removing them later restores the box honestly.
-That's the part that makes golem worth using over a shell script.
+You don't write any of that — the primitives produce it. The agent
+journals each claim's prior state before mutating, so removing them
+later restores the box honestly. That's the part that makes golem
+worth using over a shell script.
 
 ## Take it back
 
-Edit the Nickel to empty out `workloads`, `services`, and `ingress`,
-then re-apply:
+Edit the Nickel to empty the fragments:
 
 ```nickel
 "box-01" = {
-  name      = "box-01",
   public_ip = "203.0.113.10",
+  vrack_ip  = "10.42.0.1",
+  fragments = [],
 }
 ```
 
 After the next tick:
 
-- `hello.service` is stopped and disabled, the quadlet is removed.
-- `nginx.service` is stopped, the site file is removed.
-- The nft fragments are removed.
+- `hello.service` and `nginx.service` are stopped and disabled, the
+  unit files removed.
+- The Quadlet `.container` file is removed.
+- The nginx site config and nftables fragment are removed.
 - The DNS record is deleted.
 - Both `podman` and `nginx` are removed via `apt-get autoremove` —
   *only because* golem captured `preexisting: false` for each when it
@@ -129,9 +140,9 @@ After the next tick:
 - The journal in `/var/lib/golem/state.db` is empty.
 
 The empty journal is the proof that nothing leaked. Honest unapply is
-what makes golem safe to use on a box you also touch by hand for other
-reasons. See [Honest convergence](/reference/honest-convergence/) for
-how this stays honest even across crashes.
+what makes golem safe to use on a box you also touch by hand. See
+[Honest convergence](/reference/honest-convergence/) for how this stays
+honest even across crashes.
 
 ## Where to next
 

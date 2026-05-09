@@ -17,7 +17,7 @@ Usage: golemctl <COMMAND>
 
 Commands:
   keygen   Generate a new ed25519 keypair
-  eval     Evaluate a Nickel Inventory config for a host, dump Bundle JSON
+  eval     Evaluate a Nickel config for a host, dump Bundle JSON
   sign     Wrap a Bundle JSON into a SignedBundle JSON
   push     POST a SignedBundle to a node's /bundle endpoint
   apply    End-to-end: eval each node in the fleet, sign, and push
@@ -39,24 +39,19 @@ golemctl keygen ./operator
 
 ### `golemctl eval <config.ncl> <host> [--as-version N]`
 
-Evaluates the Nickel `Inventory` config for the named host and dumps the
-unsigned `Bundle` JSON to stdout. Useful for inspecting what the
-translator produces before signing.
+Evaluates the Nickel config for the named host and dumps the unsigned
+`Bundle` JSON to stdout. Internally this calls `(import
+"config.ncl").bundle_for "host"` via `nickel export`. Useful for
+inspecting what your Nickel produces before signing.
 
-The Inventory itself doesn't carry a version (`golemctl apply` computes
-one automatically — see below). For `eval` alone, the bundle gets
+The Nickel doesn't carry a version (`golemctl apply` computes one
+automatically — see below). For `eval` alone, the bundle gets
 `version = 1` unless you pass `--as-version N`.
 
 ```bash
 golemctl eval examples/simple/config.ncl app-01 | jq '.claims | length'
-# → 7
+# → 14
 ```
-
-<Aside type="caution">
-  M2: the existing `examples/simple/config.ncl` doesn't yet evaluate cleanly
-  against the current Nickel stdlib. Until the Nickel work lands, hand-write
-  bundles like the one in `smoke-test/bundle-v1-install.json`.
-</Aside>
 
 ### `golemctl sign <bundle.json> <secret_key>`
 

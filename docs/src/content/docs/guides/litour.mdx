@@ -1,30 +1,34 @@
 ---
 title: Tier 3 — Litour on a box
-description: The real lichess league software — web, api, ui, workers, redis, postgres — as Workloads + Services across three hosts.
+description: A real Django stack — web, api, ui, workers, redis, postgres — across three hosts. Build your own domain abstractions on top of golem's primitives.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 + M3 target">
   This is the capstone. It uses Layer 1 features that span M2 (the
-  Inventory + Workload + Service input language) and M3 (secrets at
-  rest). The Nickel below is the shape the docs are anchored on; the
-  translator is in progress.
+  Nickel input language) and M3 (secrets at rest). The Nickel below is
+  the shape the docs are anchored on; the agent runs today (M1).
 </Aside>
 
 [Litour](https://codeberg.org/dull/litour) is the league management
 software that runs the [Lichess 4545 League](https://www.lichess4545.com/)
 and several other team chess leagues. It's a real, multi-service,
-secrets-bearing, publicly-routed Django app — exactly the workload that
+secrets-bearing, publicly-routed Django app — the workload that
 motivated golem.
 
 This guide deploys the full stack across three hosts: an edge box
 terminating ingress, an app box running the Django workloads and
-workers, and a data box running redis and postgres.
+workers, and a data box running redis and postgres. Along the way it
+shows the move users care about: **building your own domain
+abstractions on top of golem's primitives**.
 
-## Templates
+## Step 1 — your domain vocabulary
 
-Plain Nickel records, imported from `workloads/litour.ncl` in your repo:
+Litour has seven container variants — web, api, apiworker, ui, celery,
+watcher, migrate. They all share an image registry, common env, and
+secrets. Instead of writing each one as a raw `g.contrib.web_service`,
+build a `litour_service` and `litour_worker` for your project:
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
@@ -42,57 +46,58 @@ let litour_env = {
   EMAIL_HOST_PASS   = secret "email_pass",
 } in
 
-# Workload templates. The port the container internally binds is a
-# property of the image; the matching Service entry on the host is what
-# routes to it.
-let web       = { image = litour_image "web",        env = litour_env } in
-let api       = { image = litour_image "api",        env = litour_env } in
-let apiworker = { image = litour_image "api-worker", env = litour_env } in
-let ui        = {
-  image = litour_image "ui",
-  env   = litour_env & { LITOUR_API_BASE_URL = "http://%{g.ref.service "api"}" },
-} in
-let celery    = { image = litour_image "celery",  env = litour_env } in
-let watcher   = { image = litour_image "watcher", env = litour_env } in
-let migrate   = { image = litour_image "migrate", env = litour_env,
-                  oneshot = true } in
+# A litour service: a web_service with the litour image + env baked in.
+let litour_service = fun config =>
+  g.contrib.web_service (config & {
+    image = litour_image config.name,
+    env   = litour_env & (if std.record.has_field "env" config then config.env else {}),
+  })
+in
 
-let postgres  = fun version => {
-  image = "postgres:%{version}",
-  volume = { at = "/var/lib/postgresql/data", size = "50Gb" },
-} in
+# A litour worker: a background container, dial-out only, no port.
+let litour_worker = fun config =>
+  g.contrib.worker {
+    name  = config.name,
+    image = litour_image config.name,
+    env   = litour_env & (if std.record.has_field "env" config then config.env else {}),
+  }
+in
 
-let redis     = {
-  image = "redis:7-alpine",
-  volume = { at = "/data", size = "5Gb" },
-} in
+# A litour oneshot — the migrate container, runs and exits.
+let litour_oneshot = fun config =>
+  g.contrib.oneshot {
+    name  = config.name,
+    image = litour_image config.name,
+    env   = litour_env,
+  }
+in
 ```
 
-Read it: every name is a *thing that runs*. There's no quadlet
-boilerplate, no networks block, no separate volumes block.
+Three functions, ~25 lines. Now your inventory speaks litour, not
+"workload-with-litour-config-baked-in".
 
-## The inventory
+## Step 2 — the inventory
 
 ```nickel
-{
+let app_ip = "10.42.0.2" in
+let db_ip  = "10.42.0.3" in
+
+let inventory = {
   hosts = {
     # ── Edge: public-facing nginx, owns DNS for the zone. ────────────
     "edge-01" = {
-      name      = "edge-01",
       public_ip = "203.0.113.10",
       vrack_ip  = "10.42.0.1",
-      tags      = ["dns-primary"],
-
-      ingress = [
-        {
-          host                 = "www.lichess4545.com",
-          backend              = "web",
-          dns                  = true,
-          rate_limit           = "200r/m",
-          rate_limit_burst     = 50,
-          rate_limit_zone_size = "10m",
-          conn_limit           = 100,
-          buffering            = false,
+      fragments = [
+        g.contrib.ingress {
+          host             = "www.lichess4545.com",
+          upstream         = "%{g.ref.service "web"}",
+          dns              = true,
+          dns_ip           = "203.0.113.10",
+          rate_limit       = "200r/m",
+          rate_limit_burst = 50,
+          conn_limit       = 100,
+          buffering        = false,
           routes = [
             { path = "/v2/api", backend = "api" },
             { path = "/v2",     backend = "ui"  },
@@ -101,94 +106,87 @@ boilerplate, no networks block, no separate volumes block.
       ],
     },
 
-    # ── App: every Django workload + the workers + the migrate oneshot. ─
+    # ── App: every Django workload + the workers + the migrate oneshot.
     "app-01" = {
-      name      = "app-01",
       public_ip = "203.0.113.20",
-      vrack_ip  = "10.42.0.2",
-      tags      = ["postgres-clients", "redis-clients"],
+      vrack_ip  = app_ip,
+      fragments = [
+        litour_service { name = "web", port = 8000, allow = ["10.42.0.1"] },
+        litour_service { name = "api", port = 8001, allow = ["10.42.0.1"] },
+        litour_service { name = "ui",  port = 3000, allow = ["10.42.0.1"],
+                         env  = { LITOUR_API_BASE_URL = "http://%{g.ref.service "api"}" } },
 
-      workloads = [
-        web       & { name = "web"       },
-        api       & { name = "api"       },
-        apiworker & { name = "apiworker" },
-        ui        & { name = "ui"        },
-
-        # No Service entries below — these dial out only.
-        celery    & { name = "celery"    },
-        watcher   & { name = "watcher"   },
-        migrate   & { name = "migrate"   },          # oneshot: runs and exits
-      ],
-
-      services = [
-        { name = "web",       workload = "web",       port = 8000,
-          allow_from = ["edge-01"] },
-        { name = "api",       workload = "api",       port = 8001,
-          allow_from = ["edge-01"] },
-        { name = "ui",        workload = "ui",        port = 3000,
-          allow_from = ["edge-01"] },
         # apiworker is internal — only dialable from app-01 itself.
-        { name = "apiworker", workload = "apiworker", port = 8002,
-          allow_from = ["app-01"] },
+        litour_service { name = "apiworker", port = 8002, allow = [app_ip] },
+
+        # No port: dial out only.
+        litour_worker { name = "celery"  },
+        litour_worker { name = "watcher" },
+
+        # Runs and exits.
+        litour_oneshot { name = "migrate" },
+      ],
+      services = [
+        { name = "web",       port = 8000 },
+        { name = "api",       port = 8001 },
+        { name = "ui",        port = 3000 },
+        { name = "apiworker", port = 8002 },
       ],
     },
 
     # ── Data: redis + postgres. Locked down to app-01. ────────────────
     "data-01" = {
-      name      = "data-01",
       public_ip = "203.0.113.30",
-      vrack_ip  = "10.42.0.3",
-
-      workloads = [
-        postgres "18" & {
-          name = "appdb",
-          env  = {
-            POSTGRES_USER     = "litour",
-            POSTGRES_PASSWORD = g.ref.secret "pg_pass",
-            POSTGRES_DB       = "litour",
-          },
-          configs = [
+      vrack_ip  = db_ip,
+      fragments = [
+        g.contrib.postgres {
+          name     = "appdb",
+          version  = "18",
+          db       = "litour",
+          user     = "litour",
+          password = secret "pg_pass",
+          allow    = [app_ip],
+          configs  = [
             { path    = "/etc/postgresql/18/main/conf.d/golem.conf",
               content = m%"
                 listen_addresses = '*'
                 max_connections = 200
-              "% },
+              "%, },
           ],
         },
 
-        redis & { name = "redis" },
+        g.contrib.redis {
+          name  = "redis",
+          allow = [app_ip],
+        },
       ],
-
       services = [
-        { name = "appdb", workload = "appdb", port = 5432,
-          allow_from = ["postgres-clients"] },          # tag membership: app-01
-        { name = "redis", workload = "redis", port = 6379,
-          allow_from = ["redis-clients"] },             # tag membership: app-01
+        { name = "appdb", port = 5432 },
+        { name = "redis", port = 6379 },
       ],
     },
   },
-} | g.Inventory
+} in
+
+{ bundle_for = g.bundle_for inventory }
 ```
 
-That's the whole deploy. Three hosts, ~80 lines of Nickel. Read what's
-there:
+That's the whole deploy. Three hosts, ~80 lines including the domain
+vocabulary at the top. Read what's there:
 
-- **Templates, instantiated.** `web`, `api`, `apiworker`, `ui` are all
-  the same litour image with different config. Each gets a per-host
-  `name`. Three of them get a Service that exposes their port to
-  edge-01; `apiworker` gets a Service that exposes its port only to
-  `app-01` itself (internal API).
-- **Pure-outbound workloads have no Service.** `celery`, `watcher`,
-  `migrate` connect out (postgres, redis, the lichess API). Nothing
-  connects in to them, so they don't need a Service entry.
-- **Firewall is tight.** Each Service's `allow_from` is the rule.
-  Database tier accepts only from `postgres-clients` / `redis-clients`
-  (app-01 by tag). Nothing else can reach those ports.
-- **`migrate` is `oneshot = true`** — runs, exits, doesn't restart.
+- **Domain vocabulary up front.** `litour_service`, `litour_worker`,
+  `litour_oneshot` — the shapes you actually deploy. Each is one
+  function, three or four lines, calling a `g.contrib` constructor with
+  litour-specific defaults.
+- **Pure-outbound workloads use `litour_worker`.** Celery, watcher
+  connect out (postgres, redis, the lichess API). Nothing connects in,
+  so they don't expose a port — `litour_worker` doesn't take one.
+- **Migrations use `litour_oneshot`.** Runs once and exits.
   Re-applying with a new image runs migrate again with that image.
-- **DNS owned by edge-01.** `dns = true` on the ingress. The
-  `dns-primary` tag marks edge-01 as the host that handles DNS provider
-  API calls.
+- **Firewall is tight.** Each `litour_service`'s `allow` list controls
+  who reaches it. apiworker is `[app_ip]` — only the app box itself.
+  web/api/ui are `[edge_ip]` — only edge-01.
+- **DNS owned by edge-01.** `dns = true` on the ingress.
 - **Routes inside an ingress.** `/v2/api/*` → api, `/v2/*` → ui,
   fall-through → web. nginx `location` blocks materialized from those
   three lines.
@@ -223,10 +221,23 @@ there:
    ssh app-01 'systemctl status web.service api.service ui.service'
    ```
 
-4. **Roll forward.** Bump an image tag (or the whole `litour_image`
+4. **Roll forward.** Bump an image tag (or change the `litour_image`
    helper), re-apply. The version monotonically increases; the agent
    does the right thing on each host.
 </Steps>
+
+## What you just did
+
+You wrote three small functions — `litour_service`, `litour_worker`,
+`litour_oneshot` — that became your project's vocabulary. They're built
+on top of `g.contrib` constructors, which are built on top of golem's
+primitives, which compile down to per-host bundles of files +
+packages + units.
+
+Nothing in golem knew the word "litour". You taught it.
+
+That's the move: the schema doesn't predict your fleet. You predict
+your fleet, and use golem's primitives to express it.
 
 ## Migrating from compose
 
@@ -235,37 +246,40 @@ translation:
 
 | compose | nickel |
 | --- | --- |
-| `services.<name>.image` | a Workload's `.image` (or template) |
+| `services.<name>.image` | a `g.container`'s `image` (or higher-level wrapper) |
 | `services.<name>.environment` | `.env` |
 | `services.<name>.command` | `.command` |
-| `services.<name>.volumes: ["named:/path"]` | `.volume = { at = "/path" }` |
-| `services.<name>.ports: ["8080:8080"]` | a Service entry pointing at the workload + port + `allow_from` |
+| `services.<name>.volumes: ["named:/path"]` | `.volume = { at = "/path", size = "..." }` |
+| `services.<name>.ports: ["8080:8080"]` | `g.firewall { port, allow }` + a `services` registration |
 | `secrets.<name>` (file:) | `g.ref.secret "<name>"` referenced in env |
-| nginx site / Caddyfile | `Ingress` on the edge host |
-| `networks:` block | (gone — host network + `allow_from`) |
+| nginx site / Caddyfile | `g.contrib.ingress` on the edge host |
+| `networks:` block | (gone — host network + `allow` lists) |
 | `depends_on:` | (gone — placeholder references imply ordering) |
 | All services in one file | Inventory across multiple hosts |
 
 `golemctl translate compose.yml > config.ncl` will be a real command in
-M2; it places everything on one host as workloads with a service each,
-and you split it up by host as you need to.
+M2; it places everything on one host and you split it up by host as you
+need to.
 
 ## What this gives you compose doesn't
 
 - **Multi-host out of the box.** Compose is one Docker daemon. This is
   three boxes with shared firewall semantics.
-- **First-class firewall.** Every Service has `allow_from`. No manual
-  `iptables` / `ufw` / cloud security group sprawl.
+- **First-class firewall.** Every workload's `allow` is the rule. No
+  manual `iptables` / `ufw` / cloud security group sprawl.
 - **First-class DNS.** `dns = true` on Ingress. Add a host, get a
   record; remove a host, lose the record. No separate Terraform DNS
   module to drift out of sync.
 - **References, not stringly-typed addresses.** `g.ref.service "appdb"`
   is checked at translation; `data-01` in compose is a string the
   network might or might not resolve.
-- **Honest unapply.** Remove a workload from a host's list and
+- **Domain vocabulary.** `litour_service` is your project's word, not
+  golem's. Compose forces you to write the same Docker boilerplate
+  every time.
+- **Honest unapply.** Remove a workload's fragment from a host and
   re-apply; the agent stops + disables the unit, removes the quadlet,
-  removes the firewall rule entry, removes the journal entry. No
-  leaked state.
+  removes the firewall rule, removes the journal entry. No leaked
+  state.
 
 ## What it doesn't give you
 

@@ -1,273 +1,234 @@
 ---
 title: The config
-description: One Nickel file describes every host in your fleet — what runs on it, how it's reached, what it talks to.
+description: Golem ships small primitives — file, package, container, firewall — that you compose into whatever abstractions fit your fleet.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-You write one [Nickel](https://nickel-lang.org) file. It describes an
-**Inventory** — every host in your fleet, with the workloads, services,
-and ingress that live on each one.
+Golem ships a toolkit of small Nickel primitives — like Ansible modules
+in shape and spirit. You compose them into whatever higher-level
+abstractions fit your fleet. The Nickel evaluates to a per-host bundle
+that the agent applies.
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-{
+let inventory = {
   hosts = {
-    "edge-01" = {
-      name      = "edge-01",
-      public_ip = "203.0.113.10",
-      ingress = [
-        { host = "hello.example.com", backend = "hello", dns = true },
-      ],
-    },
-
-    "app-01" = {
-      name      = "app-01",
-      public_ip = "203.0.113.20",
-      workloads = [
-        { name = "hello", image = "ghcr.io/example/hello:v1" },
-      ],
-      services = [
-        { name = "hello", workload = "hello", port = 8080,
-          allow_from = ["edge-01"] },
+    "box-01" = {
+      vrack_ip = "10.42.0.1",
+      fragments = [
+        g.package { name = "podman" },
+        g.container { name = "hello", image = "ghcr.io/example/hello:v1" },
+        g.firewall { name = "hello", port = 8080, allow = ["10.42.0.1"] },
       ],
     },
   },
-} | g.Inventory
+} in
+
+{ bundle_for = g.bundle_for inventory }
 ```
 
-Two hosts. The world hits `edge-01` on `hello.example.com`, golem
-terminates TLS and reverse-proxies to the `hello` service on `app-01`,
-the firewall on `app-01` only accepts that port from `edge-01`. The DNS
-A record is owned by golem (`dns = true`).
+That's the whole shape. A host is a record. Its `fragments` array lists
+what runs on that host — each fragment built from primitives.
 
-## Two shapes do all the work
+## The primitives
 
-The schema is deliberately small. Two records:
+These are the Ansible-module equivalents. Each takes a config record
+and returns a `Fragment` (resources + handlers).
 
-**`Workload`** — the container. Image, env, volumes, command. Anything
-that runs is a Workload, full stop. Mongo, postgres, redis, fishnet,
-your Django app, the migrate oneshot — all Workloads with different
-images and env. The schema doesn't distinguish "stateful" from
-"stateless", "data" from "app". That's a pattern in your templates,
-not in golem.
+| Function | What it ensures |
+| --- | --- |
+| `g.file { path, content, mode?, owner?, group? }` | A file exists with given content. |
+| `g.package { name, version?, hold? }` | An apt package is installed. |
+| `g.unit { name, enable?, active? }` | A systemd unit is enabled and/or started. |
+| `g.container { name, image, env?, volume?, command?, ... }` | A Podman Quadlet container runs. Expands into a `.container` file + a `.service` unit + a handler that restarts on change. |
+| `g.firewall { name, port, allow, protocol? }` | An nftables fragment in `/etc/nftables.d/` accepting traffic to a port from listed sources. |
+| `g.dns_record { zone, name, type, value, ttl? }` | A DNS record (M3 — agent provider not yet implemented). |
+| `g.site { host, upstream, tls?, rate_limit?, routes?, ... }` | An nginx site block in `/etc/nginx/sites-enabled/`. |
 
-**`Service`** — internal port routing. A name, the Workload it points
-at, the port on that Workload, and an `allow_from` firewall surface.
-Multiple Services can target the same Workload on different ports
-(e.g. one for web traffic with `allow_from = ["edge-01"]`, one for
-metrics with `allow_from = ["prom-01"]`). A Workload that only dials
-out has no Service entries at all.
+That's the whole API surface for resources. Everything else — workload
+templates, web services, databases — is *composition* of these.
 
-Plus `Ingress` — public HTTPS termination — that picks a Service as
-its backend.
+## Composition
 
-## `Workload` — the container
+Three functions glue primitives together:
 
 ```nickel
-{
-  name    = "lila",
-  image   = "ghcr.io/lichess-org/lila:latest",
-  env     = { LILA_DB_URI = "mongodb://%{g.ref.service "mongo-lichess"}/lichess" },
-  volume  = { at = "/var/lila/cache", size = "20Gb" },
+g.combine    : Array Fragment -> Fragment            # concatenate
+g.own        : String -> Fragment -> Fragment        # tag ownership
+g.bundle_for : Inventory -> String -> Bundle         # per-host bundle
+```
+
+`combine` flattens fragments. `own` tags them with a refcount key — when
+the last owner drops, the agent cleans the resources up. `bundle_for`
+walks the inventory, resolves cross-host references, and returns the
+bundle a single host should apply.
+
+## Cross-host references
+
+Workloads talk to other workloads by name, not address. Use the `ref`
+helpers:
+
+```nickel
+env = {
+  LILA_DB  = "mongodb://%{g.ref.service "mongo"}/lichess",
+  REDIS    = "%{g.ref.service "redis"}",
+  PG_PASS  = g.ref.secret "pg_pass",
 }
 ```
 
-Fields a Workload can carry:
-
-| Field | What it is |
-| --- | --- |
-| `name` | Workload name. Required. Used as the systemd unit name. |
-| `image` | Container image. Required. |
-| `env` | Environment variables. May contain `g.ref.*` placeholders. |
-| `volume` / `volumes` | Persistent storage. `{ at = "/path", size = "5Gb" }`. |
-| `configs` | Inline config files shipped with the workload. |
-| `command` | Override the container's default command. |
-| `oneshot` | `true` for migrations / backfills — runs once and exits. |
-| `restart` | `'always`, `'on-failure`, or `'no`. Default `'always`. |
-| `managed` / `disabled` | Lifecycle flags — `managed = false` means golem records the workload exists but won't touch it (migration). |
-
-There's no `port` field on a Workload. Whether the container internally
-binds 8080 is a property of the image; what `allow_from` rule applies
-to that port lives on a `Service`.
-
-## `Service` — port routing with a firewall
+`g.bundle_for` resolves `{mongo.service}` to the right `host:port` by
+walking the inventory. Misspell a service name and the resolver leaves
+the placeholder in the output — easy to spot in the bundle JSON, easy
+to test before shipping. Hosts declare which service names they own:
 
 ```nickel
-{ name = "lila", workload = "lila", port = 9663,
-  allow_from = ["edge-01"] }
-```
-
-That's the whole shape. Four fields:
-
-| Field | What it is |
-| --- | --- |
-| `name` | The routing name. Other workloads dial it via `g.ref.service`; ingress backends reference it by this. |
-| `workload` | Name of a `Workload` on this host. |
-| `port` | Which port on the workload. |
-| `allow_from` | List of hostnames or group names allowed to reach this port. Materialized as nftables rules. |
-
-A workload exposing two ports → two services:
-
-```nickel
-workloads = [
-  { name = "api", image = "ghcr.io/example/api:v1" },
-],
-services = [
-  { name = "api",         workload = "api", port = 8080,
-    allow_from = ["edge-01"] },
-  { name = "api-metrics", workload = "api", port = 9090,
-    allow_from = ["prom-01"] },
-],
-```
-
-A pure background workload (fishnet, a celery worker, an irwin listener)
-is a Workload with no Service:
-
-```nickel
-workloads = [
-  { name = "fishnet-1", image = "ghcr.io/lichess-org/fishnet:latest",
-    env = { FISHNET_KEY = g.ref.secret "fishnet_key" } },
-],
-```
-
-## `Ingress` — public HTTPS termination
-
-Backed by nginx. Rate limiting, connection limiting, CORS, timeouts, and
-DNS are all first-class fields. `backend` names a `Service` (anywhere in
-the inventory — the translator finds the host that owns it and
-reverse-proxies across the private network).
-
-```nickel
-{
-  host                 = "lichess.example.com",
-  backend              = "lila",
-  dns                  = true,                      # golem owns the A record
-  rate_limit           = "100r/m",
-  rate_limit_burst     = 20,
-  rate_limit_zone_size = "10m",
-  conn_limit           = 50,
-  cors                 = false,
-  buffering            = false,
-  routes = [
-    { path = "/socket",  backend = "lila-ws" },
-    { path = "/socket/", backend = "lila-ws" },
+"db-01" = {
+  vrack_ip = "10.42.0.3",
+  fragments = [ ... ],
+  services = [
+    { name = "mongo", port = 27017 },
+    { name = "redis", port = 6379  },
   ],
 }
 ```
 
-## Templates and record merge
+The `services` declaration is just a name→port map for the resolver.
+The actual containers and firewall rules come from the fragments.
 
-Most workloads in a real fleet are repeated with small variations — same
-image, different name and env. Write the template once, instantiate with
-`&`:
+## Shipped abstractions (`g.contrib`)
+
+Golem ships some pre-built compositions in `g.contrib`. They're small —
+look at `nickel/contrib.ncl` to see exactly how they're built. Use them
+as-is, or use them as a recipe for your own.
 
 ```nickel
-let mongo    = fun instance => {
-  name   = "mongo-%{instance}",
-  image  = "mongo:7",
-  volume = { at = "/data/db", size = "200Gb" },
-} in
-
-let postgres = fun version => {
-  image  = "postgres:%{version}",
-  volume = { at = "/var/lib/postgresql/data", size = "50Gb" },
-} in
-
-# On db-01:
-workloads = [
-  mongo "lichess",
-  postgres "18" & {
-    name = "analytics",
-    env  = { POSTGRES_USER = "app",
-             POSTGRES_PASSWORD = g.ref.secret "pg_password",
-             POSTGRES_DB = "analytics" },
-  },
-],
-
-services = [
-  { name = "mongo-lichess", workload = "mongo-lichess", port = 27017,
-    allow_from = ["mongodb-clients"] },
-  { name = "analytics",     workload = "analytics",     port = 5432,
-    allow_from = ["app-01"] },
-],
+g.contrib.workload    { name, image, env?, volume?, ... }
+g.contrib.web_service { name, image, port, allow, env?, volume?, ... }
+g.contrib.worker      { name, image, env?, ... }
+g.contrib.oneshot     { name, image, env?, ... }
+g.contrib.ingress     { host, upstream, dns?, dns_ip?, rate_limit?, ... }
+g.contrib.postgres    { name, db, user, password, allow, version?, ... }
+g.contrib.redis       { name, allow, image?, volume_size? }
+g.contrib.mongo       { name, allow, image?, volume_size? }
 ```
 
-`&` is Nickel's record merge, right-hand fields win. There's no
-inheritance, no class hierarchy, no template language — just records
-and merge. "Mongo", "Postgres", "Fishnet", "Lila" are user-land
-patterns; the schema knows nothing about them.
+`web_service` is `workload` + `firewall`. `postgres` is `web_service`
+with the right image, port, volume path, and env. None of this is
+magic — read the source, copy what fits, change what doesn't.
 
-## Firewall — `allow_from` is the rule
+## Building your own
 
-`allow_from` on a `Service` lists hostnames or group names that may
-connect to its port. The translator emits an nftables fragment on the
-host the workload runs on. Default is **deny everything except
-localhost** — you have to opt in to who reaches you.
-
-Group names come from `Inventory.groups` and from host `tags`:
+The point is *not* to use `g.contrib`. The point is to write
+abstractions for your domain. A typical project's Nickel might look
+like:
 
 ```nickel
-{
+let g = import "../../nickel/lib.ncl" in
+
+# Your domain — a Litour service is a Django container, common env,
+# always wants a postgres + redis nearby.
+let litour_service = fun config =>
+  g.contrib.web_service (config & {
+    image = "ghcr.io/lichess4545/litour-%{config.name}:latest",
+    env   = litour_env & (config.env),
+  })
+in
+
+let litour_worker = fun config =>
+  g.contrib.worker (config & {
+    image = "ghcr.io/lichess4545/litour-%{config.name}:latest",
+    env   = litour_env,
+  })
+in
+```
+
+Now `litour_service` and `litour_worker` are your project's vocabulary.
+You compose them into your inventory like any other fragment.
+
+## A realistic example
+
+```nickel
+let g = import "../../nickel/lib.ncl" in
+
+let edge_ip = "10.42.0.1" in
+let app_ip  = "10.42.0.2" in
+let db_ip   = "10.42.0.3" in
+
+let lila_env = {
+  LILA_DB_URI = "mongodb://%{g.ref.service "mongo"}/lichess",
+  LILA_REDIS  = "%{g.ref.service "redis"}",
+  JAVA_OPTS   = "-Xmx12g",
+} in
+
+let inventory = {
   hosts = {
-    "app-01" = { ..., tags = ["mongodb-clients"] },
-    "app-02" = { ..., tags = ["mongodb-clients"] },
-    "db-01"  = {
-      workloads = [ mongo "lichess" ],
-      services  = [ { name = "mongo-lichess", workload = "mongo-lichess",
-                      port = 27017,
-                      allow_from = ["mongodb-clients"] } ],
+    "edge-01" = {
+      vrack_ip = edge_ip,
+      fragments = [
+        g.contrib.ingress {
+          host     = "lichess.example.com",
+          upstream = "%{g.ref.service "lila"}",
+          dns      = true, dns_ip = "203.0.113.10",
+        },
+      ],
+    },
+
+    "app-01" = {
+      vrack_ip = app_ip,
+      fragments = [
+        g.contrib.web_service {
+          name = "lila", image = "ghcr.io/lichess-org/lila:latest",
+          port = 9663, allow = [edge_ip], env = lila_env,
+        },
+        g.contrib.worker {
+          name = "fishnet", image = "ghcr.io/lichess-org/fishnet:latest",
+          env = { FISHNET_KEY = g.ref.secret "fishnet_key" },
+        },
+      ],
+      services = [{ name = "lila", port = 9663 }],
+    },
+
+    "db-01" = {
+      vrack_ip = db_ip,
+      fragments = [
+        g.contrib.mongo { name = "mongo", allow = [app_ip] },
+        g.contrib.redis { name = "redis", allow = [app_ip] },
+      ],
+      services = [
+        { name = "mongo", port = 27017 },
+        { name = "redis", port = 6379  },
+      ],
     },
   },
-  groups = {
-    # Optional explicit list. Union with `tags` membership.
-    "redis-clients" = ["app-01"],
-  },
-}
+} in
+
+{ bundle_for = g.bundle_for inventory }
 ```
 
-## DNS — `dns = true` on Ingress
-
-When an Ingress has `dns = true`, golem owns the DNS record for its
-`host`. The record is a layer-3 claim emitted on whichever host carries
-the DNS role for the zone. Removing the Ingress removes the record.
-
-There's no separate DNS-management tool. The same Nickel that declares
-the ingress declares the record that points at it.
-
-## Cross-host references
-
-Workloads don't hardcode addresses. They use placeholders the
-translator resolves:
-
-| Helper | Produces | When to use |
-| --- | --- | --- |
-| `g.ref.service "name"` | `"{name.service}"` — the host:port for the named Service | a `LILA_DB_URI` pointing at `mongo-lichess` |
-| `g.ref.host "name"` | `"{name.host}"` — the host's primary address (vrack_ip if set, else public_ip) | raw addressing without a port |
-| `g.ref.secret "name"` | `"{secret:name}"` — operator-supplied secret value (M3) | passwords, API tokens |
-
-`golemctl apply` checks every placeholder. Misspell a service or host
-name, the apply rejects with a clear error before anything reaches the
-agent.
+Three hosts, ~30 lines, covers ingress + web service + worker + mongo
++ redis with cross-host references and firewalls.
 
 ## What's *not* in the config
 
-- **No version field.** Bundle versions are golem's bookkeeping.
+- **No version field.** Bundle versions are golem's bookkeeping;
   `golemctl apply` queries each host's last-applied version and bumps
   automatically.
 - **No `kind:`, no `spec:`, no claim DAG.** That's the wire format the
-  agent receives, not what you write.
+  agent receives — your Nickel produces it, but you write at the
+  primitive level (or higher).
 - **No port mappings.** Cross-workload traffic uses `g.ref.service`,
   which resolves to the right host:port at translation time.
-- **No `Mongo` / `Database` / `Fishnet` / `JavaConfig` types.** Those
-  are user-land templates over `Workload` + `Service`. The schema
-  stays small; you bring the patterns.
-- **No `nodes:` block or separate `place:` map.** Placement is
-  host-owned — a workload attached to a host runs on that host.
+- **No `Mongo` / `Database` / `Fishnet` types in the schema.** Those
+  live in `g.contrib` — and even there, they're just compositions of
+  the primitives. You can replace any of them.
 
 ## Where to next
 
-You know what to write. See [Applying changes](/getting-started/applying/)
-for how `golemctl` turns this into something the agents act on. Or jump
-to a worked example: [Tier 1 — One service](/guides/hello-agent/).
+- **[Tier 1 — One service](/guides/hello-agent/)** — smallest deploy.
+- **[Tier 2 — Two hosts, one DB](/guides/app-and-db/)** — cross-host
+  references and firewall.
+- **[Tier 3 — Litour on a box](/guides/litour/)** — building your own
+  domain abstractions.
+- **[Architecture](/reference/architecture/)** — how the layers stack.

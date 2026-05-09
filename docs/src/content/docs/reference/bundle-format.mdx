@@ -6,7 +6,8 @@ description: The wire format the agent verifies and applies.
 import { Aside } from "@astrojs/starlight/components";
 
 A bundle is the operator's instruction to the agent for one specific host.
-Layer 2 (`golemctl`) produces it; layer 3 (`golemd`) applies it.
+The Nickel toolkit produces it (called via `golemctl eval`); `golemd`
+applies it.
 
 ## Top-level shape
 
@@ -38,8 +39,8 @@ A monotonically-increasing integer. The agent rejects any bundle whose version
 is `<= last_applied_version`. There's no rollback mechanism — to undo a
 deploy, push a *newer* bundle that describes the previous state.
 
-Operators don't type version numbers. The Layer 1 `Inventory` contract
-has no `version` field; `golemctl apply` queries each target host's
+Operators don't type version numbers. The Nickel doesn't include a
+`version` field; `golemctl apply` queries each target host's
 `/status`, computes `max(last_applied) + 1` across the apply set, and
 bakes it in before signing. Version numbers are bookkeeping the system
 owns.
@@ -120,8 +121,8 @@ installed the package; if the package was preexisting, removal is a no-op.
 ### `quadlet`
 
 A podman `.container` file. systemd's quadlet generator turns this into a
-`<name>.service` unit at boot. Used to materialize `Service` and
-`Workload` entries from the inventory.
+`<name>.service` unit at boot. Produced by `g.container` (and anything
+that wraps it: `g.contrib.workload`, `g.contrib.web_service`, etc.).
 
 ```json
 {
@@ -143,8 +144,10 @@ matching `systemd_unit` claim then enables/activates the generated unit.
 ### `nft_fragment`
 
 A named nftables ruleset chunk dropped into `/etc/nftables.d/<key>.nft`,
-included by the host's main ruleset, applied atomically. Used to
-materialize `allow_from` firewall rules.
+included by the host's main ruleset, applied atomically. Produced by
+`g.firewall` (today carried as a plain `file` claim with a handler
+that reloads `nftables.service`; a dedicated `nft_fragment` provider
+is on the agent roadmap).
 
 ```json
 {
@@ -166,9 +169,10 @@ the parent ruleset.
 
 ### `dns_record`
 
-An A / AAAA / CNAME / TXT / MX record on a configured zone. Owned by the
-host that carries the DNS role for that zone (see
-`Inventory.role_deps`).
+An A / AAAA / CNAME / TXT / MX record on a configured zone. Produced
+by `g.dns_record` (and `g.contrib.ingress` when `dns = true`). Emitted
+on the host that carries the DNS role for the zone (typically tagged
+`dns-primary`). Agent provider is M3.
 
 ```json
 {
