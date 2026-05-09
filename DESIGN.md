@@ -30,109 +30,171 @@ Golem has three layers, and they must not be conflated:
 
 | | Layer | Audience | Shape | Lifetime |
 |---|---|---|---|---|
-| 1 | **Input language** (Nickel) | tenants + operators | `app.services.caddy = {…}`, `expose = [{…}]`, `system.files."/etc/foo" = {…}` — high-level, statically verifiable, few lines per service | written by humans |
-| 2 | **Translation** (Nickel eval, operator-side, pre-sign) | Golem authors | Expands each service → File + SystemdUnit (Quadlet), `expose` → Caddy config, `volume` → podman-volume + reservation, resolves `{name.service}` placeholders. Produces a signed bundle of layer-3 primitives. | runs on operator's laptop |
-| 3 | **System primitives** (wire format + agent state engine) | agent only | `AptPackage`, `SystemdUnit`, `File`, plus their reconciliation machinery | persisted on each node |
+| 1 | **Input language** (Nickel) | tenants + operators | `Inventory` of `Hosts`, each carrying `workloads` (containers) + `services` (port routing with `allow_from`) + `ingress` + `tags`. Cross-cutting `groups` and `role_deps` at the Inventory level. Statically verifiable, few lines per workload. | written by humans |
+| 2 | **Translation** (Nickel eval, operator-side, pre-sign) | Golem authors | For each host, expands each Workload → Quadlet + SystemdUnit, each Service → NftFragment for the firewall, each Ingress → nginx site + (optionally) DNS record. Resolves `g.ref.host` / `g.ref.service` placeholders. Produces a signed bundle of layer-3 primitives per host. | runs on operator's laptop |
+| 3 | **System primitives** (wire format + agent state engine) | agent only | `AptPackage`, `SystemdUnit`, `File`, `Quadlet`, `NftFragment`, `DnsRecord`, plus their reconciliation machinery | persisted on each host |
 
 **The rule:** users only see layer 1. The agent only sees layer 3. Layer 2 is a Golem implementation detail that runs *before* signing, on the operator's laptop. The wire format is layer 3.
 
-This is not a high-level / low-level *user* split. It is a translation pipeline. Tenants do not "drop down" to layer 3. Lichess's "manage one weird file alongside hand-bombed stuff" is still written at layer 1 — it just happens that the layer-1 `File` primitive translates 1:1 to a layer-3 `File` claim, because there's nothing to expand.
+This is not a high-level / low-level *user* split. It is a translation pipeline. Tenants do not "drop down" to layer 3. Lichess's "manage one weird file alongside hand-bombed stuff" still goes through layer 1 — there's a small `system` escape hatch on a Host for raw `packages` / `files` / `units` that translate 1:1 into layer-3 claims when the high-level shapes don't fit.
 
 ---
 
 ## 3. Layer 1 — input language
 
-Nickel. **Two sub-layers**, both small. The split is the feature: `app`
-describes *what's running*; `deploy` describes *where it lives*. The same app
-deploys to staging and prod by changing only the deploy block.
+Nickel. The shape is borrowed in spirit from the lichess Ansible
+inventory DSL but with the lichess-specific shapes (Mongo, Database,
+Fishnet, JavaConfig) collapsed back into the two general primitives
+that subsume them: `Workload` (the container) and `Service` (port
+routing with a firewall). The schema is small on purpose.
 
-### `app` — what's running
-
-A graph of named **services** that wire to each other. Each service is
-container-shaped: an image, optional env, optional volume(s), optional inline
-config. Services reference each other by name via placeholders the translator
-resolves.
+### `Inventory` — every host, what runs there
 
 ```nickel
-app.services = {
-  postgres = {
-    image  = "ghcr.io/postgresql/postgresql-18:latest",
-    volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
-    env    = { POSTGRES_USER = "app", POSTGRES_DB = "app" },
-  },
-  web = {
-    image = "ghcr.io/me/myapp:1.4",
-    env   = { DATABASE_URL = "postgres://app@{postgres.service}:5432/app" },
-  },
-  caddy = {
-    image  = "caddy:2",
-    config = {
-      path    = "/etc/caddy/Caddyfile",
-      content = m%"
-        myapp.example.com {
-          reverse_proxy {web.service}:8080
-        }
-      "%,
+let lila = {
+  image = "ghcr.io/lichess-org/lila:latest",
+  env   = { LILA_DB_URI = "mongodb://%{g.ref.service "mongo-lichess"}/lichess" },
+} in
+
+let mongo = fun instance => {
+  name   = "mongo-%{instance}",
+  image  = "mongo:7",
+  volume = { at = "/data/db", size = "200Gb" },
+} in
+
+{
+  hosts = {
+    "edge-01" = {
+      name      = "edge-01",
+      public_ip = "203.0.113.10",
+      ingress = [
+        { host = "lichess.example.com", backend = "lila", dns = true,
+          rate_limit = "100r/m", rate_limit_burst = 20 },
+      ],
+    },
+
+    "app-01" = {
+      name      = "app-01",
+      public_ip = "203.0.113.20",
+      vrack_ip  = "10.42.0.2",
+      tags      = ["mongodb-clients"],
+      workloads = [ lila & { name = "lila" } ],
+      services  = [ { name = "lila", workload = "lila", port = 9663,
+                      allow_from = ["edge-01"] } ],
+    },
+
+    "db-01" = {
+      name      = "db-01",
+      vrack_ip  = "10.42.0.3",
+      workloads = [ mongo "lichess" ],
+      services  = [ { name = "mongo-lichess", workload = "mongo-lichess",
+                      port = 27017, allow_from = ["mongodb-clients"] } ],
     },
   },
-}
+} | g.Inventory
 ```
 
-Read what's *not* there: no `nodes` block (the app doesn't know about boxes),
-no `containers` wrapper (the kind is the default), no separate top-level
-`volumes` (volumes belong to services), no port mappings (cross-service traffic
-goes through the runtime's network DNS), no `networks` block.
+Each Host can carry:
 
-### `deploy` — where it goes, how it's exposed
+- **`workloads`** — the containers that run on this host. Image, env,
+  volumes, command. The schema doesn't distinguish "stateful" from
+  "stateless", "data" from "app" — that's the user's pattern in their
+  templates.
+- **`services`** — internal port routing. A name + `(workload, port)` +
+  an `allow_from` firewall surface. Multiple Services can target one
+  Workload (different ports → different `allow_from`); pure-outbound
+  workloads have zero Services.
+- **`ingress`** — public HTTPS termination (nginx) with rate limits,
+  connection limits, CORS, routes, and a `dns` flag that makes golem
+  own the A record. `backend` names a Service.
+- **`tags`** — host membership in cross-cutting groups for `allow_from`.
+
+There's no `version` field. `golemctl apply` queries each host's
+`/status` to read its last-applied version and bumps automatically —
+version numbers are bookkeeping golem owns, not something operators
+type.
+
+### Firewall: `allow_from` is the rule
+
+`allow_from` on a `Service` is a list of hostnames or group names that
+may connect to its port. The translator emits an `NftFragment` claim
+on the host the workload runs on. Default is **deny everything except
+localhost** — opt-in, not opt-out.
+
+Group names come from `Inventory.groups` (explicit list) and from host
+`tags` (a host with tag `"mongodb-clients"` is a member of group
+`"mongodb-clients"` automatically). Misspell a host or group name and
+`golemctl apply` rejects.
+
+### DNS: `dns = true` on Ingress
+
+When an Ingress has `dns = true`, golem owns the DNS record for its
+`host`. The record is a layer-3 `DnsRecord` claim emitted on whichever
+host carries the DNS role for the zone (see `Inventory.role_deps`).
+Removing the Ingress removes the record honestly — no separate
+DNS-provisioning tool to drift out of sync.
+
+### Cross-host references
+
+Workloads don't hardcode addresses. They use placeholders:
+
+- `{name.service}` — host:port for the named Service, anywhere in the
+  inventory. The translator finds the host carrying the Service and
+  resolves to that host's private address + the Service's port.
+- `{name.host}` — primary address of the named host (vrack_ip if set,
+  else public_ip). For raw addressing without a port.
+- `g.ref.service "name"` / `g.ref.host "name"` — Nickel helpers that
+  emit the same placeholders but check existence at translate time.
+  Misspelled names are rejected with a clear error, not surfaced as
+  `getaddrinfo` failures at 3am.
+- `g.ref.secret "name"` — placeholder for an operator-supplied secret.
+  Values stage on the operator's laptop under
+  `~/.golem/secrets/<inventory>/`, encrypted into the bundle, decrypted
+  to a tmpfs on the agent. (M3.)
+
+You never type a port mapping or a container name. "The mongo-lichess
+service" is how you refer to mongo on db-01.
+
+### Templates and record merge
+
+A `Workload` is just a record. Write the common shape once, instantiate
+per host with `&`:
 
 ```nickel
-{
-  app = app,
-  nodes = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
-  expose = [{ host = "myapp.example.com", service = "caddy" }],
-  system.packages = { postgresql-16 = {} },
-} | g.Deploy
+let lila = {
+  image = "ghcr.io/lichess-org/lila:latest",
+  env   = { LILA_DB_URI = "mongodb://%{g.ref.service "mongo-lichess"}/lichess" },
+} in
+
+workloads = [
+  lila & { name = "lila"        },
+  lila & { name = "lila-canary",
+           env.FEATURE_FLAGS = "canary" },
+]
 ```
 
-There's no `version` field. `golemctl apply` queries each target node's
-`/status` to read its last-applied version and bumps automatically — version
-numbers are bookkeeping golem owns, not something operators type.
+`&` is Nickel's record merge — right-hand fields win. There's no
+inheritance, no class hierarchy, no template language. Just records and
+merge. This is how the lichess inventory's repeated-with-variation
+pattern collapses into a few templates and a lot of merges. "Mongo",
+"Postgres", "Fishnet", "Lila" are user-land patterns over `Workload`;
+the schema knows nothing about them.
 
-`expose` names the public hostnames; `system.packages`/`system.files`/
-`system.units` is the layer-3 escape hatch for things the App model can't
-or shouldn't express (kernel sysctls, custom systemd timers, an apt-managed
-postgres on the host instead of a containerized one).
-
-### Cross-service references
-
-Services don't hardcode addresses. They use placeholders:
-
-- `{name.service}` — runtime address of the named service. Resolves to the
-  container DNS name on the runtime's shared network.
-- `g.ref.service "name"` — Nickel helper that emits the same placeholder
-  but is checked at translate time: misspelled service names are rejected
-  with a clear error, not silently surfaced as `getaddrinfo` failures at
-  3am.
-- `g.ref.secret "name"` — placeholder for an operator-supplied secret.
-  Values stage on the operator's laptop under `~/.golem/secrets/<deploy>/`,
-  encrypted into the bundle, decrypted to a tmpfs on the agent. (M3.)
-
-You never type a port mapping or a container name. "The postgres service" is
-how you refer to postgres.
-
-### Trust tiers map to the two sub-layers
+### Trust tiers
 
 The narrow harness only works if the harness *is* narrow:
 
-- **Tenant-trust** — `app.services.*`. A team running an app can declare
-  containers, env, volumes, and references between them. Nothing in `app`
-  reaches the host directly; every service compiles to a quadlet + a unit.
-- **Operator-trust** — the rest of `deploy`, especially `system.*`. Node
-  placement, public hostnames, raw `packages`/`files`/`units`. The operator's
-  signing key is what authorizes them.
+- **Tenant-trust** — `workloads` and `services` on a Host. A team
+  running an app can declare containers, env, volumes, references
+  between them, and the firewall surface for the ports they expose.
+  Nothing here reaches the host directly; every workload compiles to
+  a quadlet + a unit, and every service compiles to an nft fragment.
+- **Operator-trust** — Host addresses, ingress, DNS, role_deps, and any
+  raw `system.*` escape-hatch claims. The operator's signing key is
+  what authorizes them.
 
-A strabs tenant who writes `system.files."/etc/sudoers" = ...` gets a Nickel
-contract violation at `golemctl apply` time, not a CVE.
+A strabs tenant who writes a `system.file` for `/etc/sudoers` gets a
+Nickel contract violation at `golemctl apply` time, not a CVE.
 
 ### Why Nickel
 
@@ -154,17 +216,20 @@ The translator runs as part of `golemctl apply` on the operator's laptop. It eva
 
 | Layer 1 | Translates to (Layer 3) |
 |---|---|
-| `app.services.<name>` | One `File` for `/etc/containers/systemd/<name>.container` (Quadlet body). One `SystemdUnit` for `<name>.service` (the auto-generated Quadlet unit), enabled + active. A handler so the unit restarts when the `.container` file changes. The first service triggers an `AptPackage` claim for `podman` (idempotent across services). |
-| `services.<name>.volume` / `volumes` | A `File` for the podman-volume definition (`<name>-<vol>.volume` Quadlet). The container's `Volume=` line references it. |
-| `services.<name>.config` | A `File` at the declared path; the container quadlet bind-mounts it in. |
-| `expose[].host` + `service` | A `File` fragment in `/etc/caddy/Caddyfile.d/<host>.conf`. An `AptPackage` claim for `caddy` (idempotent across multiple ingresses). A `SystemdUnit` for `caddy.service` enabled + active. A handler to reload caddy on file changes. |
-| `{name.service}` placeholders | Resolved at translate time to the container DNS name (or `127.0.0.1`) on the runtime's network. |
-| `g.ref.secret "name"` | A `File` at `/run/golem/secrets/<deploy>/<name>` (tmpfs, mode 0600). Container env or mount references resolve to that path. |
-| `system.files."<key>"` | A `File` claim, 1:1. |
+| `Workload` | A `Quadlet` for `/etc/containers/systemd/<name>.container`. A `SystemdUnit` for `<name>.service` (the auto-generated quadlet unit), enabled + active. A handler so the unit restarts when the quadlet body changes. The first workload on a host triggers an `AptPackage` claim for `podman` (idempotent across workloads). |
+| `Workload.volume` / `volumes` | A `File` for the podman-volume definition (`<name>-<vol>.volume` Quadlet). The container's `Volume=` line references it. |
+| `Workload.configs[]` | A `File` at the declared path; the container quadlet bind-mounts it in. |
+| `Service` | An `NftFragment` claim materializing the firewall rule: accept `port` from each listed host or group's addresses, drop otherwise. The Service's `name` is the routing identity for `g.ref.service` and ingress `backend` references. |
+| `Ingress` (one per ingress entry) | A `File` for `/etc/nginx/sites-enabled/<host>.conf` carrying rate-limit zones, conn-limit zones, locations, and routes. The `backend` Service is resolved to host:port at translate time. An `AptPackage` claim for `nginx` (idempotent across ingresses). A `SystemdUnit` for `nginx.service` enabled + active. A handler to reload nginx on file changes. An `NftFragment` for 80/443. |
+| `Ingress.dns = true` | A `DnsRecord` claim (kind A or AAAA) emitted on the host carrying the DNS role for the zone, pointing the ingress hostname at the ingress host's public addresses. |
+| `g.ref.service "name"` placeholder | Resolved at translate time to `<host>:<port>` for the Service named `name`. The translator looks up which host owns the Service. |
+| `g.ref.host "name"` placeholder | Resolved at translate time to that host's `vrack_ip` if set, else `public_ip`. |
+| `g.ref.secret "name"` | A `File` at `/run/golem/secrets/<inventory>/<name>` (tmpfs, mode 0600). Container env or mount references resolve to that path. |
+| `system.files."<key>"` (per-host escape hatch) | A `File` claim, 1:1. |
 | `system.packages."<name>"` | An `AptPackage` claim, 1:1. |
 | `system.units."<name>"` | A `SystemdUnit` claim, 1:1. |
 
-Quadlet is podman's native systemd-integration mechanism (drop a `.container` file in `/etc/containers/systemd/`, `daemon-reload`, get a generated `.service` you can start). The agent does not need a `Quadlet` claim kind on the wire — Quadlet is just *the file format the Container translator emits*. The agent sees File + SystemdUnit and applies them with no special-casing beyond the daemon-reload-after-container-file handler.
+Quadlet is podman's native systemd-integration mechanism (drop a `.container` file in `/etc/containers/systemd/`, `daemon-reload`, get a generated `.service` you can start). The agent has a `Quadlet` claim kind in addition to `File` so the daemon-reload-after-container-file handler is implicit, not something every Service translation has to wire up.
 
 ### Why translate operator-side, not on the agent
 
@@ -177,13 +242,16 @@ Quadlet is podman's native systemd-integration mechanism (drop a `.container` fi
 
 ## 5. Layer 3 — system primitives and state engine
 
-Three providers, one engine. This is the heart of the project and where the correctness commitments live.
+A small set of providers, one engine. This is the heart of the project and where the correctness commitments live.
 
 ### Primitives (wire format)
 
 - **`File`** — path, content (base64), mode, owner, group, marker (`Owned` / `Append` / `RegionMarker`).
 - **`AptPackage`** — name (and optionally version pin). Idempotent install/remove via `apt-get`.
 - **`SystemdUnit`** — name, enable, active, scope (system/user). Idempotent enable/disable + start/stop.
+- **`Quadlet`** — name + body of a podman `.container` file dropped in `/etc/containers/systemd/`. The agent writes the body, runs `systemctl daemon-reload`, and the matching `SystemdUnit` claim takes care of enable/active.
+- **`NftFragment`** — name + table + raw nft body, dropped into `/etc/nftables.d/<name>.nft` and applied atomically with `nft -f`. Used to materialize `allow_from` firewall rules.
+- **`DnsRecord`** — zone, name, kind (A/AAAA/CNAME/TXT/MX), value, ttl, optional priority. Owned by the host carrying the DNS role; the agent calls the configured DNS provider's API. Capture-once-at-first-touch records the prior record (or "did not exist") so removal restores the zone honestly.
 
 Plus the meta:
 

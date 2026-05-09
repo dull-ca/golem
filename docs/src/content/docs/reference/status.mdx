@@ -29,9 +29,10 @@ What you can do today:
 What you can't do yet:
 
 - Use Nickel input (`golemctl apply` with `config.ncl`).
-- Write the Nickel `app` + `deploy` input language. Declare services,
-  volumes, ingress (`expose`), secrets — those live at layer 1, and the
-  layer-2 translator that compiles them down to layer-3 claims is M2.
+- Write the Nickel `Inventory` of `Hosts` input language. Declare
+  workloads (containers), services (port routing with `allow_from`),
+  ingress, DNS (`dns = true`) — those live at layer 1, and the layer-2
+  translator that compiles them down to layer-3 claims is M2.
 
 The [Tier 1 — Hello, agent](/guides/hello-agent/) guide is the canonical M1
 walkthrough.
@@ -42,16 +43,25 @@ walkthrough.
 
 What it adds:
 
-- Nickel `App` + `Deploy` schemas (see `nickel/app.ncl`, `nickel/deploy.ncl`).
-- A reference resolver: `{name.service}` placeholders compiled to runtime
-  addresses, with translate-time checking against the declared service set.
+- Nickel `Inventory` / `Host` schemas (see `nickel/inventory.ncl`,
+  `nickel/host.ncl`, `nickel/types.ncl`).
+- `Workload` (the container) and `Service` (port routing + firewall)
+  primitives, plus `Ingress` for public HTTPS — small core, everything
+  else is a user-land template.
+- A reference resolver: `{name.service}` resolves to host:port for the
+  named Service anywhere in the inventory; `{name.host}` resolves to a
+  host's primary address. Translate-time checked.
+- `allow_from` materialized into `NftFragment` claims (firewall).
+- `dns = true` on Ingress materialized into `DnsRecord` claims.
 - `golemctl eval` and `golemctl apply` working end-to-end.
-- Per-node bundle extraction.
-- Quadlet-based service expansion (each service → a `.container` file +
-  a generated systemd service the agent already knows how to manage).
-- `golemctl translate compose.yml > config.ncl` for migrations.
+- Per-host bundle extraction.
+- Quadlet-based workload expansion (each Workload → a `.container` file
+  + a generated systemd service the agent already knows how to manage).
+- `golemctl translate compose.yml > config.ncl` for migrations
+  (everything onto one host as a workload + a service; operator splits
+  later).
 
-The [Tier 2 — One app, one DB](/guides/app-and-db/) guide tracks the M2
+The [Tier 2 — Two hosts, one DB](/guides/app-and-db/) guide tracks the M2
 target. The Nickel under `nickel/` is the schema; what's missing is the
 plumbing that runs the translator inside `golemctl apply`.
 

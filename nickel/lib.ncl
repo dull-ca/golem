@@ -1,46 +1,51 @@
 # lib.ncl — the public surface for users.
 #
-# A user's config.ncl imports this and writes a Deploy. `golemctl` calls
-# `bundle_for` with a node name to get the layer-3 bundle that ships to that
-# node.
-#
-# This file is intentionally thin. The schemas live in app.ncl and deploy.ncl;
-# the layer-2 translation that turns App+Deploy into Bundle claims is in
-# golemctl proper (Rust), not Nickel — Nickel just exports the input shape
-# and the resolver placeholders, then golemctl scans + substitutes + renders
-# quadlets.
+# A user's config.ncl imports this and writes an Inventory. `golemctl`
+# walks the Inventory and emits one signed Bundle per Host.
 
 let c = import "claims.ncl" in
-let a = import "app.ncl" in
-let d = import "deploy.ncl" in
+let t = import "types.ncl" in
+let h = import "host.ncl" in
+let i = import "inventory.ncl" in
 
 {
-  # Re-export so user configs only need to import lib.ncl.
-  App     = a.App,
-  Service = a.Service,
-  Volume  = a.Volume,
+  # ── Top level ─────────────────────────────────────────────────────────
+  Inventory = i.Inventory,
+  Host      = h.Host,
+  Role      = h.Role,
+  RoleDeps  = h.RoleDeps,
 
-  Deploy  = d.Deploy,
-  Node    = d.Node,
-  Expose  = d.Expose,
+  # ── Building blocks attached to a Host ────────────────────────────────
+  Workload = t.Workload,
+  Service  = t.Service,
+  Ingress  = t.Ingress,
+  Volume   = t.Volume,
+  Config   = t.Config,
 
-  # Placeholder helpers — these emit the literal placeholder strings that
-  # golemctl substitutes at translation time. Use them in env values and
-  # config files for cross-service references.
+  # ── Placeholder helpers ───────────────────────────────────────────────
+  # These emit literal placeholder strings that golemctl substitutes at
+  # translation time. Use them in env values and config files for cross-
+  # workload references.
   #
-  #   env = { PG_URL = "%{ref.service "postgres"}:5432" },
+  #   env = { LILA_DB = "%{ref.service "mongo-lichess"}" },
   #
-  # Equivalent to writing the string `"{postgres.service}:5432"` directly,
-  # but compiler-checked: misspell a service name and `golemctl` will reject
-  # the deploy because the placeholder doesn't resolve.
+  # Equivalent to writing the string `"{mongo-lichess.service}"` directly,
+  # but compiler-checked: misspell a service name and `golemctl` will
+  # reject the inventory because the placeholder doesn't resolve.
   ref = {
+    # Address of a Service, anywhere in the Inventory. Resolves to
+    # "<host>:<port>" using the host that owns the Service and the port
+    # the Service advertises.
     service = fun name => "{%{name}.service}",
-    port    = fun name p => "{%{name}.service}:%{std.to_string p}",
-    # Operator-supplied secret. Values stage on the operator's laptop under
-    # ~/.golem/secrets/<deploy>/<name> and decrypt to a tmpfs path on the
-    # agent. M3. The placeholder shape is reserved here so docs and configs
-    # can be written against it now; the translator currently rejects
-    # unresolved {secret:…} placeholders.
+
+    # Address of a Host, by name. Resolves to its primary private
+    # address (vrack_ip if set, else public_ip). Use `service` instead
+    # when you want a specific port — `host` is for raw addressing.
+    host    = fun name => "{%{name}.host}",
+
+    # Operator-supplied secret. Values stage on the operator's laptop
+    # under ~/.golem/secrets/<inventory>/<name> and decrypt to a tmpfs
+    # path on the agent. M3.
     secret  = fun name => "{secret:%{name}}",
   },
 }

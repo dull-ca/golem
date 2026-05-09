@@ -22,19 +22,25 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 Golem is two things and that's it:
 
-- **An input language** — write your services, volumes, env, and ingress as
-  records in [Nickel](https://nickel-lang.org). The smallest interesting
-  deploy (a Django app, a postgres, a caddy ingress) is *twelve lines*. No
-  YAML, no Helm chart, no ConfigMap, no operators-CRD.
-- **An agent** — `golemd` runs on each box, accepts signed per-node bundles
-  from `golemctl`, and reconciles the box's actual state against them.
+- **An input language** — write your fleet as an `Inventory` of `Hosts`
+  in [Nickel](https://nickel-lang.org), each carrying `workloads` (the
+  containers), `services` (internal port routing with a firewall), and
+  `ingress` (public HTTPS with first-class DNS). The smallest
+  interesting deploy is *twelve lines*. No YAML, no Helm chart, no
+  ConfigMap, no operators-CRD.
+- **An agent** — `golemd` runs on each box, accepts signed per-host
+  bundles from `golemctl`, and reconciles the box's actual state
+  against them.
 
 Most of golem's value is in what you *don't* write. You don't write port
-mappings — `{postgres.service}` resolves at translate time. You don't repeat
-node names on every container. You don't keep a separate `volumes:` block
-in sync with the container that owns the volume. You don't split your config
-into ten YAML files glued together by `kustomize` because the language is
-expressive enough to express the thing once.
+mappings — `{db-01.host}` resolves at translate time. You don't keep a
+separate `volumes:` block in sync with the container that owns the
+volume. You don't write firewall rules separately from the services they
+protect — `allow_from = ["edge-01"]` IS the rule. You don't run a DNS
+tool alongside golem — `dns = true` on an ingress IS the record. You
+don't split your config into ten YAML files glued together by
+`kustomize` because the language is expressive enough to express the
+thing once.
 
 ## Why it's different
 
@@ -46,15 +52,16 @@ expressive enough to express the thing once.
     wired.
   </Card>
   <Card title="Statically checked" icon="approve-check">
-    Misspell `{postgres.serice}`? Forget the `image` field on a service?
-    Reference a volume that doesn't exist? `golemctl apply` rejects it before
-    bytes leave your laptop. Errors find you in seconds, not in an outage.
+    Misspell `{db-01.hsot}`? Forget the `port` field on a service?
+    Reference a host or group that doesn't exist? `golemctl apply`
+    rejects it before bytes leave your laptop. Errors find you in
+    seconds, not in an outage.
   </Card>
   <Card title="Composable, not packaged" icon="puzzle">
-    The app is just a record. `app & { services.web.env.LOG_LEVEL = "debug" }`
-    overrides one env var without forking. Same app deploys to staging and
-    prod by changing only the deploy block — not the application's source of
-    truth.
+    A service is just a record. `lila & { name = "lichess",
+    env.FEATURE_FLAGS = "canary" }` clones the template with overrides
+    — no inheritance, no forking. The same template runs on staging,
+    prod, and a single-box dev rig.
   </Card>
   <Card title="Two binaries, no control plane" icon="seti:lock">
     `golemctl` on your laptop, `golemd` on each box, ed25519 signatures
@@ -76,14 +83,16 @@ at every window. That's the floor — necessary, not the pitch.
 
 Three walkthroughs, in order of how far they go:
 
-- **[Tier 1 — One service](/guides/hello-agent/)** — a single container behind
-  one public hostname. Three fields of Nickel. **Targets M2.**
-- **[Tier 2 — One app, one DB](/guides/app-and-db/)** — a small Django app + a
-  postgres container + an ingress. **Targets M2.**
+- **[Tier 1 — One service](/guides/hello-agent/)** — a single container
+  behind one public hostname, with the DNS record golem owns.
+  **Targets M2.**
+- **[Tier 2 — Two hosts, one DB](/guides/app-and-db/)** — an edge box +
+  app box + database box. Service templates, `allow_from` firewall,
+  cross-host references. **Targets M2.**
 - **[Tier 3 — Litour on a box](/guides/litour/)** — the real
-  [lichess league software](https://codeberg.org/dull/litour) with caddy +
-  web + api + apiworker + ui + celery + watcher + redis + postgres.
-  **Targets M2 + M3 (secrets).**
+  [lichess league software](https://codeberg.org/dull/litour) with edge
+  + web + api + apiworker + ui + celery + watcher + redis + postgres,
+  across three hosts. **Targets M2 + M3 (secrets).**
 
 ## Status
 

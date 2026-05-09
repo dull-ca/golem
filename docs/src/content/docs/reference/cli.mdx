@@ -17,7 +17,7 @@ Usage: golemctl <COMMAND>
 
 Commands:
   keygen   Generate a new ed25519 keypair
-  eval     Evaluate a Nickel Deploy config for a node, dump Bundle JSON
+  eval     Evaluate a Nickel Inventory config for a host, dump Bundle JSON
   sign     Wrap a Bundle JSON into a SignedBundle JSON
   push     POST a SignedBundle to a node's /bundle endpoint
   apply    End-to-end: eval each node in the fleet, sign, and push
@@ -37,15 +37,15 @@ golemctl keygen ./operator
 # public key: 6f93...e1c2
 ```
 
-### `golemctl eval <config.ncl> <node> [--as-version N]`
+### `golemctl eval <config.ncl> <host> [--as-version N]`
 
-Evaluates the Nickel `Deploy` config for the named node and dumps the unsigned
-`Bundle` JSON to stdout. Useful for inspecting what the translator produces
-before signing.
+Evaluates the Nickel `Inventory` config for the named host and dumps the
+unsigned `Bundle` JSON to stdout. Useful for inspecting what the
+translator produces before signing.
 
-The Deploy itself doesn't carry a version (`golemctl apply` computes one
-automatically — see below). For `eval` alone, the bundle gets `version = 1`
-unless you pass `--as-version N`.
+The Inventory itself doesn't carry a version (`golemctl apply` computes
+one automatically — see below). For `eval` alone, the bundle gets
+`version = 1` unless you pass `--as-version N`.
 
 ```bash
 golemctl eval examples/simple/config.ncl app-01 | jq '.claims | length'
@@ -83,36 +83,37 @@ golemctl push signed.json http://10.42.0.2:7474
 
 Equivalent to `curl -X POST --data-binary @signed.json $addr/bundle`.
 
-### `golemctl apply <config.ncl> <secret_key> <node_addrs.json>`
+### `golemctl apply <config.ncl> <secret_key> <host_addrs.json>`
 
-The end-to-end command. Reads the Nickel config and a JSON file mapping node
-names to URLs:
+The end-to-end command. Reads the Nickel config and a JSON file mapping
+host names to URLs:
 
 ```json
-// node-addrs.json
+// host-addrs.json
 {
   "edge-01": "http://10.42.0.1:7474",
-  "app-01":  "http://10.42.0.2:7474"
+  "app-01":  "http://10.42.0.2:7474",
+  "db-01":   "http://10.42.0.3:7474"
 }
 ```
 
-For each node listed, it:
+For each host listed, it:
 
-1. Queries `/status` to read `bundle_version` (the last-applied version on
-   that node).
+1. Queries `/status` to read `bundle_version` (the last-applied version
+   on that host).
 2. Computes the next version as `max(versions) + 1` across all reachable
-   target nodes — every node in this apply gets the same fresh version.
-3. Evaluates the Nickel for that node, signs the bundle (with the computed
-   version baked in), and POSTs to `/bundle`.
+   target hosts — every host in this apply gets the same fresh version.
+3. Evaluates the Nickel for that host, signs the bundle (with the
+   computed version baked in), and POSTs to `/bundle`.
 
-The operator never types a version. If a node is unreachable during the
-status query, `apply` stops and reports it — pushing without knowing every
-node's last-applied version risks a partial deploy where some nodes accept
-and some reject on monotonicity. Use `--force` to skip an unreachable node;
-that node will pick up at the next apply.
+The operator never types a version. If a host is unreachable during the
+status query, `apply` stops and reports it — pushing without knowing
+every host's last-applied version risks a partial deploy where some
+hosts accept and some reject on monotonicity. Use `--force` to skip an
+unreachable host; that host will pick up at the next apply.
 
-If any node returns non-2xx during the push phase, the command reports which
-nodes succeeded and which failed.
+If any host returns non-2xx during the push phase, the command reports
+which hosts succeeded and which failed.
 
 ## `golemd`
 
@@ -134,8 +135,9 @@ Options:
 
 ### `--node <name>` (required)
 
-The agent's identity. Bundles whose `node` field doesn't match are rejected.
-Can also be set via `GOLEM_NODE` environment variable.
+The agent's identity (the host name). Bundles whose `node` field doesn't
+match are rejected. Can also be set via `GOLEM_NODE` environment
+variable.
 
 ### `--bundle <path>`
 

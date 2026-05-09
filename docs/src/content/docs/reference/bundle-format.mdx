@@ -5,7 +5,7 @@ description: The wire format the agent verifies and applies.
 
 import { Aside } from "@astrojs/starlight/components";
 
-A bundle is the operator's instruction to the agent for one specific node.
+A bundle is the operator's instruction to the agent for one specific host.
 Layer 2 (`golemctl`) produces it; layer 3 (`golemd`) applies it.
 
 ## Top-level shape
@@ -38,19 +38,20 @@ A monotonically-increasing integer. The agent rejects any bundle whose version
 is `<= last_applied_version`. There's no rollback mechanism — to undo a
 deploy, push a *newer* bundle that describes the previous state.
 
-Operators don't type version numbers. The Layer 1 `Deploy` contract has no
-`version` field; `golemctl apply` queries each target node's `/status`,
-computes `max(last_applied) + 1` across the apply set, and bakes it in
-before signing. Version numbers are bookkeeping the system owns.
+Operators don't type version numbers. The Layer 1 `Inventory` contract
+has no `version` field; `golemctl apply` queries each target host's
+`/status`, computes `max(last_applied) + 1` across the apply set, and
+bakes it in before signing. Version numbers are bookkeeping the system
+owns.
 
 ## `node`
 
-The agent's identity. Must match the agent's `--node` flag (or `GOLEM_NODE`).
-Bundle for a different node → 400.
+The agent's identity (the host name). Must match the agent's `--node`
+flag (or `GOLEM_NODE`). Bundle for a different host → 400.
 
 ## `claims`
 
-An array of declarative claims. Three kinds today:
+An array of declarative claims. The kinds the agent understands:
 
 ### `file`
 
@@ -115,6 +116,79 @@ installed the package; if the package was preexisting, removal is a no-op.
 - `scope` is `"system"` today. `"user"` (per-user units) is M3.
 - `after` lets you express "this unit must be started after that file lands."
   Useful for handlers and ordering, see below.
+
+### `quadlet`
+
+A podman `.container` file. systemd's quadlet generator turns this into a
+`<name>.service` unit at boot. Used to materialize `Service` and
+`Workload` entries from the inventory.
+
+```json
+{
+  "id":   { "kind": "quadlet", "key": "lila" },
+  "kind": "quadlet",
+  "spec": {
+    "name": "lila",
+    "body": "[Container]\nImage=ghcr.io/lichess-org/lila:latest\nPublishPort=9663:9663\n[Install]\nWantedBy=default.target\n"
+  },
+  "owners": ["service/lila"],
+  "after": []
+}
+```
+
+The agent writes the file to `/etc/containers/systemd/<name>.container`,
+runs `systemctl daemon-reload`, and lets the generator do its job. The
+matching `systemd_unit` claim then enables/activates the generated unit.
+
+### `nft_fragment`
+
+A named nftables ruleset chunk dropped into `/etc/nftables.d/<key>.nft`,
+included by the host's main ruleset, applied atomically. Used to
+materialize `allow_from` firewall rules.
+
+```json
+{
+  "id":   { "kind": "nft_fragment", "key": "lila-allow" },
+  "kind": "nft_fragment",
+  "spec": {
+    "name":  "lila-allow",
+    "table": "Inet",
+    "body":  "add rule inet golem input ip saddr 10.42.0.1 tcp dport 9663 accept\n"
+  },
+  "owners": ["service/lila"],
+  "after": []
+}
+```
+
+The agent applies fragments by writing the file and running `nft -f
+/etc/nftables.d/<key>.nft`. On removal, it deletes the file and reloads
+the parent ruleset.
+
+### `dns_record`
+
+An A / AAAA / CNAME / TXT / MX record on a configured zone. Owned by the
+host that carries the DNS role for that zone (see
+`Inventory.role_deps`).
+
+```json
+{
+  "id":   { "kind": "dns_record", "key": "A:lichess.example.com" },
+  "kind": "dns_record",
+  "spec": {
+    "zone":  "example.com",
+    "name":  "lichess",
+    "kind":  "A",
+    "value": "203.0.113.10",
+    "ttl":   300
+  },
+  "owners": ["ingress/edge-01"],
+  "after": []
+}
+```
+
+The agent calls the configured DNS provider's API. Capture-once-at-first-touch
+records the prior record (or "did not exist") so removal restores the
+zone honestly.
 
 ### `id`, `owners`, `after`
 

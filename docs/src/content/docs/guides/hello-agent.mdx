@@ -1,21 +1,24 @@
 ---
 title: Tier 1 — One service
-description: The smallest interesting deploy. One container, one public hostname.
+description: The smallest interesting deploy. One host, one workload behind one public hostname, with the DNS record golem owns.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 target">
-  Like Tier 2 and Tier 3, this guide describes the App/Deploy input language
-  the M2 translator compiles. The agent itself runs today (M1) — to exercise
-  it now, see the smoke test and JSON wire-format walkthrough in
+  Like Tier 2 and Tier 3, this guide describes the Inventory input
+  language the M2 translator compiles. The agent itself runs today (M1)
+  — to exercise it now, see the smoke test and JSON wire-format
+  walkthrough in
   [QUICKSTART.md](https://codeberg.org/dull/golem/src/branch/main/QUICKSTART.md)
   and the [bundle format reference](/reference/bundle-format/).
 </Aside>
 
-The shape of every golem deploy is the same: an `app` describing what runs,
-plus a `deploy` saying where it goes and how the world reaches it. This guide
-is that pattern at its smallest. One service. One hostname.
+The shape of every golem deploy is the same: an `Inventory` of `Hosts`,
+each carrying `workloads` (containers), `services` (port routing with
+firewall), and `ingress` (public HTTPS). This guide is that pattern at
+its smallest. One host. One workload. One service. One hostname. Golem
+owns the DNS record.
 
 ## The whole thing
 
@@ -23,24 +26,39 @@ is that pattern at its smallest. One service. One hostname.
 let g = import "../../nickel/lib.ncl" in
 
 {
-  app.services = {
-    hello = { image = "ghcr.io/example/hello:v1" },
-  },
+  hosts = {
+    "box-01" = {
+      name      = "box-01",
+      public_ip = "203.0.113.10",
 
-  nodes  = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
-  expose = [{ host = "hello.example.com", service = "hello" }],
-} | g.Deploy
+      workloads = [
+        { name = "hello", image = "ghcr.io/example/hello:v1" },
+      ],
+
+      services = [
+        { name = "hello", workload = "hello", port = 8080,
+          allow_from = ["box-01"] },
+      ],
+
+      ingress = [
+        { host = "hello.example.com", backend = "hello", dns = true },
+      ],
+    },
+  },
+} | g.Inventory
 ```
 
-That's the deploy. Three fields. No version number — `golemctl apply` reads
-each node's last-applied version and bumps automatically.
+That's the deploy. One host with one workload, one service, one ingress.
 
-- **`app.services.hello`** — one container. The image is whatever you're
-  shipping. No env, no volume, no command override; defaults are fine for a
-  hello-world.
-- **`nodes`** — one box, addressable at `10.42.0.1`.
-- **`expose`** — `hello.example.com` is fronted by golem's caddy, which
-  reverse-proxies to the `hello` service.
+- **`workloads`** — the container. The image is whatever you're shipping.
+- **`services`** — names port `8080` on the `hello` workload as the
+  service `hello`, with `allow_from = ["box-01"]` (only this box itself
+  can reach the port). The firewall is closed to the outside; nginx
+  (running on the same box) is what the world hits.
+- **`ingress`** — `hello.example.com` is fronted by nginx, terminating
+  TLS via Let's Encrypt and reverse-proxying to the `hello` *service*.
+  `dns = true` makes golem own the A record pointing
+  `hello.example.com` at `203.0.113.10`.
 
 ## Apply it
 
@@ -48,7 +66,7 @@ each node's last-applied version and bumps automatically.
 1. From the operator's laptop:
 
    ```bash
-   golemctl apply config.ncl operator.sk node-addrs.json
+   golemctl apply config.ncl operator.sk host-addrs.json
    ```
 
 2. Wait one tick (the agent reconciles every 30s by default):
@@ -57,8 +75,8 @@ each node's last-applied version and bumps automatically.
    curl -s http://10.42.0.1:7474/status | jq
    ```
 
-3. Hit the hostname. With DNS pointed at the box, you get TLS-terminated
-   traffic to your container:
+3. Hit the hostname. The DNS record is live, TLS is provisioned, traffic
+   reaches your container:
 
    ```bash
    curl https://hello.example.com
@@ -67,52 +85,57 @@ each node's last-applied version and bumps automatically.
 
 ## What golem did under the hood
 
-The translator unfolded those five lines into roughly six layer-3 claims that
-the agent then applied:
+The translator unfolded those nine lines into roughly nine layer-3
+claims that the agent then applied:
 
 | Claim | Why |
 | --- | --- |
-| `apt_package: podman` | Required for any service. |
-| `file: /etc/containers/systemd/hello.container` | The quadlet that defines the `hello` container. |
+| `apt_package: podman` | Required for any workload. |
+| `quadlet: hello` | Defines the `hello` container. |
 | `systemd_unit: hello.service` | Auto-generated from the quadlet, enabled and active. |
-| `apt_package: caddy` | Required because `expose` is non-empty. |
-| `file: /etc/caddy/Caddyfile.d/hello.example.com.caddy` | Site block routing the hostname to `hello.service:80`. |
-| `systemd_unit: caddy.service` | Enabled and active, with a handler that reloads on Caddyfile change. |
+| `nft_fragment: hello-allow.nft` | Firewall rule allowing port 8080 only from `box-01`. |
+| `apt_package: nginx` | Required because `ingress` is non-empty. |
+| `file: /etc/nginx/sites-enabled/hello.example.com.conf` | Site block routing the hostname to the `hello` service. |
+| `systemd_unit: nginx.service` | Enabled and active, with a handler that reloads on site change. |
+| `nft_fragment: nginx-allow.nft` | Firewall rule allowing 80/443 from anywhere. |
+| `dns_record: hello.example.com A` | A record pointing at `203.0.113.10`. |
 
-You don't write any of that. The agent journals each claim's prior state
-before mutating, so removing them later restores the box honestly. That's the
-part that makes golem worth using over a shell script.
+You don't write any of that. The agent journals each claim's prior
+state before mutating, so removing them later restores the box honestly.
+That's the part that makes golem worth using over a shell script.
 
 ## Take it back
 
-Edit the Nickel to empty out `app.services` and `expose`, then re-apply:
+Edit the Nickel to empty out `workloads`, `services`, and `ingress`,
+then re-apply:
 
 ```nickel
-{
-  app.services = {},
-  nodes  = { "box-01" = { name = "box-01", address = "10.42.0.1" } },
-  expose = [],
-} | g.Deploy
+"box-01" = {
+  name      = "box-01",
+  public_ip = "203.0.113.10",
+}
 ```
 
 After the next tick:
 
-- `hello.service` is stopped and disabled, the quadlet file is removed.
-- `caddy.service` is stopped, the Caddyfile fragment is removed.
-- Both `podman` and `caddy` are removed via `apt-get autoremove` — *only
-  because* golem captured `preexisting: false` for each when it first
-  installed them. If either was already on the box for another reason, the
-  unapply leaves it alone.
+- `hello.service` is stopped and disabled, the quadlet is removed.
+- `nginx.service` is stopped, the site file is removed.
+- The nft fragments are removed.
+- The DNS record is deleted.
+- Both `podman` and `nginx` are removed via `apt-get autoremove` —
+  *only because* golem captured `preexisting: false` for each when it
+  first installed them. If either was already on the box for another
+  reason, the unapply leaves it alone.
 - The journal in `/var/lib/golem/state.db` is empty.
 
-The empty journal is the proof that nothing leaked. Honest unapply is what
-makes golem safe to use on a box you also touch by hand for other reasons.
-See [Honest convergence](/reference/honest-convergence/) for how this stays honest
-even across crashes.
+The empty journal is the proof that nothing leaked. Honest unapply is
+what makes golem safe to use on a box you also touch by hand for other
+reasons. See [Honest convergence](/reference/honest-convergence/) for
+how this stays honest even across crashes.
 
 ## Where to next
 
-- Add a database and wire two services together:
-  **[Tier 2 — One app, one DB](/guides/app-and-db/)**
+- Add a database and wire two hosts together:
+  **[Tier 2 — Two hosts, one DB](/guides/app-and-db/)**
 - The capstone — a real lichess deploy, end-to-end:
   **[Tier 3 — Litour on a box](/guides/litour/)**

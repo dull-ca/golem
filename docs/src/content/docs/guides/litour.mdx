@@ -1,128 +1,197 @@
 ---
 title: Tier 3 — Litour on a box
-description: Deploy the real lichess league software (web, api, ui, workers, redis, postgres) to a single trixie box.
+description: The real lichess league software — web, api, ui, workers, redis, postgres — as Workloads + Services across three hosts.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 + M3 target">
-  This is the capstone. It uses Layer 1 features that span M2 (the App/Deploy
-  input language) and M3 (secrets at rest). The Nickel below is the shape
-  the docs are anchored on; the translator is in progress.
+  This is the capstone. It uses Layer 1 features that span M2 (the
+  Inventory + Workload + Service input language) and M3 (secrets at
+  rest). The Nickel below is the shape the docs are anchored on; the
+  translator is in progress.
 </Aside>
 
-[Litour](https://codeberg.org/dull/litour) is the league management software
-that runs the [Lichess 4545 League](https://www.lichess4545.com/) and several
-other team chess leagues. It's a real, multi-service, secrets-bearing,
-publicly-routed Django app — exactly the workload that motivated golem.
+[Litour](https://codeberg.org/dull/litour) is the league management
+software that runs the [Lichess 4545 League](https://www.lichess4545.com/)
+and several other team chess leagues. It's a real, multi-service,
+secrets-bearing, publicly-routed Django app — exactly the workload that
+motivated golem.
 
-This guide deploys the full stack on a single trixie box. It's not a
-hypothetical example — it's the deploy story for litour-prod.
+This guide deploys the full stack across three hosts: an edge box
+terminating ingress, an app box running the Django workloads and
+workers, and a data box running redis and postgres.
 
-## The app
+## Templates
 
-Same shape as [Tier 2](/guides/app-and-db/), more services. The app definition
-is a flat record of named services that wire to each other:
+Plain Nickel records, imported from `workloads/litour.ncl` in your repo:
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-let secret = g.ref.secret in              # placeholder; values supplied at deploy (M3)
-let svc    = g.ref.service in
+let secret = g.ref.secret in
 
-let litour_image = fun name =>            # local helper, not part of golem
-  "ghcr.io/lichess4545/litour-%{name}:latest" in
+let litour_image = fun n => "ghcr.io/lichess4545/litour-%{n}:latest" in
 
 let litour_env = {
-  DATABASE_URL      = secret "db_url",
+  DATABASE_URL      = "postgres://litour:%{secret "pg_pass"}@%{g.ref.service "appdb"}/litour",
+  REDIS_URL         = "redis://%{g.ref.service "redis"}",
   SECRET_KEY        = secret "django_secret",
   LICHESS_API_TOKEN = secret "lichess_token",
   EMAIL_HOST_USER   = secret "email_user",
   EMAIL_HOST_PASS   = secret "email_pass",
 } in
 
-app.services = {
-  redis = {
-    image   = "redis:7-alpine",
-    command = "redis-server --appendonly yes",
-    volume  = { at = "/data", size = "1Gb" },
-  },
+# Workload templates. The port the container internally binds is a
+# property of the image; the matching Service entry on the host is what
+# routes to it.
+let web       = { image = litour_image "web",        env = litour_env } in
+let api       = { image = litour_image "api",        env = litour_env } in
+let apiworker = { image = litour_image "api-worker", env = litour_env } in
+let ui        = {
+  image = litour_image "ui",
+  env   = litour_env & { LITOUR_API_BASE_URL = "http://%{g.ref.service "api"}" },
+} in
+let celery    = { image = litour_image "celery",  env = litour_env } in
+let watcher   = { image = litour_image "watcher", env = litour_env } in
+let migrate   = { image = litour_image "migrate", env = litour_env,
+                  oneshot = true } in
 
-  web       = { image = litour_image "web",       env = litour_env },
-  api       = { image = litour_image "api",       env = litour_env },
-  apiworker = { image = litour_image "api-worker", env = litour_env },
-  ui        = {
-    image = litour_image "ui",
-    env   = { LITOUR_API_BASE_URL = "http://%{svc "api"}:8001" },
-  },
-  celery   = { image = litour_image "celery",  env = litour_env },
-  watcher  = { image = litour_image "watcher", env = litour_env },
+let postgres  = fun version => {
+  image = "postgres:%{version}",
+  volume = { at = "/var/lib/postgresql/data", size = "50Gb" },
+} in
 
-  migrate = {
-    image   = litour_image "migrate",
-    env     = litour_env,
-    oneshot = true,                       # runs once, exits
-  },
-
-  caddy = {
-    image  = "caddy:2",
-    config = {
-      path    = "/etc/caddy/Caddyfile",
-      content = m%"
-        www.lichess4545.com {
-          handle_path /v2/api/* { reverse_proxy %{svc "api"}:8001 }
-          handle_path /v2/*     { reverse_proxy %{svc "ui"}:3000 }
-          handle                { reverse_proxy %{svc "web"}:8000 }
-        }
-      "%,
-    },
-  },
-}
+let redis     = {
+  image = "redis:7-alpine",
+  volume = { at = "/data", size = "5Gb" },
+} in
 ```
 
-Nine services, fifty-ish lines of Nickel. Read it: every service is a *thing
-that runs*. There's no quadlet boilerplate, no `nodes = ["box-01"]` repeated
-ten times, no separate `volumes` block, no `networks` block.
+Read it: every name is a *thing that runs*. There's no quadlet
+boilerplate, no networks block, no separate volumes block.
 
-The `litour_image` and `litour_env` lets are local conveniences — a litour
-operator's habit, not a golem feature. They're just Nickel functions and
-records.
-
-## The deploy
-
-Postgres is *not* in the app — for production, it runs as an apt-installed
-package on the host (better defaults, smoother upgrades than the container).
-That's an OS-level concern, so it lives in `system.packages`:
+## The inventory
 
 ```nickel
 {
-  app = app,
+  hosts = {
+    # ── Edge: public-facing nginx, owns DNS for the zone. ────────────
+    "edge-01" = {
+      name      = "edge-01",
+      public_ip = "203.0.113.10",
+      vrack_ip  = "10.42.0.1",
+      tags      = ["dns-primary"],
 
-  nodes = {
-    "box-01" = { name = "box-01", address = "10.42.0.1" },
-  },
+      ingress = [
+        {
+          host                 = "www.lichess4545.com",
+          backend              = "web",
+          dns                  = true,
+          rate_limit           = "200r/m",
+          rate_limit_burst     = 50,
+          rate_limit_zone_size = "10m",
+          conn_limit           = 100,
+          buffering            = false,
+          routes = [
+            { path = "/v2/api", backend = "api" },
+            { path = "/v2",     backend = "ui"  },
+          ],
+        },
+      ],
+    },
 
-  expose = [
-    { host = "www.lichess4545.com", service = "caddy", tls = 'auto },
-  ],
+    # ── App: every Django workload + the workers + the migrate oneshot. ─
+    "app-01" = {
+      name      = "app-01",
+      public_ip = "203.0.113.20",
+      vrack_ip  = "10.42.0.2",
+      tags      = ["postgres-clients", "redis-clients"],
 
-  system.packages = { postgresql-16 = {} },
-  system.units    = { "postgresql.service" = {} },
-  system.files = {
-    "pg-tuning" = {
-      path    = "/etc/postgresql/16/main/conf.d/golem.conf",
-      content = m%"
-        listen_addresses = '127.0.0.1'
-        max_connections = 200
-      "%,
+      workloads = [
+        web       & { name = "web"       },
+        api       & { name = "api"       },
+        apiworker & { name = "apiworker" },
+        ui        & { name = "ui"        },
+
+        # No Service entries below — these dial out only.
+        celery    & { name = "celery"    },
+        watcher   & { name = "watcher"   },
+        migrate   & { name = "migrate"   },          # oneshot: runs and exits
+      ],
+
+      services = [
+        { name = "web",       workload = "web",       port = 8000,
+          allow_from = ["edge-01"] },
+        { name = "api",       workload = "api",       port = 8001,
+          allow_from = ["edge-01"] },
+        { name = "ui",        workload = "ui",        port = 3000,
+          allow_from = ["edge-01"] },
+        # apiworker is internal — only dialable from app-01 itself.
+        { name = "apiworker", workload = "apiworker", port = 8002,
+          allow_from = ["app-01"] },
+      ],
+    },
+
+    # ── Data: redis + postgres. Locked down to app-01. ────────────────
+    "data-01" = {
+      name      = "data-01",
+      public_ip = "203.0.113.30",
+      vrack_ip  = "10.42.0.3",
+
+      workloads = [
+        postgres "18" & {
+          name = "appdb",
+          env  = {
+            POSTGRES_USER     = "litour",
+            POSTGRES_PASSWORD = g.ref.secret "pg_pass",
+            POSTGRES_DB       = "litour",
+          },
+          configs = [
+            { path    = "/etc/postgresql/18/main/conf.d/golem.conf",
+              content = m%"
+                listen_addresses = '*'
+                max_connections = 200
+              "% },
+          ],
+        },
+
+        redis & { name = "redis" },
+      ],
+
+      services = [
+        { name = "appdb", workload = "appdb", port = 5432,
+          allow_from = ["postgres-clients"] },          # tag membership: app-01
+        { name = "redis", workload = "redis", port = 6379,
+          allow_from = ["redis-clients"] },             # tag membership: app-01
+      ],
     },
   },
-} | g.Deploy
+} | g.Inventory
 ```
 
-`system` is the layer-3 escape hatch — when the App model can't (or
-shouldn't) express something, you drop to raw `packages` / `files` / `units`
-and the agent still treats them as honestly-unappliable claims.
+That's the whole deploy. Three hosts, ~80 lines of Nickel. Read what's
+there:
+
+- **Templates, instantiated.** `web`, `api`, `apiworker`, `ui` are all
+  the same litour image with different config. Each gets a per-host
+  `name`. Three of them get a Service that exposes their port to
+  edge-01; `apiworker` gets a Service that exposes its port only to
+  `app-01` itself (internal API).
+- **Pure-outbound workloads have no Service.** `celery`, `watcher`,
+  `migrate` connect out (postgres, redis, the lichess API). Nothing
+  connects in to them, so they don't need a Service entry.
+- **Firewall is tight.** Each Service's `allow_from` is the rule.
+  Database tier accepts only from `postgres-clients` / `redis-clients`
+  (app-01 by tag). Nothing else can reach those ports.
+- **`migrate` is `oneshot = true`** — runs, exits, doesn't restart.
+  Re-applying with a new image runs migrate again with that image.
+- **DNS owned by edge-01.** `dns = true` on the ingress. The
+  `dns-primary` tag marks edge-01 as the host that handles DNS provider
+  API calls.
+- **Routes inside an ingress.** `/v2/api/*` → api, `/v2/*` → ui,
+  fall-through → web. nginx `location` blocks materialized from those
+  three lines.
 
 ## Operator workflow
 
@@ -131,65 +200,78 @@ and the agent still treats them as honestly-unappliable claims.
 
    ```bash
    mkdir -p ~/.golem/secrets/litour-prod
-   echo 'postgres://litour:...@127.0.0.1/litour' > ~/.golem/secrets/litour-prod/db_url
-   echo 's3cr3t' > ~/.golem/secrets/litour-prod/django_secret
-   # … one file per name referenced by g.ref.secret
+   echo 'verysecret'          > ~/.golem/secrets/litour-prod/pg_pass
+   echo 'django-secret-key'   > ~/.golem/secrets/litour-prod/django_secret
+   echo 'lip_xxx'             > ~/.golem/secrets/litour-prod/lichess_token
+   echo 'mailgun-user'        > ~/.golem/secrets/litour-prod/email_user
+   echo 'mailgun-password'    > ~/.golem/secrets/litour-prod/email_pass
    chmod -R 0600 ~/.golem/secrets
    ```
 
 2. **Apply:**
 
    ```bash
-   golemctl apply config.ncl operator.sk node-addrs.json
+   golemctl apply config.ncl operator.sk host-addrs.json
    ```
 
 3. **Watch the rollout:**
 
    ```bash
-   ssh box-01 'curl -s http://127.0.0.1:7474/status | jq'
-   ssh box-01 'systemctl status web.service api.service ui.service'
+   for h in edge-01 app-01 data-01; do
+     ssh $h 'curl -s http://127.0.0.1:7474/status | jq'
+   done
+   ssh app-01 'systemctl status web.service api.service ui.service'
    ```
 
-4. **Roll forward.** Bump an image tag (or the whole `litour_image` helper),
-   re-apply. The version monotonically increases; the agent does the right
-   thing.
+4. **Roll forward.** Bump an image tag (or the whole `litour_image`
+   helper), re-apply. The version monotonically increases; the agent
+   does the right thing on each host.
 </Steps>
 
 ## Migrating from compose
 
-If you already run litour via `docker compose`, the mechanical translation:
+If you already run litour via `docker compose`, the mechanical
+translation:
 
 | compose | nickel |
 | --- | --- |
-| `services.<name>.image` | `services.<name>.image` |
-| `services.<name>.environment` | `services.<name>.env` |
-| `services.<name>.command` | `services.<name>.command` |
-| `services.<name>.volumes: ["named:/path"]` | `services.<name>.volume = { at = "/path" }` |
+| `services.<name>.image` | a Workload's `.image` (or template) |
+| `services.<name>.environment` | `.env` |
+| `services.<name>.command` | `.command` |
+| `services.<name>.volumes: ["named:/path"]` | `.volume = { at = "/path" }` |
+| `services.<name>.ports: ["8080:8080"]` | a Service entry pointing at the workload + port + `allow_from` |
 | `secrets.<name>` (file:) | `g.ref.secret "<name>"` referenced in env |
-| Caddyfile in a separate config | `services.caddy.config` (inline) |
-| `networks:` block | (gone — implicit shared network) |
+| nginx site / Caddyfile | `Ingress` on the edge host |
+| `networks:` block | (gone — host network + `allow_from`) |
 | `depends_on:` | (gone — placeholder references imply ordering) |
+| All services in one file | Inventory across multiple hosts |
 
-`golemctl translate compose.yml > config.ncl` will be a real command in M2.
+`golemctl translate compose.yml > config.ncl` will be a real command in
+M2; it places everything on one host as workloads with a service each,
+and you split it up by host as you need to.
 
 ## What this gives you compose doesn't
 
-- **One file describes the app, another describes the deploy.** Move the same
-  app between dev/staging/prod by swapping the deploy block.
-- **References, not stringly-typed addresses.** `{api.service}` is checked at
-  translation; `api:8001` in compose is a string the network might or might
-  not resolve.
-- **Honest unapply.** Remove `services.celery` from the app and re-apply; the
-  agent stops + disables `celery.service`, removes the quadlet file, cleans
-  the systemd state. Compose has no rollback story for the OS-level `system`
-  bits.
-- **No control plane to keep up.** The agent runs on each box; no Swarm, no
-  Portainer, no orchestrator daemon to babysit.
+- **Multi-host out of the box.** Compose is one Docker daemon. This is
+  three boxes with shared firewall semantics.
+- **First-class firewall.** Every Service has `allow_from`. No manual
+  `iptables` / `ufw` / cloud security group sprawl.
+- **First-class DNS.** `dns = true` on Ingress. Add a host, get a
+  record; remove a host, lose the record. No separate Terraform DNS
+  module to drift out of sync.
+- **References, not stringly-typed addresses.** `g.ref.service "appdb"`
+  is checked at translation; `data-01` in compose is a string the
+  network might or might not resolve.
+- **Honest unapply.** Remove a workload from a host's list and
+  re-apply; the agent stops + disables the unit, removes the quadlet,
+  removes the firewall rule entry, removes the journal entry. No
+  leaked state.
 
 ## What it doesn't give you
 
-- **Built-in mTLS for east-west traffic.** Run on a Nebula tunnel for that.
-- **Auto-rollback on health-check failure.** M4 may add health-gated rollback;
-  for now, you SSH in and re-apply the previous config.
-- **Horizontal autoscaling.** This is for fleets where the box count changes
-  on the order of months, not seconds.
+- **Built-in mTLS for east-west traffic.** Run on a Nebula tunnel for
+  that.
+- **Auto-rollback on health-check failure.** M4 may add health-gated
+  rollback; for now, you SSH in and re-apply the previous config.
+- **Horizontal autoscaling.** This is for fleets where the host count
+  changes on the order of months, not seconds.

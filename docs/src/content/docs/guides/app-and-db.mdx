@@ -1,164 +1,182 @@
 ---
-title: Tier 2 — One app, one DB
-description: A Django app, a postgres backing it, a caddy ingress. The smallest interesting deploy.
+title: Tier 2 — Two hosts, one DB
+description: An edge box terminating ingress, an app box running a Django workload, a db box running postgres. Templates, allow_from, cross-host services.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 <Aside type="caution" title="M2 target">
-  This guide describes the Layer 1 input language — `app` + `deploy` —
-  that's the M2 target. M1 doesn't yet evaluate this Nickel; the layer-2
-  translator is in progress. The guide is here so the model is clear and
-  so the example tracks the milestone.
+  This guide describes the Layer 1 input language — `Inventory` of
+  `Hosts` carrying `Workloads` and `Services` — that's the M2 target. M1
+  doesn't yet evaluate this Nickel; the layer-2 translator is in
+  progress.
 
   If you want something that works *today*, see
-  [Tier 1 — Hello, agent](/guides/hello-agent/).
+  [Tier 1 — One service](/guides/hello-agent/).
 </Aside>
 
-The shape of the input language is **describe the app, then describe the
-deploy**. Two layers, both small. The app says what's running and how the
-services wire to each other; the deploy says where it goes and how the world
-reaches it.
+The shape of the input language is **describe each host, attach the
+workloads that run on it, expose them as services with a firewall.**
+This guide adds a second host and a real database. You'll see Workload
+templates, the Workload-vs-Service split, `allow_from` rules, and
+cross-host service references.
 
-## Describing the app
+## The inventory
 
 ```nickel
 let g = import "../../nickel/lib.ncl" in
 
-app.services = {
-  postgres = {
-    image  = "ghcr.io/postgresql/postgresql-18:latest",
-    volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
-    env    = {
-      POSTGRES_USER     = "app",
-      POSTGRES_PASSWORD = "dev-change-me",
-      POSTGRES_DB       = "app",
-    },
+# A Workload template. Plain record, no schema magic.
+let web = {
+  image = "ghcr.io/example/hello-django:v1",
+  env   = {
+    DATABASE_URL = "postgres://app:%{g.ref.secret "pg_password"}@%{g.ref.service "appdb"}/app",
   },
+} in
 
-  web = {
-    image = "ghcr.io/example/hello-django:v1",
-    env   = {
-      DATABASE_URL = "postgres://app:dev-change-me@%{g.ref.service "postgres"}:5432/app",
-    },
-  },
+# A postgres template — also just a record.
+let postgres = fun version => {
+  image  = "postgres:%{version}",
+  volume = { at = "/var/lib/postgresql/data", size = "5Gb" },
+} in
 
-  caddy = {
-    image  = "caddy:2",
-    config = {
-      path    = "/etc/caddy/Caddyfile",
-      content = m%"
-        hello.example.com {
-          reverse_proxy %{g.ref.port "web" 8000}
-        }
-      "%,
-    },
-  },
-}
-```
-
-Three services, twelve lines. Worth reading for what's *not* there:
-
-- **No `nodes` block.** The app doesn't know about boxes.
-- **No `containers` wrapper.** A service named `postgres` is a service named
-  `postgres`. The kind ("it's a container") is the default; you don't repeat
-  it.
-- **No `volumes` top-level.** Postgres has a volume because postgres has a
-  volume. The volume's lifecycle is tied to the service that owns it.
-- **No port-mapping.** Container-to-container traffic doesn't need host ports
-  — the runtime gives services DNS names on a shared network. Only the
-  externally-exposed service (caddy) needs a port, and that's stated in the
-  deploy block, not here.
-
-### Cross-service references
-
-`g.ref.service "postgres"` returns the literal string `{postgres.service}`,
-which is a *placeholder* the translator resolves at deploy time. It becomes
-the runtime address postgres listens on (in podman's default network, just
-`postgres`). The `g.ref.port "web" 8000` helper produces `{web.service}:8000`.
-
-You can write the placeholders by hand if you prefer:
-
-```nickel
-env = { DATABASE_URL = "postgres://app:pw@{postgres.service}:5432/app" }
-```
-
-Either form is checked: misspell a service name and `golemctl` rejects the
-deploy because the placeholder doesn't resolve. Strings without `{...}` pass
-through untouched.
-
-### Inline config files
-
-The `caddy.config` field ships a config file *with* the service. The
-translator mounts it into the container (or, for runtimes that can't bind-mount,
-bakes it into a derived image). This keeps the rendered Caddyfile next to
-the service that consumes it — no separate `volumes/caddy_config` declaration,
-no `:ro` flag, no thinking about it.
-
-## Describing the deploy
-
-```nickel
 {
-  app = app,                                  # the record above
-  nodes = {
-    "box-01" = { name = "box-01", address = "10.42.0.1" },
+  hosts = {
+    # Edge: public ingress, no app code.
+    "edge-01" = {
+      name      = "edge-01",
+      public_ip = "203.0.113.10",
+      ingress   = [
+        { host = "hello.example.com", backend = "hello",
+          dns = true, rate_limit = "100r/m", rate_limit_burst = 20 },
+      ],
+    },
+
+    # App: the Django workload, fronted by edge-01.
+    "app-01" = {
+      name      = "app-01",
+      public_ip = "203.0.113.20",
+      vrack_ip  = "10.42.0.2",
+
+      workloads = [ web & { name = "hello" } ],
+      services  = [
+        { name = "hello", workload = "hello", port = 8000,
+          allow_from = ["edge-01"] },
+      ],
+    },
+
+    # DB: postgres only, locked down to app-01.
+    "db-01" = {
+      name      = "db-01",
+      vrack_ip  = "10.42.0.3",
+
+      workloads = [
+        postgres "18" & {
+          name = "appdb",
+          env  = {
+            POSTGRES_USER     = "app",
+            POSTGRES_PASSWORD = g.ref.secret "pg_password",
+            POSTGRES_DB       = "app",
+          },
+        },
+      ],
+
+      services = [
+        { name = "appdb", workload = "appdb", port = 5432,
+          allow_from = ["app-01"] },
+      ],
+    },
   },
-  expose = [
-    { host = "hello.example.com", service = "caddy" },
-  ],
-} | g.Deploy
+} | g.Inventory
 ```
 
-That's it. One node, one public hostname. With one node defined, every service
-in the app is placed there by default; you only write a `place` block when
-some services go to different boxes.
+Three hosts. Worth reading for what's there:
+
+- **Workload = the container.** `web` and `postgres "18"` are templates
+  for "thing that runs". They carry image, env, volumes — nothing about
+  who can reach them.
+- **Service = port + firewall.** `db-01`'s `appdb` service points at
+  the `appdb` workload's port 5432 and only accepts traffic from
+  `app-01`. `app-01`'s `hello` service points at the `hello` workload's
+  port 8000 and only accepts traffic from `edge-01`. The translator
+  emits nftables fragments on each host.
+- **`dns = true` on Ingress** means golem owns the A record for
+  `hello.example.com`, pointing at `edge-01.public_ip`.
+- **`g.ref.service "appdb"`** resolves to db-01's address + 5432
+  because db-01 owns the `appdb` service. Misspell the name and
+  `golemctl apply` rejects.
+- **`g.ref.secret "pg_password"`** is a placeholder for an
+  operator-staged secret value. M3.
+
+### Why two records, not one
+
+A Workload is what podman runs. A Service is the routing surface — a
+port + a firewall + a name other workloads dial. They're separate
+because:
+
+- **One workload, multiple ports.** A workload exposing both an HTTP
+  port and a metrics port has two Services with different `allow_from`
+  lists.
+- **Pure outbound workloads have no service.** Background workers
+  (celery, fishnet, queue consumers) are Workloads with zero Service
+  entries — they connect out, nothing connects in.
+- **Migrations.** A Workload with `oneshot = true` runs and exits.
+  Nothing routes to it; no Service entry needed.
 
 ## What the translator unfolds this into
 
-Layer 2 (`golemctl`) walks `app` + `deploy` and produces ~10 layer-3 claims:
+Layer 2 (`golemctl`) walks the inventory and produces three per-host
+bundles totaling around 15 layer-3 claims:
 
-| Source | Claims produced |
+| Host | Claims |
 | --- | --- |
-| `services.postgres` | `packages.podman` + `files["/etc/containers/systemd/postgres.container"]` (rendered quadlet) + `files["/etc/containers/systemd/postgres-data.volume"]` + `units["postgres.service"]` + `units["postgres-data-volume.service"]` |
-| `services.web` | `files["/etc/containers/systemd/web.container"]` + `units["web.service"]` (with `Requires=postgres.service` because of the placeholder reference) |
-| `services.caddy` | `files["/etc/containers/systemd/caddy.container"]` + `files["/etc/caddy/Caddyfile"]` (the inline config) + `units["caddy.service"]` |
-| `expose[0]` | adds the `hello.example.com` block to the Caddyfile + a handler that reloads caddy on Caddyfile change + ensures port 80/443 is allowed |
+| `edge-01` | nginx site for `hello.example.com` (with rate-limit zones), nginx package + unit, nft fragment for 80/443, DNS A record `hello.example.com → 203.0.113.10` |
+| `app-01` | quadlet for `hello`, systemd unit, nft fragment allowing `8000/tcp` only from edge-01's vrack address, podman package |
+| `db-01` | quadlet for `appdb` postgres container, systemd unit, volume claim, nft fragment allowing `5432/tcp` only from app-01's vrack address, podman package |
 
 Every claim is a primitive [the agent already understands](/reference/architecture/).
 The Nickel was just a more compact way to write it down.
 
-## Same app, different deploys
+## Same inventory, different deploys
 
-The same `app` record deploys to staging by changing only the deploy block:
-
-```nickel
-{
-  app = app,
-  nodes = { "stage-01" = { ... } },
-  expose = [
-    { host = "staging.hello.example.com", service = "caddy", tls = 'auto },
-  ],
-} | g.Deploy
-```
-
-Or to production with a beefier secret-bearing config (M3):
+The same Nickel deploys to staging by changing host addresses and the
+ingress hostname:
 
 ```nickel
-{
-  app = app & { services.postgres.env.POSTGRES_PASSWORD = g.ref.secret "pg_password" },
-  nodes = { "prod-01" = { ... } },
-  expose = [
-    { host = "hello.example.com", service = "caddy", tls = 'auto },
-  ],
-} | g.Deploy
+"stage-edge" = {
+  name      = "stage-edge",
+  public_ip = "203.0.113.110",
+  ingress   = [{ host = "staging.hello.example.com", backend = "hello",
+                 dns = true, rate_limit = "100r/m" }],
+},
 ```
 
-The `&` is Nickel's record merge — you compose new layers on top of the app
-without forking it.
+Or it deploys to a single all-in-one box for development by collapsing
+all the workload onto one host:
+
+```nickel
+"dev-01" = {
+  name      = "dev-01",
+  public_ip = "127.0.0.1",
+  workloads = [
+    web & { name = "hello" },
+    postgres "18" & { name = "appdb", env = {...} },
+  ],
+  services  = [
+    { name = "hello", workload = "hello", port = 8000,
+      allow_from = ["dev-01"] },
+    { name = "appdb", workload = "appdb", port = 5432,
+      allow_from = ["dev-01"] },
+  ],
+  ingress   = [{ host = "hello.test", backend = "hello" }],
+}
+```
+
+Same templates, same shape, different topology.
 
 ## Where to next
 
-- The capstone — same shape, more services:
+- The capstone — same shape, more workloads:
   **[Tier 3 — Litour on a box](/guides/litour/)**.
 - See exactly what gets sent to the agent:
   **[Bundle format reference](/reference/bundle-format/)**.

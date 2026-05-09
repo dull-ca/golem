@@ -1,14 +1,14 @@
 ---
 title: Architecture
-description: How the input language compiles down to what the agent runs.
+description: How the inventory language compiles down to what the agent runs.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
 You don't need to read this to use golem. The
 [config](/getting-started/the-config/) and [apply](/getting-started/applying/)
-pages are enough. This page is for when something goes wrong and you want to
-know what's actually happening, or when you're hacking on golem itself.
+pages are enough. This page is for when something goes wrong and you want
+to know what's actually happening, or when you're hacking on golem itself.
 
 Internally, golem is three things stacked on each other. They're separated
 because each has different change-frequency, different audience, and a
@@ -16,81 +16,108 @@ different failure mode.
 
 ## The config (input language)
 
-What you write. Nickel, with two halves:
+What you write. Nickel — an `Inventory` of named `Hosts`, each carrying:
 
-- **`app`** — services, volumes, env, references. Application-level. Doesn't
-  know about boxes.
-- **`deploy`** — nodes, expose, place, system escapes. Deployment-level.
-  Doesn't know about your code.
+- **`workloads`** — containers. Image, env, volumes, command. Anything
+  that runs is a Workload (web service, mongo, postgres, fishnet, the
+  migrate oneshot — same shape, different image and env).
+- **`services`** — internal port routing. A name + a (workload, port)
+  pair + an `allow_from` firewall surface. Pure outbound workloads have
+  no Service; a workload exposing two ports has two Services with
+  different `allow_from` lists.
+- **`ingress`** — public HTTPS termination (nginx) with rate limits,
+  CORS, routes, and a `dns` flag for first-class DNS. `backend` names
+  a Service.
+- **`tags`** — host membership in cross-cutting groups for `allow_from`.
 
-This layer changes daily as you ship features. It's where typos and contract
-violations get caught before bytes leave your laptop.
+Plus an `Inventory.groups` map and an optional `role_deps` graph for
+migration ordering.
 
-See [The config](/getting-started/the-config/) for the user-facing description.
+This layer changes daily as you ship features. It's where typos and
+contract violations get caught before bytes leave your laptop.
+
+See [The config](/getting-started/the-config/) for the user-facing
+description.
 
 ## The translator (operator-side)
 
 `golemctl` runs on your laptop. When you `apply`, it:
 
 1. Reads the Nickel input and validates contracts.
-2. Resolves all `{name.service}` and `g.ref.*` placeholders against the
-   actual services declared.
-3. Translates each service into a set of agent-level claims:
-   - `services.api` becomes a `files["/etc/containers/systemd/api.container"]`
-     claim with the rendered quadlet body, a `packages.podman` claim
-     (idempotent across services), and a `units["api.service"]` claim that
-     depends on the file claim.
-   - `expose[].host` becomes a Caddyfile fragment + caddy package + caddy
-     unit + a handler that reloads on Caddyfile change.
-   - `volumes` and `system.*` translate similarly.
-4. Computes a per-node bundle — only the claims that node owns.
-5. Reads the agent's `/status` to get the last-applied version.
-6. Signs the bundle with the operator's ed25519 key.
-7. POSTs to the agent.
+2. Resolves all `g.ref.host`, `g.ref.service`, `g.ref.port`, and
+   `g.ref.secret` placeholders against the inventory.
+3. For each host, translates its `workloads` / `services` / `ingress`
+   into a set of agent-level claims:
+   - A `Workload` becomes a `Quadlet` claim (rendered .container body)
+     and a `SystemdUnit` claim for the generated `<name>.service`.
+   - A `Service` becomes an `NftFragment` claim materializing
+     `allow_from` into nftables rules on the host carrying the
+     workload — accept the named port from the listed hosts'
+     addresses, drop everything else.
+   - An `Ingress` becomes a `File` claim for the nginx site block, a
+     handler that reloads nginx on change, and (when `dns = true`) a
+     `DnsRecord` claim emitted on whichever host carries the DNS role
+     for the zone. Cross-host backends look up the host carrying the
+     named Service and reverse-proxy to its private address + the
+     Service's port.
+4. Computes a per-host bundle — only the claims that host owns.
+5. Reads each host's `/status` to get the last-applied version; assigns
+   `max(last_applied) + 1` across the apply set.
+6. Signs each bundle with the operator's ed25519 key.
+7. POSTs to each host's agent.
 
 The translation is **deterministic** and **canonical**: the same input
 produces byte-identical bundles. The agent's monotonicity check
-(`version > last_applied`) requires this — re-signing the same input must not
-break verification.
+(`version > last_applied`) requires this — re-signing the same input must
+not break verification.
 
 ## The agent (system engine)
 
-`golemd` runs on each box. ~3000 lines of Rust. Speaks three primitives only:
+`golemd` runs on each box. ~3000 lines of Rust. Speaks a small set of
+primitives:
 
-- **`files["/some/path"]`** — write a file with given content/mode/owner.
-- **`packages.<name>`** — apt install / autoremove.
-- **`units["foo.service"]`** — `systemctl enable --now`, `disable`, etc.
+- **`File`** — write a file with given content / mode / owner.
+- **`AptPackage`** — apt install / autoremove.
+- **`SystemdUnit`** — `systemctl enable --now`, `disable`, etc.
+- **`Quadlet`** — a podman .container file (translated by systemd into a
+  service unit).
+- **`NftFragment`** — an nftables ruleset chunk dropped into
+  `/etc/nftables.d/<key>.nft`, applied atomically.
+- **`DnsRecord`** — an A / AAAA / CNAME / TXT / MX record on a configured
+  zone.
 
-Plus the bookkeeping every claim needs: capture prior state before mutating,
-journal it, mutate, journal "applied". When a claim is removed from a future
-bundle, *unapply* it using the captured prior state. When a previously-installed
-package was already on the box for another reason, leave it alone.
+Plus the bookkeeping every claim needs: capture prior state before
+mutating, journal it, mutate, journal "applied". When a claim is removed
+from a future bundle, *unapply* it using the captured prior state. When a
+previously-installed package was already on the box for another reason,
+leave it alone.
 
-The agent deliberately does not know about services, exposes, volumes, or
-anything at the config-language level. That keeps it small and the wire
-format stable across config-language changes.
+The agent deliberately does not know about workloads, services,
+ingress, or anything at the config-language level. That keeps it small
+and the wire format stable across config-language changes.
 
-See [Honest convergence](/reference/honest-convergence/) for how the agent
-stays honest after crashes.
+See [Honest convergence](/reference/honest-convergence/) for how the
+agent stays honest after crashes.
 
 ## Why split it this way
 
 | Concern | Lives in | Changes | Failure mode |
 | --- | --- | --- | --- |
-| What I'm running | The config (Nickel) | Daily | Operator catches it at apply time |
+| What I'm running | The Inventory (Nickel) | Daily | Operator catches it at apply time |
 | How it lands on a box | `golemctl` (translator) | Per golem release | Bundle rejected at signing or by agent |
 | What's actually on the box | `golemd` (agent) | Almost never | Crash → recover honestly on next tick |
 
-The agent is the part that can corrupt your boxes. So it's the part we test
-the hardest — every journal-before-mutate window has a `GOLEM_CRASH_AFTER`
-injection point and a [smoke test](/reference/honest-convergence/) that
-aborts the agent there.
+The agent is the part that can corrupt your boxes. So it's the part we
+test the hardest — every journal-before-mutate window has a
+`GOLEM_CRASH_AFTER` injection point and a
+[smoke test](/reference/honest-convergence/) that aborts the agent there.
 
 ## Where to look in the source
 
 | Component | Path |
 | --- | --- |
-| Nickel schemas | `nickel/app.ncl`, `nickel/deploy.ncl`, `nickel/lib.ncl` |
+| Nickel schemas | `nickel/types.ncl`, `nickel/host.ncl`, `nickel/inventory.ncl`, `nickel/lib.ncl` |
+| Wire-format claims | `nickel/claims.ncl` |
 | Translator | `crates/golemctl/` |
 | Agent | `crates/golemd/` |
 | Wire-format types | `crates/golem-types/` |

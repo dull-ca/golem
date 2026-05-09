@@ -36,14 +36,16 @@ What happens on each node:
   3. The signed bundle is POSTed to `http://<addr>:7474/bundle`.
   4. The agent verifies the signature against `/etc/golem/trusted-keys`,
      validates the layer-3 claim DAG, and swaps the in-memory desired set.
-  5. On the next reconcile tick (≤30s), the agent installs podman / caddy,
-     drops the .container files (one per service in the App), daemon-reloads,
-     and starts the units.
+  5. On the next reconcile tick (≤30s), the agent installs podman / nginx,
+     drops the .container files (one per service on this host),
+     applies any nft fragments, creates DNS records, daemon-reloads, and
+     starts the units.
 
-The `examples/simple/config.ncl` is the canonical small example: a Django
-app + postgres + caddy as three `app.services` entries, exposed via a single
-`expose` block. See `nickel/app.ncl` and `nickel/deploy.ncl` for the contracts
-the user fills in.
+The `examples/simple/config.ncl` is the canonical small example: a
+lichess-shaped slice across three hosts (edge / app / data) with a service
+template, `allow_from` firewall, ingress rate limiting, and first-class
+DNS. See `nickel/types.ncl`, `nickel/host.ncl`, and `nickel/inventory.ncl`
+for the contracts the user fills in.
 
 Single-node test on your dev box (no remote):
 
