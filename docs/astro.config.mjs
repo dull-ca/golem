@@ -34,6 +34,12 @@ export default defineConfig({
           ],
         },
         {
+          label: "Patterns",
+          items: [
+            { label: "A maintenance page", link: "/guides/maintenance-page/" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { label: "CLI", link: "/reference/cli/" },

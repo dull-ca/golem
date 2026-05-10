@@ -66,13 +66,14 @@
     |> std.record.from_array,
 
   # ── build_host_map ─────────────────────────────────────────────────────
-  # Walk all hosts, collect into { host_name -> "ip_address" }.
+  # Walk all hosts, collect into { host_name -> "ip_address" }. The host
+  # name is the dict key; no redundant `name` field is required on the
+  # host record itself.
   build_host_map = fun inventory =>
     inventory.hosts
     |> std.record.to_array
     |> std.array.map (fun host_entry =>
-      let host = host_entry.value in
-      { field = host.name, value = host_address host })
+      { field = host_entry.field, value = host_address host_entry.value })
     |> std.record.from_array,
 
   # ── build_group_map ────────────────────────────────────────────────────
