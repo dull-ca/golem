@@ -11,10 +11,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signer, SigningKey};
 use golem_types::{canonical_json, Bundle, SignedBundle};
+use nickel_lang::{Context as NickelContext, ErrorFormat};
 use rand_core::OsRng;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use tokio::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "golem fleet operator CLI")]
@@ -61,7 +60,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Keygen { name }                            => keygen(&name),
-        Cmd::Eval { config, node }                      => eval_cmd(&config, &node).await,
+        Cmd::Eval { config, node }                      => eval_cmd(&config, &node),
         Cmd::Sign { bundle, secret_key }                => sign_cmd(&bundle, &secret_key),
         Cmd::Push { signed, addr }                      => push_cmd(&signed, &addr).await,
         Cmd::Apply { config, secret_key, node_addrs }   => apply_cmd(&config, &secret_key, &node_addrs).await,
@@ -88,44 +87,61 @@ fn keygen(stem: &Path) -> Result<()> {
 
 // ─── eval ────────────────────────────────────────────────────────────────
 
-/// Run `nickel export --format json` on the user config, asking it to emit
-/// `(import "config.ncl").bundle_for "<node>"`. We do this by writing a
-/// tiny driver expression to a temp file that imports the user config.
-async fn eval_for_node(config: &Path, node: &str) -> Result<Bundle> {
-    let driver = format!(
+/// Evaluate the user's config via embedded Nickel and deserialize the result
+/// for one node. We build a small driver expression that imports the user's
+/// config by absolute path and calls `.bundle_for "<node>"`, then hand it to
+/// `nickel-lang`'s `Context`. Relative imports inside the user's config
+/// (e.g. `import "../../nickel/lib.ncl"`) resolve relative to the user's
+/// config file, since Nickel resolves imports relative to the importing file.
+fn eval_for_node(config: &Path, node: &str) -> Result<Bundle> {
+    let abs = config
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", config.display()))?;
+    let src = format!(
         r#"(import "{}").bundle_for "{}""#,
-        config.canonicalize()?.display(),
-        node
+        nickel_escape(&abs.to_string_lossy()),
+        nickel_escape(node),
     );
-    let tmp = tempfile_with(&driver)?;
-
-    let out = Command::new("nickel")
-        .args(["export", "--format", "json"])
-        .arg(tmp.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("spawn nickel — is `nickel` on PATH?")?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        bail!("nickel export failed:\n{err}");
-    }
-    let bundle: Bundle = serde_json::from_slice(&out.stdout)
-        .context("parse nickel output as Bundle")?;
-    Ok(bundle)
+    let mut ctx = NickelContext::new().with_source_name("<golemctl-eval>".into());
+    let expr = ctx
+        .eval_deep_for_export(&src)
+        .map_err(|e| anyhow!("nickel eval failed:\n{}", format_nickel_err(&e)))?;
+    let json = ctx
+        .expr_to_json(&expr)
+        .map_err(|e| anyhow!("export nickel result as JSON:\n{}", format_nickel_err(&e)))?;
+    serde_json::from_str(&json).context("parse nickel output as Bundle")
 }
 
-fn tempfile_with(contents: &str) -> Result<tempfile::NamedTempFile> {
-    use std::io::Write;
-    let mut f = tempfile::Builder::new().suffix(".ncl").tempfile()?;
-    write!(f.as_file_mut(), "{contents}")?;
-    f.as_file_mut().sync_all()?;
-    Ok(f)
+fn list_nodes(config: &Path) -> Result<Vec<String>> {
+    let abs = config
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", config.display()))?;
+    let src = format!(
+        r#"std.record.fields ((import "{}").nodes)"#,
+        nickel_escape(&abs.to_string_lossy()),
+    );
+    let mut ctx = NickelContext::new().with_source_name("<golemctl-nodes>".into());
+    let expr = ctx
+        .eval_deep_for_export(&src)
+        .map_err(|e| anyhow!("nickel eval failed:\n{}", format_nickel_err(&e)))?;
+    let json = ctx
+        .expr_to_json(&expr)
+        .map_err(|e| anyhow!("export nickel result as JSON:\n{}", format_nickel_err(&e)))?;
+    serde_json::from_str(&json).context("parse node list")
 }
 
-async fn eval_cmd(config: &Path, node: &str) -> Result<()> {
-    let bundle = eval_for_node(config, node).await?;
+fn nickel_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn format_nickel_err(e: &nickel_lang::Error) -> String {
+    let mut buf = Vec::new();
+    let _ = e.format(&mut buf, ErrorFormat::Text);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn eval_cmd(config: &Path, node: &str) -> Result<()> {
+    let bundle = eval_for_node(config, node)?;
     println!("{}", serde_json::to_string_pretty(&bundle)?);
     Ok(())
 }
@@ -194,24 +210,7 @@ async fn apply_cmd(config: &Path, sk_path: &Path, addrs_path: &Path) -> Result<(
         serde_json::from_slice(&std::fs::read(addrs_path)?)
             .context("parse node addresses JSON")?;
 
-    // We need the list of nodes — read it from the fleet by evaluating
-    // `(import "...").nodes` and pulling keys.
-    let driver = format!(
-        r#"std.record.fields ((import "{}").nodes)"#,
-        config.canonicalize()?.display()
-    );
-    let tmp = tempfile_with(&driver)?;
-    let out = Command::new("nickel")
-        .args(["export", "--format", "json"])
-        .arg(tmp.path())
-        .output()
-        .await
-        .context("nickel — to enumerate fleet nodes")?;
-    if !out.status.success() {
-        bail!("nickel export failed:\n{}", String::from_utf8_lossy(&out.stderr));
-    }
-    let nodes: Vec<String> = serde_json::from_slice(&out.stdout)
-        .context("parse node list")?;
+    let nodes = list_nodes(config)?;
 
     let mut errors = 0usize;
     for node in &nodes {
@@ -219,7 +218,7 @@ async fn apply_cmd(config: &Path, sk_path: &Path, addrs_path: &Path) -> Result<(
             Some(a) => a.clone(),
             None => { eprintln!("no address for node `{node}`, skipping"); continue; }
         };
-        match eval_for_node(config, node).await {
+        match eval_for_node(config, node) {
             Ok(b) => {
                 let signed = sign_bundle(b, &sk)?;
                 if let Err(e) = push_signed(&signed, &addr).await {

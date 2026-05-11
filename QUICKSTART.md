@@ -31,7 +31,8 @@ Apply the example config (from your laptop):
 
 What happens on each node:
 
-  1. golemctl runs `nickel export` to evaluate `config.ncl` for that node.
+  1. golemctl evaluates `config.ncl` for that node via the embedded Nickel
+     interpreter (no external `nickel` binary required).
   2. The bundle is signed with `operator.sk`.
   3. The signed bundle is POSTed to `http://<addr>:7474/bundle`.
   4. The agent verifies the signature against `/etc/golem/trusted-keys`,
