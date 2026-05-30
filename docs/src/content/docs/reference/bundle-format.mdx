@@ -58,17 +58,17 @@ An array of declarative claims. The kinds the agent understands:
 
 ```json
 {
-  "id":   { "kind": "file", "key": "/etc/caddy/Caddyfile" },
+  "id":   { "kind": "file", "key": "/etc/nginx/sites-enabled/hello.example.com.conf" },
   "kind": "file",
   "spec": {
-    "path":    "/etc/caddy/Caddyfile",
+    "path":    "/etc/nginx/sites-enabled/hello.example.com.conf",
     "content": "...",
     "mode":    420,
     "owner":   "root",
     "group":   "root",
     "marker":  "Owned"
   },
-  "owners": ["app/web"],
+  "owners": ["ingress/edge-01"],
   "after": []
 }
 ```
@@ -83,10 +83,10 @@ An array of declarative claims. The kinds the agent understands:
 
 ```json
 {
-  "id":   { "kind": "apt_package", "key": "caddy" },
+  "id":   { "kind": "apt_package", "key": "nginx" },
   "kind": "apt_package",
-  "spec": { "name": "caddy" },
-  "owners": ["app/web"],
+  "spec": { "name": "nginx" },
+  "owners": ["ingress/edge-01"],
   "after": []
 }
 ```
@@ -99,16 +99,16 @@ installed the package; if the package was preexisting, removal is a no-op.
 
 ```json
 {
-  "id":   { "kind": "systemd_unit", "key": "caddy.service" },
+  "id":   { "kind": "systemd_unit", "key": "nginx.service" },
   "kind": "systemd_unit",
   "spec": {
-    "name":   "caddy.service",
+    "name":   "nginx.service",
     "enable": true,
     "active": true,
     "scope":  "system"
   },
-  "owners": ["app/web"],
-  "after": [{ "kind": "file", "key": "/etc/caddy/Caddyfile" }]
+  "owners": ["ingress/edge-01"],
+  "after": [{ "kind": "file", "key": "/etc/nginx/sites-enabled/hello.example.com.conf" }]
 }
 ```
 
@@ -132,7 +132,7 @@ that wraps it: `g.contrib.workload`, `g.contrib.web_service`, etc.).
     "name": "lila",
     "body": "[Container]\nImage=ghcr.io/lichess-org/lila:latest\nPublishPort=9663:9663\n[Install]\nWantedBy=default.target\n"
   },
-  "owners": ["service/lila"],
+  "owners": ["workload/lila"],
   "after": []
 }
 ```
@@ -210,8 +210,8 @@ When a *source* claim's content changes, restart the *target* units:
 
 ```json
 {
-  "source":  { "kind": "file", "key": "/etc/caddy/Caddyfile" },
-  "targets": ["caddy.service"]
+  "source":  { "kind": "file", "key": "/etc/nginx/sites-enabled/hello.example.com.conf" },
+  "targets": ["nginx.service"]
 }
 ```
 

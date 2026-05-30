@@ -27,7 +27,7 @@ Install the agent on each node:
 Apply the example config (from your laptop):
 
     cd examples/simple
-    golemctl apply config.ncl ../../operator.sk node-addrs.json
+    golemctl apply config.ncl ../../operator.sk host-addrs.json
 
 What happens on each node:
 
