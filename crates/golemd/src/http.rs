@@ -1,94 +1,123 @@
-//! Tiny HTTP server for operator pushes and status checks.
+//! HTTP routes.
 //!
-//! Endpoints:
-//!   POST /bundle   — accept a SignedBundle JSON. Verify, swap into shared
-//!                    state, and return 202 Accepted. Reconciler will pick
-//!                    it up on the next tick.
-//!   GET  /status   — current bundle version + last tick summary.
-//!   GET  /healthz  — process liveness.
-//!
-//! Bind to localhost or a Unix socket; trust comes from the ed25519
-//! signature on the bundle, not from network ACLs. (You'd still want to
-//! restrict the socket — over Nebula, or unix-domain only — but the
-//! cryptographic story is what makes this safe.)
+//! - `POST   /blueprints`              commission (insert or replace)
+//! - `DELETE /blueprints/:name`        decommission
+//! - `GET    /blueprints`              list active
+//! - `GET    /state`                   current resolved state
+//! - `GET    /revisions`               full journal
+//! - `GET    /revisions/:id`           a single revision (state + actions)
+//! - `GET    /status`                  identity + latest revision id
 
 use axum::{
-    extract::State,
+    extract::{Path, State as AxState},
     http::StatusCode,
-    routing::{get, post},
-    Json, Router,
+    response::{IntoResponse, Json},
+    routing::{delete, get, post},
+    Router,
 };
-use golem_types::Bundle;
+use golem_types::Blueprint;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
 
-use crate::bundle::{load_signed, TrustConfig};
+use crate::store::Store;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub trust:  Arc<TrustConfig>,
-    pub bundle: Arc<RwLock<Option<Bundle>>>,
-}
-
-#[derive(Serialize)]
-struct StatusResp {
-    bundle_version: Option<u64>,
-    node:           String,
-    claim_count:    usize,
+    pub node: String,
+    pub store: Arc<Store>,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/bundle",  post(post_bundle))
-        .route("/status",  get(get_status))
-        .route("/healthz", get(get_healthz))
+        .route("/blueprints", post(commission).get(list_blueprints))
+        .route("/blueprints/:name", delete(decommission))
+        .route("/state", get(current_state))
+        .route("/revisions", get(list_revisions))
+        .route("/revisions/:id", get(get_revision))
+        .route("/status", get(status))
         .with_state(state)
 }
 
-async fn get_healthz() -> &'static str { "ok\n" }
+#[derive(Serialize)]
+struct StatusBody {
+    node: String,
+    latest_revision: Option<u64>,
+}
 
-async fn get_status(State(s): State<AppState>) -> Json<StatusResp> {
-    let b = s.bundle.read().await;
-    Json(StatusResp {
-        bundle_version: b.as_ref().map(|b| b.version),
-        node:           s.trust.node_name.clone(),
-        claim_count:    b.as_ref().map(|b| b.claims.len()).unwrap_or(0),
+async fn status(AxState(s): AxState<AppState>) -> impl IntoResponse {
+    let latest = s
+        .store
+        .list_revisions()
+        .map(|rs| rs.last().map(|r| r.id))
+        .unwrap_or(None);
+    Json(StatusBody {
+        node: s.node,
+        latest_revision: latest,
     })
 }
 
-async fn post_bundle(
-    State(s): State<AppState>,
-    body: axum::body::Bytes,
-) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
-    // TOCTOU fix: hold the write-guard across the entire read-validate-write
-    // window. Without this, two concurrent POSTs both reading prev_version=N
-    // would both accept their (N+1, N+2) bundles in the wrong order — older
-    // wins. With the guard held, the second writer reads the first writer's
-    // new prev_version and rejects via the monotonicity check inside
-    // load_signed.
-    let mut slot = s.bundle.write().await;
-    let prev_version = slot.as_ref().map(|b| b.version);
+async fn commission(
+    AxState(s): AxState<AppState>,
+    Json(bp): Json<Blueprint>,
+) -> Result<impl IntoResponse, ApiError> {
+    let rev = s.store.commission(bp).map_err(ApiError::internal)?;
+    Ok(Json(rev))
+}
 
-    let new_bundle = match load_signed(&body, &s.trust, prev_version) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("rejected bundle: {e:#}");
-            return Err((StatusCode::BAD_REQUEST, format!("{e:#}")));
+async fn decommission(
+    AxState(s): AxState<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    match s.store.decommission(&name).map_err(ApiError::internal)? {
+        Some(rev) => Ok(Json(rev)),
+        None => Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("no blueprint named {name:?}"),
+        }),
+    }
+}
+
+async fn list_blueprints(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(s.store.list_blueprints().map_err(ApiError::internal)?))
+}
+
+async fn current_state(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(s.store.current_state().map_err(ApiError::internal)?))
+}
+
+async fn list_revisions(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(s.store.list_revisions().map_err(ApiError::internal)?))
+}
+
+async fn get_revision(
+    AxState(s): AxState<AppState>,
+    Path(id): Path<u64>,
+) -> Result<impl IntoResponse, ApiError> {
+    match s.store.get_revision(id).map_err(ApiError::internal)? {
+        Some(rev) => Ok(Json(rev)),
+        None => Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("no revision {id}"),
+        }),
+    }
+}
+
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    fn internal(e: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("{e:#}"),
         }
-    };
+    }
+}
 
-    info!(
-        "accepted bundle version={} claims={}",
-        new_bundle.version,
-        new_bundle.claims.len()
-    );
-    let version = new_bundle.version;
-    *slot = Some(new_bundle);
-
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "accepted_version": version })),
-    ))
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, self.message).into_response()
+    }
 }

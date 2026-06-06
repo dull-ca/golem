@@ -106,6 +106,15 @@ What it adds:
   within a budget, automatically push the previous bundle.
 - **Multi-key trust.** Per-tenant signing keys, with the operator's key as
   meta-key.
+- **Binary wire format.** Replace canonical JSON with a statically-typed
+  binary format (protobuf, msgpack-with-schema, or similar — pick on
+  Rust ergonomics and tooling story). The conceptual model — Bundle,
+  Claim, the kinds — doesn't change; serializer and codegen do. Removes
+  the canonical-form module, makes the wire byte-stable by
+  construction, and gives bundle-consuming tools generated types
+  instead of hand-rolled JSON parsing. Coordinated agent rollout: the
+  agent accepts both formats during the transition window, then drops
+  JSON once every host has been upgraded.
 
 ## M5 — managed control plane ⏳
 

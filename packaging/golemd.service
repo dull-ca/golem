@@ -1,6 +1,6 @@
 [Unit]
-Description=Golem fleet agent
-Documentation=https://github.com/yourname/golem
+Description=Golem bookkeeping agent
+Documentation=https://codeberg.org/dull/golem
 After=network-online.target
 Wants=network-online.target
 
@@ -8,24 +8,26 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/golemd \
     --state-dir /var/lib/golem \
-    --trusted-keys /etc/golem/trusted-keys \
     --node %H \
     --listen 127.0.0.1:7474
 Restart=on-failure
 RestartSec=5s
 
-# This service legitimately needs to do almost anything (install packages,
-# write to /etc, manage units), so most sandboxing is off. We do still:
-ProtectKernelTunables=false
+# The agent only reads/writes its own state dir and binds a localhost
+# port. Sandbox aggressively.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
 ProtectKernelModules=true
-ProtectControlGroups=false
-NoNewPrivileges=false
+ProtectControlGroups=true
 RestrictRealtime=true
 LockPersonality=true
 
-# State + journal location.
 StateDirectory=golem
 StateDirectoryMode=0700
+ReadWritePaths=/var/lib/golem
 
 [Install]
 WantedBy=multi-user.target

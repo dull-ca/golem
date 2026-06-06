@@ -1,255 +1,194 @@
 //! Shared types between `golemd` and `golemctl`.
 //!
-//! The Bundle is what crosses the trust boundary: signed by the operator,
-//! verified by the agent. Everything else is internal to the agent.
-
-pub mod canonical;
-pub use canonical::canonical_json;
+//! Three nouns:
+//!
+//! - [`Blueprint`] — what a user commissions. A name + a list of
+//!   packages they want present on the node.
+//! - [`State`] — the canonical resolved view across all currently
+//!   commissioned blueprints: each package mapped to the blueprints
+//!   that asked for it.
+//! - [`Revision`] — a historical entry in the node's journal. Every
+//!   commission / decommission produces one. Each revision embeds the
+//!   resolved [`State`] at that moment plus the [`Action`]s the agent
+//!   would take to transition from the previous revision to this one.
+//!
+//! The verbs: a user **commissions** a blueprint (requesting it be
+//! present) or **decommissions** it (requesting it be gone). What golem
+//! does in answer to a successful commission / decommission is **build**
+//! / **teardown** — the realization phase. Today nothing is realized;
+//! the [`Action`]s (`Install` / `Remove`) that a build / teardown would
+//! comprise are only recorded. No installation, no signing, no
+//! providers — this is a bookkeeping agent. Adding real-world
+//! enforcement happens layered on top of this, not in it.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-// ─── Identity ──────────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    File,
-    AptPackage,
-    SystemdUnit,
-    // M2+ — still addressable as an id even though the provider is virtual:
-    Quadlet,
-    // Future:
-    NftFragment,
-    CaddySite,
-}
-
-impl ProviderKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ProviderKind::File => "file",
-            ProviderKind::AptPackage => "apt_package",
-            ProviderKind::SystemdUnit => "systemd_unit",
-            ProviderKind::Quadlet => "quadlet",
-            ProviderKind::NftFragment => "nft_fragment",
-            ProviderKind::CaddySite => "caddy_site",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct ClaimId {
-    pub kind: ProviderKind,
-    pub key:  String,
-}
-
-impl std::fmt::Display for ClaimId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.kind.as_str(), self.key)
-    }
-}
-
-// ─── Specs ─────────────────────────────────────────────────────────────────
-
+/// What a user commissions.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum FileMarker {
-    /// We own the whole file. On unapply: restore backup if preexisting, else delete.
-    Owned,
-    /// Snippet wrapped in BEGIN/END markers inside a file we don't own.
-    BlockInFile,
-    /// File under a `.d/` drop-in dir — treated like Owned for us.
-    Dropin,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FileSpec {
-    pub path:    String,
-    pub content: String,
-    #[serde(default = "default_mode")]
-    pub mode:    u32,
-    #[serde(default = "default_root")]
-    pub owner:   String,
-    #[serde(default = "default_root")]
-    pub group:   String,
-    #[serde(default = "default_marker")]
-    pub marker:  FileMarker,
-}
-fn default_mode()   -> u32    { 0o644 }
-fn default_root()   -> String { "root".into() }
-fn default_marker() -> FileMarker { FileMarker::Owned }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AptPackageSpec {
-    pub name:    String,
+pub struct Blueprint {
+    pub name: String,
     #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub hold:    bool,
+    pub packages: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Scope { System, User }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SystemdUnitSpec {
-    pub name:    String,
-    #[serde(default = "default_true")]
-    pub enable:  bool,
-    #[serde(default = "default_true")]
-    pub active:  bool,
-    #[serde(default = "default_scope")]
-    pub scope:   Scope,
-}
-fn default_true()  -> bool  { true }
-fn default_scope() -> Scope { Scope::System }
-
-// ─── ClaimSpec (tagged union over the specs) ───────────────────────────────
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "spec", rename_all = "snake_case")]
-pub enum ClaimSpec {
-    File(FileSpec),
-    AptPackage(AptPackageSpec),
-    SystemdUnit(SystemdUnitSpec),
-    // Quadlet is expanded client-side (by the agent, before reconcile)
-    // into a File + SystemdUnit. But we accept it in the bundle for
-    // ergonomics.
-    Quadlet { name: String, body: String, active: bool },
+/// Canonical resolved state. `packages[name]` is the set of blueprint
+/// names that currently want `name` present. Empty `packages` means no
+/// blueprint is asking for anything (e.g. fresh node, or every
+/// blueprint has been decommissioned).
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct State {
+    pub packages: BTreeMap<String, BTreeSet<String>>,
 }
 
-// ─── The user-facing Claim ─────────────────────────────────────────────────
+impl State {
+    /// Recompute state from the full set of currently commissioned
+    /// blueprints.
+    pub fn resolve(blueprints: &BTreeMap<String, Blueprint>) -> Self {
+        let mut packages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for bp in blueprints.values() {
+            for pkg in &bp.packages {
+                packages
+                    .entry(pkg.clone())
+                    .or_default()
+                    .insert(bp.name.clone());
+            }
+        }
+        Self { packages }
+    }
 
-pub type OwnerId = String;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Claim {
-    pub id:     ClaimId,
-    #[serde(flatten)]
-    pub spec:   ClaimSpec,
-    pub owners: BTreeSet<OwnerId>,
-    #[serde(default)]
-    pub after:  Vec<ClaimId>,
+    /// Actions that would transition `from` → `self`. An `Install`
+    /// when a package newly appears; a `Remove` when it newly
+    /// disappears. Changes only to *which blueprints* want a package
+    /// (without the package itself entering or leaving) do not produce
+    /// actions.
+    pub fn actions_from(&self, prior: &State) -> Vec<Action> {
+        let prior_keys: BTreeSet<&String> = prior.packages.keys().collect();
+        let new_keys: BTreeSet<&String> = self.packages.keys().collect();
+        let mut actions = Vec::new();
+        for pkg in new_keys.difference(&prior_keys) {
+            actions.push(Action::Install {
+                package: (*pkg).clone(),
+            });
+        }
+        for pkg in prior_keys.difference(&new_keys) {
+            actions.push(Action::Remove {
+                package: (*pkg).clone(),
+            });
+        }
+        actions
+    }
 }
 
-// ─── Handlers (Ansible-style) ──────────────────────────────────────────────
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Handler {
-    pub source:  ClaimId,
-    pub targets: Vec<String>,   // unit names to restart
+/// A bookkeeping record of one step a build / teardown *would* take at
+/// a transition. No execution is implied today.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Action {
+    Install { package: String },
+    Remove { package: String },
 }
 
-// ─── Bundle (over the wire) ────────────────────────────────────────────────
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Bundle {
-    pub version:  u64,
-    pub node:     String,
-    pub claims:   Vec<Claim>,
-    #[serde(default)]
-    pub handlers: Vec<Handler>,
+/// What kind of transition produced this revision.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionKind {
+    /// The node's initial empty revision, written on first boot.
+    Init,
+    /// A blueprint was commissioned (new or replacing an existing one
+    /// of the same name).
+    Commission,
+    /// A blueprint was decommissioned by name.
+    Decommission,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignedBundle {
-    pub bundle:    Bundle,
-    pub signer_pk: String,   // hex ed25519 public key
-    pub signature: String,   // hex ed25519 sig over canonical JSON of bundle
+/// One entry in the node's journal.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Revision {
+    pub id: u64,
+    pub at: DateTime<Utc>,
+    pub kind: RevisionKind,
+    /// The blueprint name involved, when applicable. `None` for
+    /// [`RevisionKind::Init`].
+    pub blueprint: Option<String>,
+    /// Transition actions from the previous revision to this one.
+    pub actions: Vec<Action>,
+    /// The full resolved state as of this revision. Embedded so
+    /// querying `/revisions/:id` returns everything you need without
+    /// reconstructing.
+    pub state: State,
 }
 
-// ─── Agent-internal per-claim state ────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Health {
-    Healthy,
-    Degraded(String),
-    Unknown,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct Backup {
-    /// If true, the resource existed before we touched it.
-    pub existed:       bool,
-    /// For File claims: sha256 + content bytes (base64) of prior content.
-    pub prior_content: Option<String>,
-    pub prior_hash:    Option<String>,
-    pub prior_mode:    Option<u32>,
-    /// For SystemdUnit: prior active/enabled state.
-    pub prior_active:  Option<bool>,
-    pub prior_enabled: Option<bool>,
-}
-
-/// What a Provider's `capture` returns. Persisted forever once written;
-/// never recomputed for a given claim id. The honest-unapply machinery
-/// reads this — never re-derives — when reversing a mutation.
-///
-/// For the design rationale (capture-once-at-first-touch), see DESIGN.md §6.
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct Capture {
-    /// Did this resource exist before Golem ever touched this claim?
-    pub preexisting: bool,
-    /// Provider-specific backup data needed to restore prior state.
-    pub backup:      Backup,
-}
-
-/// Hard limit on a single claim's capture size. File contents that would
-/// exceed this cause `capture` to return `CaptureError::TooLarge` and the
-/// engine refuses the claim — surfacing it in `/status` rather than
-/// silently OOM-ing the agent.
-pub const MAX_CAPTURE_BYTES: usize = 1 << 20; // 1 MiB
-
-#[derive(Debug, thiserror::Error)]
-pub enum CaptureError {
-    #[error("capture exceeds {MAX_CAPTURE_BYTES} bytes (got {0})")]
-    TooLarge(usize),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ClaimState {
-    pub id:               ClaimId,
-    /// True once `capture` has run and been persisted for this claim. Capture
-    /// is one-shot per claim id; never re-derived. See DESIGN.md §6.
-    #[serde(default)]
-    pub captured:         bool,
-    /// Set at capture time, never recomputed. Mirror of `capture.preexisting`,
-    /// kept on ClaimState for cheap dispatch in unmutate.
-    pub preexisting:      bool,
-    /// Provider-specific captured prior state.
-    pub backup:           Backup,
-    pub last_applied:     Option<DateTime<Utc>>,
-    pub last_health:      Option<Health>,
-    /// For File-like claims: hash of what we last wrote. Lets us detect
-    /// "file didn't change, no handlers need firing."
-    pub content_hash:     Option<String>,
-    /// The last spec we applied. Stored so orphan-unapply can run without
-    /// needing the (now-departed) bundle to still hold the claim.
-    #[serde(default)]
-    pub last_spec:        Option<ClaimSpec>,
-}
-
-impl ClaimState {
-    pub fn fresh(id: ClaimId) -> Self {
-        Self {
-            id,
-            captured:        false,
-            preexisting:     false,
-            backup:          Backup::default(),
-            last_applied:    None,
-            last_health:     None,
-            content_hash:    None,
-            last_spec:       None,
+    fn blueprint(name: &str, pkgs: &[&str]) -> Blueprint {
+        Blueprint {
+            name: name.into(),
+            packages: pkgs.iter().map(|s| s.to_string()).collect(),
         }
     }
 
-    /// Reconstruct a Capture from the persisted ClaimState fields.
-    pub fn capture(&self) -> Capture {
-        Capture {
-            preexisting: self.preexisting,
-            backup:      self.backup.clone(),
-        }
+    #[test]
+    fn resolve_unions_packages_and_tracks_owners() {
+        let mut active = BTreeMap::new();
+        active.insert("web".into(), blueprint("web", &["nginx", "curl"]));
+        active.insert(
+            "monitoring".into(),
+            blueprint("monitoring", &["curl", "prometheus-node-exporter"]),
+        );
+        let st = State::resolve(&active);
+
+        assert_eq!(
+            st.packages["nginx"],
+            BTreeSet::from(["web".to_string()])
+        );
+        assert_eq!(
+            st.packages["curl"],
+            BTreeSet::from(["web".to_string(), "monitoring".to_string()])
+        );
+        assert_eq!(
+            st.packages["prometheus-node-exporter"],
+            BTreeSet::from(["monitoring".to_string()])
+        );
+    }
+
+    #[test]
+    fn decommissioning_one_blueprint_keeps_shared_packages() {
+        let mut active = BTreeMap::new();
+        active.insert("web".into(), blueprint("web", &["nginx", "curl"]));
+        active.insert("monitoring".into(), blueprint("monitoring", &["curl", "prom"]));
+        let before = State::resolve(&active);
+
+        active.remove("web");
+        let after = State::resolve(&active);
+
+        let actions = after.actions_from(&before);
+        // nginx is gone; curl stays (monitoring still wants it); prom stays.
+        assert_eq!(
+            actions,
+            vec![Action::Remove {
+                package: "nginx".into(),
+            }]
+        );
+        assert!(after.packages.contains_key("curl"));
+        assert!(after.packages.contains_key("prom"));
+    }
+
+    #[test]
+    fn actions_only_fire_when_set_membership_changes() {
+        // Two blueprints both wanting curl. Drop one; curl stays.
+        let mut active = BTreeMap::new();
+        active.insert("a".into(), blueprint("a", &["curl"]));
+        active.insert("b".into(), blueprint("b", &["curl"]));
+        let before = State::resolve(&active);
+
+        active.remove("a");
+        let after = State::resolve(&active);
+
+        let actions = after.actions_from(&before);
+        assert!(actions.is_empty(), "expected no actions, got {:?}", actions);
     }
 }
