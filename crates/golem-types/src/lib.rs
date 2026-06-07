@@ -1,122 +1,219 @@
-//! Shared types between `golemd` and `golemctl`.
+//! Shared model types for golem. See `TERMINOLOGY.md`.
 //!
-//! Three nouns:
-//!
-//! - [`Blueprint`] — what a user commissions. A name + a list of
-//!   packages they want present on the node.
-//! - [`State`] — the canonical resolved view across all currently
-//!   commissioned blueprints: each package mapped to the blueprints
-//!   that asked for it.
-//! - [`Revision`] — a historical entry in the node's journal. Every
-//!   commission / decommission produces one. Each revision embeds the
-//!   resolved [`State`] at that moment plus the [`Action`]s the agent
-//!   would take to transition from the previous revision to this one.
-//!
-//! The verbs: a user **commissions** a blueprint (requesting it be
-//! present) or **decommissions** it (requesting it be gone). What golem
-//! does in answer to a successful commission / decommission is **build**
-//! / **teardown** — the realization phase. Today nothing is realized;
-//! the [`Action`]s (`Install` / `Remove`) that a build / teardown would
-//! comprise are only recorded. No installation, no signing, no
-//! providers — this is a bookkeeping agent. Adding real-world
-//! enforcement happens layered on top of this, not in it.
+//! A [`Blueprint`] is a set of [`Host`]s; each Host carries the [`Workload`]s,
+//! [`Service`]s, and [`Ingress`] placed on it. [`State`] is the resolved view
+//! across every commissioned Blueprint; diffing two States yields the
+//! [`Action`]s a build/teardown comprises; each change is journalled as a
+//! [`Revision`].
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What a user commissions.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// A named, self-contained system: a set of Hosts and what runs on them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Blueprint {
     pub name: String,
     #[serde(default)]
-    pub packages: Vec<String>,
+    pub hosts: Vec<Host>,
 }
 
-/// Canonical resolved state. `packages[name]` is the set of blueprint
-/// names that currently want `name` present. Empty `packages` means no
-/// blueprint is asking for anything (e.g. fresh node, or every
-/// blueprint has been decommissioned).
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+/// A machine, and the container for everything that runs on it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Host {
+    pub name: String,
+    #[serde(default)]
+    pub workloads: Vec<Workload>,
+    #[serde(default)]
+    pub services: Vec<Service>,
+    #[serde(default)]
+    pub ingress: Vec<Ingress>,
+}
+
+/// A container that runs but is not attached to any network.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Workload {
+    pub name: String,
+    #[serde(default)]
+    pub image: String,
+}
+
+/// A container on the blueprint-internal network.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Service {
+    pub name: String,
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub port: u16,
+}
+
+/// How traffic is allowed into the blueprint.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Ingress {
+    pub name: String,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default)]
+    pub from: IngressFrom,
+    #[serde(default)]
+    pub port: u16,
+}
+
+/// Where ingress traffic is allowed to originate.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressFrom {
+    #[default]
+    World,
+    Internal,
+}
+
+/// The resolved view across every commissioned Blueprint: per host, each item
+/// name maps to the set of Blueprints that call for it. An item stays as long
+/// as at least one Blueprint wants it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct State {
-    pub packages: BTreeMap<String, BTreeSet<String>>,
+    pub hosts: BTreeMap<String, HostState>,
+}
+
+/// One host's slice of [`State`]: per item kind, each item name maps to the
+/// set of Blueprint names that call for it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostState {
+    pub workloads: BTreeMap<String, BTreeSet<String>>,
+    pub services: BTreeMap<String, BTreeSet<String>>,
+    pub ingress: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl State {
-    /// Recompute state from the full set of currently commissioned
-    /// blueprints.
+    /// Recompute the resolved state from the full set of commissioned
+    /// Blueprints.
     pub fn resolve(blueprints: &BTreeMap<String, Blueprint>) -> Self {
-        let mut packages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state = State::default();
         for bp in blueprints.values() {
-            for pkg in &bp.packages {
-                packages
-                    .entry(pkg.clone())
-                    .or_default()
-                    .insert(bp.name.clone());
+            for host in &bp.hosts {
+                let hs = state.hosts.entry(host.name.clone()).or_default();
+                for w in &host.workloads {
+                    hs.workloads.entry(w.name.clone()).or_default().insert(bp.name.clone());
+                }
+                for s in &host.services {
+                    hs.services.entry(s.name.clone()).or_default().insert(bp.name.clone());
+                }
+                for i in &host.ingress {
+                    hs.ingress.entry(i.name.clone()).or_default().insert(bp.name.clone());
+                }
             }
         }
-        Self { packages }
+        state
     }
 
-    /// Actions that would transition `from` → `self`. An `Install`
-    /// when a package newly appears; a `Remove` when it newly
-    /// disappears. Changes only to *which blueprints* want a package
-    /// (without the package itself entering or leaving) do not produce
-    /// actions.
+    /// The Actions that move `prior` → `self`: a build when an item newly
+    /// appears, a teardown when it newly disappears. A change only in *which*
+    /// Blueprints want an item produces no Action.
     pub fn actions_from(&self, prior: &State) -> Vec<Action> {
-        let prior_keys: BTreeSet<&String> = prior.packages.keys().collect();
-        let new_keys: BTreeSet<&String> = self.packages.keys().collect();
         let mut actions = Vec::new();
-        for pkg in new_keys.difference(&prior_keys) {
-            actions.push(Action::Install {
-                package: (*pkg).clone(),
-            });
-        }
-        for pkg in prior_keys.difference(&new_keys) {
-            actions.push(Action::Remove {
-                package: (*pkg).clone(),
-            });
+        let empty = HostState::default();
+        let hosts: BTreeSet<&String> = self.hosts.keys().chain(prior.hosts.keys()).collect();
+        for host in hosts {
+            let now = self.hosts.get(host).unwrap_or(&empty);
+            let was = prior.hosts.get(host).unwrap_or(&empty);
+            actions.extend(actions_for_kind(host, &was.workloads, &now.workloads, ItemKind::Workload));
+            actions.extend(actions_for_kind(host, &was.services, &now.services, ItemKind::Service));
+            actions.extend(actions_for_kind(host, &was.ingress, &now.ingress, ItemKind::Ingress));
         }
         actions
     }
 }
 
-/// A bookkeeping record of one step a build / teardown *would* take at
-/// a transition. No execution is implied today.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Action {
-    Install { package: String },
-    Remove { package: String },
+#[derive(Clone, Copy)]
+enum ItemKind {
+    Workload,
+    Service,
+    Ingress,
 }
 
-/// What kind of transition produced this revision.
+fn actions_for_kind(
+    host: &str,
+    was: &BTreeMap<String, BTreeSet<String>>,
+    now: &BTreeMap<String, BTreeSet<String>>,
+    kind: ItemKind,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    for name in now.keys() {
+        if !was.contains_key(name) {
+            actions.push(Action::build(kind, host, name));
+        }
+    }
+    for name in was.keys() {
+        if !now.contains_key(name) {
+            actions.push(Action::teardown(kind, host, name));
+        }
+    }
+    actions
+}
+
+/// One recorded step within a build/teardown.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum Action {
+    BuildWorkload { host: String, name: String },
+    TeardownWorkload { host: String, name: String },
+    BuildService { host: String, name: String },
+    TeardownService { host: String, name: String },
+    BuildIngress { host: String, name: String },
+    TeardownIngress { host: String, name: String },
+}
+
+impl Action {
+    fn build(kind: ItemKind, host: &str, name: &str) -> Self {
+        let (host, name) = (host.to_string(), name.to_string());
+        match kind {
+            ItemKind::Workload => Action::BuildWorkload { host, name },
+            ItemKind::Service => Action::BuildService { host, name },
+            ItemKind::Ingress => Action::BuildIngress { host, name },
+        }
+    }
+
+    fn teardown(kind: ItemKind, host: &str, name: &str) -> Self {
+        let (host, name) = (host.to_string(), name.to_string());
+        match kind {
+            ItemKind::Workload => Action::TeardownWorkload { host, name },
+            ItemKind::Service => Action::TeardownService { host, name },
+            ItemKind::Ingress => Action::TeardownIngress { host, name },
+        }
+    }
+
+    /// Which host this Action lands on.
+    pub fn host(&self) -> &str {
+        match self {
+            Action::BuildWorkload { host, .. }
+            | Action::TeardownWorkload { host, .. }
+            | Action::BuildService { host, .. }
+            | Action::TeardownService { host, .. }
+            | Action::BuildIngress { host, .. }
+            | Action::TeardownIngress { host, .. } => host,
+        }
+    }
+}
+
+/// What kind of change a [`Revision`] records.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RevisionKind {
-    /// The node's initial empty revision, written on first boot.
     Init,
-    /// A blueprint was commissioned (new or replacing an existing one
-    /// of the same name).
     Commission,
-    /// A blueprint was decommissioned by name.
     Decommission,
 }
 
-/// One entry in the node's journal.
+/// One append-only entry in the journal.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Revision {
     pub id: u64,
-    pub at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
     pub kind: RevisionKind,
-    /// The blueprint name involved, when applicable. `None` for
-    /// [`RevisionKind::Init`].
     pub blueprint: Option<String>,
-    /// Transition actions from the previous revision to this one.
     pub actions: Vec<Action>,
-    /// The full resolved state as of this revision. Embedded so
-    /// querying `/revisions/:id` returns everything you need without
-    /// reconstructing.
     pub state: State,
 }
 
@@ -124,71 +221,86 @@ pub struct Revision {
 mod tests {
     use super::*;
 
-    fn blueprint(name: &str, pkgs: &[&str]) -> Blueprint {
+    fn bp(name: &str, host: &str, services: &[&str]) -> Blueprint {
         Blueprint {
             name: name.into(),
-            packages: pkgs.iter().map(|s| s.to_string()).collect(),
+            hosts: vec![Host {
+                name: host.into(),
+                services: services
+                    .iter()
+                    .map(|s| Service { name: s.to_string(), ..Default::default() })
+                    .collect(),
+                ..Default::default()
+            }],
         }
     }
 
-    #[test]
-    fn resolve_unions_packages_and_tracks_owners() {
-        let mut active = BTreeMap::new();
-        active.insert("web".into(), blueprint("web", &["nginx", "curl"]));
-        active.insert(
-            "monitoring".into(),
-            blueprint("monitoring", &["curl", "prometheus-node-exporter"]),
-        );
-        let st = State::resolve(&active);
+    fn active(bps: &[Blueprint]) -> BTreeMap<String, Blueprint> {
+        bps.iter().map(|b| (b.name.clone(), b.clone())).collect()
+    }
 
+    #[test]
+    fn resolve_tracks_owning_blueprints() {
+        let st = State::resolve(&active(&[bp("a", "h1", &["nginx"]), bp("b", "h1", &["nginx", "pg"])]));
+        assert_eq!(st.hosts["h1"].services["nginx"], BTreeSet::from(["a".into(), "b".into()]));
+        assert_eq!(st.hosts["h1"].services["pg"], BTreeSet::from(["b".to_string()]));
+    }
+
+    #[test]
+    fn commission_builds_only_new_items() {
+        let s1 = State::resolve(&active(&[bp("a", "h1", &["nginx"])]));
+        let s2 = State::resolve(&active(&[bp("a", "h1", &["nginx"]), bp("b", "h1", &["nginx", "pg"])]));
+        // nginx already present (a wants it); only pg is newly built.
         assert_eq!(
-            st.packages["nginx"],
-            BTreeSet::from(["web".to_string()])
-        );
-        assert_eq!(
-            st.packages["curl"],
-            BTreeSet::from(["web".to_string(), "monitoring".to_string()])
-        );
-        assert_eq!(
-            st.packages["prometheus-node-exporter"],
-            BTreeSet::from(["monitoring".to_string()])
+            s2.actions_from(&s1),
+            vec![Action::BuildService { host: "h1".into(), name: "pg".into() }]
         );
     }
 
     #[test]
-    fn decommissioning_one_blueprint_keeps_shared_packages() {
-        let mut active = BTreeMap::new();
-        active.insert("web".into(), blueprint("web", &["nginx", "curl"]));
-        active.insert("monitoring".into(), blueprint("monitoring", &["curl", "prom"]));
-        let before = State::resolve(&active);
-
-        active.remove("web");
-        let after = State::resolve(&active);
-
-        let actions = after.actions_from(&before);
-        // nginx is gone; curl stays (monitoring still wants it); prom stays.
+    fn decommission_keeps_shared_tears_down_unique() {
+        let both = active(&[bp("a", "h1", &["nginx"]), bp("b", "h1", &["nginx", "pg"])]);
+        let s_both = State::resolve(&both);
+        let mut only_a = both.clone();
+        only_a.remove("b");
+        let s_a = State::resolve(&only_a);
+        // pg leaves; nginx stays (a still wants it).
         assert_eq!(
-            actions,
-            vec![Action::Remove {
-                package: "nginx".into(),
-            }]
+            s_a.actions_from(&s_both),
+            vec![Action::TeardownService { host: "h1".into(), name: "pg".into() }]
         );
-        assert!(after.packages.contains_key("curl"));
-        assert!(after.packages.contains_key("prom"));
+        assert!(s_a.hosts["h1"].services.contains_key("nginx"));
     }
 
     #[test]
-    fn actions_only_fire_when_set_membership_changes() {
-        // Two blueprints both wanting curl. Drop one; curl stays.
-        let mut active = BTreeMap::new();
-        active.insert("a".into(), blueprint("a", &["curl"]));
-        active.insert("b".into(), blueprint("b", &["curl"]));
-        let before = State::resolve(&active);
+    fn membership_only_change_produces_no_actions() {
+        let s1 = State::resolve(&active(&[bp("a", "h1", &["nginx"])]));
+        // b also wants nginx now, but nginx neither appears nor disappears.
+        let s2 = State::resolve(&active(&[bp("a", "h1", &["nginx"]), bp("b", "h1", &["nginx"])]));
+        assert!(s2.actions_from(&s1).is_empty());
+    }
 
-        active.remove("a");
-        let after = State::resolve(&active);
+    #[test]
+    fn diff_emits_the_right_variant_and_host_per_kind() {
+        let bp = Blueprint {
+            name: "a".into(),
+            hosts: vec![Host {
+                name: "h".into(),
+                workloads: vec![Workload { name: "w".into(), ..Default::default() }],
+                services: vec![Service { name: "s".into(), ..Default::default() }],
+                ingress: vec![Ingress { name: "i".into(), ..Default::default() }],
+            }],
+        };
+        let full = State::resolve(&active(&[bp]));
 
-        let actions = after.actions_from(&before);
-        assert!(actions.is_empty(), "expected no actions, got {:?}", actions);
+        let built = full.actions_from(&State::default());
+        assert!(built.contains(&Action::BuildWorkload { host: "h".into(), name: "w".into() }));
+        assert!(built.contains(&Action::BuildService { host: "h".into(), name: "s".into() }));
+        assert!(built.contains(&Action::BuildIngress { host: "h".into(), name: "i".into() }));
+
+        let torn = State::default().actions_from(&full);
+        assert!(torn.contains(&Action::TeardownWorkload { host: "h".into(), name: "w".into() }));
+        assert!(torn.contains(&Action::TeardownService { host: "h".into(), name: "s".into() }));
+        assert!(torn.contains(&Action::TeardownIngress { host: "h".into(), name: "i".into() }));
     }
 }

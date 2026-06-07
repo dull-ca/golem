@@ -1,12 +1,14 @@
-//! HTTP routes.
+//! HTTP surface over the foreman.
 //!
-//! - `POST   /blueprints`              commission (insert or replace)
-//! - `DELETE /blueprints/:name`        decommission
-//! - `GET    /blueprints`              list active
-//! - `GET    /state`                   current resolved state
-//! - `GET    /revisions`               full journal
-//! - `GET    /revisions/:id`           a single revision (state + actions)
-//! - `GET    /status`                  identity + latest revision id
+//! - `POST   /blueprints`        commission
+//! - `DELETE /blueprints/:name`  decommission
+//! - `GET    /blueprints`        list blueprints
+//! - `GET    /state`             resolved state
+//! - `GET    /revisions[/:id]`   the journal
+//! - `GET    /status`            host + latest revision
+//!
+//! The foreman is synchronous and blocking (sqlite, sleeps, retries), so every
+//! call runs on a blocking thread via [`blocking`], never on a runtime worker.
 
 use axum::{
     extract::{Path, State as AxState},
@@ -19,86 +21,85 @@ use golem_types::Blueprint;
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::store::Store;
+use crate::foreman::Foreman;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub node: String,
-    pub store: Arc<Store>,
+    pub foreman: Arc<Foreman>,
 }
 
-pub fn router(state: AppState) -> Router {
+pub fn router(app: AppState) -> Router {
     Router::new()
-        .route("/blueprints", post(commission).get(list_blueprints))
+        .route("/blueprints", post(commission).get(blueprints))
         .route("/blueprints/:name", delete(decommission))
-        .route("/state", get(current_state))
-        .route("/revisions", get(list_revisions))
-        .route("/revisions/:id", get(get_revision))
+        .route("/state", get(state))
+        .route("/revisions", get(revisions))
+        .route("/revisions/:id", get(revision))
         .route("/status", get(status))
-        .with_state(state)
+        .with_state(app)
+}
+
+/// Run blocking foreman work off the async runtime.
+async fn blocking<T, F>(foreman: Arc<Foreman>, f: F) -> Result<T, ApiError>
+where
+    F: FnOnce(&Foreman) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || f(&foreman))
+        .await
+        .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
+        .map_err(ApiError::internal)
 }
 
 #[derive(Serialize)]
-struct StatusBody {
-    node: String,
+struct Status {
+    host: String,
     latest_revision: Option<u64>,
 }
 
-async fn status(AxState(s): AxState<AppState>) -> impl IntoResponse {
-    let latest = s
-        .store
-        .list_revisions()
-        .map(|rs| rs.last().map(|r| r.id))
-        .unwrap_or(None);
-    Json(StatusBody {
-        node: s.node,
-        latest_revision: latest,
-    })
+async fn status(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    let host = s.foreman.host().to_string();
+    let latest = blocking(s.foreman.clone(), |f| f.latest_revision_id()).await?;
+    Ok(Json(Status { host, latest_revision: latest }))
 }
 
 async fn commission(
     AxState(s): AxState<AppState>,
     Json(bp): Json<Blueprint>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let rev = s.store.commission(bp).map_err(ApiError::internal)?;
-    Ok(Json(rev))
+    Ok(Json(blocking(s.foreman.clone(), move |f| f.commission(bp)).await?))
 }
 
 async fn decommission(
     AxState(s): AxState<AppState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    match s.store.decommission(&name).map_err(ApiError::internal)? {
+    let n = name.clone();
+    match blocking(s.foreman.clone(), move |f| f.decommission(&n)).await? {
         Some(rev) => Ok(Json(rev)),
-        None => Err(ApiError {
-            status: StatusCode::NOT_FOUND,
-            message: format!("no blueprint named {name:?}"),
-        }),
+        None => Err(ApiError::not_found(format!("no blueprint named {name:?}"))),
     }
 }
 
-async fn list_blueprints(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(s.store.list_blueprints().map_err(ApiError::internal)?))
+async fn blueprints(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), |f| f.blueprints()).await?))
 }
 
-async fn current_state(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(s.store.current_state().map_err(ApiError::internal)?))
+async fn state(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), |f| f.state()).await?))
 }
 
-async fn list_revisions(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(s.store.list_revisions().map_err(ApiError::internal)?))
+async fn revisions(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), |f| f.revisions()).await?))
 }
 
-async fn get_revision(
+async fn revision(
     AxState(s): AxState<AppState>,
     Path(id): Path<u64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    match s.store.get_revision(id).map_err(ApiError::internal)? {
+    match blocking(s.foreman.clone(), move |f| f.revision(id)).await? {
         Some(rev) => Ok(Json(rev)),
-        None => Err(ApiError {
-            status: StatusCode::NOT_FOUND,
-            message: format!("no revision {id}"),
-        }),
+        None => Err(ApiError::not_found(format!("no revision {id}"))),
     }
 }
 
@@ -109,10 +110,10 @@ struct ApiError {
 
 impl ApiError {
     fn internal(e: anyhow::Error) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("{e:#}"),
-        }
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: format!("{e:#}") }
+    }
+    fn not_found(message: String) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message }
     }
 }
 

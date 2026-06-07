@@ -1,0 +1,6 @@
+target/
+.git/
+.devenv/
+.claude/
+docs/
+*.md

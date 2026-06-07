@@ -1,14 +1,12 @@
-//! `golemd` — the bookkeeping agent.
-//!
-//! Accepts blueprints over HTTP (commission / decommission), persists
-//! them to SQLite, journals every change as a revision. Does not build
-//! or tear down anything on the host. That layer comes later.
-
-mod http;
-mod store;
+//! `golemd` — a golem: a foreman directing a builder, serving its plan room
+//! over HTTP.
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use golemd::builder::RandomBuilder;
+use golemd::foreman::Foreman;
+use golemd::http;
+use golemd::planroom::SqlitePlanRoom;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,17 +15,15 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "golem bookkeeping agent")]
+#[command(version, about = "golem agent")]
 struct Cli {
-    /// This node's name. Returned by /status; for now informational.
-    #[arg(long, env = "GOLEM_NODE")]
-    node: String,
-
-    /// Where to keep state.db.
+    /// This golem's host. Actions for this host are built locally.
+    #[arg(long, env = "GOLEM_HOST")]
+    host: String,
+    /// Directory holding the plan room database.
     #[arg(long, default_value = "/var/lib/golem")]
     state_dir: PathBuf,
-
-    /// HTTP listen address.
+    /// Address to serve the HTTP API on.
     #[arg(long, default_value = "127.0.0.1:7474")]
     listen: SocketAddr,
 }
@@ -40,20 +36,20 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     std::fs::create_dir_all(&cli.state_dir)
-        .with_context(|| format!("create state dir {}", cli.state_dir.display()))?;
+        .with_context(|| format!("create {}", cli.state_dir.display()))?;
 
-    let store = Arc::new(store::Store::open(&cli.state_dir.join("state.db"))?);
-    let state = http::AppState {
-        node: cli.node.clone(),
-        store,
-    };
+    let planroom = SqlitePlanRoom::open(&cli.state_dir.join("planroom.db"))?;
+    let foreman = Arc::new(Foreman::new(
+        cli.host.clone(),
+        Box::new(planroom),
+        Box::new(RandomBuilder::default()),
+    ));
 
-    let app = http::router(state);
+    let app = http::router(http::AppState { foreman });
     let listener = TcpListener::bind(cli.listen)
         .await
         .with_context(|| format!("bind {}", cli.listen))?;
-
-    info!(node = %cli.node, listen = %cli.listen, "golemd ready");
+    info!(host = %cli.host, listen = %cli.listen, "golemd ready");
     axum::serve(listener, app).await?;
     Ok(())
 }
