@@ -1,0 +1,33 @@
+{
+  "name": "tree-sitter-emet",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Emet configuration language",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "emet",
+    "parser"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^7.0.0",
+    "node-gyp-build": "^4.6.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.emet",
+      "file-types": [
+        "emet"
+      ],
+      "highlights": [
+        "queries/highlights.scm"
+      ],
+      "injections": [
+        "queries/injections.scm"
+      ]
+    }
+  ]
+}

@@ -12,5 +12,6 @@
     pkgs.bun
     pkgs.nodejs_20
     pkgs.nickel
+    pkgs.tree-sitter
   ];
 }

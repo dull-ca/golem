@@ -1,0 +1,18 @@
+[package]
+name = "emet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "emetc"
+
+[dependencies]
+ariadne = "0.4.1"
+chumsky = "0.10"
+
+[[bin]]
+name = "emetc"
+path = "src/main.rs"
+
+[lib]
+name = "emet"
+path = "src/lib.rs"

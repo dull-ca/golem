@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/golem-types", "crates/golemd", "crates/golemctl"]
+members = ["crates/golem-types", "crates/golemd", "crates/golemctl", "emet/crates/emet", "emet/crates/emet-lsp"]
 
 [workspace.package]
 version     = "0.1.0"

@@ -1,0 +1,342 @@
+//! Evaluation: a type-checked `Module` -> `Vec<Scroll>` (the value of `main`).
+//!
+//! Inference has already ruled out every runtime type error, so the many
+//! `unreachable!`s here are genuinely unreachable on a module that type-checks —
+//! each rests on an inference guarantee (an applied value is a function; a
+//! `case` scrutinee matches some arm; a glyph field is a `String`; …).
+//! `run_module` assumes its `Module` came through `check_module`.
+
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use crate::ast::*;
+use crate::ir::{Glyph, Scroll};
+use crate::prelude;
+
+pub type BuiltinFn = fn(Vec<Value>) -> Value;
+
+pub const RECURSION_LIMIT: u64 = 20_000;
+
+const EVAL_STACK_SIZE: usize = 512 * 1024 * 1024;
+
+pub struct EvalError {
+    pub msg: String,
+}
+
+/// A runtime value. Beyond the obvious literals and containers:
+/// `Data` is a saturated sum-type constructor (`Just 3`, `True`); `Closure` is
+/// a user lambda over a captured env; `Builtin` is a prelude function
+/// collecting `args` until it reaches `arity`, then calling `run`. An
+/// unsaturated constructor is either a `Builtin` (prelude constructors, see
+/// `prelude`) or a `Ctor` (user constructors) — both build a `Data` once
+/// saturated.
+#[derive(Clone)]
+pub enum Value {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Glyph(Glyph),
+    Scroll(Scroll),
+    List(Vec<Value>),
+    Record(BTreeMap<String, Value>),
+    Data { ctor: String, args: Vec<Value> },
+    Closure { name: Option<String>, param: String, body: Rc<Spanned<Expr>>, env: Env },
+    Builtin { name: String, arity: usize, args: Vec<Value>, run: BuiltinFn },
+    /// A user sum-type value constructor collecting its `arity` arguments,
+    /// yielding `Data { ctor, args }` once saturated (`apply`). A prelude
+    /// constructor instead rides on `Builtin`, whose `run` is a `fn` pointer
+    /// baked in at compile time — fine for a fixed constructor set, but user
+    /// constructors are only known at runtime, so this variant carries the name
+    /// and arity as data, letting one representation serve any user constructor.
+    Ctor { ctor: String, arity: usize, args: Vec<Value> },
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Str(s) => f.debug_tuple("Str").field(s).finish(),
+            Value::Int(n) => f.debug_tuple("Int").field(n).finish(),
+            Value::Float(x) => f.debug_tuple("Float").field(x).finish(),
+            Value::Glyph(g) => f.debug_tuple("Glyph").field(g).finish(),
+            Value::Scroll(s) => f.debug_tuple("Scroll").field(s).finish(),
+            Value::List(vs) => f.debug_tuple("List").field(vs).finish(),
+            Value::Record(m) => f.debug_tuple("Record").field(m).finish(),
+            Value::Data { ctor, args } => {
+                f.debug_struct("Data").field("ctor", ctor).field("args", args).finish()
+            }
+            Value::Closure { name, param, .. } => {
+                f.debug_struct("Closure").field("name", name).field("param", param).finish()
+            }
+            Value::Builtin { name, arity, args, .. } => f
+                .debug_struct("Builtin")
+                .field("name", name)
+                .field("arity", arity)
+                .field("args", args)
+                .finish(),
+            Value::Ctor { ctor, arity, args } => f
+                .debug_struct("Ctor")
+                .field("ctor", ctor)
+                .field("arity", arity)
+                .field("args", args)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Env(BTreeMap<String, Value>);
+impl Env {
+    fn get(&self, k: &str) -> Option<&Value> {
+        self.0.get(k)
+    }
+    pub fn insert(&self, k: String, v: Value) -> Env {
+        let mut m = self.0.clone();
+        m.insert(k, v);
+        Env(m)
+    }
+}
+
+fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalError> {
+    Ok(match &e.0 {
+        Expr::Str(s) => Value::Str(s.clone()),
+        Expr::Int(n) => Value::Int(*n),
+        Expr::Float(x) => Value::Float(*x),
+        Expr::Var(name) => env.get(name).cloned().unwrap_or_else(|| unreachable!("unbound {name}")),
+        Expr::AptPackage(name) => Value::Glyph(Glyph::AptPackage {
+            name: as_str(eval(env, name, depth)?),
+        }),
+        Expr::SystemdService(unit) => Value::Glyph(Glyph::SystemdService {
+            unit: as_str(eval(env, unit, depth)?),
+        }),
+        Expr::File { path, contents, mode } => Value::Glyph(Glyph::File {
+            path: as_str(eval(env, path, depth)?),
+            contents: as_str(eval(env, contents, depth)?),
+            mode: as_str(eval(env, mode, depth)?),
+        }),
+        Expr::LineInFile { path, line } => Value::Glyph(Glyph::LineInFile {
+            path: as_str(eval(env, path, depth)?),
+            line: as_str(eval(env, line, depth)?),
+        }),
+        Expr::Scroll { name, glyphs } => Value::Scroll(Scroll {
+            name: as_str(eval(env, name, depth)?),
+            glyphs: as_glyphs(eval(env, glyphs, depth)?),
+        }),
+        Expr::Ctor(name) => env.get(name).cloned().unwrap_or_else(|| unreachable!("unbound ctor {name}")),
+        Expr::List(items) => {
+            let mut vs = Vec::with_capacity(items.len());
+            for it in items {
+                vs.push(eval(env, it, depth)?);
+            }
+            Value::List(vs)
+        }
+        Expr::Lam { param, body } => Value::Closure {
+            name: None,
+            param: param.clone(),
+            body: Rc::new((**body).clone()),
+            env: env.clone(),
+        },
+        Expr::App(f, x) => {
+            let fv = eval(env, f, depth)?;
+            let xv = eval(env, x, depth)?;
+            apply(fv, xv, depth)?
+        }
+        Expr::Let { decls, body } => {
+            let mut e = env.clone();
+            for d in decls {
+                let v = eval_decl(&e, d, depth)?;
+                e = e.insert(d.name.clone(), v);
+            }
+            eval(&e, body, depth)?
+        }
+        Expr::Record(fields) => {
+            let mut m = BTreeMap::new();
+            for (k, v) in fields {
+                m.insert(k.clone(), eval(env, v, depth)?);
+            }
+            Value::Record(m)
+        }
+        Expr::Field(base, field) => match eval(env, base, depth)? {
+            Value::Record(mut m) => m.remove(field).unwrap_or_else(|| unreachable!()),
+            _ => unreachable!("field on non-record"),
+        },
+        Expr::If { cond, then_, else_ } => match eval(env, cond, depth)? {
+            Value::Data { ctor, .. } if ctor == "True" => eval(env, then_, depth)?,
+            Value::Data { ctor, .. } if ctor == "False" => eval(env, else_, depth)?,
+            _ => unreachable!("if condition is not a Bool"),
+        },
+        Expr::Case { scrutinee, arms } => {
+            let value = eval(env, scrutinee, depth)?;
+            for arm in arms {
+                let mut bindings = Vec::new();
+                if match_pattern(&arm.pat.0, &value, &mut bindings) {
+                    let mut arm_env = env.clone();
+                    for (name, v) in bindings {
+                        arm_env = arm_env.insert(name, v);
+                    }
+                    return eval(&arm_env, &arm.body, depth);
+                }
+            }
+            unreachable!("non-exhaustive case")
+        }
+    })
+}
+
+fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value)>) -> bool {
+    match pat {
+        Pattern::Wildcard => true,
+        Pattern::Var(name) => {
+            bindings.push((name.clone(), value.clone()));
+            true
+        }
+        Pattern::Str(s) => matches!(value, Value::Str(v) if v == s),
+        Pattern::Ctor(name, subpats) => match value {
+            Value::Data { ctor, args } if ctor == name && args.len() == subpats.len() => subpats
+                .iter()
+                .zip(args.iter())
+                .all(|(p, a)| match_pattern(&p.0, a, bindings)),
+            _ => false,
+        },
+    }
+}
+
+/// Apply a function value to one argument. A closure substitutes and evaluates
+/// its body; a builtin accumulates the argument and, once saturated (arg count
+/// reaches its arity), runs — otherwise it stays partially applied. This is the
+/// single apply path both user lambdas and higher-order builtins go through.
+pub fn apply_top(func: Value, arg: Value) -> Value {
+    let mut depth = 0;
+    match apply(func, arg, &mut depth) {
+        Ok(v) => v,
+        Err(e) => panic!("{}", e.msg),
+    }
+}
+
+pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalError> {
+    match func {
+        Value::Closure { name, param, body, env: captured } => {
+            *depth += 1;
+            if *depth > RECURSION_LIMIT {
+                return Err(EvalError {
+                    msg: "evaluation exceeded recursion limit (possible infinite recursion)"
+                        .to_string(),
+                });
+            }
+            let self_bound = match &name {
+                Some(n) => captured.insert(
+                    n.clone(),
+                    Value::Closure { name: name.clone(), param: param.clone(), body: body.clone(), env: captured.clone() },
+                ),
+                None => captured,
+            };
+            let result = eval(&self_bound.insert(param, arg), &body, depth);
+            *depth -= 1;
+            result
+        }
+        Value::Builtin { name, arity, mut args, run } => {
+            args.push(arg);
+            Ok(if args.len() == arity {
+                run(args)
+            } else {
+                Value::Builtin { name, arity, args, run }
+            })
+        }
+        Value::Ctor { ctor, arity, mut args } => {
+            args.push(arg);
+            Ok(if args.len() == arity {
+                Value::Data { ctor, args }
+            } else {
+                Value::Ctor { ctor, arity, args }
+            })
+        }
+        _ => unreachable!("applied non-function"),
+    }
+}
+
+fn eval_decl(env: &Env, d: &Decl, depth: &mut u64) -> Result<Value, EvalError> {
+    let mut e = d.body.clone();
+    for p in d.params.iter().rev() {
+        e = Spanned(Expr::Lam { param: p.clone(), body: Box::new(e) }, d.span.clone());
+    }
+    let value = eval(env, &e, depth)?;
+    Ok(name_closure(value, &d.name))
+}
+
+fn name_closure(value: Value, decl_name: &str) -> Value {
+    match value {
+        Value::Closure { name: _, param, body, env } => {
+            Value::Closure { name: Some(decl_name.to_string()), param, body, env }
+        }
+        other => other,
+    }
+}
+
+fn as_str(v: Value) -> String {
+    match v {
+        Value::Str(s) => s,
+        _ => unreachable!("expected Str"),
+    }
+}
+
+/// Evaluate the module's `main` to a scroll list.
+pub fn run_module(m: &Module) -> Result<Vec<Scroll>, EvalError> {
+    let m = m.clone();
+    std::thread::Builder::new()
+        .stack_size(EVAL_STACK_SIZE)
+        .spawn(move || eval_module(&m))
+        .expect("spawn eval thread")
+        .join()
+        .expect("eval thread panicked")
+}
+
+fn eval_module(m: &Module) -> Result<Vec<Scroll>, EvalError> {
+    let mut env = prelude::env();
+    // Seed every user constructor into the env before value decls, so a decl
+    // body can refer to one. A nullary variant (`Leaf`) is already a complete
+    // value, so it binds directly to `Data`; a variant with fields binds to a
+    // `Ctor` that becomes `Data` once applied to all of them (`apply`).
+    for td in &m.type_decls {
+        for variant in &td.variants {
+            let value = if variant.fields.is_empty() {
+                Value::Data { ctor: variant.name.clone(), args: Vec::new() }
+            } else {
+                Value::Ctor {
+                    ctor: variant.name.clone(),
+                    arity: variant.fields.len(),
+                    args: Vec::new(),
+                }
+            };
+            env = env.insert(variant.name.clone(), value);
+        }
+    }
+    let mut depth = 0;
+    for d in &m.decls {
+        let v = eval_decl(&env, d, &mut depth)?;
+        env = env.insert(d.name.clone(), v);
+    }
+    Ok(match env.get("main") {
+        Some(Value::List(items)) => items.iter().map(as_scroll).collect(),
+        Some(Value::Scroll(s)) => vec![s.clone()],
+        _ => vec![],
+    })
+}
+
+fn as_glyphs(v: Value) -> Vec<Glyph> {
+    match v {
+        Value::List(items) => items.iter().map(as_glyph).collect(),
+        _ => unreachable!("expected List of Glyph"),
+    }
+}
+
+fn as_glyph(v: &Value) -> Glyph {
+    match v {
+        Value::Glyph(g) => g.clone(),
+        _ => unreachable!("expected Glyph in glyph list"),
+    }
+}
+
+fn as_scroll(v: &Value) -> Scroll {
+    match v {
+        Value::Scroll(s) => s.clone(),
+        _ => unreachable!("expected Scroll in main list"),
+    }
+}

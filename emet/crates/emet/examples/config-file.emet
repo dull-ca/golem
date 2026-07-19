@@ -1,0 +1,29 @@
+-- A managed config file whose contents are built from a port number.
+-- The language renders the final string; the IR carries no placeholder.
+renderConfig : Int -> String
+renderConfig port =
+  String.join "\n"
+    [ "[server]"
+    , "listen = ${String.fromInt port}"
+    , "workers = 4"
+    ]
+
+siteFile : Int -> File
+siteFile port =
+  file
+    { path = "/etc/app/site.conf"
+    , contents = renderConfig port
+    , mode = "0644"
+    }
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "app"
+      , glyphs =
+          [ aptPackage { name = "app" }
+          , siteFile 8080
+          , systemdService { unit = "app.service" }
+          ]
+      }
+  ]

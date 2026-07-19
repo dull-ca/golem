@@ -1,0 +1,36 @@
+-- A heterogeneous fleet: web hosts and a database host with different glyphs,
+-- all in one main : List Scroll. List.append joins the two groups.
+webHost : String -> Scroll
+webHost name =
+  scroll
+    { name = name
+    , glyphs =
+        [ aptPackage { name = "nginx" }
+        , systemdService { unit = "nginx.service" }
+        , lineInFile
+            { path = "/etc/hosts"
+            , line = "10.0.0.1 db.internal"
+            }
+        ]
+    }
+
+dbHost : String -> Scroll
+dbHost name =
+  scroll
+    { name = name
+    , glyphs =
+        [ aptPackage { name = "postgresql" }
+        , systemdService { unit = "postgresql.service" }
+        , file
+            { path = "/etc/postgresql/tuning.conf"
+            , contents = "shared_buffers = 256MB"
+            , mode = "0644"
+            }
+        ]
+    }
+
+main : List Scroll
+main =
+  List.append
+    (List.map webHost [ "web-1", "web-2" ])
+    [ dbHost "db-1" ]

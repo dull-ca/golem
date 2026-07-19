@@ -1,0 +1,19 @@
+-- A user type picks each host's role; case maps the role to its glyphs.
+type Role = Web | Db
+
+glyphsFor : Role -> List Glyph
+glyphsFor role =
+  case role of
+    Web -> [ aptPackage { name = "nginx" }, systemdService { unit = "nginx.service" } ]
+    Db  -> [ aptPackage { name = "postgresql" }, systemdService { unit = "postgresql.service" } ]
+
+host : { name : String, role : Role } -> Scroll
+host h = scroll { name = h.name, glyphs = glyphsFor h.role }
+
+main : List Scroll
+main =
+  List.map host
+    [ { name = "web-1", role = Web }
+    , { name = "web-2", role = Web }
+    , { name = "db-1", role = Db }
+    ]

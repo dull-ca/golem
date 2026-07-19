@@ -1,0 +1,11 @@
+-- One host: install nginx and enable its systemd unit.
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ aptPackage { name = "nginx" }
+          , systemdService { unit = "nginx.service" }
+          ]
+      }
+  ]

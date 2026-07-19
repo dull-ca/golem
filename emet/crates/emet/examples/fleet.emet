@@ -1,0 +1,15 @@
+-- A fleet: one scroll per hostname, each installing nginx.
+-- List.map turns a list of names into a List Scroll.
+webHost : String -> Scroll
+webHost name =
+  scroll
+    { name = name
+    , glyphs =
+        [ aptPackage { name = "nginx" }
+        , systemdService { unit = "nginx.service" }
+        ]
+    }
+
+main : List Scroll
+main =
+  List.map webHost [ "web-1", "web-2", "web-3" ]

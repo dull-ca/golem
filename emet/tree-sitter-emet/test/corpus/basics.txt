@@ -1,0 +1,108 @@
+================================================================================
+Type signature and declaration
+================================================================================
+
+webserver : Str -> SystemdService
+webserver unit = systemdService { unit = unit }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_signature
+    name: (lower_identifier)
+    type: (function_type
+      (type_constructor (upper_identifier))
+      (type_constructor (upper_identifier))))
+  (value_declaration
+    name: (lower_identifier)
+    parameters: (variable (lower_identifier))
+    body: (application
+      function: (builtin)
+      argument: (record_expression
+        (field_assignment
+          name: (lower_identifier)
+          value: (variable (lower_identifier)))))))
+
+================================================================================
+String interpolation
+================================================================================
+
+x = "port ${String.fromInt n}"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (value_declaration
+    name: (lower_identifier)
+    body: (string
+      (string_content)
+      (interpolation
+        (interpolation_start)
+        (application
+          function: (qualified_identifier
+            module: (upper_identifier))
+          argument: (variable (lower_identifier)))
+        (interpolation_end)))))
+
+================================================================================
+Case expression
+================================================================================
+
+describe m =
+  case m of
+    Just n -> "a"
+    Nothing -> "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (value_declaration
+    name: (lower_identifier)
+    parameters: (variable (lower_identifier))
+    body: (case_expression
+      value: (variable (lower_identifier))
+      (case_arm
+        pattern: (constructor_pattern
+          constructor: (constructor (upper_identifier))
+          (variable (lower_identifier)))
+        body: (string (string_content)))
+      (case_arm
+        pattern: (constructor (upper_identifier))
+        body: (string (string_content))))))
+
+================================================================================
+If and operators
+================================================================================
+
+tag n = if n > 1000 then "high" else "low"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (value_declaration
+    name: (lower_identifier)
+    parameters: (variable (lower_identifier))
+    body: (if_expression
+      condition: (binary_expression
+        left: (variable (lower_identifier))
+        operator: (operator)
+        right: (number))
+      consequence: (string (string_content))
+      alternative: (string (string_content)))))
+
+================================================================================
+Lambda and field access
+================================================================================
+
+f = \x -> x.name
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (value_declaration
+    name: (lower_identifier)
+    body: (lambda
+      parameters: (variable (lower_identifier))
+      body: (field_access
+        (variable (lower_identifier))
+        field: (lower_identifier)))))

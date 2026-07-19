@@ -1,0 +1,1 @@
+main = let u = "redis.service" in [ scroll { name = "cache", glyphs = [ aptPackage { name = "redis" }, systemdService { unit = u } ] } ]
