@@ -1,94 +1,124 @@
-//! Tiny HTTP server for operator pushes and status checks.
+//! HTTP surface over the foreman.
 //!
-//! Endpoints:
-//!   POST /bundle   — accept a SignedBundle JSON. Verify, swap into shared
-//!                    state, and return 202 Accepted. Reconciler will pick
-//!                    it up on the next tick.
-//!   GET  /status   — current bundle version + last tick summary.
-//!   GET  /healthz  — process liveness.
+//! - `POST   /blueprints`        commission
+//! - `DELETE /blueprints/:name`  decommission
+//! - `GET    /blueprints`        list blueprints
+//! - `GET    /state`             resolved state
+//! - `GET    /revisions[/:id]`   the journal
+//! - `GET    /status`            host + latest revision
 //!
-//! Bind to localhost or a Unix socket; trust comes from the ed25519
-//! signature on the bundle, not from network ACLs. (You'd still want to
-//! restrict the socket — over Nebula, or unix-domain only — but the
-//! cryptographic story is what makes this safe.)
+//! The foreman is synchronous and blocking (sqlite, sleeps, retries), so every
+//! call runs on a blocking thread via [`blocking`], never on a runtime worker.
 
 use axum::{
-    extract::State,
+    extract::{Path, State as AxState},
     http::StatusCode,
-    routing::{get, post},
-    Json, Router,
+    response::{IntoResponse, Json},
+    routing::{delete, get, post},
+    Router,
 };
-use golem_types::Bundle;
+use golem_types::Blueprint;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
 
-use crate::bundle::{load_signed, TrustConfig};
+use crate::foreman::Foreman;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub trust:  Arc<TrustConfig>,
-    pub bundle: Arc<RwLock<Option<Bundle>>>,
+    pub foreman: Arc<Foreman>,
+}
+
+pub fn router(app: AppState) -> Router {
+    Router::new()
+        .route("/blueprints", post(commission).get(blueprints))
+        .route("/blueprints/:name", delete(decommission))
+        .route("/state", get(state))
+        .route("/revisions", get(revisions))
+        .route("/revisions/:id", get(revision))
+        .route("/status", get(status))
+        .with_state(app)
+}
+
+/// Run blocking foreman work off the async runtime.
+async fn blocking<T, F>(foreman: Arc<Foreman>, f: F) -> Result<T, ApiError>
+where
+    F: FnOnce(&Foreman) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || f(&foreman))
+        .await
+        .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
+        .map_err(ApiError::internal)
 }
 
 #[derive(Serialize)]
-struct StatusResp {
-    bundle_version: Option<u64>,
-    node:           String,
-    claim_count:    usize,
+struct Status {
+    host: String,
+    latest_revision: Option<u64>,
 }
 
-pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/bundle",  post(post_bundle))
-        .route("/status",  get(get_status))
-        .route("/healthz", get(get_healthz))
-        .with_state(state)
+async fn status(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    let host = s.foreman.host().to_string();
+    let latest = blocking(s.foreman.clone(), |f| f.latest_revision_id()).await?;
+    Ok(Json(Status { host, latest_revision: latest }))
 }
 
-async fn get_healthz() -> &'static str { "ok\n" }
-
-async fn get_status(State(s): State<AppState>) -> Json<StatusResp> {
-    let b = s.bundle.read().await;
-    Json(StatusResp {
-        bundle_version: b.as_ref().map(|b| b.version),
-        node:           s.trust.node_name.clone(),
-        claim_count:    b.as_ref().map(|b| b.claims.len()).unwrap_or(0),
-    })
+async fn commission(
+    AxState(s): AxState<AppState>,
+    Json(bp): Json<Blueprint>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), move |f| f.commission(bp)).await?))
 }
 
-async fn post_bundle(
-    State(s): State<AppState>,
-    body: axum::body::Bytes,
-) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
-    // TOCTOU fix: hold the write-guard across the entire read-validate-write
-    // window. Without this, two concurrent POSTs both reading prev_version=N
-    // would both accept their (N+1, N+2) bundles in the wrong order — older
-    // wins. With the guard held, the second writer reads the first writer's
-    // new prev_version and rejects via the monotonicity check inside
-    // load_signed.
-    let mut slot = s.bundle.write().await;
-    let prev_version = slot.as_ref().map(|b| b.version);
+async fn decommission(
+    AxState(s): AxState<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let n = name.clone();
+    match blocking(s.foreman.clone(), move |f| f.decommission(&n)).await? {
+        Some(rev) => Ok(Json(rev)),
+        None => Err(ApiError::not_found(format!("no blueprint named {name:?}"))),
+    }
+}
 
-    let new_bundle = match load_signed(&body, &s.trust, prev_version) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("rejected bundle: {e:#}");
-            return Err((StatusCode::BAD_REQUEST, format!("{e:#}")));
-        }
-    };
+async fn blueprints(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), |f| f.blueprints()).await?))
+}
 
-    info!(
-        "accepted bundle version={} claims={}",
-        new_bundle.version,
-        new_bundle.claims.len()
-    );
-    let version = new_bundle.version;
-    *slot = Some(new_bundle);
+async fn state(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), |f| f.state()).await?))
+}
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "accepted_version": version })),
-    ))
+async fn revisions(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(blocking(s.foreman.clone(), |f| f.revisions()).await?))
+}
+
+async fn revision(
+    AxState(s): AxState<AppState>,
+    Path(id): Path<u64>,
+) -> Result<impl IntoResponse, ApiError> {
+    match blocking(s.foreman.clone(), move |f| f.revision(id)).await? {
+        Some(rev) => Ok(Json(rev)),
+        None => Err(ApiError::not_found(format!("no revision {id}"))),
+    }
+}
+
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    fn internal(e: anyhow::Error) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: format!("{e:#}") }
+    }
+    fn not_found(message: String) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, self.message).into_response()
+    }
 }

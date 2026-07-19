@@ -1,81 +1,145 @@
 # Quickstart
 
-> **Status today (M1):** the layer-3 engine (File / AptPackage / SystemdUnit providers, signed bundles, journal-before-mutate, orphan sweep) is the part that's working. The Nickel-driven `golemctl apply` flow described below is the M2 target — the existing `examples/simple/config.ncl` does not yet evaluate cleanly against current Nickel (see REVIEW.md §2 for the Nickel-stdlib issues to fix). For an end-to-end M1 demo, use the hand-written JSON bundles in `smoke-test/` and the `golemctl sign` path described under "Single-node test" below. The full flow described next is what M2 will deliver.
+> **Scope today.** Golem is a per-node bookkeeper for *package
+> declarations*. You submit named declarations (each one a list of
+> packages you want present). The node merges them into a canonical
+> state — each package mapped to which declarations want it — and
+> journals every submit/withdraw as a revision. **Nothing is
+> installed.** The agent does not touch the host. The whole point of
+> this slice is to nail the bookkeeping model before any enforcement
+> code goes near it.
 
-Build static binaries:
+## Build
 
-    ./build-static.sh
+```bash
+cargo build --release -p golemd -p golemctl
+```
 
-Generate an operator keypair:
+(Static musl builds via `./build-static.sh` still work if you want
+them; not required for local hacking.)
 
-    ./target/x86_64-unknown-linux-musl/release/golemctl keygen ./operator
+## Run the agent
 
-This creates `operator.sk` (private, mode 0600) and `operator.pk` (public).
+```bash
+./target/release/golemd --node dev-01 \
+  --state-dir /tmp/golem-state \
+  --listen 127.0.0.1:7474
+```
 
-Distribute the public key to every node — it becomes their trusted root:
+State lives in `/tmp/golem-state/state.db` (SQLite, WAL). Removing
+that directory resets the node.
 
-    sudo install -d -m 0755 /etc/golem
-    sudo cp operator.pk /etc/golem/trusted-keys
+## A Declaration in Nickel
 
-Install the agent on each node:
+The whole input language is one record:
 
-    sudo install -m 0755 target/x86_64-unknown-linux-musl/release/golemd /usr/local/bin/
-    sudo install -m 0644 packaging/golemd.service /etc/systemd/system/
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now golemd
+```nickel
+let g = import "../../nickel/lib.ncl" in
+{
+  name     = "web",
+  packages = ["nginx", "curl", "git"],
+} | g.Declaration
+```
 
-Apply the example config (from your laptop):
+That's it. A `name`, a list of `packages`. Three canonical
+declarations are in `examples/canonical/` — `base`, `web`,
+`monitoring`. Their package sets overlap on purpose so you can watch
+the refcounting work.
 
-    cd examples/simple
-    golemctl apply config.ncl ../../operator.sk host-addrs.json
+## Submit and inspect
 
-What happens on each node:
+```bash
+# Submit each declaration.
+./target/release/golemctl submit examples/canonical/base.ncl       http://127.0.0.1:7474
+./target/release/golemctl submit examples/canonical/web.ncl        http://127.0.0.1:7474
+./target/release/golemctl submit examples/canonical/monitoring.ncl http://127.0.0.1:7474
+```
 
-  1. golemctl runs `nickel export` to evaluate `config.ncl` for that node.
-  2. The bundle is signed with `operator.sk`.
-  3. The signed bundle is POSTed to `http://<addr>:7474/bundle`.
-  4. The agent verifies the signature against `/etc/golem/trusted-keys`,
-     validates the layer-3 claim DAG, and swaps the in-memory desired set.
-  5. On the next reconcile tick (≤30s), the agent installs podman / nginx,
-     drops the .container files (one per service on this host),
-     applies any nft fragments, creates DNS records, daemon-reloads, and
-     starts the units.
+Each submit returns the new revision (id, kind, actions, resolved
+state).
 
-The `examples/simple/config.ncl` is the canonical small example: a
-lichess-shaped slice across three hosts (edge / app / data) with a service
-template, `allow_from` firewall, ingress rate limiting, and first-class
-DNS. See `nickel/types.ncl`, `nickel/host.ncl`, and `nickel/inventory.ncl`
-for the contracts the user fills in.
+```bash
+./target/release/golemctl state http://127.0.0.1:7474
+```
 
-Single-node test on your dev box (no remote):
+→ canonical state. Each package lists the declarations that want it:
 
-    # M1-ready: hand-write a bundle, sign it, and run the agent against it.
-    # No Nickel involved — the smoke-test directory has working examples.
-    golemctl sign smoke-test/bundle-v1-install.json operator.sk > /tmp/signed.json
+```json
+{
+  "packages": {
+    "curl":                     ["base", "monitoring", "web"],
+    "git":                      ["base", "web"],
+    "nginx":                    ["web"],
+    "prometheus-node-exporter": ["monitoring"]
+  }
+}
+```
 
-    # Run the agent in the foreground, loading from disk
-    sudo ./target/release/golemd \
-        --node test-01 \
-        --state-dir /tmp/golem-state \
-        --trusted-keys ./operator.pk \
-        --bundle /tmp/signed.json \
-        --listen 127.0.0.1:7474
+## Withdraw, watch refcounts work
 
-    # Once Nickel translation lands (M2), the `golemctl eval` form will work:
-    #   golemctl eval examples/simple/config.ncl app-01 > /tmp/bundle.json
+```bash
+./target/release/golemctl withdraw web http://127.0.0.1:7474
+./target/release/golemctl state    http://127.0.0.1:7474
+```
 
-Inspecting state:
+`nginx` is gone (only `web` wanted it). `curl` stays (base + monitoring
+still do). `git` stays (base still does).
 
-    curl -s http://127.0.0.1:7474/status | jq
-    sqlite3 /var/lib/golem/state.db 'SELECT id_kind, id_key FROM claim_state;'
+```json
+{
+  "packages": {
+    "curl":                     ["base", "monitoring"],
+    "git":                      ["base"],
+    "prometheus-node-exporter": ["monitoring"]
+  }
+}
+```
 
-Containerized integration test (no host system pollution):
+## The journal
 
-    docker build -t golem-smoke:trixie crates/golemd/tests/fixtures
-    cargo build --release -p golemd
-    cargo test -p golemd --test smoke_install_remove --release -- --ignored --nocapture
+Every submit/withdraw is a revision. The first revision is `init`
+(empty state, written when the node boots for the first time).
 
-This brings up a fresh `debian:trixie + systemd` container, installs and removes
-caddy through the agent, and asserts the journal cleans up to zero rows. ~20s
-end-to-end. See `smoke-test/run.sh` for the bash equivalent including the four
-`GOLEM_CRASH_AFTER` injection points that exercise crash recovery.
+```bash
+./target/release/golemctl history http://127.0.0.1:7474
+./target/release/golemctl show    http://127.0.0.1:7474 3
+```
+
+Each revision carries:
+
+- `id`, `at`, `kind` (`init` / `submit` / `withdraw`)
+- `declaration` — which declaration changed (null for `init`)
+- `actions` — what would have to happen at the system level
+  (`{"kind":"install","package":"nginx"}` etc.) to transition from the
+  previous revision to this one. **These are recorded, not executed.**
+- `state` — the full resolved state at this revision
+
+So you can answer "what was the state at revision 5?" with one HTTP
+call, and "what actions did revision 6 record?" with another.
+
+## Manual HTTP, if you prefer
+
+```bash
+curl -X POST http://127.0.0.1:7474/declarations \
+  -H 'content-type: application/json' \
+  -d '{"name":"adhoc","packages":["htop","jq"]}'
+
+curl    http://127.0.0.1:7474/state | jq
+curl    http://127.0.0.1:7474/revisions | jq
+curl -X DELETE http://127.0.0.1:7474/declarations/adhoc
+```
+
+## What this isn't (yet)
+
+- **No enforcement.** Nothing reaches apt, systemd, the filesystem,
+  the network. Adding enforcement layers on top of this — the next
+  pass once the bookkeeping model is settled.
+- **No signing.** Anyone who can reach the agent's port can submit
+  declarations. Trust is its own concern; we'll bolt ed25519 back on
+  when it's needed, and possibly migrate the wire format off JSON at
+  the same time (see CLAUDE.md).
+- **No multi-node.** One agent, one node, one URL. The `--node`
+  argument is just for `/status`.
+- **No claim kinds beyond packages.** A Declaration's `packages` field
+  is a list of strings; the agent doesn't try to parse them as apt /
+  brew / anything. They're labels.

@@ -1,6 +1,6 @@
 ---
 title: Bundle format
-description: The wire format the agent verifies and applies.
+description: The conceptual model the agent verifies and applies. Today's wire encoding is JSON; the planned migration is to a typed binary format.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
@@ -9,7 +9,43 @@ A bundle is the operator's instruction to the agent for one specific host.
 The Nickel toolkit produces it (called via `golemctl eval`); `golemd`
 applies it.
 
-## Top-level shape
+<Aside type="note" title="Wire encoding is an implementation detail">
+  The JSON examples on this page are the **current** representation.
+  The conceptual model — Bundle, Claim, claim kinds, ownership,
+  ordering, handlers — is the actual contract between `golemctl` and
+  `golemd`. The plan of record is to migrate the encoding to a
+  statically-typed binary format (protobuf or similar) with generated
+  types on both sides. The model doesn't change; the bytes do.
+
+  When that lands, JSON drops out of the trust path. Don't write
+  tooling that depends on JSON-specific details (key ordering,
+  whitespace, base64 framing) — those won't survive.
+</Aside>
+
+## The model
+
+A `Bundle` carries:
+
+- A monotonically-increasing **version** the agent uses to reject
+  stale bundles.
+- A **node** identifier: the host this bundle is for.
+- A list of **Claims**: idempotent, declarative assertions of
+  individual resources' desired state.
+- A list of **Handlers**: "if source claim changed, restart target
+  units."
+
+A `Claim` carries:
+
+- An **id**: `(kind, key)` — globally unique within a bundle.
+- A **spec**: the kind-specific payload (file contents, package name,
+  unit name + flags, quadlet body, nft fragment body, DNS record).
+- **owners**: free-form labels for observability and refcounting.
+- **after**: claim ids that must apply before this one. Forms a DAG.
+
+The bundle is signed by an ed25519 operator key. The agent verifies the
+signature, checks the signer is trusted, and applies on the next tick.
+
+## Current encoding (JSON)
 
 ```json
 {
@@ -20,7 +56,7 @@ applies it.
 }
 ```
 
-Then signed:
+Signed envelope:
 
 ```json
 {
@@ -30,8 +66,9 @@ Then signed:
 }
 ```
 
-The agent verifies `signature` against `signer` over the canonical bytes of
-`bundle`, checks `signer` is in `/etc/golem/trusted-keys`, then applies.
+The agent verifies `signature` against `signer` over the canonical
+bytes of `bundle`, checks `signer` is in `/etc/golem/trusted-keys`,
+then applies.
 
 ## `version`
 
@@ -220,30 +257,33 @@ leave the source's content identical. The agent compares the canonical-form
 of the new spec to the journal's last_applied form; if they're byte-equal,
 no handler fires.
 
-## Canonical form
+## Signature stability — and where it's going
 
-Bundle signing is over a **canonical JSON** representation:
+Signing requires byte-stable serialization. Today that means **canonical
+JSON**:
 
 - Object keys are sorted lexicographically at every level.
 - Numbers serialize without trailing zeros.
 - Strings are JSON-escaped using the standard rules.
 - No trailing whitespace.
 
-This is implemented in `crates/golem-types/src/canonical.rs` with an explicit
-recursive walker — *not* by relying on `serde_json/preserve_order`, which is
-a feature flag that can be enabled at the workspace level and silently break
-signature stability.
+Implemented in `crates/golem-types/src/canonical.rs` with an explicit
+recursive walker — *not* by relying on `serde_json/preserve_order`,
+which is a feature flag that can be enabled at the workspace level and
+silently break signature stability.
 
-If you write a bundle by hand and `golemctl sign` produces a signature that
-doesn't verify, the most likely cause is a key-ordering mismatch. The signer
-re-canonicalizes; the verifier re-canonicalizes; if they don't agree, your
-JSON has a feature you didn't expect (NaN? Comments? UTF-8 BOM?).
+If you write a bundle by hand and `golemctl sign` produces a signature
+that doesn't verify, the most likely cause is a key-ordering mismatch.
 
-<Aside type="note" title="Why not just protobuf?">
-  Because the bundle is also the Nickel translator's output, and Nickel's
-  natural export format is JSON. JSON-with-canonical-form is the lowest-friction
-  path. If we ever need binary efficiency, the canonical form is already the
-  bytes-on-the-wire — protobuf can wrap it later.
+<Aside type="caution" title="Hand-writing JSON bundles is M1-only">
+  The hand-written-JSON workflow exists because M1 ships before the
+  Nickel translator does. Once M2 lands, all bundles come from
+  `golemctl apply`, and the canonicalization layer disappears in
+  favor of a binary format that's byte-stable by construction
+  (protobuf, msgpack-with-schema, or similar — choice TBD on typing
+  and Rust ergonomics). If you're building tooling, build it against
+  the conceptual model in `nickel/claims.ncl` and
+  `crates/golem-types/`, not against the JSON shape.
 </Aside>
 
 ## What the agent does on receipt
