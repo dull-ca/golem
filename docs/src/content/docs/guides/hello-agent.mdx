@@ -1,152 +1,116 @@
 ---
-title: Tier 1 — One service
-description: The smallest deploy. One host, one container, one public hostname, with the DNS record golem owns.
+title: A first glyph
+description: The smallest end-to-end run — one host, one package, one unit — from Emet source through a manifest to a reconciled box.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-<Aside type="caution" title="M2 target">
-  This guide describes the Nickel input language the M2 translator
-  produces bundles from. The agent itself runs today (M1) — to exercise
-  it now, see the smoke test and JSON wire-format walkthrough in
-  [QUICKSTART.md](https://codeberg.org/dull/golem/src/branch/main/QUICKSTART.md)
-  and the [bundle format reference](/reference/bundle-format/).
-</Aside>
-
-The shape of every golem deploy is the same: an inventory of hosts,
-each carrying an array of `fragments` — small composable units built
-from primitives like `g.container`, `g.firewall`, `g.site`. This guide
-is that shape at its smallest. One host. One container behind one
-public hostname.
+The smallest useful fleet is one host with two glyphs: install a package and
+enable its unit. This guide takes it from Emet source to a reconciled box
+and back.
 
 ## The whole thing
 
-```nickel
-let g = import "../../nickel/lib.ncl" in
-
-let inventory = {
-  hosts = {
-    "box-01" = {
-      public_ip = "203.0.113.10",
-      vrack_ip  = "10.42.0.1",
-      fragments = [
-        # The container — and the firewall + ingress around it.
-        g.contrib.web_service {
-          name  = "hello",
-          image = "ghcr.io/example/hello:v1",
-          port  = 8080,
-          allow = ["10.42.0.1"],
-        },
-
-        # Public HTTPS termination. Owns the DNS record.
-        g.contrib.ingress {
-          host     = "hello.example.com",
-          upstream = "%{g.ref.service "hello"}",
-          dns      = true,
-          dns_ip   = "203.0.113.10",
-        },
-      ],
-      services = [{ name = "hello", port = 8080 }],
-    },
-  },
-} in
-
-{ bundle_for = g.bundle_for inventory }
+```elm
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ aptPackage { name = "nginx" }
+          , systemdService { unit = "nginx.service" }
+          ]
+      }
+  ]
 ```
 
-That's the deploy. One host with one workload (the container + its
-firewall + the matching service-name registration) and one ingress.
+Save it as `web.emet`. That is the deploy: one scroll named `web`, two
+glyphs.
 
-- **`g.contrib.web_service`** combines `g.package "podman"` +
-  `g.container` + `g.firewall`. It's a workload that listens on a port
-  with firewall rules. Read `nickel/contrib.ncl` if you want to see how
-  it's built — it's about 12 lines.
-- **`g.contrib.ingress`** combines `g.package "nginx"` + `g.unit
-  "nginx.service"` + `g.site` + (optionally) `g.dns_record`. Public
-  HTTPS via nginx with the DNS record golem owns.
-- **`g.ref.service "hello"`** resolves to `10.42.0.1:8080` at
-  translation time — the resolver finds which host owns the `hello`
-  service (this same box) and which port it's on.
-- **`services = [{ name = "hello", port = 8080 }]`** registers the
-  service-name → port mapping for the resolver.
+## Compile it
+
+Look at the plan before shipping anything:
+
+```bash
+emetc build web.emet --text
+```
+
+```
+planned scrolls (1):
+  scroll `web` (2 glyphs):
+    * ensure apt package `nginx` installed
+    * ensure systemd unit `nginx.service` enabled and started
+```
+
+The binary manifest is the default output; `--text` is the readable view.
 
 ## Apply it
 
 <Steps>
-1. From the operator's laptop:
+1. Start the agent as host `web`. Use the `host` reconciler on a Debian box
+   for real effects, or `fake` to see the plan enacted in memory:
 
    ```bash
-   golemctl apply config.ncl operator.sk host-addrs.json
+   golemd --host web --reconciler host --listen 127.0.0.1:7474
    ```
 
-2. Wait one tick (the agent reconciles every 30s by default):
+2. From your laptop, compile-and-ship in one command:
 
    ```bash
-   curl -s http://10.42.0.1:7474/status | jq
+   golemctl apply web.emet http://127.0.0.1:7474
    ```
 
-3. Hit the hostname. The DNS record is live, TLS is provisioned, traffic
-   reaches your container:
+3. Inspect what the node applied:
 
    ```bash
-   curl https://hello.example.com
+   golemctl state http://127.0.0.1:7474
    ```
+
+   You get the applied scroll and its content id.
 </Steps>
 
-## What golem produced under the hood
+## What golem did
 
-The Nickel evaluation produces a Bundle for `box-01` with roughly nine
-claims that the agent then applies:
+The agent selected the `web` scroll, diffed it against an empty journal, and
+enacted two `Install` ops:
 
-| Claim | Why |
-| --- | --- |
-| `apt_package: podman` | Required for any container. |
-| `file: /etc/containers/systemd/hello.container` | The Quadlet definition. |
-| `systemd_unit: hello.service` | Auto-generated by systemd from the quadlet. |
-| `file: /etc/nftables.d/hello-allow.nft` | Firewall rule allowing port 8080 only from `10.42.0.1`. |
-| `apt_package: nginx` | For the ingress. |
-| `file: /etc/nginx/sites-enabled/hello.example.com.conf` | The nginx site block routing `hello.example.com` to the `hello` service. |
-| `systemd_unit: nginx.service` | Enabled and active. |
-| `dns_record: hello.example.com A` | A record pointing at `203.0.113.10`. |
+| Glyph | What the reconciler did | What it recorded to reverse |
+| --- | --- | --- |
+| `aptPackage { name = "nginx" }` | `apt-get install -y nginx` (if absent) | `InstalledByUs` — remove on reverse; or `WasPresent` — leave alone |
+| `systemdService { unit = "nginx.service" }` | records prior enabled/active state, then `enable --now` | the prior state, to restore on reverse |
 
-You don't write any of that — the primitives produce it. The agent
-journals each claim's prior state before mutating, so removing them
-later restores the box honestly. That's the part that makes golem
-worth using over a shell script.
+Each op's reversal receipt is journalled. That is what makes the next step
+exact.
 
 ## Take it back
 
-Edit the Nickel to empty the fragments:
+Remove the glyphs from your Emet — an empty scroll:
 
-```nickel
-"box-01" = {
-  public_ip = "203.0.113.10",
-  vrack_ip  = "10.42.0.1",
-  fragments = [],
-}
+```elm
+main : List Scroll
+main =
+  [ scroll { name = "web", glyphs = [] } ]
 ```
 
-After the next tick:
+Re-apply:
 
-- `hello.service` and `nginx.service` are stopped and disabled, the
-  unit files removed.
-- The Quadlet `.container` file is removed.
-- The nginx site config and nftables fragment are removed.
-- The DNS record is deleted.
-- Both `podman` and `nginx` are removed via `apt-get autoremove` —
-  *only because* golem captured `preexisting: false` for each when it
-  first installed them. If either was already on the box for another
-  reason, the unapply leaves it alone.
-- The journal in `/var/lib/golem/state.db` is empty.
+```bash
+golemctl apply web.emet http://127.0.0.1:7474
+```
 
-The empty journal is the proof that nothing leaked. Honest unapply is
-what makes golem safe to use on a box you also touch by hand. See
-[Honest convergence](/reference/honest-convergence/) for how this stays
-honest even across crashes.
+The agent diffs the empty scroll against the journal, turns both glyphs into
+`Remove` ops, and runs each recorded uninstaller — `nginx` is removed
+**only because** golem installed it and captured `InstalledByUs`. If nginx
+had been on the box already, the reverse leaves it. The unit is disabled and
+its prior state restored.
+
+That is the property worth having: removing a glyph and re-applying restores
+the box to what it was before golem touched that resource. See
+[Reversible reconcile](/reference/honest-convergence/).
 
 ## Where to next
 
-- Add a database and wire two hosts together:
-  **[Tier 2 — Two hosts, one DB](/guides/app-and-db/)**
-- The capstone — a real lichess deploy, end-to-end:
-  **[Tier 3 — Litour on a box](/guides/litour/)**
+- Build a real abstraction that lowers to glyphs:
+  **[A service abstraction](/guides/app-and-db/)**
+- The capstone — a real multi-host lichess deploy:
+  **[A tour of the lichess fleet](/guides/litour/)**

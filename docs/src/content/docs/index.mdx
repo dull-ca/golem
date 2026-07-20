@@ -1,18 +1,20 @@
 ---
 title: Golem
-description: A toolkit of small Nickel primitives for declaring what runs on your boxes — and an agent that makes it true.
+description: Author a fleet in Emet, compile it to a content-addressed manifest, and let a per-host agent reconcile each box toward it — reversibly.
 template: splash
 hero:
   tagline: |
-    Compose small primitives — file, package, container, firewall — in
-    [Nickel](https://nickel-lang.org). The agent makes it true on each box.
+    Write your fleet in [Emet](/getting-started/the-config/), a typed
+    functional language. It compiles to a binary, content-addressed
+    manifest of four glyphs. A small agent reconciles each box toward its
+    scroll — and can reverse every edit it made.
   actions:
     - text: Get started
       link: /getting-started/install/
       icon: right-arrow
       variant: primary
     - text: See an example
-      link: /guides/app-and-db/
+      link: /guides/hello-agent/
       icon: open-book
 ---
 
@@ -20,89 +22,94 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## What it is
 
-Golem is two things:
+Golem is a pipeline with two ends and one contract between them.
 
-- **A Nickel toolkit** — small primitives like Ansible modules
-  (`g.file`, `g.package`, `g.container`, `g.firewall`, `g.site`,
-  `g.dns_record`) that you compose into whatever shape fits your fleet.
-  Some compositions ship in `g.contrib` (`workload`, `web_service`,
-  `postgres`, `redis`, `mongo`) — read them, copy them, replace them.
-  The schema doesn't predict your fleet; you predict your fleet.
-- **An agent** — `golemd` runs on each box, accepts signed per-host
-  bundles from `golemctl`, and reconciles the box's actual state
-  against them.
+- **Emet** — a typed, Elm-modeled configuration language. A program
+  evaluates to a **fleet**: `main : List Scroll`, one `Scroll` per host,
+  each a list of **glyphs**. There are exactly four glyph primitives —
+  `aptPackage`, `systemdService`, `file`, `lineInFile`. Every field is a
+  fully-evaluated concrete string; there is no templating layer.
+- **`golemd`** — a per-host agent. It ingests the compiled manifest,
+  selects its own host's scroll, and reconciles the box toward it. Each
+  glyph is enacted through a **reversible reconciler**: applying captures
+  the prior host state so the edit can be undone exactly.
 
-The smallest interesting deploy is *twelve lines*. No YAML, no Helm
-chart, no ConfigMap, no operator-CRD.
+The contract between them is the **manifest**: `emetc` (the compiler)
+emits a binary, content-addressed artifact; `golemd` consumes it. Both
+ends compile against the same shared `scroll-format` crate, so they
+cannot drift.
 
-Most of golem's value is in what you *don't* write. You don't write
-port mappings — `{db.service}` resolves at translate time. You don't
-keep a separate `volumes:` block in sync with the container that owns
-the volume. You don't write firewall rules separately from the
-container they protect — `g.firewall { allow = [edge_ip] }` IS the
-rule. You don't run a DNS tool alongside golem — `dns = true` on an
-ingress IS the record. And the abstractions you build (`postgres`,
-`celery_worker`, `litour_service`) are *yours*, not golem's.
+Higher-level shapes — a container workload, a service with a firewall, an
+ingress — are **not** engine primitives. You build them in Emet and they
+lower to the four glyphs. The agent never grows a fifth resource kind.
 
-## Why it's different
+## Why it's shaped this way
 
 <CardGrid>
-  <Card title="Compose, don't configure" icon="puzzle">
-    Golem ships primitives, not a schema. `g.contrib.postgres` is ten
-    lines of Nickel composing `g.container + g.firewall + g.package
-    "podman"`. Read it, copy it, change it. The shapes you deploy are
-    yours.
+  <Card title="Abstractions live in the language" icon="puzzle">
+    A "workload" or a "service" is an ordinary Emet function that returns
+    a `List Glyph`. Read it, copy it, change it. The agent stays small
+    because every abstraction compiles down to the same four primitives.
   </Card>
-  <Card title="Statically checked" icon="approve-check">
-    Misspell `{db.servic}`? Forget the `port` field on a service?
-    Reference a host that doesn't exist? Nickel rejects it before
-    bytes leave your laptop. Errors find you in seconds, not in an
-    outage.
+  <Card title="Statically typed authoring" icon="approve-check">
+    Emet is Hindley-Milner typed with generics, records, `case`/`if`, and
+    exhaustiveness checking. A missing field or a type mismatch is a
+    compile error, before any bytes leave your laptop.
   </Card>
-  <Card title="Tiny agent, small wire format" icon="seti:lock">
-    The agent speaks five primitives — file, apt, systemd, quadlet,
-    nft fragment. Everything else is composed in Nickel. The agent
-    is ~3000 lines and the wire format is stable across config
-    changes.
+  <Card title="Content-addressed versioning" icon="seti:lock">
+    Every scroll is identified by a BLAKE3 hash of its deterministic
+    bytes. Same bytes, same id, no-op. A changed field is a new id, and
+    an upgrade. The manifest is versioned by `format_version`, not by
+    hand-typed numbers.
   </Card>
-  <Card title="Two binaries, no control plane" icon="seti:default">
-    `golemctl` on your laptop, `golemd` on each box, ed25519
-    signatures between them. No etcd, no Swarm manager, no operator
-    pattern, no CRDs, no API server to keep up.
+  <Card title="Reversible reconcile" icon="seti:default">
+    Applying a glyph captures what it changed. `golemd` only ever reverses
+    edits it recorded — it will not remove a package, line, or file it
+    did not add. That drives both upgrade (reverse old, apply new) and
+    removal (reverse toward an empty scroll).
   </Card>
 </CardGrid>
 
-## And it's correct
+## The pipeline in one line
 
-The agent is small (~3000 lines of Rust) and engineered for one property:
-**after any number of crashes, the next clean tick converges to a state
-that matches the OS.** Every claim journals its prior state before
-mutating; removing a claim restores what was there before; the
-[crash-injection smoke test](/reference/honest-convergence/) verifies
-recovery at every window. That's the floor — necessary, not the pitch.
+```
+Emet source ──emetc build──▶ binary manifest ──golemctl apply──▶ golemd ──▶ reversible reconcilers ──▶ the box
+```
 
-## Try the deployment guides
+See [Architecture](/reference/architecture/) for each stage.
 
-Three walkthroughs, in order of how far they go:
+## Start here
 
-- **[Tier 1 — One service](/guides/hello-agent/)** — a single container
-  behind one public hostname, with the DNS record golem owns.
-  **Targets M2.**
-- **[Tier 2 — Two hosts, one DB](/guides/app-and-db/)** — an edge box
-  + app box + database box. `g.contrib` constructors, `allow`-list
-  firewall, cross-host references. **Targets M2.**
-- **[Tier 3 — Litour on a box](/guides/litour/)** — the real
-  [lichess league software](https://codeberg.org/dull/litour) deployed
-  via your own domain abstractions (`litour_service`,
-  `litour_worker`). The capstone. **Targets M2 + M3 (secrets).**
+- **[Install the toolchain](/getting-started/install/)** — build
+  `emetc`, `golemctl`, and `golemd`.
+- **[The config](/getting-started/the-config/)** — write your first Emet
+  program and watch it compile to glyphs.
+- **[Applying changes](/getting-started/applying/)** — compile to a
+  manifest and reconcile a box.
 
-## Status
+## Guides
 
-Golem is being built in milestones. M1 (the layer-3 engine — files,
-packages, systemd units) is implemented and integration-tested. M2
-(the Nickel toolkit with primitives, contrib, ingress, secrets) is in
-progress.
+- **[A first glyph](/guides/hello-agent/)** — the smallest fleet: one
+  host, one package, one unit.
+- **[A service abstraction](/guides/app-and-db/)** — build a `service`
+  helper in Emet that lowers to a container quadlet, a unit, and a
+  firewall fragment.
+- **[A maintenance page](/guides/maintenance-page/)** — a parameterized
+  Emet function built from `file` and `lineInFile`.
+- **[A tour of the lichess fleet](/guides/litour/)** — the real
+  multi-host lichess deploy, authored in Emet with a shared library.
 
-The docs ship the full vision; pages flag which milestone covers which
-feature. See [Status & milestones](/reference/status/) for the current
-state.
+## What is not built yet
+
+Golem is honest about its edges. The following are **roadmap**, not
+working today:
+
+- **Signing and trust.** There is no ed25519 signature on the manifest
+  and no trusted-key check on the agent. See [Trust model](/reference/trust/).
+- **Multi-node orchestration.** A manifest carries the whole fleet, but
+  each `golemd` acts only on its own scroll. There is no coordinator,
+  no drain, no health-gated rollback.
+- **Any resource kind beyond the four glyphs.** Everything else is an
+  Emet abstraction that lowers to them.
+
+See [Status](/reference/status/) for the full breakdown.

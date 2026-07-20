@@ -26,28 +26,24 @@ export default defineConfig({
           ],
         },
         {
-          label: "Deployment guides",
+          label: "Guides",
           items: [
-            { label: "Tier 1 — One service", link: "/guides/hello-agent/" },
-            { label: "Tier 2 — Two hosts, one DB", link: "/guides/app-and-db/" },
-            { label: "Tier 3 — Litour on a box", link: "/guides/litour/" },
-          ],
-        },
-        {
-          label: "Patterns",
-          items: [
+            { label: "A first glyph", link: "/guides/hello-agent/" },
+            { label: "A service abstraction", link: "/guides/app-and-db/" },
             { label: "A maintenance page", link: "/guides/maintenance-page/" },
+            { label: "A tour of the lichess fleet", link: "/guides/litour/" },
           ],
         },
         {
           label: "Reference",
           items: [
             { label: "CLI", link: "/reference/cli/" },
-            { label: "Bundle format", link: "/reference/bundle-format/" },
+            { label: "The four glyphs", link: "/reference/primitives/" },
+            { label: "Manifest format", link: "/reference/bundle-format/" },
             { label: "Architecture", link: "/reference/architecture/" },
-            { label: "Honest convergence", link: "/reference/honest-convergence/" },
+            { label: "Reversible reconcile", link: "/reference/honest-convergence/" },
             { label: "Trust model", link: "/reference/trust/" },
-            { label: "Status & milestones", link: "/reference/status/" },
+            { label: "Status", link: "/reference/status/" },
           ],
         },
       ],

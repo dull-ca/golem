@@ -1,291 +1,217 @@
 ---
-title: Tier 3 — Litour on a box
-description: A real Django stack — web, api, ui, workers, redis, postgres — across three hosts. Build your own domain abstractions on top of golem's primitives.
+title: A tour of the lichess fleet
+description: The real multi-host lichess deploy, authored in Emet — a shared library of Workload / Service / Ingress abstractions that all lower to the four glyphs.
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+import { Aside } from "@astrojs/starlight/components";
 
-<Aside type="caution" title="M2 + M3 target">
-  This is the capstone. It uses Layer 1 features that span M2 (the
-  Nickel input language) and M3 (secrets at rest). The Nickel below is
-  the shape the docs are anchored on; the agent runs today (M1).
+The capstone example is the [lichess](https://lichess.org) fleet: six hosts
+running dozens of containerized services behind nginx ingress. It lives in
+`examples/lichess/` and compiles as-is. This is a tour of how it is built —
+a shared library of abstractions, a fleet that uses them, and the glyphs it
+all lowers to.
+
+The example is three files:
+
+- `Fleet.emet` — shared fleet-wide facts.
+- `Lichess.emet` — the library: `Workload`, `Service`, `Ingress`
+  abstractions and their glyph-lowering.
+- `fleet.emet` — the fleet itself: every host as a `Scroll`.
+
+## Shared facts as a module
+
+Cross-host facts are ordinary Emet values in an imported module — no
+placeholder substitution, no templating:
+
+```elm
+module Fleet exposing (internalNetwork, endpoint)
+
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address port = "${address}:${String.fromInt port}"
+```
+
+`internalNetwork` is a `String` any module can import and use. If another
+host needs to reach a service, that address is a value passed as data and
+checked by the type system — not a string the resolver hopes to fill in
+later.
+
+## The library: three abstractions
+
+`Lichess.emet` defines the vocabulary and its lowering. Each abstraction is a
+record type plus a function returning `List Glyph`.
+
+### Workload — a plain container
+
+```elm
+type Workload = Workload { name : String, image : String }
+
+containerGlyphs : String -> String -> List Glyph
+containerGlyphs name image =
+  [ aptPackage { name = "podman" }
+  , file
+      { path = quadletPath name
+      , contents = quadletContents name image
+      , mode = "0644"
+      }
+  , systemdService { unit = serviceUnit name }
+  ]
+
+workloadGlyphs : Workload -> List Glyph
+workloadGlyphs w =
+  case w of
+    Workload spec -> containerGlyphs spec.name spec.image
+```
+
+A workload lowers to three glyphs: podman, the quadlet `file`, the unit.
+
+### Service — a workload that opens a port
+
+```elm
+type Service = Service { name : String, image : String, port : Int }
+
+serviceGlyphs : Service -> List Glyph
+serviceGlyphs s =
+  case s of
+    Service spec ->
+      List.append
+        (containerGlyphs spec.name spec.image)
+        [ file
+            { path = nftablesPath spec.name
+            , contents = firewallOpening spec.name spec.port
+            , mode = "0644"
+            }
+        ]
+```
+
+A service is a workload plus one `file` glyph carrying an nftables fragment
+that opens the port to `internalNetwork`. Four glyphs.
+
+### Ingress — public HTTPS via nginx
+
+```elm
+type Ingress = Ingress { name : String, service : String, from : String, port : Int }
+
+ingressGlyphs : Ingress -> List Glyph
+ingressGlyphs i =
+  case i of
+    Ingress spec ->
+      [ aptPackage { name = "nginx" }
+      , file
+          { path = nginxSitePath spec.name
+          , contents = nginxSite spec.name spec.service
+          , mode = "0644"
+          }
+      , file
+          { path = nftablesPath "ingress-${spec.name}"
+          , contents = firewallOpening "ingress ${spec.name}" spec.port
+          , mode = "0644"
+          }
+      , lineInFile
+          { path = "/etc/nftables.d/ingress.nft"
+          , line = ingressOpening spec.name spec.port
+          }
+      , systemdService { unit = serviceUnit "nginx" }
+      ]
+```
+
+Ingress is the one place all four glyphs appear: the nginx package, the site
+`file`, a per-ingress firewall `file`, a shared-file `lineInFile` (one accept
+rule appended to `/etc/nftables.d/ingress.nft`), and the nginx unit. The
+site config and firewall rules are rendered by `String.join` at compile time
+— the `nginxSite` and `firewallOpening` helpers are plain string functions.
+
+<Aside type="note" title="lineInFile vs file, on purpose">
+  The per-ingress firewall is its own `file` — golem owns it entirely. The
+  shared `ingress.nft` gets a `lineInFile` — golem appends one line and, on
+  reverse, removes only that line, leaving every other ingress's line intact.
+  That distinction is why both primitives exist. See
+  [The four glyphs](/reference/primitives/).
 </Aside>
 
-[Litour](https://codeberg.org/dull/litour) is the league management
-software that runs the [Lichess 4545 League](https://www.lichess4545.com/)
-and several other team chess leagues. It's a real, multi-service,
-secrets-bearing, publicly-routed Django app — the workload that
-motivated golem.
+## The host binder
 
-This guide deploys the full stack across three hosts: an edge box
-terminating ingress, an app box running the Django workloads and
-workers, and a data box running redis and postgres. Along the way it
-shows the move users care about: **building your own domain
-abstractions on top of golem's primitives**.
+One helper turns a name and its glyphs into a scroll:
 
-## Step 1 — your domain vocabulary
-
-Litour has seven container variants — web, api, apiworker, ui, celery,
-watcher, migrate. They all share an image registry, common env, and
-secrets. Instead of writing each one as a raw `g.contrib.web_service`,
-build a `litour_service` and `litour_worker` for your project:
-
-```nickel
-let g = import "../../nickel/lib.ncl" in
-
-let secret = g.ref.secret in
-
-let litour_image = fun n => "ghcr.io/lichess4545/litour-%{n}:latest" in
-
-let litour_env = {
-  DATABASE_URL      = "postgres://litour:%{secret "pg_pass"}@%{g.ref.service "appdb"}/litour",
-  REDIS_URL         = "redis://%{g.ref.service "redis"}",
-  SECRET_KEY        = secret "django_secret",
-  LICHESS_API_TOKEN = secret "lichess_token",
-  EMAIL_HOST_USER   = secret "email_user",
-  EMAIL_HOST_PASS   = secret "email_pass",
-} in
-
-# A litour service: a web_service with the litour image + env baked in.
-let litour_service = fun config =>
-  g.contrib.web_service (config & {
-    image = litour_image config.name,
-    env   = litour_env & (if std.record.has_field "env" config then config.env else {}),
-  })
-in
-
-# A litour worker: a background container, dial-out only, no port.
-let litour_worker = fun config =>
-  g.contrib.worker {
-    name  = config.name,
-    image = litour_image config.name,
-    env   = litour_env & (if std.record.has_field "env" config then config.env else {}),
-  }
-in
-
-# A litour oneshot — the migrate container, runs and exits.
-let litour_oneshot = fun config =>
-  g.contrib.oneshot {
-    name  = config.name,
-    image = litour_image config.name,
-    env   = litour_env,
-  }
-in
+```elm
+host : String -> List Glyph -> Scroll
+host name glyphs = scroll { name = name, glyphs = glyphs }
 ```
 
-Three functions, ~25 lines. Now your inventory speaks litour, not
-"workload-with-litour-config-baked-in".
+## The fleet
 
-## Step 2 — the inventory
+`fleet.emet` imports the library and defines each host as a `Scroll`. A host
+is a `List.concat` of abstraction calls:
 
-```nickel
-let app_ip = "10.42.0.2" in
-let db_ip  = "10.42.0.3" in
+```elm
+module Main exposing (..)
 
-let inventory = {
-  hosts = {
-    # ── Edge: public-facing nginx, owns DNS for the zone. ────────────
-    "edge-01" = {
-      public_ip = "203.0.113.10",
-      vrack_ip  = "10.42.0.1",
-      fragments = [
-        g.contrib.ingress {
-          host             = "www.lichess4545.com",
-          upstream         = "%{g.ref.service "web"}",
-          dns              = true,
-          dns_ip           = "203.0.113.10",
-          rate_limit       = "200r/m",
-          rate_limit_burst = 50,
-          conn_limit       = 100,
-          buffering        = false,
-          routes = [
-            { path = "/v2/api", backend = "api" },
-            { path = "/v2",     backend = "ui"  },
-          ],
-        },
-      ],
-    },
+import Lichess exposing
+  ( Workload(..), Service(..), Ingress(..)
+  , workloadGlyphs, serviceGlyphs, ingressGlyphs, host )
 
-    # ── App: every Django workload + the workers + the migrate oneshot.
-    "app-01" = {
-      public_ip = "203.0.113.20",
-      vrack_ip  = app_ip,
-      fragments = [
-        litour_service { name = "web", port = 8000, allow = ["10.42.0.1"] },
-        litour_service { name = "api", port = 8001, allow = ["10.42.0.1"] },
-        litour_service { name = "ui",  port = 3000, allow = ["10.42.0.1"],
-                         env  = { LITOUR_API_BASE_URL = "http://%{g.ref.service "api"}" } },
+manta : Scroll
+manta =
+  host "manta"
+    (List.concat
+      [ workloadGlyphs (Workload { name = "leroyjenkins-lila", image = "lichess-org/leroyjenkins:latest" })
+      , serviceGlyphs (Service { name = "lila", image = "lichess-org/lila:latest", port = 9663 })
+      , serviceGlyphs (Service { name = "redis-server", image = "redis:7", port = 6379 })
+      , ingressGlyphs (Ingress { name = "lichess.org", service = "lila", from = "world", port = 443 })
+      ])
 
-        # apiworker is internal — only dialable from app-01 itself.
-        litour_service { name = "apiworker", port = 8002, allow = [app_ip] },
+scaly : Scroll
+scaly = host "scaly" (workloadGlyphs (Workload { name = "fishnet", image = "lichess-org/fishnet:latest" }))
 
-        # No port: dial out only.
-        litour_worker { name = "celery"  },
-        litour_worker { name = "watcher" },
-
-        # Runs and exits.
-        litour_oneshot { name = "migrate" },
-      ],
-      services = [
-        { name = "web",       port = 8000 },
-        { name = "api",       port = 8001 },
-        { name = "ui",        port = 3000 },
-        { name = "apiworker", port = 8002 },
-      ],
-    },
-
-    # ── Data: redis + postgres. Locked down to app-01. ────────────────
-    "data-01" = {
-      public_ip = "203.0.113.30",
-      vrack_ip  = db_ip,
-      fragments = [
-        g.contrib.postgres {
-          name     = "appdb",
-          version  = "18",
-          db       = "litour",
-          user     = "litour",
-          password = secret "pg_pass",
-          allow    = [app_ip],
-          configs  = [
-            { path    = "/etc/postgresql/18/main/conf.d/golem.conf",
-              content = m%"
-                listen_addresses = '*'
-                max_connections = 200
-              "%, },
-          ],
-        },
-
-        g.contrib.redis {
-          name  = "redis",
-          allow = [app_ip],
-        },
-      ],
-      services = [
-        { name = "appdb", port = 5432 },
-        { name = "redis", port = 6379 },
-      ],
-    },
-  },
-} in
-
-{ bundle_for = g.bundle_for inventory }
+main : List Scroll
+main = [ scaly, manta, orbit, talos, kaiju, zulip ]
 ```
 
-That's the whole deploy. Three hosts, ~80 lines including the domain
-vocabulary at the top. Read what's there:
+Six hosts, one `main`. `scaly` runs a single networkless workload; `manta`
+fronts lila with ingress; `kaiju` is one mongo service; `talos` runs the
+monitoring stack. Every host reads as the shapes you care about, and every
+shape lowers to the four glyphs.
 
-- **Domain vocabulary up front.** `litour_service`, `litour_worker`,
-  `litour_oneshot` — the shapes you actually deploy. Each is one
-  function, three or four lines, calling a `g.contrib` constructor with
-  litour-specific defaults.
-- **Pure-outbound workloads use `litour_worker`.** Celery, watcher
-  connect out (postgres, redis, the lichess API). Nothing connects in,
-  so they don't expose a port — `litour_worker` doesn't take one.
-- **Migrations use `litour_oneshot`.** Runs once and exits.
-  Re-applying with a new image runs migrate again with that image.
-- **Firewall is tight.** Each `litour_service`'s `allow` list controls
-  who reaches it. apiworker is `[app_ip]` — only the app box itself.
-  web/api/ui are `[edge_ip]` — only edge-01.
-- **DNS owned by edge-01.** `dns = true` on the ingress.
-- **Routes inside an ingress.** `/v2/api/*` → api, `/v2/*` → ui,
-  fall-through → web. nginx `location` blocks materialized from those
-  three lines.
+## Compile and apply
 
-## Operator workflow
+```bash
+# The whole fleet to a binary manifest.
+emetc build examples/lichess/fleet.emet -o fleet.manifest
 
-<Steps>
-1. **Stage the secrets locally:**
+# Eyeball one host's plan.
+emetc build examples/lichess/fleet.emet --text
 
-   ```bash
-   mkdir -p ~/.golem/secrets/litour-prod
-   echo 'verysecret'          > ~/.golem/secrets/litour-prod/pg_pass
-   echo 'django-secret-key'   > ~/.golem/secrets/litour-prod/django_secret
-   echo 'lip_xxx'             > ~/.golem/secrets/litour-prod/lichess_token
-   echo 'mailgun-user'        > ~/.golem/secrets/litour-prod/email_user
-   echo 'mailgun-password'    > ~/.golem/secrets/litour-prod/email_pass
-   chmod -R 0600 ~/.golem/secrets
-   ```
+# Ship it. The agent for host 'manta' selects manta's scroll.
+golemctl apply fleet.manifest http://127.0.0.1:7474
+```
 
-2. **Apply:**
+The manifest carries all six scrolls. Each `golemd` selects its own by
+`--host` name and ignores the rest — see
+[Manifest format](/reference/bundle-format/). `examples/lichess/run.sh`
+drives this end-to-end against a golemd container.
 
-   ```bash
-   golemctl apply config.ncl operator.sk host-addrs.json
-   ```
+## What you just saw
 
-3. **Watch the rollout:**
+The fleet is authored in the vocabulary of the problem — workloads,
+services, ingresses, an internal network — and none of that vocabulary
+reaches the agent. It all lowers to `aptPackage`, `systemdService`, `file`,
+and `lineInFile`, checked by Emet's type system on the way down.
 
-   ```bash
-   for h in edge-01 app-01 data-01; do
-     ssh $h 'curl -s http://127.0.0.1:7474/status | jq'
-   done
-   ssh app-01 'systemctl status web.service api.service ui.service'
-   ```
+- **Abstractions are functions.** `Workload`, `Service`, `Ingress` are Emet
+  types and functions in a library module, not engine features.
+- **Cross-host facts are values.** `internalNetwork` is imported and passed
+  as data — no placeholder resolution.
+- **Rendering is compile-time.** nginx sites and nftables rules are built by
+  `String.join`; the glyphs carry final strings.
+- **Upgrade and removal are content-addressed.** Bump an image tag,
+  recompile, re-apply — only the changed glyphs are replaced. See
+  [Reversible reconcile](/reference/honest-convergence/).
 
-4. **Roll forward.** Bump an image tag (or change the `litour_image`
-   helper), re-apply. The version monotonically increases; the agent
-   does the right thing on each host.
-</Steps>
+## Where to next
 
-## What you just did
-
-You wrote three small functions — `litour_service`, `litour_worker`,
-`litour_oneshot` — that became your project's vocabulary. They're built
-on top of `g.contrib` constructors, which are built on top of golem's
-primitives, which compile down to per-host bundles of files +
-packages + units.
-
-Nothing in golem knew the word "litour". You taught it.
-
-That's the move: the schema doesn't predict your fleet. You predict
-your fleet, and use golem's primitives to express it.
-
-## Migrating from compose
-
-If you already run litour via `docker compose`, the mechanical
-translation:
-
-| compose | nickel |
-| --- | --- |
-| `services.<name>.image` | a `g.container`'s `image` (or higher-level wrapper) |
-| `services.<name>.environment` | `.env` |
-| `services.<name>.command` | `.command` |
-| `services.<name>.volumes: ["named:/path"]` | `.volume = { at = "/path", size = "..." }` |
-| `services.<name>.ports: ["8080:8080"]` | `g.firewall { port, allow }` + a `services` registration |
-| `secrets.<name>` (file:) | `g.ref.secret "<name>"` referenced in env |
-| nginx site / Caddyfile | `g.contrib.ingress` on the edge host |
-| `networks:` block | (gone — host network + `allow` lists) |
-| `depends_on:` | (gone — placeholder references imply ordering) |
-| All services in one file | Inventory across multiple hosts |
-
-`golemctl translate compose.yml > config.ncl` will be a real command in
-M2; it places everything on one host and you split it up by host as you
-need to.
-
-## What this gives you compose doesn't
-
-- **Multi-host out of the box.** Compose is one Docker daemon. This is
-  three boxes with shared firewall semantics.
-- **First-class firewall.** Every workload's `allow` is the rule. No
-  manual `iptables` / `ufw` / cloud security group sprawl.
-- **First-class DNS.** `dns = true` on Ingress. Add a host, get a
-  record; remove a host, lose the record. No separate Terraform DNS
-  module to drift out of sync.
-- **References, not stringly-typed addresses.** `g.ref.service "appdb"`
-  is checked at translation; `data-01` in compose is a string the
-  network might or might not resolve.
-- **Domain vocabulary.** `litour_service` is your project's word, not
-  golem's. Compose forces you to write the same Docker boilerplate
-  every time.
-- **Honest unapply.** Remove a workload's fragment from a host and
-  re-apply; the agent stops + disables the unit, removes the quadlet,
-  removes the firewall rule, removes the journal entry. No leaked
-  state.
-
-## What it doesn't give you
-
-- **Built-in mTLS for east-west traffic.** Run on a Nebula tunnel for
-  that.
-- **Auto-rollback on health-check failure.** M4 may add health-gated
-  rollback; for now, you SSH in and re-apply the previous config.
-- **Horizontal autoscaling.** This is for fleets where the host count
-  changes on the order of months, not seconds.
+- The mechanism underneath: **[Reversible reconcile](/reference/honest-convergence/)**
+- The bytes the agent consumes: **[Manifest format](/reference/bundle-format/)**
+- Build the same abstractions from scratch:
+  **[A service abstraction](/guides/app-and-db/)**

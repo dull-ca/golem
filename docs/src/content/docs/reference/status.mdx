@@ -1,135 +1,65 @@
 ---
-title: Status & milestones
-description: What works today, what's next, what's later.
+title: Status
+description: What is implemented and tested today, and what is roadmap.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-Golem is being built in milestones. The docs site ships the full vision; this
-page tracks which features are real today vs. described aspirationally.
+An honest split between what the code does and what is still a design.
 
-## M1 — layer-3 engine ✅
+## Implemented and tested
 
-**Status:** implemented and integration-tested.
+- **Emet authoring language.** Hindley-Milner types with generics, records,
+  `case`/`if` with exhaustiveness checking, numbers with infix operators,
+  string interpolation, and a minimal Elm-modeled module system
+  (`module … exposing`, `import … [as …] [exposing …]`, file = module). A
+  program compiles a fleet: `main : List Scroll`.
+- **The four glyphs.** `aptPackage`, `systemdService`, `file`, `lineInFile`
+  — every field a concrete string. Higher-level shapes are Emet functions
+  that lower to these. See [The four glyphs](/reference/primitives/).
+- **The binary manifest.** `emetc build` emits a content-addressed
+  `Manifest` (postcard bytes, BLAKE3 per-scroll ids, `format_version`
+  guard), with `--text` and `--json` views. Determinism is enforced by
+  golden-byte and round-trip tests. See
+  [Manifest format](/reference/bundle-format/).
+- **`golemd` ingest + diff.** Decode a manifest, select this host's scroll,
+  and diff it against the journal into ordered `GlyphOp`s by glyph key and
+  content id.
+- **Reversible reconcilers.** Each glyph's `apply` captures an `Inverse`
+  receipt; `reverse` restores it exactly. Upgrade, removal, and rollback all
+  derive from this. See [Reversible reconcile](/reference/honest-convergence/).
+- **`golemctl`.** `apply` (compile-and-ship or ship a prebuilt manifest),
+  `state`, `history`, `show`. HTTP: `POST /manifest`, `GET /state`,
+  `/revisions`, `/revisions/:id`, `/status`.
+- **The lichess fleet in Emet.** A real multi-host deploy authored against a
+  shared Emet library (`examples/lichess/`), compiling to scrolls of the
+  four glyphs. See [the tour](/guides/litour/).
 
-What you can do today:
+## Roadmap — not built
 
-- Run `golemd` on a Debian trixie box (or container).
-- Hand-write JSON bundles using `file`, `apt_package`, and `systemd_unit` claim
-  kinds.
-- Sign with `golemctl sign`, push with `curl` or `golemctl push`.
-- The agent reconciles, journals, captures-once-at-first-touch, and
-  honestly-unapplies.
-- Crash-recovery is tested at every journal-before-mutate window via
-  `GOLEM_CRASH_AFTER`.
-- `cargo test -p golemd --test smoke_install_remove --release -- --ignored`
-  spins up a real systemd-in-Docker container and runs the install/remove
-  cycle end-to-end in ~20s.
+<Aside type="caution" title="Do not rely on these">
+  The following are designs, not working features.
+</Aside>
 
-What you can't do yet:
+- **Signing and trust.** No manifest signature, no trusted-key check. The
+  apply path is unauthenticated; bind the listener to localhost or a tunnel.
+  See [Trust model](/reference/trust/).
+- **Multi-node orchestration.** A manifest carries the whole fleet, but each
+  `golemd` acts only on its own scroll. There is no coordinator, no ordered
+  drain, no health-gated rollback across hosts.
+- **Resource kinds beyond the four glyphs.** Containers, ingress, DNS,
+  secrets — these are Emet abstractions (or future ones) that lower to the
+  four glyphs, not new agent primitives. There is no secrets primitive and
+  no DNS provider.
+- **The `host` reconciler on a real box, hardened.** The four reconcilers
+  exist and are tested against the fake in-memory reconciler and a Debian
+  box; treat production hardening (large-file inverse storage, edge cases)
+  as in progress.
 
-- Run the Nickel toolkit end-to-end against a real fleet
-  (`golemctl apply` with a `config.ncl`).
-- Use the firewall, ingress, or DNS primitives in production — those
-  ride as plain `file` claims with handlers today; dedicated providers
-  are M2/M3.
+## What is gone
 
-The [Tier 1 — Hello, agent](/guides/hello-agent/) guide is the canonical M1
-walkthrough.
-
-## M2 — input language 🚧
-
-**Status:** in progress. The Nickel toolkit (`nickel/primitives.ncl`,
-`nickel/contrib.ncl`, `nickel/bundle.ncl`) evaluates cleanly — try
-`nickel export --format json examples/simple/config.ncl` after running
-`g.bundle_for inventory "host-name"`. What's still in flight is the
-plumbing that runs the toolkit through `golemctl apply` end-to-end.
-
-What's there:
-
-- **Nickel primitives** — `g.file`, `g.package`, `g.unit`,
-  `g.container`, `g.firewall`, `g.dns_record`, `g.site`. Each returns
-  a `Fragment` (resources + handlers).
-- **Composition** — `g.combine`, `g.own`, `g.bundle_for`. Compose
-  fragments into per-host bundles.
-- **Reference resolution** — `g.ref.service` and `g.ref.host`
-  placeholders resolved by walking the inventory's `services`
-  declarations.
-- **Template renderers** — quadlet `.container` files, nftables rule
-  fragments, nginx site blocks — all in `nickel/render.ncl`.
-- **`g.contrib`** — shipped abstractions: `workload`, `web_service`,
-  `worker`, `oneshot`, `ingress`, `postgres`, `redis`, `mongo`. Each
-  one is ten or so lines composing primitives — read it, copy it,
-  replace it.
-
-What's still in flight:
-
-- `golemctl apply` calling the toolkit end-to-end (the eval works;
-  apply integration is next).
-- `golemctl translate compose.yml > config.ncl` for migrations
-  (everything onto one host; operator splits later).
-
-The [Tier 2 — Two hosts, one DB](/guides/app-and-db/) guide tracks the M2
-target.
-
-## M3 — production-bearing ⏳
-
-**Status:** designed, not started.
-
-What it adds:
-
-- **Secrets at rest.** `secrets.<name>` Layer 1 primitive. Operator stages
-  values locally; bundles carry encrypted blobs (likely
-  [age](https://github.com/FiloSottile/age) per-node); agent decrypts to
-  tmpfs `/run/golem/secrets/<name>` on apply.
-- **User-scoped systemd units.** `scope: "user"` for running services as a
-  non-root user without a full systemd system unit.
-- **Backup hooks.** A `backup.<name>` primitive that's a oneshot unit + a
-  timer, with an opinionated postgres-backup default.
-- **Observability.** Prometheus exporter at `/metrics`, structured tick
-  reports.
-
-The [Litour on a box](/guides/litour/) guide assumes M3 is delivered.
-
-## M4 — small fleets at scale ⏳
-
-**Status:** sketched.
-
-What it adds:
-
-- **Operator-scripted migrations.** When you change a schema in a way that
-  needs a coordinated drain — drain old workloads from `box-01`, migrate the
-  database, bring up new workloads on `box-02` — `golemctl` runs an explicit
-  imperative script that pushes a sequence of bundles. No distributed
-  coordination on the agent side; the operator orchestrates.
-- **Health-gated rollback.** Apply a new bundle; if a unit fails to start
-  within a budget, automatically push the previous bundle.
-- **Multi-key trust.** Per-tenant signing keys, with the operator's key as
-  meta-key.
-- **Binary wire format.** Replace canonical JSON with a statically-typed
-  binary format (protobuf, msgpack-with-schema, or similar — pick on
-  Rust ergonomics and tooling story). The conceptual model — Bundle,
-  Claim, the kinds — doesn't change; serializer and codegen do. Removes
-  the canonical-form module, makes the wire byte-stable by
-  construction, and gives bundle-consuming tools generated types
-  instead of hand-rolled JSON parsing. Coordinated agent rollout: the
-  agent accepts both formats during the transition window, then drops
-  JSON once every host has been upgraded.
-
-## M5 — managed control plane ⏳
-
-**Status:** explicitly deferred.
-
-If golem ends up needing a hosted control plane (for the "managed tail" of the
-Builder thesis), it lives at this milestone. Probably a small web UI that
-edits Nickel, runs `golemctl apply` against a small fleet, and stores the
-secrets you stage. The agent doesn't change.
-
-## What's load-bearing right now
-
-If you only have time to look at one thing, look at the **journal-before-mutate
-discipline**. The whole trust-the-agent story rests on it; everything else is
-either a way of producing claims (M2 Nickel toolkit) or a way of
-operating around them (M4 migrations).
-
-The [Honest convergence](/reference/honest-convergence/) reference is the deepest doc on this.
+The older model — Blueprints, Hosts, Workloads, Services, Ingress as engine
+resource kinds, refcounting ownership across blueprints, and the Nickel
+authoring surface — has been removed. State is now **per-scroll**: a node's
+desired state is one whole scroll, not a set of named blueprints that
+refcount shared resources.

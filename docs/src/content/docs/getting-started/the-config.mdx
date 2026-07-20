@@ -1,234 +1,207 @@
 ---
 title: The config
-description: Golem ships small primitives — file, package, container, firewall — that you compose into whatever abstractions fit your fleet.
+description: Write a fleet in Emet — a typed functional language. main is a List Scroll; each scroll is one host's glyphs.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-Golem ships a toolkit of small Nickel primitives — like Ansible modules
-in shape and spirit. You compose them into whatever higher-level
-abstractions fit your fleet. The Nickel evaluates to a per-host bundle
-that the agent applies.
+You author a fleet in **Emet**, a typed, Elm-modeled functional language. A
+program is a set of top-level declarations; the one that matters is `main :
+List Scroll`. A `Scroll` is one host's desired state — a `name` and a list
+of `glyphs`. A glyph is one OS resource.
 
-```nickel
-let g = import "../../nickel/lib.ncl" in
+## The smallest program
 
-let inventory = {
-  hosts = {
-    "box-01" = {
-      vrack_ip = "10.42.0.1",
-      fragments = [
-        g.package { name = "podman" },
-        g.container { name = "hello", image = "ghcr.io/example/hello:v1" },
-        g.firewall { name = "hello", port = 8080, allow = ["10.42.0.1"] },
-      ],
-    },
-  },
-} in
-
-{ bundle_for = g.bundle_for inventory }
+```elm
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs = [ aptPackage { name = "nginx" } ]
+      }
+  ]
 ```
 
-That's the whole shape. A host is a record. Its `fragments` array lists
-what runs on that host — each fragment built from primitives.
+Compile it and look at the plan:
 
-## The primitives
-
-These are the Ansible-module equivalents. Each takes a config record
-and returns a `Fragment` (resources + handlers).
-
-| Function | What it ensures |
-| --- | --- |
-| `g.file { path, content, mode?, owner?, group? }` | A file exists with given content. |
-| `g.package { name, version?, hold? }` | An apt package is installed. |
-| `g.unit { name, enable?, active? }` | A systemd unit is enabled and/or started. |
-| `g.container { name, image, env?, volume?, command?, ... }` | A Podman Quadlet container runs. Expands into a `.container` file + a `.service` unit + a handler that restarts on change. |
-| `g.firewall { name, port, allow, protocol? }` | An nftables fragment in `/etc/nftables.d/` accepting traffic to a port from listed sources. |
-| `g.dns_record { zone, name, type, value, ttl? }` | A DNS record (M3 — agent provider not yet implemented). |
-| `g.site { host, upstream, tls?, rate_limit?, routes?, ... }` | An nginx site block in `/etc/nginx/sites-enabled/`. |
-
-That's the whole API surface for resources. Everything else — workload
-templates, web services, databases — is *composition* of these.
-
-## Composition
-
-Three functions glue primitives together:
-
-```nickel
-g.combine    : Array Fragment -> Fragment            # concatenate
-g.own        : String -> Fragment -> Fragment        # tag ownership
-g.bundle_for : Inventory -> String -> Bundle         # per-host bundle
+```bash
+emetc build web.emet --text
 ```
 
-`combine` flattens fragments. `own` tags them with a refcount key — when
-the last owner drops, the agent cleans the resources up. `bundle_for`
-walks the inventory, resolves cross-host references, and returns the
-bundle a single host should apply.
-
-## Cross-host references
-
-Workloads talk to other workloads by name, not address. Use the `ref`
-helpers:
-
-```nickel
-env = {
-  LILA_DB  = "mongodb://%{g.ref.service "mongo"}/lichess",
-  REDIS    = "%{g.ref.service "redis"}",
-  PG_PASS  = g.ref.secret "pg_pass",
-}
+```
+planned scrolls (1):
+  scroll `web` (1 glyphs):
+    * ensure apt package `nginx` installed
 ```
 
-`g.bundle_for` resolves `{mongo.service}` to the right `host:port` by
-walking the inventory. Misspell a service name and the resolver leaves
-the placeholder in the output — easy to spot in the bundle JSON, easy
-to test before shipping. Hosts declare which service names they own:
+Add more glyphs; order is kept:
 
-```nickel
-"db-01" = {
-  vrack_ip = "10.42.0.3",
-  fragments = [ ... ],
-  services = [
-    { name = "mongo", port = 27017 },
-    { name = "redis", port = 6379  },
-  ],
-}
+```elm
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ aptPackage { name = "nginx" }
+          , systemdService { unit = "nginx.service" }
+          ]
+      }
+  ]
 ```
 
-The `services` declaration is just a name→port map for the resolver.
-The actual containers and firewall rules come from the fragments.
+Those are two of the [four glyphs](/reference/primitives/). The other two
+are `file` and `lineInFile`.
 
-## Shipped abstractions (`g.contrib`)
+## A recipe as a function
 
-Golem ships some pre-built compositions in `g.contrib`. They're small —
-look at `nickel/contrib.ncl` to see exactly how they're built. Use them
-as-is, or use them as a recipe for your own.
+Repeating a block per host is waste. A declaration is `name args = body`,
+with an optional signature line above it:
 
-```nickel
-g.contrib.workload    { name, image, env?, volume?, ... }
-g.contrib.web_service { name, image, port, allow, env?, volume?, ... }
-g.contrib.worker      { name, image, env?, ... }
-g.contrib.oneshot     { name, image, env?, ... }
-g.contrib.ingress     { host, upstream, dns?, dns_ip?, rate_limit?, ... }
-g.contrib.postgres    { name, db, user, password, allow, version?, ... }
-g.contrib.redis       { name, allow, image?, volume_size? }
-g.contrib.mongo       { name, allow, image?, volume_size? }
+```elm
+webHost : String -> Scroll
+webHost name =
+  scroll
+    { name = name
+    , glyphs =
+        [ aptPackage { name = "nginx" }
+        , systemdService { unit = "nginx.service" }
+        ]
+    }
+
+main : List Scroll
+main = [ webHost "web-1", webHost "web-2" ]
 ```
 
-`web_service` is `workload` + `firewall`. `postgres` is `web_service`
-with the right image, port, volume path, and env. None of this is
-magic — read the source, copy what fits, change what doesn't.
+`webHost` is now your word for "a plain web host." That is the whole idea:
+abstractions are ordinary functions, and they lower to glyphs.
 
-## Building your own
+## Contents are computed, then frozen
 
-The point is *not* to use `g.contrib`. The point is to write
-abstractions for your domain. A typical project's Nickel might look
-like:
+A config file's body is built by the language and fully evaluated before it
+reaches the `contents` field. There is no templating downstream — the glyph
+carries the final string:
 
-```nickel
-let g = import "../../nickel/lib.ncl" in
+```elm
+renderConfig : Int -> String
+renderConfig port =
+  String.join "\n"
+    [ "[server]"
+    , "listen = ${String.fromInt port}"
+    , "workers = 4"
+    ]
 
-# Your domain — a Litour service is a Django container, common env,
-# always wants a postgres + redis nearby.
-let litour_service = fun config =>
-  g.contrib.web_service (config & {
-    image = "ghcr.io/lichess4545/litour-%{config.name}:latest",
-    env   = litour_env & (config.env),
-  })
-in
+siteFile : Int -> File
+siteFile port =
+  file
+    { path = "/etc/app/site.conf"
+    , contents = renderConfig port
+    , mode = "0644"
+    }
 
-let litour_worker = fun config =>
-  g.contrib.worker (config & {
-    image = "ghcr.io/lichess4545/litour-%{config.name}:latest",
-    env   = litour_env,
-  })
-in
+main : List Scroll
+main =
+  [ scroll
+      { name = "app"
+      , glyphs =
+          [ aptPackage { name = "app" }
+          , siteFile 8080
+          , systemdService { unit = "app.service" }
+          ]
+      }
+  ]
 ```
 
-Now `litour_service` and `litour_worker` are your project's vocabulary.
-You compose them into your inventory like any other fragment.
+`${…}` is Emet string interpolation — it runs at compile time and desugars
+to `String.concat`. The compiled `file` glyph contains `listen = 8080`, not
+a placeholder.
 
-## A realistic example
+## Types catch mistakes early
 
-```nickel
-let g = import "../../nickel/lib.ncl" in
+Emet is Hindley-Milner typed. `renderConfig` above is `Int -> String`; call
+it with a `String` and the compiler rejects it. `case` must be exhaustive:
 
-let edge_ip = "10.42.0.1" in
-let app_ip  = "10.42.0.2" in
-let db_ip   = "10.42.0.3" in
+```elm
+type Role = Web | Db
 
-let lila_env = {
-  LILA_DB_URI = "mongodb://%{g.ref.service "mongo"}/lichess",
-  LILA_REDIS  = "%{g.ref.service "redis"}",
-  JAVA_OPTS   = "-Xmx12g",
-} in
+glyphsFor : Role -> List Glyph
+glyphsFor role =
+  case role of
+    Web -> [ aptPackage { name = "nginx" },      systemdService { unit = "nginx.service" } ]
+    Db  -> [ aptPackage { name = "postgresql" }, systemdService { unit = "postgresql.service" } ]
 
-let inventory = {
-  hosts = {
-    "edge-01" = {
-      vrack_ip = edge_ip,
-      fragments = [
-        g.contrib.ingress {
-          host     = "lichess.example.com",
-          upstream = "%{g.ref.service "lila"}",
-          dns      = true, dns_ip = "203.0.113.10",
-        },
-      ],
-    },
+host : { name : String, role : Role } -> Scroll
+host h = scroll { name = h.name, glyphs = glyphsFor h.role }
 
-    "app-01" = {
-      vrack_ip = app_ip,
-      fragments = [
-        g.contrib.web_service {
-          name = "lila", image = "ghcr.io/lichess-org/lila:latest",
-          port = 9663, allow = [edge_ip], env = lila_env,
-        },
-        g.contrib.worker {
-          name = "fishnet", image = "ghcr.io/lichess-org/fishnet:latest",
-          env = { FISHNET_KEY = g.ref.secret "fishnet_key" },
-        },
-      ],
-      services = [{ name = "lila", port = 9663 }],
-    },
-
-    "db-01" = {
-      vrack_ip = db_ip,
-      fragments = [
-        g.contrib.mongo { name = "mongo", allow = [app_ip] },
-        g.contrib.redis { name = "redis", allow = [app_ip] },
-      ],
-      services = [
-        { name = "mongo", port = 27017 },
-        { name = "redis", port = 6379  },
-      ],
-    },
-  },
-} in
-
-{ bundle_for = g.bundle_for inventory }
+main : List Scroll
+main =
+  List.map host
+    [ { name = "web-1", role = Web }
+    , { name = "web-2", role = Web }
+    , { name = "db-1",  role = Db }
+    ]
 ```
 
-Three hosts, ~30 lines, covers ingress + web service + worker + mongo
-+ redis with cross-host references and firewalls.
+Drop the `Db` arm and the compiler flags the non-exhaustive match — the
+mistake finds you before any bytes leave your laptop.
 
-## What's *not* in the config
+## Splitting across modules
 
-- **No version field.** Bundle versions are golem's bookkeeping;
-  `golemctl apply` queries each host's last-applied version and bumps
-  automatically.
-- **No `kind:`, no `spec:`, no claim DAG.** That's the wire format the
-  agent receives — your Nickel produces it, but you write at the
-  primitive level (or higher).
-- **No port mappings.** Cross-workload traffic uses `g.ref.service`,
-  which resolves to the right host:port at translation time.
-- **No `Mongo` / `Database` / `Fishnet` types in the schema.** Those
-  live in `g.contrib` — and even there, they're just compositions of
-  the primitives. You can replace any of them.
+A file is a module. Expose names with `module … exposing (…)` and pull them
+in with `import`:
+
+```elm
+module Fleet exposing (internalNetwork, endpoint)
+
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address port = "${address}:${String.fromInt port}"
+```
+
+```elm
+module Main exposing (..)
+
+import Fleet exposing (internalNetwork)
+
+-- use internalNetwork here…
+```
+
+This is how the [lichess fleet](/guides/litour/) keeps a shared library of
+abstractions (`Lichess`, `Fleet`) separate from the fleet definition that
+uses them.
+
+## Higher-level shapes are yours to build
+
+There is no built-in "container," "service," or "ingress." Those are Emet
+functions that return a `List Glyph`. A container workload, for example,
+lowers to a podman package, a quadlet `file`, and a `systemdService`:
+
+```elm
+containerGlyphs : String -> String -> List Glyph
+containerGlyphs name image =
+  [ aptPackage { name = "podman" }
+  , file
+      { path = "/etc/containers/systemd/${name}.container"
+      , contents = quadletContents name image
+      , mode = "0644"
+      }
+  , systemdService { unit = "${name}.service" }
+  ]
+```
+
+Read it, copy it, change it. The [service abstraction guide](/guides/app-and-db/)
+builds this up in full.
+
+<Aside type="note" title="No JSON, no YAML, no templating">
+  Emet has no JSON/YAML intermediary and no Jinja-style templating. Every
+  glyph field is a concrete string produced by the language and checked by
+  the type system.
+</Aside>
 
 ## Where to next
 
-- **[Tier 1 — One service](/guides/hello-agent/)** — smallest deploy.
-- **[Tier 2 — Two hosts, one DB](/guides/app-and-db/)** — cross-host
-  references and firewall.
-- **[Tier 3 — Litour on a box](/guides/litour/)** — building your own
-  domain abstractions.
-- **[Architecture](/reference/architecture/)** — how the layers stack.
+- **[Applying changes](/getting-started/applying/)** — compile to a
+  manifest and reconcile a box.
+- **[A first glyph](/guides/hello-agent/)** — the smallest end-to-end run.
+- **[The four glyphs](/reference/primitives/)** — the full field reference.

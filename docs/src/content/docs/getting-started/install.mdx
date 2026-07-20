@@ -1,86 +1,79 @@
 ---
 title: Install
-description: Build the binaries, generate keys, install the agent on a node.
+description: Build emetc, golemctl, and golemd; run the agent on a node.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Two binaries: `golemctl` (operator-side, runs on your laptop) and `golemd`
-(agent, runs on each node).
+Three binaries. `emetc` compiles Emet on your laptop; `golemctl` ships the
+result; `golemd` runs on each node.
 
 <Aside type="caution" title="What you need">
-  - A Debian trixie box (or container) for the agent.
-  - A laptop with the Rust toolchain to build the binaries.
-  - sudo on the agent node.
+  - A Rust toolchain (the repo pins it via `devenv` / `direnv`; see
+    `emet/CLAUDE.md`).
+  - A Debian box (or container) for the agent when you want real host
+    effects. The default `fake` reconciler needs no box.
 </Aside>
 
-## 1 — Build static binaries
+## 1 — Build the binaries
 
-The repo has a `build-static.sh` that produces musl-linked binaries you can
-scp to any Debian box:
+From a checkout of the golem workspace:
 
 ```bash
 git clone https://codeberg.org/dull/golem
 cd golem
-./build-static.sh
+cargo build --release -p emet -p golemctl -p golemd
 ```
 
-Output lands at `target/x86_64-unknown-linux-musl/release/{golemctl,golemd}`.
+That produces:
 
-## 2 — Generate an operator keypair
+- `emetc` — the Emet compiler (crate `emet`).
+- `golemctl` — the operator CLI.
+- `golemd` — the per-host agent.
 
-This is the ed25519 key the agent will trust. Treat it like an SSH private key.
+<Aside type="note" title="emetc on PATH">
+  `golemctl apply` shells out to `emetc` when you hand it a `.emet` file, so
+  `emetc` must be on `PATH`. Working in-tree before installing, use
+  `cargo run -p emet -- build …` and `cargo run -p golemctl -- …` directly.
+</Aside>
+
+## 2 — Run the agent
+
+`golemd` needs a `--host` name — that is how it selects its scroll from a
+fleet manifest. For a first run, use the default `fake` reconciler, which
+records what it would do without touching the box:
 
 ```bash
-./target/x86_64-unknown-linux-musl/release/golemctl keygen ./operator
+golemd --host web --reconciler fake --listen 127.0.0.1:7474
 ```
 
-You get two files:
-
-- `operator.sk` — private signing key, mode `0600`.
-- `operator.pk` — public verifying key (hex), shipped to every node.
-
-## 3 — Install the agent on a node
-
 <Steps>
-1. Copy the public key onto the box and put it where the agent looks:
+1. Confirm it is up:
 
    ```bash
-   sudo install -d -m 0755 /etc/golem
-   sudo cp operator.pk /etc/golem/trusted-keys
+   curl -s http://127.0.0.1:7474/status
+   # → {"host":"web","latest_revision":null}
    ```
 
-2. Install the binary and the systemd unit:
+2. When you want real effects on a Debian box, switch the reconciler:
 
    ```bash
-   sudo install -m 0755 \
-       target/x86_64-unknown-linux-musl/release/golemd \
-       /usr/local/bin/
-
-   sudo install -m 0644 packaging/golemd.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now golemd
-   ```
-
-3. Confirm it's running:
-
-   ```bash
-   curl -s http://127.0.0.1:7474/healthz
-   # → ok
+   golemd --host web --reconciler host --listen 127.0.0.1:7474
    ```
 </Steps>
 
-## 4 — Listen address & networking
+The agent keeps its journal in `--state-dir` (default `/var/lib/golem`,
+file `planroom.db`). See the [CLI reference](/reference/cli/) for every
+flag.
 
-The default listener is `127.0.0.1:7474`. The agent only authenticates
-**bundles**, not network connections, so:
-
-- For single-node fiddling, leave it on localhost and use SSH port-forwarding.
-- For a real fleet, run on a Nebula tunnel or bind to a unix socket. The
-  `--listen` flag takes any `SocketAddr`.
+<Aside type="caution" title="No authentication yet">
+  `golemd` does not verify who sent a manifest. Keep the listener on
+  `127.0.0.1` or behind an SSH forward until signing lands — see
+  [Trust model](/reference/trust/).
+</Aside>
 
 ## What's next
 
-Write your first deploy: one service, one hostname, five fields of Nickel.
+Write your first Emet program and watch it compile to glyphs.
 
-**[Tier 1 — One service](/guides/hello-agent/)**
+**[The config](/getting-started/the-config/)**

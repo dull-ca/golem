@@ -19,7 +19,11 @@ the integration backlog.
 
 `emet` — a **typed, functional configuration language** modeled on
 Elm, with totality as a design preference rather than a guarantee (self-recursion
-is allowed; ADR 0011). Its sole output is the glyph IR (`crates/emet/src/ir.rs`). The surface is Elm-lite:
+is allowed; ADR 0011). It compiles to the glyph IR — the `Glyph`/`Scroll` model,
+which lives in the shared `scroll-format` crate and is re-exported through
+`crates/emet/src/ir.rs`. `emetc`'s default output is the binary, content-addressed
+manifest of those scrolls (ADR 0012/0013); the readable plan is `--text`, JSON is
+`--json`. The surface is Elm-lite:
 top-level decls with optional signatures, Hindley-Milner inference with generics,
 records, `let`, lambdas, `case`/`if`, numbers with infix operators, string
 interpolation, and the offside (layout) rule. A program evaluates to a **fleet of
@@ -55,17 +59,42 @@ cargo run -p emet -- crates/emet/examples/basic.emet # run a file (.emet extensi
 ```
 lexer.rs   chars -> tokens (line/col; string parts + ${…} interpolation;
            numeric literals; operator symbols; case/if/then/else/of keywords)
+header.rs  peels the column-zero `module … exposing` + `import` lines off the
+           token stream BEFORE layout (they do not follow the offside rule);
+           yields the header + the body tokens still to be laid out
 layout.rs  offside rule (Haskell 2010 §10.3): virtual { } ; + parse-error(t)
 parser.rs  chumsky over the laid-out tokens -> Module (exprs, patterns, types,
            signatures, records, operators by precedence)
 infer.rs   Algorithm W: unify / generalize / instantiate; signature + generics
            checks; number/comparable constraints; case exhaustiveness/redundancy
 eval.rs    typed Module -> Vec<Scroll> (may not terminate; depth-guarded)
+resolve.rs multi-module stage (ADR 0016): load the import graph from disk,
+           reject cycles, order imports before importers, then check + eval each
+           module against the harvested interfaces of what it imports
 prelude.rs (TyEnv, Env) for constructors (Just/Nothing/True/False/LT/EQ/GT) and
            the total built-in combinators (List./Maybe./String./numeric/compare)
-lib.rs     compile() drives all stages; analyze() does per-scroll IR checks
-main.rs    CLI; renders the plan or the first error (ariadne), per scroll
+lib.rs     compile() drives the single-file stages; compile_file() runs the
+           multi-module resolve stage; analyze() does per-scroll IR checks
+main.rs    CLI (`emetc build`); default emits the binary manifest (stdout/`-o`),
+           `--text` the readable plan, `--json` the debug view, or the first
+           error (ariadne), per scroll
 ```
+
+## Module system (ADR 0016)
+
+An Elm-shaped, minimal module system for reuse across files:
+
+- **`module Name exposing (..)`** / `exposing (a, B, Type(..))` header, one
+  module per file, **file path = module name**. The header is optional: a file
+  with no `module` line is a valid entry module that exposes everything.
+- **`import Foo` / `import Foo as F` / `import Foo exposing (bar)`.** Qualified
+  access `Foo.bar` reuses the same dotted-name resolution as built-ins
+  (`List.map`; ADR 0006). Only exposed values, types, and — for `Type(..)` —
+  constructors are importable.
+- **Exactly one module has `main`** (the entry); the rest are libraries. A
+  library that declares `main` is a compile error.
+- **`compile(src)`** is the single-file pipeline (imports not resolved from
+  disk); **`compile_file(entry)`** runs the resolve stage over the import graph.
 
 ## Language / type system
 
@@ -101,8 +130,11 @@ not yet parsed (`docs/TODO.md`).
   totality is a design preference, not an invariant. Exhaustive `case` is still
   enforced at compile time regardless. Mutual recursion remains unsupported
   (decls inferred left-to-right).
-- **`crates/emet/src/ir.rs` is the sole, inert output.** Adding capability = new IR variants
-  + reconcilers; the *language* is unchanged.
+- **The IR is inert, concrete data.** `crates/emet/src/ir.rs` re-exports the
+  `Glyph`/`Scroll` model from the shared `scroll-format` crate (the wire
+  contract, ADR 0013); those types' field/variant order is a versioned contract,
+  not a free refactor. Adding capability = new IR variants + reconcilers; the
+  *language* is unchanged.
 - **No JSON/YAML, no templating.** Every glyph field is a concrete `String`
   produced by the language.
 - **Small dependency footprint.** `ariadne` for diagnostics, `chumsky` for the

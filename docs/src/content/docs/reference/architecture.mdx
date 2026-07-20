@@ -1,136 +1,118 @@
 ---
 title: Architecture
-description: How the Nickel toolkit compiles down to what the agent runs.
+description: Emet source to emetc to a binary manifest to golemd to reversible reconcilers — and the scroll-format crate that keeps the two ends in agreement.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-You don't need to read this to use golem. The
-[config](/getting-started/the-config/) and [apply](/getting-started/applying/)
-pages are enough. This page is for when something goes wrong and you want
-to know what's actually happening, or when you're hacking on golem itself.
+Golem is a straight pipeline. Source flows one way; nothing loops back.
 
-Internally, golem is two layers — Nickel composition on the operator
-side, and a small Rust agent on each box. They're separated because they
-change at different rates and have different failure modes.
+```
+Emet source
+   │  emetc build
+   ▼
+binary manifest  ◀── scroll-format (shared model) ──▶  golemd
+   │  golemctl apply (POST /manifest)                    │
+   ▼                                                     ▼
+golemd selects this host's scroll ───▶ diff ───▶ reversible reconcilers ───▶ the box
+```
 
-## The Nickel toolkit (operator-side)
+Two programs, one shared contract. The compiler is the *writer*; the agent
+is the *reader*; the `scroll-format` crate is the model they both depend on.
 
-What you write. Nickel — a library of small primitives that compose
-into per-host bundles.
+## `emetc` — the compiler (writer)
 
-**Primitives** (`nickel/primitives.ncl`):
+Emet is a typed, Elm-modeled language (`emet/crates/emet/`). A program is a
+set of top-level declarations with Hindley-Milner inference; `main : List
+Scroll` is the fleet. The compiler's stages:
 
-- `g.file` — a file on disk.
-- `g.package` — an apt package.
-- `g.unit` — a systemd unit.
-- `g.container` — a Podman Quadlet container (expands to a `.container`
-  file + a systemd unit + a handler that restarts on change).
-- `g.firewall` — an nftables rule fragment.
-- `g.dns_record` — a DNS A/AAAA/CNAME/TXT/MX record.
-- `g.site` — an nginx site config.
+```
+lexer  → layout → parser → infer (Algorithm W) → eval → manifest
+```
 
-Each returns a `Fragment` — a record carrying `resources` (claims) and
-`handlers` (restart-on-change triggers). Compose them with:
+`eval` produces `Vec<Scroll>` — one scroll per host, each a list of the
+four glyphs. `emetc build` then content-addresses each scroll and assembles
+a `Manifest`. Its default output is the **binary manifest**; `--text` is a
+readable plan and `--json` a debug view (see [CLI](/reference/cli/)).
 
-- `g.combine` — concatenate fragments.
-- `g.own` — tag resources with a refcount key.
-- `g.bundle_for` — walk an inventory and produce a per-host bundle,
-  resolving cross-host placeholders.
+Everything a config computes — a rendered nginx site, a firewall rule, a
+container quadlet — is fully evaluated at this stage. The glyphs that reach
+the manifest carry only concrete strings. There is no templating layer
+downstream.
 
-**Composition** (`nickel/contrib.ncl`):
+## `scroll-format` — the shared contract
 
-Higher-level shapes built from primitives. `g.contrib.workload` is
-`package podman + container`. `g.contrib.web_service` adds a firewall.
-`g.contrib.postgres` is `web_service` with the right image, port,
-volume, env. None of this is in the schema — it's all just composed
-primitives that you can read, copy, or replace.
+`crates/scroll-format/` owns the wire model and nothing else: `Glyph`,
+`Scroll`, `AddressedScroll`, `Manifest`, `ContentId`, and the pure
+functions that turn scrolls into manifest bytes and back. It names no I/O,
+no filesystem, no network — pure data and pure functions.
 
-**Reference resolution** (`nickel/resolve.ncl`):
+Both `emet` and `golemd` depend on it; it depends on neither. Dependencies
+point *toward* this small, stable centre, so there is exactly one
+definition of the manifest bytes and the two ends cannot drift. The
+compiler re-exports the model through `emet::ir`. See
+[Manifest format](/reference/bundle-format/) for the schema and the
+determinism guarantees.
 
-`g.ref.service "name"` produces a placeholder string `{name.service}`.
-At `bundle_for` time the resolver walks the inventory's `services`
-declarations, finds which host owns each name, and substitutes
-`vrack_ip:port` everywhere the placeholder appeared.
+## `golemctl` — the operator CLI
 
-This whole layer changes daily as you ship features. It's where typos
-and contract violations get caught before bytes leave your laptop.
+`golemctl apply <source> <addr>`:
 
-## `golemctl` (the operator CLI)
+1. If `<source>` ends in `.emet`, shell out to `emetc build` and capture
+   the binary manifest from stdout. Otherwise read the file as prebuilt
+   manifest bytes.
+2. `POST` the bytes to the agent's `/manifest`.
 
-The CLI is small. It:
+`golemctl state`, `history`, and `show` read back the agent's applied
+scroll and journal. That is the whole CLI — see [CLI](/reference/cli/).
 
-1. Calls `nickel export --format json` on `(import "config.ncl").bundle_for "node-name"`,
-   producing one Bundle per host.
-2. Reads each host's `/status` to get the last-applied version; assigns
-   `max(last_applied) + 1` across the apply set.
-3. Signs each bundle with the operator's ed25519 key.
-4. POSTs to each host's agent.
+## `golemd` — the agent (reader)
 
-Translation logic itself lives in Nickel — `golemctl` doesn't know what
-a workload, container, or firewall is. It just evaluates Nickel and
-ships the result.
+`golemd` runs on each box (`crates/golemd/`). On a manifest:
 
-The translation is **deterministic** and **canonical**: the same input
-produces byte-identical bundles. The agent's monotonicity check
-(`version > last_applied`) requires this — re-signing the same input
-must not break verification.
+1. **Ingest.** `scroll_format::from_bytes` decodes the manifest and checks
+   `format_version`.
+2. **Select.** Pick the `AddressedScroll` whose `scroll.name` matches this
+   agent's `--host`. A node enacts only its own scroll.
+3. **Diff (pure).** Compare the desired scroll's glyphs against the
+   last-applied outcomes in the journal, keyed by glyph key and versioned
+   by content id, producing an ordered list of `GlyphOp`s:
+   `Install` / `Remove` / `Replace` / `Noop`. This is a pure fold — desired
+   state in, an ordered plan out, no side effects.
+4. **Enact.** Run each op through the **`Reconciler`** port. Apply captures
+   the prior host state into an `Inverse` receipt; the port speaks glyph
+   vocabulary, never `apt-get`.
+5. **Journal.** Append a `Reconcile` revision embedding the content id, the
+   ordered ops, and the reversal receipts.
 
-## The agent (system engine)
-
-`golemd` runs on each box. ~3000 lines of Rust. Speaks a small set of
-primitives:
-
-- **`File`** — write a file with given content / mode / owner.
-- **`AptPackage`** — apt install / autoremove.
-- **`SystemdUnit`** — `systemctl enable --now`, `disable`, etc.
-- **`Quadlet`** — a podman .container file (translated by systemd into
-  a service unit).
-- **`NftFragment`** — *future*. Currently nftables fragments ride as
-  plain `File` claims with a handler that reloads `nftables.service`.
-- **`DnsRecord`** — *future* (M3).
-
-Plus the bookkeeping every claim needs: capture prior state before
-mutating, journal it, mutate, journal "applied". When a claim is
-removed from a future bundle, *unapply* it using the captured prior
-state. When a previously-installed package was already on the box for
-another reason, leave it alone.
-
-The agent deliberately does not know about workloads, services,
-ingress, or anything at the config-language level. That keeps it small
-and the wire format stable across config-language changes.
-
-See [Honest convergence](/reference/honest-convergence/) for how the
-agent stays honest after crashes.
+The core (steps 3–5) is pure and testable with a **fake in-memory
+reconciler** — zero host I/O. The real host effects live in adapters. See
+[Reversible reconcile](/reference/honest-convergence/) for the reconciler
+contract and the four concrete reconcilers.
 
 ## Why split it this way
 
 | Concern | Lives in | Changes | Failure mode |
 | --- | --- | --- | --- |
-| What I'm running | The Nickel inventory | Daily | Operator catches it at evaluation |
-| How it lands on a box | `nickel/primitives.ncl` + `contrib.ncl` | Per golem release | Bundle rejected at signing or by agent |
-| What's actually on the box | `golemd` (agent) | Almost never | Crash → recover honestly on next tick |
+| What runs on the fleet | Emet source | Daily | Compile error, before shipping |
+| How a shape lowers to glyphs | Emet library functions | As you build abstractions | Compile error |
+| The wire bytes | `scroll-format` | Rarely (a `format_version` bump) | Typed decode error on read |
+| What lands on a box | `golemd` reconcilers | Almost never | Reversible; rollback on partial failure |
 
-The agent is the part that can corrupt your boxes. So it's the part we
-test the hardest — every journal-before-mutate window has a
-`GOLEM_CRASH_AFTER` injection point and a
-[smoke test](/reference/honest-convergence/) that aborts the agent
-there.
+The agent is the part that can change a real box, so it is deliberately the
+smallest: four reconcilers over four glyphs, each capturing enough to undo
+itself.
 
 ## Where to look in the source
 
 | Component | Path |
 | --- | --- |
-| Public Nickel API | `nickel/lib.ncl` |
-| Primitives | `nickel/primitives.ncl` |
-| Composition (Fragment, combine, own) | `nickel/fragment.ncl` |
-| Template renderers (quadlet, nft, nginx) | `nickel/render.ncl` |
-| Cross-host resolution | `nickel/resolve.ncl` |
-| Bundle assembly | `nickel/bundle.ncl` |
-| Shipped contrib (workload, postgres, …) | `nickel/contrib.ncl` |
-| Wire-format claim contracts | `nickel/claims.ncl` |
+| Emet compiler | `emet/crates/emet/` |
+| Shared wire model | `crates/scroll-format/` |
 | Operator CLI | `crates/golemctl/` |
 | Agent | `crates/golemd/` |
-| Wire-format types | `crates/golem-types/` |
-| Smoke test (real Debian container) | `crates/golemd/tests/smoke_install_remove.rs` |
-| Smoke test (bash, with crash injection) | `smoke-test/run.sh` |
+| Reconciler port | `crates/golemd/src/reconciler.rs` |
+| Host reconcilers | `crates/golemd/src/reconcilers.rs` |
+| Fake reconciler (tests) | `crates/golemd/src/fake_reconciler.rs` |
+| Journal / store | `crates/golemd/src/journal.rs`, `planroom.rs` |
+| Lichess fleet (real Emet) | `examples/lichess/` |
