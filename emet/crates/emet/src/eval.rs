@@ -89,6 +89,9 @@ impl Env {
     fn get(&self, k: &str) -> Option<&Value> {
         self.0.get(k)
     }
+    pub fn lookup(&self, k: &str) -> Option<Value> {
+        self.0.get(k).cloned()
+    }
     pub fn insert(&self, k: String, v: Value) -> Env {
         let mut m = self.0.clone();
         m.insert(k, v);
@@ -282,14 +285,60 @@ pub fn run_module(m: &Module) -> Result<Vec<Scroll>, EvalError> {
     let m = m.clone();
     std::thread::Builder::new()
         .stack_size(EVAL_STACK_SIZE)
-        .spawn(move || eval_module(&m))
+        .spawn(move || {
+            let env = eval_module_env(&m, prelude::env())?;
+            Ok(main_scrolls(&env))
+        })
         .expect("spawn eval thread")
         .join()
         .expect("eval thread panicked")
 }
 
-fn eval_module(m: &Module) -> Result<Vec<Scroll>, EvalError> {
-    let mut env = prelude::env();
+/// Run `work` on a fresh thread with the evaluation stack size, so a
+/// multi-module resolution (which evaluates several modules and keeps their
+/// non-`Send` value envs across the pass) gets the same deep-recursion headroom
+/// as `run_module` without moving those envs across a thread boundary.
+pub fn on_eval_thread<T, F>(work: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    std::thread::Builder::new()
+        .stack_size(EVAL_STACK_SIZE)
+        .spawn(work)
+        .expect("spawn eval thread")
+        .join()
+        .expect("eval thread panicked")
+}
+
+/// Evaluate a library module against a base env carrying the values of its
+/// imports, returning the full resulting env so the resolver can harvest the
+/// values of its exposed decls. Assumes it already runs on an eval thread.
+pub fn eval_library(m: &Module, base: Env) -> Result<Env, EvalError> {
+    eval_module_env(m, base)
+}
+
+/// Evaluate an entry module against a base env carrying its imports' values,
+/// returning `main` as a scroll list. Assumes it already runs on an eval thread.
+pub fn eval_entry(m: &Module, base: Env) -> Result<Vec<Scroll>, EvalError> {
+    let env = eval_module_env(m, base)?;
+    Ok(main_scrolls(&env))
+}
+
+pub fn prelude_env() -> Env {
+    prelude::env()
+}
+
+fn main_scrolls(env: &Env) -> Vec<Scroll> {
+    match env.get("main") {
+        Some(Value::List(items)) => items.iter().map(as_scroll).collect(),
+        Some(Value::Scroll(s)) => vec![s.clone()],
+        _ => vec![],
+    }
+}
+
+fn eval_module_env(m: &Module, base: Env) -> Result<Env, EvalError> {
+    let mut env = base;
     // Seed every user constructor into the env before value decls, so a decl
     // body can refer to one. A nullary variant (`Leaf`) is already a complete
     // value, so it binds directly to `Data`; a variant with fields binds to a
@@ -313,11 +362,7 @@ fn eval_module(m: &Module) -> Result<Vec<Scroll>, EvalError> {
         let v = eval_decl(&env, d, &mut depth)?;
         env = env.insert(d.name.clone(), v);
     }
-    Ok(match env.get("main") {
-        Some(Value::List(items)) => items.iter().map(as_scroll).collect(),
-        Some(Value::Scroll(s)) => vec![s.clone()],
-        _ => vec![],
-    })
+    Ok(env)
 }
 
 fn as_glyphs(v: Value) -> Vec<Glyph> {

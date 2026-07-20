@@ -1,0 +1,9 @@
+module Main exposing (..)
+
+import HiddenType exposing (defaultRole)
+
+chosen : Role
+chosen = defaultRole
+
+main : List Scroll
+main = [ scroll { name = "web", glyphs = [] } ]

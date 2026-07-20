@@ -1,0 +1,4 @@
+module Fleet exposing (host)
+
+host : String -> String -> Scroll
+host name pkg = scroll { name = name, glyphs = [ aptPackage { name = pkg } ] }

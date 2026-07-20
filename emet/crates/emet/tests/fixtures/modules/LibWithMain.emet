@@ -1,0 +1,7 @@
+module LibWithMain exposing (pkg)
+
+pkg : AptPackage
+pkg = aptPackage { name = "lib" }
+
+main : List Scroll
+main = [ scroll { name = "lib", glyphs = [ pkg ] } ]

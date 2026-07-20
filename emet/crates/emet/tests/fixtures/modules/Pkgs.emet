@@ -1,0 +1,10 @@
+module Pkgs exposing (web, glyphsFor)
+
+secret : AptPackage
+secret = aptPackage { name = "hidden" }
+
+web : AptPackage
+web = aptPackage { name = "nginx" }
+
+glyphsFor : String -> List Glyph
+glyphsFor name = [ aptPackage { name = name } ]

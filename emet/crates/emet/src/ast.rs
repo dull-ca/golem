@@ -268,11 +268,40 @@ pub struct TypeDecl {
     pub span: Span,
 }
 
+#[derive(Debug, Clone)]
+pub enum Exposing {
+    All,
+    Explicit(Vec<Exposed>),
+}
+
+#[derive(Debug, Clone)]
+pub enum Exposed {
+    Value(String),
+    Type { name: String, open: bool },
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportExposing {
+    None,
+    Explicit(Vec<Exposed>),
+}
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub module: String,
+    pub alias: Option<String>,
+    pub exposing: ImportExposing,
+    pub span: Span,
+}
+
 /// A whole module: its user type declarations and its top-level value
 /// declarations. The decl named `main` is the program's output and must have
 /// type `List Scroll` (ADR 0009).
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub name: Option<String>,
+    pub exposing: Exposing,
+    pub imports: Vec<Import>,
     pub type_decls: Vec<TypeDecl>,
     pub decls: Vec<Decl>,
 }

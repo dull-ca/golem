@@ -622,6 +622,12 @@ impl TyEnv {
     fn get(&self, k: &str) -> Option<&Scheme> {
         self.0.get(k)
     }
+    pub fn scheme(&self, k: &str) -> Option<Scheme> {
+        self.0.get(k).cloned()
+    }
+    pub fn has(&self, k: &str) -> bool {
+        self.0.contains_key(k)
+    }
     fn insert(&self, k: String, s: Scheme) -> TyEnv {
         let mut m = self.0.clone();
         m.insert(k, s);
@@ -1225,7 +1231,17 @@ fn validate_type_refs_inner(
 /// that duplicates another or shadows a built-in constructor, and builds the
 /// constructor scheme (`f1 -> … -> Name p1 p2`, quantified over the params).
 /// The order of decls in the source therefore never matters.
-fn register_type_decls(inf: &mut Infer, env: &TyEnv, type_decls: &[TypeDecl]) -> Result<TyEnv, TypeError> {
+///
+/// `imported_types` folds the arities of types this module imported (their
+/// names and parameter counts, harvested by the resolver) into the arity set,
+/// so a signature may reference an imported `type` alongside the module's own
+/// and the built-ins.
+fn register_type_decls(
+    inf: &mut Infer,
+    env: &TyEnv,
+    type_decls: &[TypeDecl],
+    imported_types: &HashMap<String, usize>,
+) -> Result<TyEnv, TypeError> {
     let mut type_arities: HashMap<String, usize> = HashMap::new();
     for td in type_decls {
         if builtin_type_arity(&td.name).is_some() {
@@ -1242,6 +1258,9 @@ fn register_type_decls(inf: &mut Infer, env: &TyEnv, type_decls: &[TypeDecl]) ->
         }
     }
     let mut all_arities = type_arities.clone();
+    for (name, arity) in imported_types {
+        all_arities.entry(name.clone()).or_insert(*arity);
+    }
     for (name, arity) in builtin_types() {
         all_arities.entry(name).or_insert(arity);
     }
@@ -1307,9 +1326,18 @@ fn builtin_types() -> Vec<(String, usize)> {
 }
 
 /// Validate every type constructor referenced in a value decl's signature,
-/// now that the full user-type arity set is known.
-fn validate_signature_refs(type_decls: &[TypeDecl], decls: &[Decl]) -> Result<(), TypeError> {
+/// now that the full user-type arity set is known — the built-ins, this
+/// module's own `type` decls, and `imported_types` (imported type names and
+/// their arities), so a signature may name an imported type.
+fn validate_signature_refs(
+    type_decls: &[TypeDecl],
+    decls: &[Decl],
+    imported_types: &HashMap<String, usize>,
+) -> Result<(), TypeError> {
     let mut arities: HashMap<String, usize> = builtin_types().into_iter().collect();
+    for (name, arity) in imported_types {
+        arities.insert(name.clone(), *arity);
+    }
     for td in type_decls {
         arities.insert(td.name.clone(), td.params.len());
     }
@@ -1353,14 +1381,49 @@ fn collect_rigids(ty: &Type, acc: &mut HashSet<String>) {
     }
 }
 
-/// Public entry: type-check a module, returning the type env (so `main`'s type
-/// can be reported) or the first error.
+/// Type-check a library module against a base env seeded with the interfaces
+/// of the modules it imports. Returns the module's full final type env, from
+/// which the resolver harvests the schemes of its exposed decls. No `main`
+/// requirement: a library never has one (that is enforced elsewhere).
+pub fn check_library(
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+) -> Result<TyEnv, TypeError> {
+    let mut inf = Infer::default();
+    let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
+    validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
+    infer_decls(&mut inf, &env, &m.decls, true)
+}
+
+/// Type-check an entry module against a base env seeded with its imports,
+/// enforcing that `main : List Scroll` is present. Returns the final env plus
+/// `main`'s normalized type.
+pub fn check_entry(
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+) -> Result<(TyEnv, Type), TypeError> {
+    let mut inf = Infer::default();
+    let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
+    validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
+    let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
+    finish_main(&mut inf, &final_env)
+}
+
+/// Public entry: type-check a single-module program, returning the type env (so
+/// `main`'s type can be reported) or the first error.
 pub fn check_module(m: &Module) -> Result<(TyEnv, Type), TypeError> {
     let mut inf = Infer::default();
     let env = crate::prelude::ty_env();
-    let env = register_type_decls(&mut inf, &env, &m.type_decls)?;
-    validate_signature_refs(&m.type_decls, &m.decls)?;
+    let no_imports = HashMap::new();
+    let env = register_type_decls(&mut inf, &env, &m.type_decls, &no_imports)?;
+    validate_signature_refs(&m.type_decls, &m.decls, &no_imports)?;
     let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
+    finish_main(&mut inf, &final_env)
+}
+
+fn finish_main(inf: &mut Infer, final_env: &TyEnv) -> Result<(TyEnv, Type), TypeError> {
     let main = final_env.get("main").ok_or_else(|| {
         TypeError::new(
             "module has no `main` declaration",
@@ -1383,7 +1446,7 @@ pub fn check_module(m: &Module) -> Result<(TyEnv, Type), TypeError> {
         _ => None,
     };
     match normalized {
-        Some(ty) => Ok((final_env, ty)),
+        Some(ty) => Ok((final_env.clone(), ty)),
         None => Err(TypeError::new(
             format!("`main` must be `List Scroll` (a list of scrolls), but is `{main_ty}`"),
             0..0,

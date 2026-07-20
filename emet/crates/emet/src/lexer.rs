@@ -52,6 +52,10 @@ pub enum Tok {
     Then,
     Else,
     Type,
+    Module,
+    Import,
+    Exposing,
+    As,
 
     // punctuation
     Equals,   // =
@@ -97,6 +101,10 @@ impl fmt::Display for Tok {
             Then => write!(f, "then"),
             Else => write!(f, "else"),
             Type => write!(f, "type"),
+            Module => write!(f, "module"),
+            Import => write!(f, "import"),
+            Exposing => write!(f, "exposing"),
+            As => write!(f, "as"),
             Equals => write!(f, "="),
             Backslash => write!(f, "\\"),
             Arrow => write!(f, "->"),
@@ -489,6 +497,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 "then" => Tok::Then,
                 "else" => Tok::Else,
                 "type" => Tok::Type,
+                "module" => Tok::Module,
+                "import" => Tok::Import,
+                "exposing" => Tok::Exposing,
+                "as" => Tok::As,
                 _ => Tok::Ident(word),
             };
             let len = j - i;

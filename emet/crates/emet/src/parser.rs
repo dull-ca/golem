@@ -898,7 +898,12 @@ fn span_range(span: TokSpan) -> Span {
 /// `layout::layout_all`) into a `Module`. Returns every error chumsky
 /// collected, or one synthetic "unexpected end of input" error if parsing
 /// failed without producing any.
-pub fn parse(tokens: &[Token]) -> Result<Module, Vec<ParseError>> {
+pub fn parse(
+    tokens: &[Token],
+    name: Option<String>,
+    exposing: Exposing,
+    imports: Vec<Import>,
+) -> Result<Module, Vec<ParseError>> {
     let eoi = tokens
         .last()
         .map(|t| t.span.end)
@@ -942,6 +947,6 @@ pub fn parse(tokens: &[Token]) -> Result<Module, Vec<ParseError>> {
     }
 
     fold_decls(value_items)
-        .map(|decls| Module { type_decls, decls })
+        .map(|decls| Module { name, exposing, imports, type_decls, decls })
         .map_err(|pe| vec![pe])
 }

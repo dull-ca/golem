@@ -8,6 +8,8 @@ default-run = "emetc"
 [dependencies]
 ariadne = "0.4.1"
 chumsky = "0.10"
+clap = { workspace = true }
+scroll-format = { workspace = true }
 
 [[bin]]
 name = "emetc"
