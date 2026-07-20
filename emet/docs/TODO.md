@@ -33,11 +33,17 @@ monorepo. B's headline is model reconciliation.
   deferred because it needs a `parse-error(t)`-style layout close, the same
   mechanism `let … in` uses (ADR 0001 / design §8.1).
 
-- **User-facing `type` declarations.** `Maybe`/`Bool`/`Order` are currently
-  built-in sum types injected programmatically via the prelude constructor
-  registry. The general `type Foo a = ...` declaration syntax (which would make
-  these ordinary library types and let users define their own) is designed
-  (design §6) but not yet parsed.
+- **User-facing `type` declarations.** Non-parameterized user types work now:
+  single-constructor record-carrying types and nullary sum types (e.g. `type
+  Role = Web | Db`) parse, infer, and cross module boundaries. The general
+  *parameterized* `type Foo a = ...` (design §6) remains deferred.
+
+- **Imported value constructors not in scope for pattern-matching.** A type's
+  constructors imported via `exposing (Type(..))` can be *constructed* in the
+  importing module, but `case x of Ctor -> …` on such a constructor does **not**
+  resolve in the importer — cross-module pattern-matching on imported
+  constructors fails on the importer side (ADR 0016 §3). Constructing works;
+  matching does not.
 
 - **Skolem-escape check for over-general signatures.** Signature checking uses
   instantiate-and-unify (design §4.3 / ADR 0003), which accepts an *over-general*
@@ -85,32 +91,31 @@ Emet now lives in the golem monorepo (`emet/`, crates under `crates/emet/` and
 `crates/emet-lsp/`). This backlog is the work to make Emet golem's authoring
 language rather than a standalone project.
 
-- **Model reconciliation (headline).** Emet and golem describe desired state in
-  two different vocabularies and must be reconciled before a compiled fleet can
-  feed golem.
-  - golem's model (golem root `CLAUDE.md`; types in `crates/golem-types/`, the
-    source of truth): `Blueprint { name, packages }` → `State` / `Revision` /
-    `Action`, packages-only bookkeeping today.
-  - Emet's model: a program evaluates to `main : List Scroll` (a per-host fleet),
-    one `Scroll` per host, each a list of glyphs across four kinds — `aptPackage`,
-    `systemdService`, `file`, `lineInFile` (ADR 0002 / ADR 0009).
-  - Decide the shared types (golem's `crates/golem-types/` is the source of
-    truth) and how a compiled Emet fleet maps onto what `golemd` consumes —
-    which Emet glyph kinds correspond to golem items, and how a `Scroll` relates
-    to a golem host/blueprint. This gates every other integration item.
+- **Model reconciliation (headline) — DONE (ADR 0014).** The two vocabularies
+  were reconciled by *retiring* golem's rich model rather than mapping onto it.
+  golem's `Blueprint`/`State`/`Action` model was deleted; the compiled `Scroll`
+  *is* the desired state. The shared model now lives in the `scroll-format`
+  crate, and `golemd` diffs a manifest's scroll by content id and enacts the
+  four glyphs. Emet's model — `main : List Scroll`, one `Scroll` per host, each
+  a list of `aptPackage`/`systemdService`/`file`/`lineInFile` glyphs (ADR 0002 /
+  ADR 0009) — is authoritative.
 
-- **Binary wire format — implement ADR 0012.** Emet's content-addressed binary
-  scroll output IS golem's stated plan-of-record wire format, the one that
-  replaces "JSON exported from Nickel" (golem root `CLAUDE.md`). Implement the
-  manifest of content-addressed scrolls per ADR 0012. golem's workspace already
-  provides `serde`, `blake3`, `sha2`, `ed25519-dalek`, and `hex` — reuse them
-  rather than re-picking crates. Coordinate the schema with `golem-types` /
-  `golemd`; the artifact is a cross-repo contract versioned by `format_version`.
+- **Binary wire format — DONE (ADR 0012/0013).** `emetc`'s default output is the
+  content-addressed binary manifest (BLAKE3 over postcard, per-scroll and
+  per-glyph content ids, `format_version`), defined in the shared `scroll-format`
+  crate that both `emetc` (writer) and `golemd` (reader) depend on. `--text` and
+  `--json` are the human/debug views.
 
-- **Emet supersedes Nickel as the authoring language.** golem authors state in
-  Nickel today (`nickel/lib.ncl`). Emet is the intended replacement authoring
-  surface. Plan the transition and eventual removal of the Nickel layer, gated
-  on model reconciliation and the binary wire format above.
+- **golemd glyph rewrite — DONE (ADR 0014/0015).** `golemd` ingests the manifest,
+  selects its host's scroll, diffs by content id (`GlyphOp` Install/Remove/
+  Replace/Noop), and enacts through reversible `Reconciler`s (`apply`/`reverse`
+  with journalled `Inverse`), collapsing revisions to `Init`/`Reconcile`.
+
+- **Emet supersedes Nickel as the authoring language — DONE (ADR 0016).** Emet
+  gained a minimal Elm-shaped module system (`module … exposing`, `import`), the
+  lichess examples were re-authored in Emet (`examples/lichess/*.emet`), and the
+  Nickel layer (`nickel/`, the `.ncl` examples, and golemctl's `nickel export`
+  shell-out) was retired.
 
 - **golem crates as flake outputs.** Add golem's own crates (`golemd` /
   `golemctl`) as `flake.nix` outputs. Needs their static-build specifics worked
