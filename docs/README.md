@@ -1,8 +1,8 @@
 # golem docs site
 
-Astro + Starlight. Lives at `docs/`. Source of truth for the public docs;
-DESIGN.md is the design archive — the docs site teaches deployment, DESIGN.md
-explains the engine.
+Astro + Starlight. Lives at `docs/`. Source of truth for the public docs: the
+site teaches deployment, while `emet/docs/adr/` records the engine's design
+decisions.
 
 ## Run locally
 
