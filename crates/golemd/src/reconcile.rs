@@ -1,0 +1,127 @@
+//! The pure diff: desired scroll vs. last-applied outcomes in, an ordered list
+//! of glyph operations out, no side effects (ADR 0014 §3, ADR 0015 §2). The
+//! foreman enacts what this decides.
+
+use scroll_format::{content_id_of_glyph, ContentId, Glyph, Scroll};
+
+use crate::journal::{GlyphOp, Outcome};
+
+/// The content id `plan` versions a glyph by. Delegates to
+/// `scroll_format::content_id_of_glyph` so the hash has one definition shared
+/// with the compiler (ADR 0013).
+pub fn glyph_content_id(glyph: &Glyph) -> ContentId {
+    content_id_of_glyph(glyph)
+}
+
+/// Diff the desired scroll against the prior applied outcomes, keyed by
+/// [`Glyph::key`] (the stable per-resource identity) and versioned by content
+/// id. Per key: absent from prior → `Install`; present with the same id →
+/// `Noop`; present with a different id → `Replace` (an upgrade); present in prior
+/// but gone from desired → `Remove`. Installs and replaces come first in desired
+/// order, removes last, so the foreman applies additions before undoing what
+/// left.
+pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
+    let mut ops = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    for glyph in &desired.glyphs {
+        let key = glyph.key();
+        seen.insert(key.clone());
+        let new_cid = glyph_content_id(glyph);
+        match prior.iter().find(|o| o.op.key() == key) {
+            None => ops.push(GlyphOp::Install { cid: new_cid, glyph: glyph.clone() }),
+            Some(prev) if prev.cid == new_cid => {
+                ops.push(GlyphOp::Noop { cid: new_cid, glyph: glyph.clone() })
+            }
+            Some(prev) => ops.push(GlyphOp::Replace {
+                old_cid: prev.cid,
+                new_cid,
+                glyph: glyph.clone(),
+            }),
+        }
+    }
+
+    for prev in prior {
+        if !seen.contains(&prev.op.key()) {
+            ops.push(GlyphOp::Remove {
+                cid: prev.cid,
+                glyph: prev.op.glyph().clone(),
+            });
+        }
+    }
+
+    ops
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::Inverse;
+
+    fn apt(name: &str) -> Glyph {
+        Glyph::AptPackage { name: name.into() }
+    }
+
+    fn file(path: &str, contents: &str) -> Glyph {
+        Glyph::File { path: path.into(), contents: contents.into(), mode: "0644".into() }
+    }
+
+    fn scroll(glyphs: Vec<Glyph>) -> Scroll {
+        Scroll { name: "h1".into(), glyphs }
+    }
+
+    fn applied(glyph: Glyph) -> Outcome {
+        Outcome {
+            cid: glyph_content_id(&glyph),
+            op: GlyphOp::Install { cid: glyph_content_id(&glyph), glyph: glyph.clone() },
+            inverse: Inverse::Nothing,
+            changed: true,
+        }
+    }
+
+    #[test]
+    fn new_glyph_against_empty_prior_is_install() {
+        let ops = plan(&[], &scroll(vec![apt("nginx")]));
+        assert_eq!(ops, vec![GlyphOp::Install { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+    }
+
+    #[test]
+    fn unchanged_glyph_is_noop() {
+        let ops = plan(&[applied(apt("nginx"))], &scroll(vec![apt("nginx")]));
+        assert_eq!(ops, vec![GlyphOp::Noop { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+    }
+
+    #[test]
+    fn same_key_changed_contents_is_replace() {
+        let prior = vec![applied(file("/etc/app.conf", "old"))];
+        let ops = plan(&prior, &scroll(vec![file("/etc/app.conf", "new")]));
+        assert_eq!(
+            ops,
+            vec![GlyphOp::Replace {
+                old_cid: glyph_content_id(&file("/etc/app.conf", "old")),
+                new_cid: glyph_content_id(&file("/etc/app.conf", "new")),
+                glyph: file("/etc/app.conf", "new"),
+            }]
+        );
+    }
+
+    #[test]
+    fn glyph_only_in_prior_is_remove() {
+        let ops = plan(&[applied(apt("nginx"))], &scroll(vec![]));
+        assert_eq!(ops, vec![GlyphOp::Remove { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+    }
+
+    #[test]
+    fn installs_precede_removes_and_follow_desired_order() {
+        let prior = vec![applied(apt("old"))];
+        let ops = plan(&prior, &scroll(vec![apt("a"), apt("b")]));
+        assert_eq!(
+            ops,
+            vec![
+                GlyphOp::Install { cid: glyph_content_id(&apt("a")), glyph: apt("a") },
+                GlyphOp::Install { cid: glyph_content_id(&apt("b")), glyph: apt("b") },
+                GlyphOp::Remove { cid: glyph_content_id(&apt("old")), glyph: apt("old") },
+            ]
+        );
+    }
+}

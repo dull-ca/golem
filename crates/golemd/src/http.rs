@@ -1,37 +1,33 @@
-//! HTTP surface over the foreman.
-//!
-//! - `POST   /blueprints`        commission
-//! - `DELETE /blueprints/:name`  decommission
-//! - `GET    /blueprints`        list blueprints
-//! - `GET    /state`             resolved state
-//! - `GET    /revisions[/:id]`   the journal
-//! - `GET    /status`            host + latest revision
-//!
-//! The foreman is synchronous and blocking (sqlite, sleeps, retries), so every
-//! call runs on a blocking thread via [`blocking`], never on a runtime worker.
+//! The HTTP adapter over the foreman (ADR 0014 §5). `POST /manifest` ingests
+//! raw manifest bytes and reconciles; the read routes expose the current applied
+//! scroll (`GET /state`), the journal (`GET /revisions[/:id]`), and a liveness
+//! summary (`GET /status`). There is no decommission verb — a node's state is a
+//! whole scroll, so "remove everything" is applying an empty one. Foreman calls
+//! are blocking, so each runs on `spawn_blocking`.
 
 use axum::{
+    body::Bytes,
     extract::{Path, State as AxState},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
-use golem_types::Blueprint;
 use serde::Serialize;
 use std::sync::Arc;
 
 use crate::foreman::Foreman;
+use crate::journal::AppliedState;
 
 #[derive(Clone)]
 pub struct AppState {
     pub foreman: Arc<Foreman>,
 }
 
+/// Wire the five routes to the shared foreman state.
 pub fn router(app: AppState) -> Router {
     Router::new()
-        .route("/blueprints", post(commission).get(blueprints))
-        .route("/blueprints/:name", delete(decommission))
+        .route("/manifest", post(apply_manifest))
         .route("/state", get(state))
         .route("/revisions", get(revisions))
         .route("/revisions/:id", get(revision))
@@ -39,7 +35,8 @@ pub fn router(app: AppState) -> Router {
         .with_state(app)
 }
 
-/// Run blocking foreman work off the async runtime.
+/// Run a blocking foreman call off the async runtime and map its errors to an
+/// HTTP 500.
 async fn blocking<T, F>(foreman: Arc<Foreman>, f: F) -> Result<T, ApiError>
 where
     F: FnOnce(&Foreman) -> anyhow::Result<T> + Send + 'static,
@@ -63,30 +60,30 @@ async fn status(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiE
     Ok(Json(Status { host, latest_revision: latest }))
 }
 
-async fn commission(
+async fn apply_manifest(
     AxState(s): AxState<AppState>,
-    Json(bp): Json<Blueprint>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(blocking(s.foreman.clone(), move |f| f.commission(bp)).await?))
+    let bytes = body.to_vec();
+    Ok(Json(blocking(s.foreman.clone(), move |f| f.apply_manifest(&bytes)).await?))
 }
 
-async fn decommission(
-    AxState(s): AxState<AppState>,
-    Path(name): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    let n = name.clone();
-    match blocking(s.foreman.clone(), move |f| f.decommission(&n)).await? {
-        Some(rev) => Ok(Json(rev)),
-        None => Err(ApiError::not_found(format!("no blueprint named {name:?}"))),
-    }
-}
-
-async fn blueprints(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(blocking(s.foreman.clone(), |f| f.blueprints()).await?))
+#[derive(Serialize)]
+struct StateView {
+    content_id: Option<String>,
+    scroll: Option<scroll_format::Scroll>,
 }
 
 async fn state(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(blocking(s.foreman.clone(), |f| f.state()).await?))
+    let applied: Option<AppliedState> = blocking(s.foreman.clone(), |f| f.applied_state()).await?;
+    let view = match applied {
+        Some(a) => StateView {
+            content_id: Some(a.scroll_content_id.to_string()),
+            scroll: Some(a.scroll),
+        },
+        None => StateView { content_id: None, scroll: None },
+    };
+    Ok(Json(view))
 }
 
 async fn revisions(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {

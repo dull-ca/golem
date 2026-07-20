@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/golem-types", "crates/golemd", "crates/golemctl", "emet/crates/emet", "emet/crates/emet-lsp"]
+members = ["crates/golemd", "crates/golemctl", "crates/scroll-format", "emet/crates/emet", "emet/crates/emet-lsp"]
 
 [workspace.package]
 version     = "0.1.0"
@@ -10,7 +10,7 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 # shared core
-golem-types  = { path = "crates/golem-types" }
+scroll-format = { path = "crates/scroll-format" }
 
 # ecosystem
 serde        = { version = "1", features = ["derive"] }
@@ -23,6 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait  = "0.1"
 chrono       = { version = "0.4", features = ["serde"] }
 blake3       = "1"
+postcard     = { version = "1", features = ["use-std"] }
 sha2         = "0.10"
 hex          = "0.4"
 rusqlite     = { version = "0.31", features = ["bundled"] }
