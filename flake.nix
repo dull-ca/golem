@@ -34,7 +34,7 @@
         tree-sitter-emet = pkgs.tree-sitter.buildGrammar {
           language = "emet";
           version = "0.1.0";
-          src = ./emet/tree-sitter-emet;
+          src = ./libs/tree-sitter-emet;
         };
       in
       {

@@ -27,7 +27,7 @@ what golem did. golem only ever reverses edits it recorded — it never touches
 pre-existing host state.
 
 Source of truth for the wire model: the **`scroll-format`** crate
-(`crates/scroll-format/`), shared by writer (`emetc`) and reader (`golemd`).
+(`libs/scroll-format/`), shared by writer (`emetc`) and reader (`golemd`).
 The authoring contract is the Emet language. Build & run: `QUICKSTART.md`.
 
 ## The wire format is an implementation detail
@@ -51,8 +51,11 @@ Auto mode is on; prefer action over planning.
 Never use git unless explicitly asked — no commits, pushes, branches, or
 resets. The user decides when to commit.
 
-## Docs site
+## Docs
 
-The Astro/Starlight site under `docs/` is being brought current with the
-glyph/scroll/manifest model (another agent owns that cutover). Don't edit
-`docs/` here unless asked — coordinate rather than collide.
+Two separate trees:
+
+- **`sites/website/`** — the Astro/Starlight public docs site, on the current
+  glyph/scroll/manifest model. Run and build from there (`sites/website`).
+- **`docs/`** — the markdown design docs: `adr/`, `design/`, `guide/`,
+  `PLAN.md`, `TODO.md`. The decision and backlog record, not the published site.

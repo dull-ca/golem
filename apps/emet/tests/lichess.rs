@@ -2,7 +2,7 @@ use emet::compile_file;
 
 fn lichess_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../examples/lichess")
+        .join("../../examples/lichess")
 }
 
 fn fleet() -> emet::Compiled {

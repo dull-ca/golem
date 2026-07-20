@@ -11,7 +11,7 @@ execution.
 
 Design records this plan realizes:
 
-- **ADR 0012** (`emet/docs/adr/`) — binary content-addressed compiler output
+- **ADR 0012** (`docs/adr/`) — binary content-addressed compiler output
   (the accepted plan).
 - **ADR 0013** — implement the binary manifest; the shared `scroll-format` crate.
 - **ADR 0014** — golemd glyph rewrite + model reconciliation.
@@ -28,20 +28,19 @@ Design records this plan realizes:
 - Tests are written test-first (`superpowers:test-driven-development`) where the
   behaviour is specifiable up front — the determinism tests (Phase 1) and the
   `reverse(apply(x))` isometry tests (Phase 3) especially.
-- Per `emet/CLAUDE.md`: run `cargo test -p emet -p emet-lsp` (and the golem
+- Per `apps/emet/CLAUDE.md`: run `cargo test -p emet -p emet-lsp` (and the golem
   crates) after each change; small commits per fix. **Git is user-driven only**
   (root `CLAUDE.md`) — agents do not commit unless asked.
 
 ## ADR placement decision
 
-**[RATIFY 0]** These four ADRs (0013–0016) are written into **`emet/docs/adr/`**,
+**[RATIFY 0]** These four ADRs (0013–0016) are written into **`docs/adr/`**,
 continuing the emet sequence that 0012 started. Rationale: the wire contract and
 the model both originate at the emet boundary, 0012 lives there, and the sequence
-is unbroken. **Alternative:** a new golem-side `docs/adr/` for golem-ecosystem
+is unbroken. **Alternative:** a new golem-side ADR series for golem-ecosystem
 decisions, keeping emet's ADRs language-only. Recommendation: keep them in
-`emet/docs/adr/` now; if the golem side later accrues its own ADRs unrelated to
-emet, start `docs/adr/` then. (If the user prefers the split, the four files move
-and re-number under `docs/adr/0001–0004`.)
+`docs/adr/` now; if the golem side later accrues its own ADRs unrelated to
+emet, start a separate series then.
 
 ---
 
@@ -72,7 +71,7 @@ mitigated by the ADRs' explicit alternatives.
 
 Stand up the shared wire contract so both ends compile against one model.
 
-- Create `crates/scroll-format/` (new workspace member). Move `Glyph`/`Scroll`
+- Create `libs/scroll-format/` (new workspace member). Move `Glyph`/`Scroll`
   in; add `AddressedScroll`, `Manifest`, `ContentId`; `content_id` = BLAKE3 over
   postcard bytes; `Manifest::from_scrolls`; `to_bytes`/`from_bytes`; the JSON
   debug view; `format_version` + guard (ADR 0013 §1–3).
@@ -184,14 +183,14 @@ value-level cross-host-ref approach proves awkward, the `ref`-helper fallback
 
 ## Phase 5 — Docs cutover: new model in, old terminology out (goal #4)
 
-- Update the Astro/Starlight site (`docs/src/content/docs/`) for the glyph/
+- Update the Astro/Starlight site (`sites/website/src/content/docs/`) for the glyph/
   scroll/manifest model: rewrite `reference/primitives`, `reference/architecture`,
   `reference/bundle-format` (→ manifest format), getting-started, and guides to
   the Emet authoring surface + the four glyphs.
 - **Drop the old terminology docs**: `TERMINOLOGY.md`, `TERMINOLOGY.discworld.md`,
   and the Blueprint/Workload/Service/Ingress vocabulary in the root `CLAUDE.md`
   and docs — replaced by glyph/scroll/fleet (and the reconcile/reverse/CID model).
-- Fold Emet's markdown docs into the site (`emet/docs/TODO.md` §B "unify docs").
+- Fold Emet's markdown docs into the site (`docs/TODO.md` §B "unify docs").
 
 **Executes:** `/lw:documenter` (owns all prose) with `/lw:communicator` for any
 user-facing wording calls.
@@ -234,8 +233,8 @@ docs (5) come last because they describe the finished model.
 
 Each: the decision, the recommendation, the key alternative.
 
-- **[RATIFY 0] ADR location.** Recommend keeping 0013–0016 in `emet/docs/adr/`
-  (continue the 0012 sequence). Alternative: a new golem-side `docs/adr/`.
+- **[RATIFY 0] ADR location.** Recommend keeping 0013–0016 in `docs/adr/`
+  (continue the 0012 sequence). Alternative: a separate golem-side ADR series.
 - **[RATIFY 1] Shared model = new `scroll-format` crate; `ir::Scroll`/`Glyph`
   move there, `emet::ir` re-exports.** Recommend as written (single definition,
   no drift). Alternative: schema in `golem-types` (rejected — that model is being

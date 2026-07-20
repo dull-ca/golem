@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-Guidance for working in Emet. Emet is a subtree of the **golem** monorepo; the
-crate lives at `crates/emet/` and the LSP at `crates/emet-lsp/`, both members of
-golem's Cargo workspace. This file is Emet-only — golem has its own root
-`CLAUDE.md` for the wider project. File paths below are relative to the Emet
-subtree root (`emet/`); source paths are under `crates/emet/src/`.
+Guidance for working in Emet. The compiler crate lives at `apps/emet/` and the
+LSP at `apps/emet-lsp/`, both members of the **golem** monorepo's Cargo
+workspace. This file is Emet-only — golem has its own root `CLAUDE.md` for the
+wider project. File paths below are relative to `apps/emet/`; source paths are
+under `apps/emet/src/`.
 
 ## Where Emet fits
 
@@ -21,7 +21,7 @@ the integration backlog.
 Elm, with totality as a design preference rather than a guarantee (self-recursion
 is allowed; ADR 0011). It compiles to the glyph IR — the `Glyph`/`Scroll` model,
 which lives in the shared `scroll-format` crate and is re-exported through
-`crates/emet/src/ir.rs`. `emetc`'s default output is the binary, content-addressed
+`apps/emet/src/ir.rs`. `emetc`'s default output is the binary, content-addressed
 manifest of those scrolls (ADR 0012/0013); the readable plan is `--text`, JSON is
 `--json`. The surface is Elm-lite:
 top-level decls with optional signatures, Hindley-Milner inference with generics,
@@ -51,7 +51,7 @@ cargo build -p emet
 cargo test -p emet                                   # emet crate tests
 cargo test -p emet -p emet-lsp                       # + the LSP crate
 cargo run -p emet                                    # built-in demo
-cargo run -p emet -- crates/emet/examples/basic.emet # run a file (.emet extension)
+cargo run -p emet -- apps/emet/examples/basic.emet   # run a file (.emet extension)
 ```
 
 ## Pipeline (each stage is one module)
@@ -130,7 +130,7 @@ not yet parsed (`docs/TODO.md`).
   totality is a design preference, not an invariant. Exhaustive `case` is still
   enforced at compile time regardless. Mutual recursion remains unsupported
   (decls inferred left-to-right).
-- **The IR is inert, concrete data.** `crates/emet/src/ir.rs` re-exports the
+- **The IR is inert, concrete data.** `apps/emet/src/ir.rs` re-exports the
   `Glyph`/`Scroll` model from the shared `scroll-format` crate (the wire
   contract, ADR 0013); those types' field/variant order is a versioned contract,
   not a free refactor. Adding capability = new IR variants + reconcilers; the
@@ -142,7 +142,7 @@ not yet parsed (`docs/TODO.md`).
 
 ## The two subtle subsystems
 
-Treat `crates/emet/tests/layout.rs` and `crates/emet/tests/pipeline.rs` as the spec — fix the
+Treat `apps/emet/tests/layout.rs` and `apps/emet/tests/pipeline.rs` as the spec — fix the
 implementation, not the tests, unless a test is provably wrong.
 
 - **Layout (`layout.rs`).** Dedent / virtual-`;` / the `parse-error(t)` handshake

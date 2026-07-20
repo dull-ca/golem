@@ -1,7 +1,7 @@
 # golem docs site
 
-Astro + Starlight. Lives at `docs/`. Source of truth for the public docs: the
-site teaches deployment, while `emet/docs/adr/` records the engine's design
+Astro + Starlight. Lives at `sites/website/`. Source of truth for the public
+docs: the site teaches deployment, while `docs/adr/` records the engine's design
 decisions.
 
 ## Run locally
@@ -11,7 +11,7 @@ you want everything in one shell, also `nix profile install nixpkgs#bun` or use
 your system's node/bun.
 
 ```bash
-cd docs
+cd sites/website
 bun install        # or: npm install
 bun run dev        # or: npm run dev
 ```
@@ -21,7 +21,7 @@ Then open http://localhost:4321.
 ## Layout
 
 ```
-docs/
+sites/website/
 ├─ astro.config.mjs        # sidebar + site config
 ├─ src/content/docs/
 │  ├─ index.mdx            # landing

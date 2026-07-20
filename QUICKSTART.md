@@ -16,7 +16,7 @@ cargo build --release -p golemd -p golemctl -p emet
 ```
 
 `emetc` is the `emet` crate's binary; put it on `PATH` (or `cargo install
---path emet/crates/emet`) so `golemctl apply` can invoke it on a `.emet` source.
+--path apps/emet`) so `golemctl apply` can invoke it on a `.emet` source.
 
 ## Run the agent
 

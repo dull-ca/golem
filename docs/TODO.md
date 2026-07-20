@@ -4,7 +4,7 @@ Deferred work and known gaps, with pointers to the design/ADRs that explain the
 context. These are intentional deferrals, not bugs.
 
 Two backlogs: **A** is work inside the Emet language itself; **B** is the
-Emet ↔ golem ecosystem integration, now that Emet is a subtree of the golem
+Emet ↔ golem ecosystem integration, now that Emet lives in the golem
 monorepo. B's headline is model reconciliation.
 
 ## A. Emet language backlog
@@ -60,7 +60,7 @@ monorepo. B's headline is model reconciliation.
   (polymorphic/row variants or nominal subsumption) can be added additively.
   See ADR 0008.
 
-- **`emet-lsp` depth.** `emet-lsp` (`crates/emet-lsp/`) is diagnostics-only
+- **`emet-lsp` depth.** `emet-lsp` (`apps/emet-lsp/`) is diagnostics-only
   today. Add hover (inferred types), completion, and go-to-definition. These need
   the compiler to expose position-indexed type/scope information the LSP can query.
 
@@ -87,9 +87,9 @@ monorepo. B's headline is model reconciliation.
 
 ## B. Emet ↔ golem integration backlog
 
-Emet now lives in the golem monorepo (`emet/`, crates under `crates/emet/` and
-`crates/emet-lsp/`). This backlog is the work to make Emet golem's authoring
-language rather than a standalone project.
+Emet now lives in the golem monorepo (`apps/emet` and `apps/emet-lsp`). This
+backlog is the work to make Emet golem's authoring language rather than a
+standalone project.
 
 - **Model reconciliation (headline) — DONE (ADR 0014).** The two vocabularies
   were reconciled by *retiring* golem's rich model rather than mapping onto it.

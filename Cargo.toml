@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/golemd", "crates/golemctl", "crates/scroll-format", "emet/crates/emet", "emet/crates/emet-lsp"]
+members = ["apps/golemd", "apps/golemctl", "apps/emet", "apps/emet-lsp", "libs/scroll-format"]
 
 [workspace.package]
 version     = "0.1.0"
@@ -10,7 +10,7 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 # shared core
-scroll-format = { path = "crates/scroll-format" }
+scroll-format = { path = "libs/scroll-format" }
 
 # ecosystem
 serde        = { version = "1", features = ["derive"] }

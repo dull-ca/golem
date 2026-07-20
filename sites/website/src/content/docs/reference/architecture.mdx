@@ -22,7 +22,7 @@ is the *reader*; the `scroll-format` crate is the model they both depend on.
 
 ## `emetc` — the compiler (writer)
 
-Emet is a typed, Elm-modeled language (`emet/crates/emet/`). A program is a
+Emet is a typed, Elm-modeled language (`apps/emet/`). A program is a
 set of top-level declarations with Hindley-Milner inference; `main : List
 Scroll` is the fleet. The compiler's stages:
 
@@ -42,7 +42,7 @@ downstream.
 
 ## `scroll-format` — the shared contract
 
-`crates/scroll-format/` owns the wire model and nothing else: `Glyph`,
+`libs/scroll-format/` owns the wire model and nothing else: `Glyph`,
 `Scroll`, `AddressedScroll`, `Manifest`, `ContentId`, and the pure
 functions that turn scrolls into manifest bytes and back. It names no I/O,
 no filesystem, no network — pure data and pure functions.
@@ -68,7 +68,7 @@ scroll and journal. That is the whole CLI — see [CLI](/reference/cli/).
 
 ## `golemd` — the agent (reader)
 
-`golemd` runs on each box (`crates/golemd/`). On a manifest:
+`golemd` runs on each box (`apps/golemd/`). On a manifest:
 
 1. **Ingest.** `scroll_format::from_bytes` decodes the manifest and checks
    `format_version`.
@@ -107,12 +107,12 @@ itself.
 
 | Component | Path |
 | --- | --- |
-| Emet compiler | `emet/crates/emet/` |
-| Shared wire model | `crates/scroll-format/` |
-| Operator CLI | `crates/golemctl/` |
-| Agent | `crates/golemd/` |
-| Reconciler port | `crates/golemd/src/reconciler.rs` |
-| Host reconcilers | `crates/golemd/src/reconcilers.rs` |
-| Fake reconciler (tests) | `crates/golemd/src/fake_reconciler.rs` |
-| Journal / store | `crates/golemd/src/journal.rs`, `planroom.rs` |
+| Emet compiler | `apps/emet/` |
+| Shared wire model | `libs/scroll-format/` |
+| Operator CLI | `apps/golemctl/` |
+| Agent | `apps/golemd/` |
+| Reconciler port | `apps/golemd/src/reconciler.rs` |
+| Host reconcilers | `apps/golemd/src/reconcilers.rs` |
+| Fake reconciler (tests) | `apps/golemd/src/fake_reconciler.rs` |
+| Journal / store | `apps/golemd/src/journal.rs`, `planroom.rs` |
 | Lichess fleet (real Emet) | `examples/lichess/` |

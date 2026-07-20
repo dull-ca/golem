@@ -8,7 +8,7 @@ import { Aside } from "@astrojs/starlight/components";
 The **manifest** is the contract between the compiler and the agent.
 `emetc build` emits it; `golemd` consumes it. It is a binary,
 content-addressed artifact — not JSON, not a text plan. Its schema is the
-shared `scroll-format` crate (`crates/scroll-format/`), which both `emet`
+shared `scroll-format` crate (`libs/scroll-format/`), which both `emet`
 and `golemd` depend on and neither owns, so the writer and reader cannot
 drift.
 
@@ -123,7 +123,7 @@ The diff, the enact, and the journalled reversal records are the subject of
 
 | Concern | Path |
 | --- | --- |
-| Manifest / AddressedScroll / ContentId | `crates/scroll-format/src/manifest.rs`, `content_id.rs` |
-| Glyph / Scroll model | `crates/scroll-format/src/scroll.rs` |
-| Compiler (writer) | `emet/crates/emet/` (re-exports the model via `emet::ir`) |
-| Agent (reader) | `crates/golemd/` |
+| Manifest / AddressedScroll / ContentId | `libs/scroll-format/src/manifest.rs`, `content_id.rs` |
+| Glyph / Scroll model | `libs/scroll-format/src/scroll.rs` |
+| Compiler (writer) | `apps/emet/` (re-exports the model via `emet::ir`) |
+| Agent (reader) | `apps/golemd/` |
