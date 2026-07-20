@@ -1,0 +1,13 @@
+-- Fleet-wide facts every host shares. This is how golem expresses cross-host
+-- references (ADR 0016 §4): instead of a placeholder-substitution pass, a
+-- shared value module holds the facts (the internal CIDR, an `address:port`
+-- helper) and each host imports and reads them as ordinary values, resolved by
+-- evaluation.
+
+module Fleet exposing (internalNetwork, endpoint)
+
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address port = "${address}:${String.fromInt port}"
