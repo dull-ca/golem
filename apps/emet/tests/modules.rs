@@ -91,6 +91,36 @@ fn imported_open_type_is_usable_in_annotation() {
 }
 
 #[test]
+fn imported_open_type_constructors_are_matchable() {
+    let c = compile_fixture("MatchEntry.emet").expect("case on imported Role(..) compiles");
+    assert_eq!(scroll_names(&c), vec!["web".to_string(), "db".to_string()]);
+}
+
+#[test]
+fn imported_open_type_exhaustiveness_crosses_module() {
+    let err = compile_fixture("MatchNonExhaustiveEntry.emet")
+        .expect_err("a missing arm on an imported type must be non-exhaustive");
+    assert_eq!(err.phase, Phase::Type);
+    assert!(
+        err.msg.contains("non-exhaustive"),
+        "expected a non-exhaustive diagnostic, got: {}",
+        err.msg
+    );
+}
+
+#[test]
+fn type_imported_without_open_is_not_matchable() {
+    let err = compile_fixture("OpaqueMatchEntry.emet")
+        .expect_err("matching constructors of a type imported without (..) must fail");
+    assert_eq!(err.phase, Phase::Type);
+    assert!(
+        err.msg.contains("unknown constructor"),
+        "expected an unknown-constructor diagnostic, got: {}",
+        err.msg
+    );
+}
+
+#[test]
 fn annotation_with_non_exposed_type_is_rejected() {
     let err = compile_fixture("HiddenTypeAnnotEntry.emet")
         .expect_err("annotating with a non-exposed type must fail");

@@ -91,6 +91,20 @@ impl Infer {
             .cloned()
             .or_else(|| crate::prelude::sum_type_constructors(type_name))
     }
+
+    /// Seed the constructor scope with the open-exposed constructors this module
+    /// imports, before its own `type` decls register. They land in the same
+    /// `user_ctor_schemes` / `user_sum_ctors` tables the local decls use, so
+    /// `constructor_scheme` and `sum_type_constructors` resolve imported and
+    /// local constructors uniformly.
+    fn seed_imported_constructors(&mut self, imported: &ImportedConstructors) {
+        for (name, scheme) in &imported.ctor_schemes {
+            self.user_ctor_schemes.insert(name.clone(), scheme.clone());
+        }
+        for (name, members) in &imported.sum_ctors {
+            self.user_sum_ctors.insert(name.clone(), members.clone());
+        }
+    }
 }
 
 impl Infer {
@@ -614,6 +628,19 @@ fn glyph_injects(from: &str, from_args: &[Type], to: &str, to_args: &[Type]) -> 
 
 fn con(name: &str) -> Type {
     Type::Con(name.to_string(), vec![])
+}
+
+/// The constructor-scope contribution of a module's open-exposed (`Type(..)`)
+/// imports: each imported constructor's value scheme and each imported type's
+/// full variant set. The resolver harvests this from the interfaces a module
+/// imports and hands it to `check_entry`/`check_library`, which seed it into the
+/// `Infer` so `infer_pattern` can resolve imported constructors and the
+/// exhaustiveness checker can see their type's complete signature — the pattern
+/// counterpart to `imported_types` on the annotation side.
+#[derive(Default)]
+pub struct ImportedConstructors {
+    pub ctor_schemes: HashMap<String, Scheme>,
+    pub sum_ctors: HashMap<String, Vec<(String, usize)>>,
 }
 
 #[derive(Clone, Default)]
@@ -1414,8 +1441,10 @@ pub fn check_library(
     m: &Module,
     base: TyEnv,
     imported_types: &HashMap<String, usize>,
+    imported_ctors: &ImportedConstructors,
 ) -> Result<TyEnv, TypeError> {
     let mut inf = Infer::default();
+    inf.seed_imported_constructors(imported_ctors);
     let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
     validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
     infer_decls(&mut inf, &env, &m.decls, true)
@@ -1428,8 +1457,10 @@ pub fn check_entry(
     m: &Module,
     base: TyEnv,
     imported_types: &HashMap<String, usize>,
+    imported_ctors: &ImportedConstructors,
 ) -> Result<(TyEnv, Type), TypeError> {
     let mut inf = Infer::default();
+    inf.seed_imported_constructors(imported_ctors);
     let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
     validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
     let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;

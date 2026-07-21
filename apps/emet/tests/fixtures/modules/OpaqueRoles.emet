@@ -1,0 +1,6 @@
+module OpaqueRoles exposing (Role, web)
+
+type Role = Web | Db
+
+web : Role
+web = Web

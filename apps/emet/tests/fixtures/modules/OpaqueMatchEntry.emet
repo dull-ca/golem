@@ -1,0 +1,12 @@
+module Main exposing (..)
+
+import OpaqueRoles exposing (Role, web)
+
+nameFor : Role -> String
+nameFor role =
+  case role of
+    Web -> "web"
+    Db  -> "db"
+
+main : List Scroll
+main = [ scroll { name = nameFor web, glyphs = [] } ]

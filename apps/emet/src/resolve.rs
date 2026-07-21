@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module};
+use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme};
 use crate::eval::{self, Env};
-use crate::infer::{self, TyEnv};
+use crate::infer::{self, ImportedConstructors, TyEnv};
 use crate::{Error, Phase};
 
 struct Loaded {
@@ -36,6 +36,8 @@ struct Interface {
     exposed_values: HashSet<String>,
     exposed_constructors: Vec<String>,
     exposed_type_arities: HashMap<String, usize>,
+    exposed_ctor_schemes: HashMap<String, Scheme>,
+    exposed_sum_ctors: HashMap<String, Vec<(String, usize)>>,
 }
 
 /// Compile a multi-module program from its entry file to `main`'s type and the
@@ -69,10 +71,12 @@ fn check_and_eval(
         let base_ty = import_ty_env(&loaded_mod.module, &interfaces, loaded_mod)?;
         let base_val = import_value_env(&loaded_mod.module, &interfaces);
         let imported_types = import_type_arities(&loaded_mod.module, &interfaces);
+        let imported_ctors = import_constructors(&loaded_mod.module, &interfaces);
 
         if is_entry {
-            let (_, main_ty) = infer::check_entry(&loaded_mod.module, base_ty, &imported_types)
-                .map_err(|e| type_error(loaded_mod, e))?;
+            let (_, main_ty) =
+                infer::check_entry(&loaded_mod.module, base_ty, &imported_types, &imported_ctors)
+                    .map_err(|e| type_error(loaded_mod, e))?;
             let scrolls = eval::eval_entry(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
             crate::analyze(&scrolls).map_err(|msg| Error {
@@ -84,8 +88,9 @@ fn check_and_eval(
             entry_result = Some((main_ty, scrolls));
         } else {
             reject_library_main(loaded_mod)?;
-            let final_ty = infer::check_library(&loaded_mod.module, base_ty, &imported_types)
-                .map_err(|e| type_error(loaded_mod, e))?;
+            let final_ty =
+                infer::check_library(&loaded_mod.module, base_ty, &imported_types, &imported_ctors)
+                    .map_err(|e| type_error(loaded_mod, e))?;
             let final_val = eval::eval_library(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
             interfaces.insert(name.clone(), interface_of(&loaded_mod.module, final_ty, final_val));
@@ -269,6 +274,31 @@ fn import_type_arities(
     arities
 }
 
+/// Collect the constructor schemes and full variant sets of the open-exposed
+/// types this module imports, mirroring `import_type_arities` but for the
+/// pattern side. The exporting module's `exposed_ctor_schemes` /
+/// `exposed_sum_ctors` already hold only `Type(..)` constructors, so a type
+/// exposed without `(..)` contributes nothing here and stays unmatchable in the
+/// importer. Fed to inference so `infer_pattern` resolves imported constructors
+/// and the exhaustiveness checker sees their type's complete signature.
+fn import_constructors(
+    module: &Module,
+    interfaces: &HashMap<String, Interface>,
+) -> ImportedConstructors {
+    let mut ctor_schemes = HashMap::new();
+    let mut sum_ctors = HashMap::new();
+    for import in &module.imports {
+        let iface = &interfaces[&import.module];
+        for (name, scheme) in &iface.exposed_ctor_schemes {
+            ctor_schemes.insert(name.clone(), scheme.clone());
+        }
+        for (name, members) in &iface.exposed_sum_ctors {
+            sum_ctors.insert(name.clone(), members.clone());
+        }
+    }
+    ImportedConstructors { ctor_schemes, sum_ctors }
+}
+
 fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) -> Env {
     let mut env = eval::prelude_env();
     for import in &module.imports {
@@ -303,27 +333,43 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
 /// a type's constructors exposed only when written `Type(..)`. The visibility
 /// rule is enforced here: a name absent from the exposing list never enters the
 /// interface and so cannot be imported.
+///
+/// A type exposed open (`Type(..)`) additionally carries, per constructor, its
+/// value scheme (`exposed_ctor_schemes`, harvested from the module's own
+/// `ty_env`) and, per type, its full variant set (`exposed_sum_ctors`), so an
+/// importer can both build and pattern-match its values and have the
+/// exhaustiveness checker see the complete constructor set. A type exposed
+/// without `(..)` contributes none of this, so its constructors stay invisible
+/// to the importer.
 fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
     let mut exposed_values = HashSet::new();
     let mut exposed_constructors = Vec::new();
     let mut exposed_type_arities = HashMap::new();
+    let mut exposed_ctor_schemes = HashMap::new();
+    let mut exposed_sum_ctors = HashMap::new();
 
     let ctor_names: BTreeMap<String, Vec<String>> = module
         .type_decls
         .iter()
         .map(|td| (td.name.clone(), td.variants.iter().map(|v| v.name.clone()).collect()))
         .collect();
+    let sum_ctors: BTreeMap<String, Vec<(String, usize)>> = module
+        .type_decls
+        .iter()
+        .map(|td| {
+            (td.name.clone(), td.variants.iter().map(|v| (v.name.clone(), v.fields.len())).collect())
+        })
+        .collect();
     let type_arities: BTreeMap<String, usize> =
         module.type_decls.iter().map(|td| (td.name.clone(), td.params.len())).collect();
 
+    let mut open_type_names: Vec<String> = Vec::new();
     match &module.exposing {
         Exposing::All => {
             for decl in &module.decls {
                 exposed_values.insert(decl.name.clone());
             }
-            for variants in ctor_names.values() {
-                exposed_constructors.extend(variants.iter().cloned());
-            }
+            open_type_names.extend(ctor_names.keys().cloned());
             for (name, arity) in &type_arities {
                 exposed_type_arities.insert(name.clone(), *arity);
             }
@@ -339,9 +385,7 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
                             exposed_type_arities.insert(name.clone(), *arity);
                         }
                         if *open {
-                            if let Some(variants) = ctor_names.get(name) {
-                                exposed_constructors.extend(variants.iter().cloned());
-                            }
+                            open_type_names.push(name.clone());
                         }
                     }
                 }
@@ -349,7 +393,29 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         }
     }
 
-    Interface { ty_env, value_env, exposed_values, exposed_constructors, exposed_type_arities }
+    for type_name in &open_type_names {
+        if let Some(variants) = ctor_names.get(type_name) {
+            exposed_constructors.extend(variants.iter().cloned());
+            for ctor in variants {
+                if let Some(scheme) = ty_env.scheme(ctor) {
+                    exposed_ctor_schemes.insert(ctor.clone(), scheme);
+                }
+            }
+        }
+        if let Some(members) = sum_ctors.get(type_name) {
+            exposed_sum_ctors.insert(type_name.clone(), members.clone());
+        }
+    }
+
+    Interface {
+        ty_env,
+        value_env,
+        exposed_values,
+        exposed_constructors,
+        exposed_type_arities,
+        exposed_ctor_schemes,
+        exposed_sum_ctors,
+    }
 }
 
 fn reject_library_main(loaded: &Loaded) -> Result<(), Error> {

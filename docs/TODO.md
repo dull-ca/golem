@@ -41,12 +41,15 @@ monorepo. B's headline is model reconciliation.
   Role = Web | Db`) parse, infer, and cross module boundaries. The general
   *parameterized* `type Foo a = ...` (design §6) remains deferred.
 
-- **Imported value constructors not in scope for pattern-matching.** A type's
-  constructors imported via `exposing (Type(..))` can be *constructed* in the
-  importing module, but `case x of Ctor -> …` on such a constructor does **not**
-  resolve in the importer — cross-module pattern-matching on imported
-  constructors fails on the importer side (ADR 0016 §3). Constructing works;
-  matching does not.
+- **Imported value constructors in scope for pattern-matching — DONE.** A
+  type's constructors imported via `exposing (Type(..))` now resolve in
+  `case x of Ctor -> …` on the importer side, and the exhaustiveness/redundancy
+  checker sees the imported type's complete constructor set across the module
+  boundary. The resolver carries each open-exposed type's constructor schemes
+  and full variant set on the `Interface` and threads them into inference
+  (`ImportedConstructors`), the pattern-side counterpart to the imported-type
+  arities used for annotations. A type imported without `(..)` still keeps its
+  constructors invisible to the importer (ADR 0016 §3).
 
 - **Skolem-escape check for over-general signatures.** Signature checking uses
   instantiate-and-unify (design §4.3 / ADR 0003), which accepts an *over-general*
