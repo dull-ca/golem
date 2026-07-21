@@ -40,7 +40,7 @@ pub enum Value {
     List(Vec<Value>),
     Record(BTreeMap<String, Value>),
     Data { ctor: String, args: Vec<Value> },
-    Closure { name: Option<String>, param: String, body: Rc<Spanned<Expr>>, env: Env },
+    Closure { rec: Option<Rc<RecGroup>>, param: String, body: Rc<Spanned<Expr>>, env: Env },
     Builtin { name: String, arity: usize, args: Vec<Value>, run: BuiltinFn },
     /// A user sum-type value constructor collecting its `arity` arguments,
     /// yielding `Data { ctor, args }` once saturated (`apply`). A prelude
@@ -49,6 +49,21 @@ pub enum Value {
     /// constructors are only known at runtime, so this variant carries the name
     /// and arity as data, letting one representation serve any user constructor.
     Ctor { ctor: String, arity: usize, args: Vec<Value> },
+}
+
+/// A group of mutually recursive declarations sharing one captured environment.
+/// A closure built for a group carries the group so that, when it is applied,
+/// every member is reconstructed and bound into the environment before the body
+/// runs — tying the recursive knot lazily. A singleton group whose sole member
+/// references itself is ordinary self-recursion.
+pub struct RecGroup {
+    members: Vec<RecMember>,
+}
+
+struct RecMember {
+    name: String,
+    param: String,
+    body: Rc<Spanned<Expr>>,
 }
 
 impl std::fmt::Debug for Value {
@@ -64,8 +79,8 @@ impl std::fmt::Debug for Value {
             Value::Data { ctor, args } => {
                 f.debug_struct("Data").field("ctor", ctor).field("args", args).finish()
             }
-            Value::Closure { name, param, .. } => {
-                f.debug_struct("Closure").field("name", name).field("param", param).finish()
+            Value::Closure { param, .. } => {
+                f.debug_struct("Closure").field("param", param).finish()
             }
             Value::Builtin { name, arity, args, .. } => f
                 .debug_struct("Builtin")
@@ -133,7 +148,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             Value::List(vs)
         }
         Expr::Lam { param, body } => Value::Closure {
-            name: None,
+            rec: None,
             param: param.clone(),
             body: Rc::new((**body).clone()),
             env: env.clone(),
@@ -145,9 +160,8 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         }
         Expr::Let { decls, body } => {
             let mut e = env.clone();
-            for d in decls {
-                let v = eval_decl(&e, d, depth)?;
-                e = e.insert(d.name.clone(), v);
+            for group in crate::depgraph::scc_order(decls) {
+                e = eval_group(&e, decls, &group, depth)?;
             }
             eval(&e, body, depth)?
         }
@@ -227,7 +241,7 @@ pub fn apply_top(func: Value, arg: Value) -> Value {
 
 pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalError> {
     match func {
-        Value::Closure { name, param, body, env: captured } => {
+        Value::Closure { rec, param, body, env: captured } => {
             *depth += 1;
             if *depth > RECURSION_LIMIT {
                 return Err(EvalError {
@@ -235,11 +249,8 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
                         .to_string(),
                 });
             }
-            let self_bound = match &name {
-                Some(n) => captured.insert(
-                    n.clone(),
-                    Value::Closure { name: name.clone(), param: param.clone(), body: body.clone(), env: captured.clone() },
-                ),
+            let self_bound = match &rec {
+                Some(group) => bind_group(&captured, group),
                 None => captured,
             };
             let result = eval(&self_bound.insert(param, arg), &body, depth);
@@ -266,22 +277,73 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
     }
 }
 
-fn eval_decl(env: &Env, d: &Decl, depth: &mut u64) -> Result<Value, EvalError> {
+/// Reconstruct every member of a recursive group as a closure carrying the same
+/// group and the shared captured environment, then bind each under its name.
+/// Injecting the whole group before a member's body runs is what lets the
+/// members call one another, generalizing self-recursion to mutual recursion.
+fn bind_group(captured: &Env, group: &Rc<RecGroup>) -> Env {
+    let mut env = captured.clone();
+    for member in &group.members {
+        env = env.insert(
+            member.name.clone(),
+            Value::Closure {
+                rec: Some(group.clone()),
+                param: member.param.clone(),
+                body: member.body.clone(),
+                env: captured.clone(),
+            },
+        );
+    }
+    env
+}
+
+fn decl_as_curried(d: &Decl) -> Spanned<Expr> {
     let mut e = d.body.clone();
     for p in d.params.iter().rev() {
         e = Spanned(Expr::Lam { param: p.clone(), body: Box::new(e) }, d.span.clone());
     }
-    let value = eval(env, &e, depth)?;
-    Ok(name_closure(value, &d.name))
+    e
 }
 
-fn name_closure(value: Value, decl_name: &str) -> Value {
-    match value {
-        Value::Closure { name: _, param, body, env } => {
-            Value::Closure { name: Some(decl_name.to_string()), param, body, env }
+/// Evaluate one dependency group into `env`. A recursive group (a mutually
+/// recursive set, or a self-referential singleton) whose members are all
+/// functions builds a shared `RecGroup` so each member's closure can see the
+/// others when applied; any other group is evaluated member by member against
+/// an environment that already carries the groups it depends on.
+fn eval_group(
+    env: &Env,
+    decls: &[Decl],
+    group: &[usize],
+    depth: &mut u64,
+) -> Result<Env, EvalError> {
+    if crate::depgraph::group_is_recursive(decls, group) {
+        if let Some(rec_env) = eval_recursive_group(env, decls, group) {
+            return Ok(rec_env);
         }
-        other => other,
     }
+    let mut cur = env.clone();
+    for &idx in group {
+        let value = eval(&cur, &decl_as_curried(&decls[idx]), depth)?;
+        cur = cur.insert(decls[idx].name.clone(), value);
+    }
+    Ok(cur)
+}
+
+fn eval_recursive_group(env: &Env, decls: &[Decl], group: &[usize]) -> Option<Env> {
+    let mut members = Vec::with_capacity(group.len());
+    for &idx in group {
+        let curried = decl_as_curried(&decls[idx]);
+        match curried.0 {
+            Expr::Lam { param, body } => members.push(RecMember {
+                name: decls[idx].name.clone(),
+                param,
+                body: Rc::new(*body),
+            }),
+            _ => return None,
+        }
+    }
+    let group = Rc::new(RecGroup { members });
+    Some(bind_group(env, &group))
 }
 
 fn as_str(v: Value) -> String {
@@ -369,9 +431,8 @@ fn eval_module_env(m: &Module, base: Env) -> Result<Env, EvalError> {
         }
     }
     let mut depth = 0;
-    for d in &m.decls {
-        let v = eval_decl(&env, d, &mut depth)?;
-        env = env.insert(d.name.clone(), v);
+    for group in crate::depgraph::scc_order(&m.decls) {
+        env = eval_group(&env, &m.decls, &group, &mut depth)?;
     }
     Ok(env)
 }

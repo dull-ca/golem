@@ -4,6 +4,7 @@
 //! rule), whose sole output is the glyph IR.
 
 pub mod ast;
+pub mod depgraph;
 pub mod eval;
 pub mod header;
 pub mod infer;

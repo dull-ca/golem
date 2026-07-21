@@ -1157,28 +1157,60 @@ fn decl_as_lambda(decl: &Decl) -> Spanned<Expr> {
     e
 }
 
-/// Infer a group of declarations left-to-right, generalizing each before the
-/// next can use it. (No mutual recursion.)
+/// Infer the declarations by dependency analysis: group them into strongly
+/// connected components and infer each group together (ADR 0011). Every member
+/// of a group is bound to a fresh monomorphic variable before any body is
+/// inferred, so a group's members may reference one another in any direction —
+/// this is what makes mutual recursion type-check, and a singleton
+/// self-referential group is the self-recursion case. The whole group is
+/// generalized only once it is solved, so members are monomorphic *within* the
+/// group and polymorphic outside it. Groups come out in dependency order, so a
+/// group sees the generalized schemes of the groups it depends on and source
+/// order no longer matters for forward references.
 fn infer_decls(inf: &mut Infer, env: &TyEnv, decls: &[Decl], top_level: bool) -> Result<TyEnv, TypeError> {
     let mut cur = env.clone();
-    for decl in decls {
-        let lam = decl_as_lambda(decl);
-        let self_ty = inf.fresh();
-        let body_env = cur.insert(decl.name.clone(), mono(self_ty.clone()));
-        let inferred = infer_expr(inf, &body_env, &lam)?;
-        inf.unify(&self_ty, &inferred, &decl.span)?;
+    for group in crate::depgraph::scc_order(decls) {
+        cur = infer_group(inf, &cur, decls, &group, top_level)?;
+    }
+    Ok(cur)
+}
 
+fn infer_group(
+    inf: &mut Infer,
+    env: &TyEnv,
+    decls: &[Decl],
+    group: &[usize],
+    top_level: bool,
+) -> Result<TyEnv, TypeError> {
+    let self_tys: Vec<Type> = group.iter().map(|_| inf.fresh()).collect();
+    let mut body_env = env.clone();
+    for (&idx, self_ty) in group.iter().zip(self_tys.iter()) {
+        body_env = body_env.insert(decls[idx].name.clone(), mono(self_ty.clone()));
+    }
+
+    let mut inferred_tys: Vec<Type> = Vec::with_capacity(group.len());
+    for (&idx, self_ty) in group.iter().zip(self_tys.iter()) {
+        let decl = &decls[idx];
+        let lam = decl_as_lambda(decl);
+        let inferred = infer_expr(inf, &body_env, &lam)?;
+        inf.unify(self_ty, &inferred, &decl.span)?;
         if let Some(sig) = &decl.sig {
             let sig_inst = inf.instantiate_signature(&sig.0);
             inf.unify(&inferred, &sig_inst, &sig.1)?;
         }
+        inferred_tys.push(inferred);
+    }
 
-        if top_level {
-            inf.default_number_vars(&inferred);
+    if top_level {
+        for inferred in &inferred_tys {
+            inf.default_number_vars(inferred);
         }
+    }
 
-        let scheme = inf.generalize(&cur, &inferred);
-        cur = cur.insert(decl.name.clone(), scheme);
+    let mut cur = env.clone();
+    for (&idx, inferred) in group.iter().zip(inferred_tys.iter()) {
+        let scheme = inf.generalize(env, inferred);
+        cur = cur.insert(decls[idx].name.clone(), scheme);
     }
     Ok(cur)
 }

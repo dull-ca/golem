@@ -17,10 +17,15 @@ monorepo. B's headline is model reconciliation.
   a synthetic two-constructor (`[]`/`::`) sum through the existing Maranget
   checker (ADR 0005).
 
-- **Mutual recursion for value decls.** Decls are inferred left-to-right, so
-  only self-recursion works; two decls that reference each other do not. Needs
-  the inferencer to group a strongly-connected component and generalize it
-  together.
+- **Mutual recursion for value decls — DONE.** Decls are grouped by dependency
+  analysis into strongly-connected components (Tarjan) and each component is
+  inferred together: every member is bound to a fresh monomorphic variable
+  before any body is inferred, then the whole group is generalized once solved,
+  so mutual recursion type-checks while a genuinely polymorphic group still
+  generalizes and a monomorphic one stays monomorphic. Components are processed
+  in dependency order, so forward references between non-recursive decls resolve
+  and source order no longer matters. Evaluation ties the recursive knot per
+  group (`RecGroup`), generalizing the former self-recursion binding to a set.
 
 - **Full `appendable` `++` — DONE.** `++` is now `appendable -> appendable ->
   appendable`, satisfied by `String` and `List a` only, mirroring Elm exactly.
