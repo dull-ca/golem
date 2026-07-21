@@ -179,9 +179,10 @@ pub enum Expr {
         body: Box<Spanned<Expr>>,
     },
     App(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
-    /// `let <decls> in <body>`. Decls are inferred and evaluated
-    /// left-to-right; a later decl may reference an earlier one, but there is
-    /// no mutual recursion (totality).
+    /// `let <decls> in <body>`. Decls are not strictly left-to-right: like
+    /// top-level bindings they are grouped into dependency SCCs (`depgraph`) and
+    /// each group inferred/evaluated together, so a `let` may bind mutually
+    /// recursive helpers and reference them in any order (ADR 0011).
     Let {
         decls: Vec<Decl>,
         body: Box<Spanned<Expr>>,

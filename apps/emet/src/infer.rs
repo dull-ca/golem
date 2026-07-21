@@ -29,6 +29,13 @@
 //!     space with a separate substitution (`row_subst`) and their own occurs
 //!     check — see `unify_records`, `bind_row`, `row_occurs`, and the
 //!     `Expr::Field` rule.
+//!   * **SCC-grouped recursive binding** (ADR 0011). Declarations are not
+//!     inferred left-to-right: `infer_decls` partitions them into dependency
+//!     strongly-connected components (`depgraph`) and infers each group
+//!     together — every member bound to a fresh monomorphic var before any
+//!     body, generalized only once the group is solved. This is what makes both
+//!     self- and mutual recursion type-check; source order no longer matters for
+//!     forward references. See `infer_group`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -1175,6 +1182,15 @@ fn infer_decls(inf: &mut Infer, env: &TyEnv, decls: &[Decl], top_level: bool) ->
     Ok(cur)
 }
 
+/// Infer one dependency SCC. Every member is first bound to a fresh
+/// monomorphic variable, so members may call one another (or themselves) while
+/// their bodies are checked; a member's signature, if any, is unified against
+/// its inferred body in the same pass. Generalization happens against the
+/// *pre-group* `env`, not the body env that carries the members' monomorphic
+/// vars — generalizing against the body env would wrongly treat a group-mate's
+/// still-unresolved var as generalizable and hand a member a falsely
+/// polymorphic type. So members are monomorphic within the group and
+/// polymorphic only outside it.
 fn infer_group(
     inf: &mut Infer,
     env: &TyEnv,

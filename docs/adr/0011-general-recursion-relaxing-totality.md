@@ -81,3 +81,24 @@ scope within its own body, so users can define recursive functions directly.
   restate termination as guaranteed.
 - Mutual recursion stays out of scope for now; left-to-right decl ordering
   is unchanged outside of a declaration's own body.
+
+## Addendum — mutual recursion
+
+Mutual recursion is now supported alongside self-recursion. Rather than infer
+and evaluate declarations strictly left-to-right, both stages group siblings
+(top-level *and* `let`) into dependency strongly-connected components (Tarjan
+over the free-variable graph; `depgraph`) and process each component together:
+
+- **Inference** (`infer_group`) binds every member of a group to a fresh
+  monomorphic variable before checking any body — the recursive-let rule of the
+  original decision, now applied to a whole clique — then generalizes the solved
+  group against the environment as it stood *before* the group, so members are
+  monomorphic within the group and polymorphic outside it.
+- **Evaluation** (`eval::RecGroup`/`bind_group`) ties the knot per group: a
+  member's closure carries the whole group and re-binds every member into its
+  environment when applied, generalizing the self-rebinding closure of the
+  original decision. A self-referential singleton is just the one-member case.
+
+Components come out in dependency order, so source order no longer matters for
+forward references. Termination is not restored — a mutually recursive group can
+diverge exactly as a self-recursive one can.

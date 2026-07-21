@@ -90,7 +90,11 @@ An Elm-shaped, minimal module system for reuse across files:
 - **`import Foo` / `import Foo as F` / `import Foo exposing (bar)`.** Qualified
   access `Foo.bar` reuses the same dotted-name resolution as built-ins
   (`List.map`; ADR 0006). Only exposed values, types, and — for `Type(..)` —
-  constructors are importable.
+  constructors are importable. An open-exposed (`Type(..)`) constructor is fully
+  usable in an importer: both to build values and to **pattern-match**, with the
+  exhaustiveness checker seeing the imported type's complete constructor set. A
+  type exposed without `(..)` stays unmatchable — its constructors never enter
+  the importer (`resolve::import_constructors`, `infer::seed_imported_constructors`).
 - **Exactly one module has `main`** (the entry); the rest are libraries. A
   library that declares `main` is a compile error.
 - **`compile(src)`** is the single-file pipeline (imports not resolved from
@@ -103,12 +107,17 @@ An Elm-shaped, minimal module system for reuse across files:
   unannotated decls polymorphic. Signatures are checked against the inferred type
   (instantiate-and-unify; the skolem-escape check for over-general signatures is
   deferred — see `docs/TODO.md`).
-- **Types.** `String` (`Str` a transitional alias), `Int`, `Float`, `Bool`,
+- **Types.** `String`, `Int`, `Float`, `Bool`,
   `Order`, `List a`, `Maybe a`, records, functions; the glyph types `AptPackage`,
   `SystemdService`, `File`, `LineInFile` and their sum `Glyph`; and `Scroll`.
-- **`number` / `comparable`.** Elm's two bounded type variables — the one place
-  emet leaves pure HM. No user-defined typeclasses. Integer literals are
-  `number` (default `Int`); float literals are `Float`.
+  (The transitional `Str`/`Glyphs` aliases are gone — `String` and `List Glyph`
+  are the sole spellings; `Str`/`Glyphs` are now unknown-type errors.)
+- **`number` / `comparable` / `appendable`.** Elm's three bounded type
+  variables — the one place emet leaves pure HM. No user-defined typeclasses.
+  Integer literals are `number` (default `Int`); float literals are `Float`.
+  `appendable` (`String`/`List a`) backs `++`; it shares no admissible type with
+  `number` or `comparable`, so `merge_constraints` rejects `appendable ∧ number`
+  and `appendable ∧ comparable`.
 - **`case … of` + `if`.** Compile-time **exhaustiveness and redundancy** checking;
   a non-exhaustive or redundant match is a compile error. `if` desugars to `case`
   on `Bool`. Arms must be laid out (inline single-line `case` is deferred).
@@ -119,24 +128,29 @@ An Elm-shaped, minimal module system for reuse across files:
   checker requires both cases — see below.
 - **Numbers + operators.** `+ - * / // ^ < > <= >= == /= && || ++ ::` with Elm
   precedence; operators desugar to prelude built-ins. `::` (cons) is
-  right-associative at level 5, desugaring to the `cons` builtin. `/` is float
-  division, `//` integer; division / `modBy` / `remainderBy` by zero return `0`
-  (total).
+  right-associative at level 5, desugaring to the `cons` builtin. `++` (append)
+  is also right-associative at level 5, desugaring to the `append` builtin
+  (`∀p:appendable. p -> p -> p`), which dispatches String vs. List on the
+  runtime value at eval time — no surface spelling of its own, reached only via
+  `++`. `/` is float division, `//` integer; division / `modBy` / `remainderBy`
+  by zero return `0` (total).
 - **String interpolation.** `"port ${expr}"` (embedded expr must be `String`);
   desugars to `String.concat`. The IR carries only fully-evaluated concrete
   strings — no templating (not Ansible/Jinja).
 
 `Maybe`, `Bool`, and `Order` are built-in sum types injected via the prelude
-constructor registry; user-facing `type Foo a = …` declarations are designed but
-not yet parsed (`docs/TODO.md`).
+constructor registry. User-facing `type Foo a = …` declarations parse and infer:
+each constructor scheme is generalized over the type's params, the type
+constructor registers at its arity, and both nullary and parameterized (arity>0)
+user types cross module boundaries (`register_type_decls`, ADR 0016).
 
 ## Invariants — do not drift
 
-- **Total language (soft preference, not a guarantee).** Self-recursion is now
-  allowed (ADR 0011), so evaluation is no longer guaranteed to terminate;
-  totality is a design preference, not an invariant. Exhaustive `case` is still
-  enforced at compile time regardless. Mutual recursion remains unsupported
-  (decls inferred left-to-right).
+- **Total language (soft preference, not a guarantee).** Self- *and* mutual
+  recursion are allowed (ADR 0011): decls are grouped into dependency SCCs
+  (`depgraph`) and inferred/evaluated per group, so neither self- nor mutual
+  recursion is guaranteed to terminate. Totality is a design preference, not an
+  invariant. Exhaustive `case` is still enforced at compile time regardless.
 - **The IR is inert, concrete data.** `apps/emet/src/ir.rs` re-exports the
   `Glyph`/`Scroll` model from the shared `scroll-format` crate (the wire
   contract, ADR 0013); those types' field/variant order is a versioned contract,
@@ -158,8 +172,11 @@ implementation, not the tests, unless a test is provably wrong.
   single-line `let x = e in e` parse. `of` opens a `case` block (closed by
   dedent, no `in`); adding new layout-opening keywords needs new close rules.
 - **Algorithm W (`infer.rs`).** generalize / instantiate, signature unification
-  with rigid vars for generics, the `number`/`comparable` constraint bounds
-  threaded through `bind`, and the `case` exhaustiveness/redundancy check (what
+  with rigid vars for generics, the `number`/`comparable`/`appendable` constraint
+  bounds threaded through `bind`, the per-SCC group inference (`depgraph` +
+  `infer_group`) that supports self/mutual recursion by binding a group
+  monomorphic before generalizing it against the pre-group env, and the `case`
+  exhaustiveness/redundancy check (what
   removes the runtime "no match" path; kept independent of totality per ADR 0011).
   The check is Maranget's usefulness algorithm over the sum constructors; `List`
   joins it as a synthetic two-constructor sum (`[]` / `::`, via

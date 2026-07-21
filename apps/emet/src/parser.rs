@@ -914,6 +914,10 @@ fn take_field(
     })
 }
 
+/// Build an applied type constructor from a written `Upper` head. No name is
+/// special-cased here: the former `Str`/`Glyphs` migration aliases are gone, so
+/// they parse as ordinary `Con` heads and fail later as unknown type
+/// constructors (`String` and `List Glyph` are the sole spellings).
 fn type_con(name: &str, args: Vec<Type>) -> Type {
     Type::Con(name.to_string(), args)
 }

@@ -94,6 +94,11 @@ retained as a transitional surface alias for **one migration step** so existing
 `.emet` files and tests do not all churn at once, then remove the alias. This
 is settled, not an open question.
 
+**As implemented:** that migration step is complete — the `Str` and `Glyphs`
+aliases are **removed**. `String` and `List Glyph` are the sole spellings;
+`Str`/`Glyphs` now parse as ordinary `Con` heads and fail as unknown type
+constructors (`parser::type_con` special-cases nothing).
+
 ## Alternatives considered
 
 1. **Separate `App(Box<Type>, Box<Type>)` + `Con(String)` nodes** (curried type
@@ -117,7 +122,8 @@ is settled, not an open question.
 - The HM core (`generalize`/`instantiate`/`unify`/`ftv`/`occurs`) is unchanged in
   algorithm; only its pattern-matching is refactored onto `Con`, the bound is
   threaded through `bind`, and a `Rigid` case is added at the signature boundary.
-- `Str → String` is **decided** (alias for one migration step, then removed).
+- `Str → String` is **decided** and the migration is **done** — the transitional
+  `Str`/`Glyphs` aliases are removed; `Str`/`Glyphs` are now unknown-type errors.
 - Over-general signatures are accepted until skolem-escape checking lands
   (documented, bounded, non-evaluation-affecting).
 - Preserves ADR 0002: glyph subsumption becomes explicit `Con`-head arms; the

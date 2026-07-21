@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed
+Proposed. **Amended:** `++`/`appendable` is no longer special-cased or deferred
+— `Appendable` is now a real third `Constraint` alongside `number`/`comparable`
+(see the Decision's `(++)` bullet and Alternative 4).
 
 ## Context
 
@@ -80,10 +82,14 @@ Elm-precedence infix operators — following Elm exactly this far and no further
   ordinary `App`. Types come from the builtins:
   `(+) : number -> number -> number`, `(<) : comparable -> comparable -> Bool`,
   `(==) : comparable -> comparable -> Bool`.
-- `(++)` is Elm's `appendable` (`String`/`List`). Emet **special-cases `++`
-  resolution** in the operator desugarer (pick `String.append`/`List.append` by
-  operand type) rather than adding a third `Appendable` constraint. If that
-  proves insufficient, promote it to a real constraint later.
+- `(++)` is Elm's `appendable` (`String`/`List`). **As implemented, this is a
+  real third `Constraint::Appendable`** (not the special-case originally
+  proposed): `++` desugars to an `append` builtin typed
+  `∀p:appendable. p -> p -> p`, `constraint_admits` accepts `String`/`List`, and
+  the builtin dispatches String vs. List on the runtime value at eval time.
+  `merge_constraints` treats `appendable` as disjoint from `number`/`comparable`
+  (they share no admissible type), so `appendable ∧ number` and
+  `appendable ∧ comparable` are unsatisfiable and rejected.
 
 ### Builtins (total; ADR 0006 prelude)
 
@@ -111,8 +117,12 @@ cannot crash.
    set exactly as in Elm — no user extension.
 3. **User-defined operators (custom fixity).** Rejected: a non-goal; only Elm's
    built-in operator set with fixed precedence.
-4. **A third `Appendable` constraint for `++`.** Deferred: special-casing `++`
-   resolution avoids a third constraint; revisit only if needed.
+4. **A third `Appendable` constraint for `++`.** Originally deferred in favor of
+   special-casing `++`. **Superseded:** `Appendable` is now the implemented
+   design — a real third constraint (`String`/`List`) carried on `Var` and
+   threaded through `bind`/`merge_constraints`/`constraint_admits` exactly like
+   `number`/`comparable`, with runtime String/List dispatch in the `append`
+   builtin.
 5. **Trap on division by zero.** Rejected: breaks totality; Elm's defined-at-zero
    behaviour is adopted.
 6. **Deciding the constrained-`Var` representation in this ADR.** Rejected — it

@@ -100,7 +100,7 @@ main = [ scroll { name = "test", glyphs = [ webserver "x" ] } ]
 
 #[test]
 fn wrong_field_type_is_type_error() {
-    // A glyph is not a Str, so it cannot fill the `unit` field.
+    // A glyph is not a String, so it cannot fill the `unit` field.
     let src = r#"main = [ scroll { name = "test", glyphs = [ systemdService { unit = aptPackage { name = "x" } } ] } ]"#;
     assert_eq!(err_phase(src), Phase::Type);
 }

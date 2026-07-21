@@ -86,15 +86,18 @@ Mimic Elm (`emet/CLAUDE.md` mandate) at the surface:
   lichess abstraction introduces its own sum type. First cut: lean on records +
   the built-in sum types; add general `type` when an abstraction demands it.
 
-  **As implemented:** single-constructor record-carrying types and nullary sum
-  types (e.g. `type Role = Web | Db`) already work and **cross module
-  boundaries** — a library may declare one and an importer use it. Only the
-  *parameterized* `type Foo a` remains deferred. Two related findings from the
-  module work: **imported types are now usable in annotations** in the importing
-  module (the fix that threads `imported_types` through `check_entry`/
-  `check_library` landed); but **importer-side pattern-matching on imported
-  constructors is still a gap** — `case x of Ctor -> …` on a constructor defined
-  in another module does not resolve in the importer yet.
+  **As implemented:** user `type` declarations — nullary sum types
+  (`type Role = Web | Db`), record-carrying types, *and* parameterized
+  `type Foo a = …` — all work and **cross module boundaries** (constructor
+  schemes generalized over the params, the type constructor registered at its
+  arity, arity>0 types importable). Two related pieces from the module work,
+  both now landed: **imported types are usable in annotations** in the importing
+  module (`imported_types` threaded through `check_entry`/`check_library`); and
+  **importer-side pattern-matching on `Type(..)` constructors** now resolves —
+  `case x of Ctor -> …` on a constructor from another module type-checks, and
+  the exhaustiveness checker sees the imported type's full constructor set
+  (`import_constructors` / `seed_imported_constructors`). A type exposed without
+  `(..)` stays unmatchable in importers.
 - **List patterns / recursion over host lists.** Not needed for the lichess port
   (§1). Sequenced after, as its own language-backlog item — it unblocks *future*
   fleet-wide recursion (e.g. "N numbered nodes" beyond `numbered-nodes.emet`'s

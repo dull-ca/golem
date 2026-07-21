@@ -1,7 +1,23 @@
+//! Dependency analysis over a group of sibling declarations, shared by
+//! inference (`infer::infer_decls`) and evaluation (`eval::eval_module_env` /
+//! the `let` rule). A declaration depends on a sibling when it references that
+//! sibling's name free (not shadowed by a parameter, lambda, `let`, or pattern
+//! binder). Tarjan's algorithm collapses those edges into strongly connected
+//! components: each SCC is one mutually recursive clique, and the components
+//! come out in reverse-finish order — dependencies before dependents. Feeding
+//! declarations to inference and eval one SCC at a time is what lets a group
+//! reference itself and its group-mates (mutual recursion, ADR 0011) while a
+//! non-recursive decl still sees the finished schemes/values of everything it
+//! depends on, regardless of source order.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Arm, Decl, Expr, Pattern, Spanned};
 
+/// Partition `decls` into strongly connected components in dependency order:
+/// every component precedes the components that depend on it, and a component
+/// with more than one member (or a self-referential singleton) is a recursive
+/// clique to be processed together.
 pub fn scc_order(decls: &[Decl]) -> Vec<Vec<usize>> {
     let names: HashMap<&str, usize> =
         decls.iter().enumerate().map(|(i, d)| (d.name.as_str(), i)).collect();
@@ -14,6 +30,9 @@ pub fn scc_order(decls: &[Decl]) -> Vec<Vec<usize>> {
     Tarjan::new(&edges).run()
 }
 
+/// The indices of the siblings a declaration references free — its edges in the
+/// dependency graph. The decl's own parameters start out bound, so a parameter
+/// that shadows a sibling name is not counted as a dependency.
 fn dependency_indices(decl: &Decl, names: &HashMap<&str, usize>) -> Vec<usize> {
     let mut bound: HashSet<String> = decl.params.iter().cloned().collect();
     let mut refs: HashSet<usize> = HashSet::new();
@@ -23,6 +42,12 @@ fn dependency_indices(decl: &Decl, names: &HashMap<&str, usize>) -> Vec<usize> {
     out
 }
 
+/// Walk an expression collecting references to sibling declarations (`names`)
+/// into `refs`, skipping any name currently in `bound`. Each binding form —
+/// lambda, `let`, `case` arm — adds its binders to `bound` for the duration of
+/// its body and removes only the ones it actually introduced (a binder that
+/// shadows an already-bound name is left in place on the way out), so the same
+/// `bound` set threads through nested scopes correctly.
 fn free_vars_expr(
     e: &Spanned<Expr>,
     bound: &mut HashSet<String>,
@@ -221,6 +246,10 @@ impl<'a> Tarjan<'a> {
     }
 }
 
+/// Whether a component needs the recursive-binding treatment: any multi-member
+/// clique is recursive, and a singleton is recursive exactly when it references
+/// its own name. A non-recursive singleton can be bound with a plain
+/// left-to-right pass instead of tying a knot.
 pub fn group_is_recursive(decls: &[Decl], group: &[usize]) -> bool {
     if group.len() > 1 {
         return true;

@@ -138,3 +138,13 @@ reports both as the complete signature. A `case` on a list is therefore
 exhaustive exactly when it covers both cases, and a redundant list arm is caught
 like any other. The Maranget algorithm itself is unchanged — only the synthetic
 constructors and their schemes were added, no list-specific code path.
+
+## Addendum — parameterized user types
+
+The exhaustiveness checker now also covers user sum types of arity > 0
+(`type Foo a = …`, not only nullary `type Role = Web | Db`). A constructor
+scheme is generalized over the type's params, so it instantiates against the
+scrutinee's element type at a `case`, and `register_type_decls` records the full
+variant set for the type name. The usefulness algorithm reads that variant set
+the same way it reads a nullary type's or `List`'s — the arity of the type
+constructor is irrelevant to coverage, so no checker change was needed.

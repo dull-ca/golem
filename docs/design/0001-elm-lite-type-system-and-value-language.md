@@ -512,12 +512,14 @@ For `type Maybe a = Just a | Nothing`, the checker derives:
 - **`List`** is not a `type` decl (it has literal syntax + is the element of the
   glyph story); it stays a built-in `Con("List", [_])` with literal support.
 
-**Deferred (not "modeling Elm-lite"):** type aliases (`type alias`),
-constructors with many type params beyond what `Maybe` needs, opaque
+**Deferred (not "modeling Elm-lite"):** type aliases (`type alias`), opaque
 types/modules, comparables/`number` type classes. None are needed for the
 confirmed feature set; list them as explicit non-goals in the ADR.
 (Records-as-extensible-rows was deferred here too, but is no longer a
-non-goal — it is implemented per ADR 0010.)
+non-goal — it is implemented per ADR 0010. Parameterized user types
+`type Foo a b = …` are **no longer deferred** either: they now parse and infer,
+constructor schemes generalized over the params and the type registered at its
+arity — see `infer::register_type_decls`.)
 
 ---
 
