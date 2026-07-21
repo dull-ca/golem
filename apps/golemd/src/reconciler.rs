@@ -4,7 +4,7 @@
 //! host adapters live in `reconcilers.rs`, the in-memory fake in
 //! `fake_reconciler.rs`.
 
-use scroll_format::{ContentId, Glyph};
+use scroll_format::{ContentId, Entry, Glyph};
 use std::sync::Arc;
 
 use crate::journal::{Inverse, Outcome};
@@ -50,7 +50,13 @@ pub fn inverse_of(glyph: &Glyph) -> Inverse {
         Glyph::SystemdService { unit } => {
             Inverse::DisableSystemdService { unit: unit.clone(), prior_enabled: false, prior_active: false, started_only: false }
         }
-        Glyph::File { path, .. } => Inverse::DeleteFile { path: path.clone() },
+        Glyph::Filesystem { path, entry } => match entry {
+            Entry::File { .. } => Inverse::DeleteFile { path: path.clone() },
+            Entry::Directory { .. } => {
+                Inverse::RemoveDirectory { path: path.clone(), created: vec![path.clone()] }
+            }
+            Entry::Symlink { .. } => Inverse::RemoveSymlink { path: path.clone() },
+        },
         Glyph::LineInFile { path, line } => {
             Inverse::RemoveLineInFile { path: path.clone(), line: line.clone() }
         }

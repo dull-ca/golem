@@ -1,10 +1,18 @@
-//! The real host reconcilers for the four glyphs (ADR 0015 §4). Each `apply`
-//! first observes the host so re-applying a matching glyph is a no-op, then
-//! captures the exact prior state as an [`Inverse`] so `reverse` restores it —
-//! never removing a package, unit, file, or line the host already had. apt and
-//! systemd go through the [`CommandRunner`] port; file and lineInFile do real
-//! filesystem I/O (atomic temp-file-and-rename for writes) and are tested
-//! against tempfiles.
+//! The real host reconcilers for the four glyph kinds (ADR 0015 §4). Each
+//! `apply` first observes the host so re-applying a matching glyph is a no-op,
+//! then captures the exact prior state as an [`Inverse`] so `reverse` restores
+//! it — never removing a package, unit, filesystem entry, or line the host
+//! already had. apt and systemd go through the [`CommandRunner`] port; the
+//! `filesystem` and `lineInFile` glyphs do real filesystem I/O (atomic
+//! temp-file-and-rename for file writes) and are tested against tempfiles.
+//!
+//! The `filesystem` glyph is one reconciler kind over three entry kinds (ADR
+//! 0019): `apply` dispatches on the [`Entry`] sum to [`apply_file`],
+//! [`apply_directory`], or [`apply_symlink`]. Directory and symlink creation are
+//! governed by the same "reverse only what golem created" discipline as the rest
+//! of the module — golem removes only empty directories it made (deepest-first,
+//! stopping at any non-empty or pre-existing component) and refuses to clobber a
+//! pre-existing entry rather than record an inverse it should not own.
 //!
 //! Two limits stand for now (ADR 0015):
 //! - The `file` inverse holds the prior contents **inline** and reads them as a
@@ -22,15 +30,16 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use scroll_format::{ContentId, Glyph};
+use nix::unistd::{chown, Gid, Group, Uid, User};
+use scroll_format::{ContentId, Entry, Glyph, Perms};
 
 use crate::host::{CommandRunner, SystemCommandRunner};
 use crate::journal::{GlyphOp, Inverse, Outcome};
 use crate::reconciler::{EnactError, EnactResult, Reconciler};
 
-/// Enacts the four glyphs on a real host, driving apt and systemd through a
+/// Enacts the four glyph kinds on a real host, driving apt and systemd through a
 /// [`CommandRunner`] `R` (the `system()` constructor uses the real one; tests
 /// inject the fake).
 pub struct HostReconciler<R: CommandRunner> {
@@ -184,7 +193,11 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         match glyph {
             Glyph::AptPackage { name } => self.apply_apt(name, cid, glyph),
             Glyph::SystemdService { unit } => self.apply_systemd(unit, cid, glyph),
-            Glyph::File { path, contents, mode } => apply_file(path, contents, mode, cid, glyph),
+            Glyph::Filesystem { path, entry } => match entry {
+                Entry::File { contents, perms } => apply_file(path, contents, perms, cid, glyph),
+                Entry::Directory { perms } => apply_directory(path, perms, cid, glyph),
+                Entry::Symlink { target } => apply_symlink(path, target, cid, glyph),
+            },
             Glyph::LineInFile { path, line } => apply_line_in_file(path, line, cid, glyph),
         }
     }
@@ -196,8 +209,11 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
             Inverse::DisableSystemdService { unit, prior_enabled, prior_active, started_only } => {
                 self.reverse_systemd(unit, *prior_enabled, *prior_active, *started_only)
             }
-            Inverse::RestoreFile { path, contents, mode } => restore_file(path, contents, mode),
+            Inverse::RestoreFile { path, contents, perms } => restore_file(path, contents, perms),
             Inverse::DeleteFile { path } => delete_file(path),
+            Inverse::RemoveDirectory { path, created } => remove_directory(path, created),
+            Inverse::RestoreDirMeta { path, prior_perms } => apply_perms(path, prior_perms),
+            Inverse::RemoveSymlink { path } => remove_symlink(path),
             Inverse::RemoveLineInFile { path, line } => remove_line_in_file(path, line),
         }
     }
@@ -215,47 +231,225 @@ fn outcome(glyph: &Glyph, cid: ContentId, inverse: Inverse, changed: bool) -> Ou
     Outcome { op: GlyphOp::Install { cid, glyph: glyph.clone() }, cid, inverse, changed }
 }
 
-fn apply_file(path: &str, contents: &str, mode: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+fn apply_file(path: &str, contents: &str, perms: &Perms, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
     let prior = read_file(path)?;
-    if let Some((prior_contents, prior_mode)) = &prior {
-        if prior_contents == contents && prior_mode == mode {
+    if let Some((prior_contents, prior_perms)) = &prior {
+        if prior_contents == contents && perms_match(prior_perms, perms)? {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
         }
     }
-    write_file_atomic(path, contents, mode)?;
+    write_file_atomic(path, contents, perms)?;
     let inverse = match prior {
-        Some((prior_contents, prior_mode)) => {
-            Inverse::RestoreFile { path: path.to_string(), contents: prior_contents, mode: prior_mode }
+        Some((prior_contents, prior_perms)) => {
+            Inverse::RestoreFile { path: path.to_string(), contents: prior_contents, perms: prior_perms }
         }
         None => Inverse::DeleteFile { path: path.to_string() },
     };
     Ok(outcome(glyph, cid, inverse, true))
 }
 
-/// The prior `(contents, mode)` of a file, or `None` if it is absent — the
+/// Ensure a directory at `path` with `perms`, dispatched from the `Directory`
+/// entry arm. Three cases (ADR 0019 §3), each recording an inverse that reverses
+/// exactly what this apply did and no more:
+///
+/// - **Already a directory** — restore `perms` if they differ
+///   ([`Inverse::RestoreDirMeta`] holding the prior perms, so reverse chmod/chowns
+///   back and never removes the directory); no-op if they already match.
+/// - **Absent** — `create_dir_all` via [`create_missing_components`], then set
+///   perms/ownership. The inverse ([`Inverse::RemoveDirectory`]) carries the
+///   exact components golem created so reverse removes only those (see
+///   [`remove_directory`]).
+/// - **A non-directory already at `path`** — refuse with `Fatal` rather than
+///   clobber a pre-existing file/symlink golem did not create (the ADR 0015
+///   "never touch state it did not record creating" rule).
+fn apply_directory(path: &str, perms: &Perms, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => {
+            let prior_perms = observe_perms(path)?;
+            if perms_match(&prior_perms, perms)? {
+                return Ok(outcome(glyph, cid, Inverse::Nothing, false));
+            }
+            apply_perms(path, perms)?;
+            Ok(outcome(glyph, cid, Inverse::RestoreDirMeta { path: path.to_string(), prior_perms }, true))
+        }
+        Ok(_) => Err(EnactError::Fatal(format!(
+            "refuse to replace pre-existing non-directory at {path} with a directory"
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let created = create_missing_components(path)?;
+            apply_perms(path, perms)?;
+            Ok(outcome(glyph, cid, Inverse::RemoveDirectory { path: path.to_string(), created }, true))
+        }
+        Err(e) => Err(EnactError::Retryable(format!("stat {path}: {e}"))),
+    }
+}
+
+/// Ensure a symlink `path` -> `target`, dispatched from the `Symlink` entry arm.
+/// The arm carries no `Perms`, so there is no mode to set — a symlink's own mode
+/// is not honoured on Linux (ADR 0019 §3). Cases:
+///
+/// - **Already a symlink to `target`** — no-op. A symlink pointing *elsewhere* is
+///   refused with `Fatal`: golem did not create it, so repointing it would clobber
+///   pre-existing state.
+/// - **Absent** — `mkdir -p` the parent, create the symlink, record
+///   [`Inverse::RemoveSymlink`] so reverse `unlink`s only the link golem made.
+/// - **A non-symlink already at `path`** — refuse with `Fatal` rather than replace
+///   a pre-existing entry (the ADR 0015 discipline; this is the one genuinely new
+///   hazard the symlink arm introduces).
+fn apply_symlink(path: &str, target: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let current = fs::read_link(path)
+                .map_err(|e| EnactError::Retryable(format!("readlink {path}: {e}")))?;
+            if current == Path::new(target) {
+                return Ok(outcome(glyph, cid, Inverse::Nothing, false));
+            }
+            Err(EnactError::Fatal(format!(
+                "refuse to repoint pre-existing symlink at {path} (points to {})",
+                current.display()
+            )))
+        }
+        Ok(_) => Err(EnactError::Fatal(format!(
+            "refuse to replace pre-existing entry at {path} with a symlink"
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let parent = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+            fs::create_dir_all(parent)
+                .map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", parent.display())))?;
+            std::os::unix::fs::symlink(target, path)
+                .map_err(|e| EnactError::Retryable(format!("symlink {path} -> {target}: {e}")))?;
+            Ok(outcome(glyph, cid, Inverse::RemoveSymlink { path: path.to_string() }, true))
+        }
+        Err(e) => Err(EnactError::Retryable(format!("stat {path}: {e}"))),
+    }
+}
+
+/// The prior `(contents, perms)` of a file, or `None` if it is absent — the
 /// state captured for the `file` inverse. Reads contents as a `String`, so a
 /// non-UTF-8 prior file is a `Fatal` error (the inline-inverse limit noted in
 /// the module doc).
-fn read_file(path: &str) -> EnactResult<Option<(String, String)>> {
+fn read_file(path: &str) -> EnactResult<Option<(String, Perms)>> {
     match fs::read(path) {
         Ok(bytes) => {
             let contents = String::from_utf8(bytes)
                 .map_err(|e| EnactError::Fatal(format!("read {path}: not utf-8: {e}")))?;
-            let mode = fs::metadata(path)
-                .map_err(|e| EnactError::Retryable(format!("stat {path}: {e}")))?
-                .permissions()
-                .mode();
-            Ok(Some((contents, format!("{:04o}", mode & 0o7777))))
+            Ok(Some((contents, observe_perms(path)?)))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(EnactError::Retryable(format!("read {path}: {e}"))),
     }
 }
 
-/// Write `contents` to `path` at `mode` atomically: fill a temp file in the
-/// target directory, set its permissions, then rename it over the target, so a
-/// reader never sees a half-written file.
-fn write_file_atomic(path: &str, contents: &str, mode: &str) -> EnactResult<()> {
+/// The permission bits and ownership currently at `path`, captured for a
+/// restoring inverse. Ownership is recorded as resolved names when the uid/gid
+/// resolves, so reverse re-resolves them on the host the same way apply does.
+fn observe_perms(path: &str) -> EnactResult<Perms> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(path).map_err(|e| EnactError::Retryable(format!("stat {path}: {e}")))?;
+    Ok(Perms {
+        mode: (meta.permissions().mode() & 0o7777) as u16,
+        owner: User::from_uid(Uid::from_raw(meta.uid()))
+            .ok()
+            .flatten()
+            .map(|u| u.name),
+        group: Group::from_gid(Gid::from_raw(meta.gid()))
+            .ok()
+            .flatten()
+            .map(|g| g.name),
+    })
+}
+
+/// Whether the host's current `prior` perms already realize the `desired` ones:
+/// same mode, and for each of owner/group the desired name (when set) resolves
+/// to the same id the prior name resolves to. An unset desired owner/group is
+/// "leave as-is", so it always matches.
+fn perms_match(prior: &Perms, desired: &Perms) -> EnactResult<bool> {
+    if prior.mode != desired.mode {
+        return Ok(false);
+    }
+    if let Some(name) = &desired.owner {
+        if resolve_uid(name)? != prior.owner.as_deref().map(resolve_uid).transpose()?.flatten() {
+            return Ok(false);
+        }
+    }
+    if let Some(name) = &desired.group {
+        if resolve_gid(name)? != prior.group.as_deref().map(resolve_gid).transpose()?.flatten() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Bring `path`'s ownership and mode to `perms`: resolve each set owner/group
+/// name to a uid/gid and `chown` (an unset name is "leave as-is" — no `chown` for
+/// that axis), then `chmod` to `mode`. An owner/group name that does not resolve
+/// on the host is a `Fatal`. Invoked only from the arms that carry a `Perms`
+/// (`File`, `Directory`) — the type forbids ever applying a mode to a symlink.
+/// Also serves as the reverse of [`Inverse::RestoreDirMeta`], restoring a
+/// directory's prior perms.
+fn apply_perms(path: &str, perms: &Perms) -> EnactResult<()> {
+    let uid = match &perms.owner {
+        Some(name) => Some(Uid::from_raw(
+            resolve_uid(name)?.ok_or_else(|| EnactError::Fatal(format!("unknown owner `{name}`")))?,
+        )),
+        None => None,
+    };
+    let gid = match &perms.group {
+        Some(name) => Some(Gid::from_raw(
+            resolve_gid(name)?.ok_or_else(|| EnactError::Fatal(format!("unknown group `{name}`")))?,
+        )),
+        None => None,
+    };
+    if uid.is_some() || gid.is_some() {
+        chown(Path::new(path), uid, gid)
+            .map_err(|e| EnactError::Retryable(format!("chown {path}: {e}")))?;
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(perms.mode as u32))
+        .map_err(|e| EnactError::Retryable(format!("chmod {path}: {e}")))
+}
+
+fn resolve_uid(name: &str) -> EnactResult<Option<u32>> {
+    Ok(User::from_name(name)
+        .map_err(|e| EnactError::Retryable(format!("resolve owner `{name}`: {e}")))?
+        .map(|u| u.uid.as_raw()))
+}
+
+fn resolve_gid(name: &str) -> EnactResult<Option<u32>> {
+    Ok(Group::from_name(name)
+        .map_err(|e| EnactError::Retryable(format!("resolve group `{name}`: {e}")))?
+        .map(|g| g.gid.as_raw()))
+}
+
+/// The path's missing ancestor components, created deepest-first: walk up to the
+/// first existing ancestor, then `mkdir` each missing component top-down and
+/// return them deepest-first — the exact list `reverse` `rmdir`s to undo only
+/// what golem created.
+fn create_missing_components(path: &str) -> EnactResult<Vec<String>> {
+    let target = Path::new(path);
+    let mut missing: Vec<PathBuf> = Vec::new();
+    let mut cursor = Some(target);
+    while let Some(component) = cursor {
+        if component.as_os_str().is_empty() || component.exists() {
+            break;
+        }
+        missing.push(component.to_path_buf());
+        cursor = component.parent();
+    }
+    let mut created = Vec::with_capacity(missing.len());
+    for component in missing.iter().rev() {
+        fs::create_dir(component)
+            .map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", component.display())))?;
+    }
+    for component in missing {
+        created.push(component.to_string_lossy().into_owned());
+    }
+    Ok(created)
+}
+
+/// Write `contents` to `path` at `perms` atomically: fill a temp file in the
+/// target directory, set its permissions and ownership, then rename it over the
+/// target, so a reader never sees a half-written file.
+fn write_file_atomic(path: &str, contents: &str, perms: &Perms) -> EnactResult<()> {
     let target = Path::new(path);
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir).map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", dir.display())))?;
@@ -264,21 +458,19 @@ fn write_file_atomic(path: &str, contents: &str, mode: &str) -> EnactResult<()> 
     temp.write_all(contents.as_bytes())
         .map_err(|e| EnactError::Retryable(format!("write temp for {path}: {e}")))?;
     temp.flush().map_err(|e| EnactError::Retryable(format!("flush temp for {path}: {e}")))?;
-    let bits = parse_mode(mode)?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(bits))
-        .map_err(|e| EnactError::Retryable(format!("chmod temp for {path}: {e}")))?;
+    let temp_path = temp
+        .path()
+        .to_str()
+        .ok_or_else(|| EnactError::Fatal(format!("non-utf8 temp path for {path}")))?
+        .to_string();
+    apply_perms(&temp_path, perms)?;
     temp.persist(target)
         .map_err(|e| EnactError::Retryable(format!("persist {path}: {e}")))?;
     Ok(())
 }
 
-fn parse_mode(mode: &str) -> EnactResult<u32> {
-    u32::from_str_radix(mode.trim_start_matches("0o"), 8)
-        .map_err(|e| EnactError::Fatal(format!("bad mode {mode}: {e}")))
-}
-
-fn restore_file(path: &str, contents: &str, mode: &str) -> EnactResult<()> {
-    write_file_atomic(path, contents, mode)
+fn restore_file(path: &str, contents: &str, perms: &Perms) -> EnactResult<()> {
+    write_file_atomic(path, contents, perms)
 }
 
 fn delete_file(path: &str) -> EnactResult<()> {
@@ -286,6 +478,34 @@ fn delete_file(path: &str) -> EnactResult<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(EnactError::Retryable(format!("remove {path}: {e}"))),
+    }
+}
+
+/// Remove only the empty directory components golem created, deepest-first,
+/// stopping at the first that is non-empty (a later glyph or a container may
+/// have populated it). Never `rm -rf`.
+fn remove_directory(path: &str, created: &[String]) -> EnactResult<()> {
+    let _ = path;
+    for component in created {
+        match fs::remove_dir(component) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if is_not_empty(&e) => break,
+            Err(e) => return Err(EnactError::Retryable(format!("rmdir {component}: {e}"))),
+        }
+    }
+    Ok(())
+}
+
+fn is_not_empty(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(nix::libc::ENOTEMPTY) || e.raw_os_error() == Some(nix::libc::EEXIST)
+}
+
+fn remove_symlink(path: &str) -> EnactResult<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(EnactError::Retryable(format!("unlink {path}: {e}"))),
     }
 }
 
@@ -362,8 +582,23 @@ mod tests {
         Glyph::SystemdService { unit: unit.into() }
     }
 
-    fn file_glyph(path: &str, contents: &str, mode: &str) -> Glyph {
-        Glyph::File { path: path.into(), contents: contents.into(), mode: mode.into() }
+    fn perms(mode: u16) -> Perms {
+        Perms { mode, owner: None, group: None }
+    }
+
+    fn file_glyph(path: &str, contents: &str, mode: u16) -> Glyph {
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::File { contents: contents.into(), perms: perms(mode) },
+        }
+    }
+
+    fn directory_glyph(path: &str, mode: u16) -> Glyph {
+        Glyph::Filesystem { path: path.into(), entry: Entry::Directory { perms: perms(mode) } }
+    }
+
+    fn symlink_glyph(path: &str, target: &str) -> Glyph {
+        Glyph::Filesystem { path: path.into(), entry: Entry::Symlink { target: target.into() } }
     }
 
     fn line_glyph(path: &str, line: &str) -> Glyph {
@@ -567,7 +802,7 @@ mod tests {
         let path = dir.path().join("app.conf");
         let path = path.to_str().unwrap();
         let rec = HostReconciler::with_runner(FakeCommandRunner::new());
-        let glyph = file_glyph(path, "desired\n", "0644");
+        let glyph = file_glyph(path, "desired\n", 0o644);
         let cid = glyph_content_id(&glyph);
 
         assert!(!Path::new(path).exists());
@@ -588,7 +823,7 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 
         let rec = HostReconciler::with_runner(FakeCommandRunner::new());
-        let glyph = file_glyph(path, "desired\n", "0644");
+        let glyph = file_glyph(path, "desired\n", 0o644);
         let cid = glyph_content_id(&glyph);
 
         let outcome = rec.apply(&glyph, cid).unwrap();
@@ -607,7 +842,7 @@ mod tests {
         let path = dir.path().join("app.conf");
         let path = path.to_str().unwrap();
         let rec = HostReconciler::with_runner(FakeCommandRunner::new());
-        let glyph = file_glyph(path, "desired\n", "0644");
+        let glyph = file_glyph(path, "desired\n", 0o644);
         let cid = glyph_content_id(&glyph);
 
         assert!(rec.apply(&glyph, cid).unwrap().changed);
@@ -690,5 +925,149 @@ mod tests {
         assert!(!outcome.changed);
         rec.reverse(&outcome).unwrap();
         assert_eq!(fs::read_to_string(path).unwrap(), "dup\ndup\n");
+    }
+
+    #[test]
+    fn directory_isometry_when_absent_removes_only_created_components_on_reverse() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("srv");
+        fs::create_dir(&base).unwrap();
+        let target = base.join("registry/data");
+        let path = target.to_str().unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = directory_glyph(path, 0o755);
+        let cid = glyph_content_id(&glyph);
+
+        assert!(!target.exists());
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert!(outcome.changed);
+        assert!(target.is_dir());
+        assert_eq!(mode_of(path), 0o755);
+
+        rec.reverse(&outcome).unwrap();
+        assert!(!target.exists());
+        assert!(!base.join("registry").exists());
+        assert!(base.exists());
+    }
+
+    #[test]
+    fn directory_reverse_stops_at_a_non_empty_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a/b/c");
+        let path = target.to_str().unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = directory_glyph(path, 0o755);
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert!(target.is_dir());
+        fs::write(dir.path().join("a/b/keeper"), "x").unwrap();
+
+        rec.reverse(&outcome).unwrap();
+        assert!(!target.exists());
+        assert!(dir.path().join("a/b").is_dir());
+        assert!(dir.path().join("a").is_dir());
+    }
+
+    #[test]
+    fn directory_reapply_same_mode_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data");
+        let path = path.to_str().unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = directory_glyph(path, 0o755);
+        let cid = glyph_content_id(&glyph);
+
+        assert!(rec.apply(&glyph, cid).unwrap().changed);
+        assert!(!rec.apply(&glyph, cid).unwrap().changed);
+    }
+
+    #[test]
+    fn directory_that_pre_existed_restores_prior_mode_and_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data");
+        let path = target.to_str().unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = directory_glyph(path, 0o755);
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert!(outcome.changed);
+        assert_eq!(mode_of(path), 0o755);
+
+        rec.reverse(&outcome).unwrap();
+        assert!(target.is_dir());
+        assert_eq!(mode_of(path), 0o700);
+    }
+
+    #[test]
+    fn directory_refuses_to_replace_a_pre_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("thing");
+        let path = target.to_str().unwrap();
+        fs::write(&target, "i am a file").unwrap();
+
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = directory_glyph(path, 0o755);
+        let cid = glyph_content_id(&glyph);
+
+        match rec.apply(&glyph, cid) {
+            Err(EnactError::Fatal(_)) => {}
+            other => panic!("expected a Fatal refusal, got {other:?}"),
+        }
+        assert!(target.is_file());
+    }
+
+    #[test]
+    fn symlink_isometry_when_absent_removes_on_reverse() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("enabled/site");
+        let path = link.to_str().unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = symlink_glyph(path, "/etc/available/site");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert!(outcome.changed);
+        assert_eq!(fs::read_link(path).unwrap(), Path::new("/etc/available/site"));
+
+        rec.reverse(&outcome).unwrap();
+        assert!(fs::symlink_metadata(path).is_err());
+    }
+
+    #[test]
+    fn symlink_reapply_same_target_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("site");
+        let path = link.to_str().unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = symlink_glyph(path, "/etc/available/site");
+        let cid = glyph_content_id(&glyph);
+
+        assert!(rec.apply(&glyph, cid).unwrap().changed);
+        let second = rec.apply(&glyph, cid).unwrap();
+        assert!(!second.changed);
+        assert_eq!(second.inverse, Inverse::Nothing);
+    }
+
+    #[test]
+    fn symlink_refuses_to_replace_a_pre_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("site");
+        let path = target.to_str().unwrap();
+        fs::write(&target, "real file").unwrap();
+
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = symlink_glyph(path, "/etc/available/site");
+        let cid = glyph_content_id(&glyph);
+
+        match rec.apply(&glyph, cid) {
+            Err(EnactError::Fatal(_)) => {}
+            other => panic!("expected a Fatal refusal, got {other:?}"),
+        }
+        assert!(target.is_file());
     }
 }

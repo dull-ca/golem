@@ -12,7 +12,12 @@ use crate::scroll::{Glyph, Scroll};
 /// or the BLAKE3 hash changes — anything that alters the bytes either end
 /// reads (ADR 0012 §1). Distinct from `emet_version`, which is provenance and
 /// is never hashed.
-pub const FORMAT_VERSION: u32 = 1;
+///
+// NOTE: `2` because the filesystem glyph (ADR 0019) replaced the flat
+// `File { path, contents, mode }` variant with `Filesystem { path, entry }`
+// over the `Entry` sum and typed `Perms` — a changed glyph layout, so a v1
+// manifest now cleanly fails `check_format_version` rather than misparsing.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// A scroll paired with its content address. The `content_id` is over the
 /// `scroll` ALONE — never over this wrapper — so a scroll's identity does not

@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Arm, Decl, Expr, Pattern, Spanned};
+use crate::ast::{Arm, Decl, EntryExpr, Expr, Pattern, Spanned};
 
 /// Partition `decls` into strongly connected components in dependency order:
 /// every component precedes the components that depend on it, and a component
@@ -64,10 +64,20 @@ fn free_vars_expr(
         }
         Expr::Str(_) | Expr::Int(_) | Expr::Float(_) | Expr::Ctor(_) => {}
         Expr::AptPackage(x) | Expr::SystemdService(x) => free_vars_expr(x, bound, names, refs),
-        Expr::File { path, contents, mode } => {
+        Expr::Filesystem { path, entry } => {
             free_vars_expr(path, bound, names, refs);
-            free_vars_expr(contents, bound, names, refs);
-            free_vars_expr(mode, bound, names, refs);
+            match entry {
+                EntryExpr::File { contents, mode } => {
+                    free_vars_expr(contents, bound, names, refs);
+                    free_vars_expr(mode, bound, names, refs);
+                }
+                EntryExpr::Directory { mode } => {
+                    free_vars_expr(mode, bound, names, refs);
+                }
+                EntryExpr::Symlink { target } => {
+                    free_vars_expr(target, bound, names, refs);
+                }
+            }
         }
         Expr::LineInFile { path, line } => {
             free_vars_expr(path, bound, names, refs);

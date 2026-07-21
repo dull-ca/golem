@@ -26,4 +26,4 @@ pub use manifest::{
     check_format_version, content_id, content_id_of_glyph, from_bytes, to_bytes, to_json,
     AddressedScroll, FromBytesError, Manifest, FORMAT_VERSION,
 };
-pub use scroll::{Glyph, Scroll};
+pub use scroll::{Entry, Glyph, Perms, Scroll};

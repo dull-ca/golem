@@ -8,7 +8,7 @@ renderConfig port =
     , "workers = 4"
     ]
 
-siteFile : Int -> File
+siteFile : Int -> Filesystem
 siteFile port =
   file
     { path = "/etc/app/site.conf"

@@ -645,7 +645,7 @@ fn widen_glyph_subtype(inf: &Infer, t: &Type) -> Type {
 }
 
 fn is_glyph_subtype(name: &str) -> bool {
-    matches!(name, "AptPackage" | "SystemdService" | "File" | "LineInFile")
+    matches!(name, "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile")
 }
 
 fn glyph_injects(from: &str, from_args: &[Type], to: &str, to_args: &[Type]) -> bool {
@@ -727,12 +727,23 @@ fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, T
             Ok(con("SystemdService"))
         }
 
-        Expr::File { path, contents, mode } => {
-            for field in [path, contents, mode] {
+        // All three surface spellings (`file`/`directory`/`symlink`) share one
+        // glyph type, `Filesystem` (ADR 0019): the `Entry` distinction lives in
+        // the IR, not the type surface. Every field is `String` here — including
+        // `mode`, which stays an octal string until `eval` lowers it to a `u16`.
+        Expr::Filesystem { path, entry } => {
+            let pt = infer_expr(inf, env, path)?;
+            inf.unify(&pt, &con("String"), &path.1)?;
+            let fields: Vec<&Spanned<Expr>> = match entry {
+                EntryExpr::File { contents, mode } => vec![contents, mode],
+                EntryExpr::Directory { mode } => vec![mode],
+                EntryExpr::Symlink { target } => vec![target],
+            };
+            for field in fields {
                 let ft = infer_expr(inf, env, field)?;
                 inf.unify(&ft, &con("String"), &field.1)?;
             }
-            Ok(con("File"))
+            Ok(con("Filesystem"))
         }
 
         Expr::LineInFile { path, line } => {
@@ -1237,8 +1248,8 @@ fn infer_group(
 /// must resolve against one or the other.
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
-        "String" | "AptPackage" | "SystemdService" | "File" | "LineInFile" | "Glyph" | "Scroll"
-        | "Bool" | "Int" | "Float" | "Order" => Some(0),
+        "String" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile" | "Glyph"
+        | "Scroll" | "Bool" | "Int" | "Float" | "Order" => Some(0),
         "List" | "Maybe" => Some(1),
         _ => None,
     }
@@ -1429,7 +1440,7 @@ fn builtin_types() -> Vec<(String, usize)> {
         "String",
         "AptPackage",
         "SystemdService",
-        "File",
+        "Filesystem",
         "LineInFile",
         "Glyph",
         "Scroll",

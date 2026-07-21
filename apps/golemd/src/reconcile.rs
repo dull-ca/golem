@@ -63,7 +63,13 @@ mod tests {
     }
 
     fn file(path: &str, contents: &str) -> Glyph {
-        Glyph::File { path: path.into(), contents: contents.into(), mode: "0644".into() }
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: scroll_format::Entry::File {
+                contents: contents.into(),
+                perms: scroll_format::Perms { mode: 0o644, owner: None, group: None },
+            },
+        }
     }
 
     fn scroll(glyphs: Vec<Glyph>) -> Scroll {

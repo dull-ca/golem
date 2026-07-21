@@ -128,6 +128,20 @@ standalone project.
   Replace/Noop), and enacts through reversible `Reconciler`s (`apply`/`reverse`
   with journalled `Inverse`), collapsing revisions to `Init`/`Reconcile`.
 
+- **Filesystem glyph: directories, symlinks, typed perms — DONE (ADR 0019).**
+  The flat `file { path, contents, mode }` glyph generalized into one
+  `Glyph::Filesystem { path, entry }` over a minimal-per-variant `Entry` sum
+  (`File { contents, perms }` | `Directory { perms }` | `Symlink { target }`) with
+  typed `Perms { mode: u16, owner, group }` — so illegal states (a symlink with a
+  mode, a directory with contents) are unrepresentable. Emet gained `directory`
+  and `symlink` reserved constructors alongside `file`; `mode` is now an octal
+  parsed to `u16` in `emet` (a bad mode is a compile error). golemd's file
+  reconciler became a filesystem reconciler that creates directories and symlinks,
+  removing only the empty components it created (deepest-first, stopping at any
+  non-empty or pre-existing one) and refusing to clobber a pre-existing entry.
+  Unblocks host bind-mount source directories (the registry dogfood). A
+  `format_version` bump 1→2.
+
 - **Emet supersedes Nickel as the authoring language — DONE (ADR 0016).** Emet
   gained a minimal Elm-shaped module system (`module … exposing`, `import`), the
   lichess examples were re-authored in Emet (`examples/lichess/*.emet`), and the

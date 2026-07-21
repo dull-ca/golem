@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::ast::*;
-use crate::ir::{Glyph, Scroll};
+use crate::ir::{Entry, Glyph, Perms, Scroll};
 use crate::prelude;
 
 pub type BuiltinFn = fn(Vec<Value>) -> Value;
@@ -126,11 +126,22 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::SystemdService(unit) => Value::Glyph(Glyph::SystemdService {
             unit: as_str(eval(env, unit, depth)?),
         }),
-        Expr::File { path, contents, mode } => Value::Glyph(Glyph::File {
-            path: as_str(eval(env, path, depth)?),
-            contents: as_str(eval(env, contents, depth)?),
-            mode: as_str(eval(env, mode, depth)?),
-        }),
+        Expr::Filesystem { path, entry } => {
+            let path = as_str(eval(env, path, depth)?);
+            let entry = match entry {
+                EntryExpr::File { contents, mode } => Entry::File {
+                    contents: as_str(eval(env, contents, depth)?),
+                    perms: perms_from_mode(as_str(eval(env, mode, depth)?))?,
+                },
+                EntryExpr::Directory { mode } => Entry::Directory {
+                    perms: perms_from_mode(as_str(eval(env, mode, depth)?))?,
+                },
+                EntryExpr::Symlink { target } => Entry::Symlink {
+                    target: as_str(eval(env, target, depth)?),
+                },
+            };
+            Value::Glyph(Glyph::Filesystem { path, entry })
+        }
         Expr::LineInFile { path, line } => Value::Glyph(Glyph::LineInFile {
             path: as_str(eval(env, path, depth)?),
             line: as_str(eval(env, line, depth)?),
@@ -351,6 +362,30 @@ fn as_str(v: Value) -> String {
         Value::Str(s) => s,
         _ => unreachable!("expected Str"),
     }
+}
+
+/// Lower a surface `mode` string to typed [`Perms`]. Accepts an optional `0o`
+/// prefix and parses the rest as octal into the 12 permission bits; a
+/// non-octal or out-of-range (`> 0o7777`) mode is an eval error — this is where
+/// a malformed mode becomes a compile-time failure rather than a reconcile-time
+/// one (ADR 0019 §1). `owner`/`group` default to `None`; the surface
+/// constructors do not expose them yet, so every authored entry leaves ownership
+/// unmanaged.
+fn perms_from_mode(mode: String) -> Result<Perms, EvalError> {
+    let digits = mode.strip_prefix("0o").unwrap_or(&mode);
+    let bits = u16::from_str_radix(digits, 8).map_err(|e| EvalError {
+        msg: format!("invalid mode `{mode}`: {e}"),
+    })?;
+    if bits > 0o7777 {
+        return Err(EvalError {
+            msg: format!("invalid mode `{mode}`: out of range"),
+        });
+    }
+    Ok(Perms {
+        mode: bits,
+        owner: None,
+        group: None,
+    })
 }
 
 /// Evaluate the module's `main` to a scroll list.

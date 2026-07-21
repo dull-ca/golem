@@ -1,6 +1,6 @@
 use scroll_format::{
-    content_id, content_id_of_glyph, from_bytes, to_bytes, ContentId, FromBytesError, Glyph,
-    Manifest, Scroll, FORMAT_VERSION,
+    content_id, content_id_of_glyph, from_bytes, to_bytes, ContentId, Entry, FromBytesError, Glyph,
+    Manifest, Perms, Scroll, FORMAT_VERSION,
 };
 
 fn fixed_scroll() -> Scroll {
@@ -13,10 +13,16 @@ fn fixed_scroll() -> Scroll {
             Glyph::SystemdService {
                 unit: "nginx.service".to_string(),
             },
-            Glyph::File {
+            Glyph::Filesystem {
                 path: "/etc/nginx/nginx.conf".to_string(),
-                contents: "worker_processes auto;".to_string(),
-                mode: "0644".to_string(),
+                entry: Entry::File {
+                    contents: "worker_processes auto;".to_string(),
+                    perms: Perms {
+                        mode: 0o644,
+                        owner: None,
+                        group: None,
+                    },
+                },
             },
             Glyph::LineInFile {
                 path: "/etc/hosts".to_string(),
@@ -36,17 +42,16 @@ fn other_scroll() -> Scroll {
 }
 
 const GOLDEN_SCROLL_BYTES: &[u8] = &[
-    0x03, 0x77, 0x65, 0x62, 0x04, 0x00, 0x05, 0x6e, 0x67, 0x69, 0x6e, 0x78, 0x01, 0x0d, 0x6e, 0x67,
-    0x69, 0x6e, 0x78, 0x2e, 0x73, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x02, 0x15, 0x2f, 0x65, 0x74,
-    0x63, 0x2f, 0x6e, 0x67, 0x69, 0x6e, 0x78, 0x2f, 0x6e, 0x67, 0x69, 0x6e, 0x78, 0x2e, 0x63, 0x6f,
-    0x6e, 0x66, 0x16, 0x77, 0x6f, 0x72, 0x6b, 0x65, 0x72, 0x5f, 0x70, 0x72, 0x6f, 0x63, 0x65, 0x73,
-    0x73, 0x65, 0x73, 0x20, 0x61, 0x75, 0x74, 0x6f, 0x3b, 0x04, 0x30, 0x36, 0x34, 0x34, 0x03, 0x0a,
-    0x2f, 0x65, 0x74, 0x63, 0x2f, 0x68, 0x6f, 0x73, 0x74, 0x73, 0x13, 0x31, 0x32, 0x37, 0x2e, 0x30,
-    0x2e, 0x30, 0x2e, 0x31, 0x20, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x68, 0x6f, 0x73, 0x74,
+    3, 119, 101, 98, 4, 0, 5, 110, 103, 105, 110, 120, 1, 13, 110, 103, 105, 110, 120, 46, 115,
+    101, 114, 118, 105, 99, 101, 2, 21, 47, 101, 116, 99, 47, 110, 103, 105, 110, 120, 47, 110,
+    103, 105, 110, 120, 46, 99, 111, 110, 102, 0, 22, 119, 111, 114, 107, 101, 114, 95, 112, 114,
+    111, 99, 101, 115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47, 101, 116,
+    99, 47, 104, 111, 115, 116, 115, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108, 111, 99, 97,
+    108, 104, 111, 115, 116,
 ];
 
 const GOLDEN_CONTENT_ID: &str =
-    "cf389a4c5d022d32d97d1ca50a85ac88c3efe55a5666632a778704e92b2152ba";
+    "39b8ce7553c9131954e44e0532745c03aabc27b014208a3bdea66986f1aa7df9";
 
 #[test]
 fn fixed_scroll_serializes_to_golden_bytes() {

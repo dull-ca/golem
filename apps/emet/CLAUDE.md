@@ -109,7 +109,10 @@ An Elm-shaped, minimal module system for reuse across files:
   deferred — see `docs/TODO.md`).
 - **Types.** `String`, `Int`, `Float`, `Bool`,
   `Order`, `List a`, `Maybe a`, records, functions; the glyph types `AptPackage`,
-  `SystemdService`, `File`, `LineInFile` and their sum `Glyph`; and `Scroll`.
+  `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; and
+  `Scroll`. (`Filesystem` is the single first-class type for `file`/`directory`/
+  `symlink` — the entry kind is an IR-level `Entry` sum, not a type distinction;
+  ADR 0019.)
   (The transitional `Str`/`Glyphs` aliases are gone — `String` and `List Glyph`
   are the sole spellings; `Str`/`Glyphs` are now unknown-type errors.)
 - **`number` / `comparable` / `appendable`.** Elm's three bounded type
@@ -185,16 +188,23 @@ implementation, not the tests, unless a test is provably wrong.
 
 ## The four primitives and `Scroll`
 
-Four reserved lowercase record constructors (lexed as `Tok::Ident`, special-cased
-in `parser.rs::parse_atom`), all IR fields plain `String`:
+Reserved lowercase record constructors (lexed as `Tok::Ident`, special-cased
+in `parser.rs::parse_atom`), all IR fields plain `String` except a filesystem
+entry's `mode`, which lowers to a `u16` `Perms` in `eval` (ADR 0019):
 
 ```
 aptPackage     { name }                    -> Glyph::AptPackage      key apt:<name>
 systemdService { unit }                    -> Glyph::SystemdService  key systemd:<unit>
-file           { path, contents, mode }    -> Glyph::File            key file:<path>
+file           { path, contents, mode }    -> Glyph::Filesystem      key file:<path>
+directory      { path, mode }              -> Glyph::Filesystem      key file:<path>
+symlink        { path, target }            -> Glyph::Filesystem      key file:<path>
 lineInFile     { path, line }              -> Glyph::LineInFile      key fileline:<path>:<line>
 ```
 
+`file`/`directory`/`symlink` are three spellings of the one filesystem glyph,
+each building a different `Entry` arm (`build_constructor` enforces the per-arm
+field set — `symlink` takes no `mode`, `directory` no `contents`); together with
+`aptPackage`/`systemdService`/`lineInFile` they are still **four glyph kinds**.
 Each injects into `Glyph`. `scroll { name, glyphs }` groups one host's glyphs
 into a `Scroll`, and `main : List Scroll` is the fleet. `analyze` (`lib.rs`) is
 **per scroll**: conflicting declarations for one glyph key within a scroll are an

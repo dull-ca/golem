@@ -865,13 +865,24 @@ fn fold_decls(items: Vec<DeclItem>) -> Result<Vec<Decl>, ParseError> {
 /// cannot be used as ordinary variables (`var` excludes them; `constructor`
 /// requires them).
 fn is_reserved_constructor(name: &str) -> bool {
-    matches!(name, "aptPackage" | "systemdService" | "file" | "lineInFile" | "scroll")
+    matches!(
+        name,
+        "aptPackage" | "systemdService" | "file" | "directory" | "symlink" | "lineInFile" | "scroll"
+    )
 }
 
 /// Dispatch a parsed `name { field = … }` to the right `Expr` variant, pulling
 /// exactly the fields that constructor requires and erroring on a missing or
 /// unknown field. `take_field` removes each expected field, so any left over is
 /// unknown.
+///
+/// This is where the filesystem glyph's per-arm field set is enforced at the
+/// surface (ADR 0019 §2): `file`, `directory`, and `symlink` all build
+/// `Expr::Filesystem` but take different fields — `symlink` never reads a `mode`,
+/// `directory` never reads `contents` — so `symlink { path, target, mode = … }`
+/// leaves `mode` unclaimed and fails as an "unknown symlink field". The illegal
+/// combinations (a symlink with a mode, a directory with contents) cannot be
+/// written down, matching the minimal `Entry` sum they lower to.
 fn build_constructor(
     ctor: &str,
     fields: &mut BTreeMap<String, Spanned<Expr>>,
@@ -882,10 +893,24 @@ fn build_constructor(
         "systemdService" => {
             Expr::SystemdService(Box::new(take_field(ctor, fields, "unit", span)?))
         }
-        "file" => Expr::File {
+        "file" => Expr::Filesystem {
             path: Box::new(take_field(ctor, fields, "path", span)?),
-            contents: Box::new(take_field(ctor, fields, "contents", span)?),
-            mode: Box::new(take_field(ctor, fields, "mode", span)?),
+            entry: EntryExpr::File {
+                contents: Box::new(take_field(ctor, fields, "contents", span)?),
+                mode: Box::new(take_field(ctor, fields, "mode", span)?),
+            },
+        },
+        "directory" => Expr::Filesystem {
+            path: Box::new(take_field(ctor, fields, "path", span)?),
+            entry: EntryExpr::Directory {
+                mode: Box::new(take_field(ctor, fields, "mode", span)?),
+            },
+        },
+        "symlink" => Expr::Filesystem {
+            path: Box::new(take_field(ctor, fields, "path", span)?),
+            entry: EntryExpr::Symlink {
+                target: Box::new(take_field(ctor, fields, "target", span)?),
+            },
         },
         "lineInFile" => Expr::LineInFile {
             path: Box::new(take_field(ctor, fields, "path", span)?),

@@ -8,12 +8,19 @@ list of **glyphs** over exactly four kinds:
 
 - **`aptPackage { name }`** — a Debian package.
 - **`systemdService { unit }`** — an enabled+started unit.
-- **`file { path, contents, mode }`** — a file with concrete contents.
+- **the filesystem glyph** — `file` / `directory` / `symlink`, three surface
+  spellings of one `Glyph::Filesystem { path, entry }` whose `entry` is an
+  `Entry` sum (`File { contents, perms }` | `Directory { perms }` | `Symlink
+  { target }`) with typed `Perms { mode, owner, group }`. Each arm carries only
+  its own fields, so illegal states (a symlink with a mode, a directory with
+  contents) are unrepresentable (ADR 0019).
 - **`lineInFile { path, line }`** — one line ensured present in a file.
 
-There is no fifth resource kind. Richer shapes (workloads, services, ingress)
-are Emet library abstractions that *compile down* to these four glyphs — never
-new golemd kinds.
+There is no fifth resource kind. `directory` and `symlink` are **variants of the
+filesystem entry**, not new glyphs — just as `AptPackage` | `SystemdService` are
+variants of one `Glyph` sum — so the count stays four *reconciler-owned kinds*.
+Richer shapes (workloads, services, ingress) are Emet library abstractions that
+*compile down* to these four glyphs — never new golemd kinds.
 
 `emetc` compiles a program to a binary, content-addressed **manifest** (BLAKE3
 over postcard bytes; per-scroll and per-glyph content ids). golemd ingests the

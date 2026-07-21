@@ -8,7 +8,7 @@
 //! reverses edits it recorded, never touching pre-existing host state.
 
 use chrono::{DateTime, Utc};
-use scroll_format::{ContentId, Glyph, Scroll};
+use scroll_format::{ContentId, Glyph, Perms, Scroll};
 use serde::{Deserialize, Serialize};
 
 /// A single glyph operation the pure diff (`reconcile::plan`) decided on for one
@@ -57,9 +57,23 @@ impl GlyphOp {
 ///   golem started an inactive unit, else leave it — see
 ///   `reconcilers::reverse_systemd`).
 /// - [`RestoreFile`](Inverse::RestoreFile) — golem overwrote an existing file;
-///   reverse rewrites the prior contents+mode.
+///   reverse rewrites the prior contents and [`Perms`] (mode + ownership — the
+///   filesystem glyph carries ownership now, ADR 0019, so the inverse records it).
 /// - [`DeleteFile`](Inverse::DeleteFile) — golem created the file; reverse
 ///   deletes it.
+/// - [`RemoveDirectory`](Inverse::RemoveDirectory) — golem created the
+///   directory. `created` is the ordered list of components `create_dir_all`
+///   actually made, deepest-first; reverse `rmdir`s them in that order and stops
+///   at the first non-empty one, so golem removes only the empty directories it
+///   created and never a component a later glyph or a container populated
+///   (`reconcilers::remove_directory`). Never records more than golem made, or
+///   reverse would over-delete (ADR 0019 §4).
+/// - [`RestoreDirMeta`](Inverse::RestoreDirMeta) — the directory pre-existed and
+///   golem only changed its perms/ownership; reverse restores `prior_perms` and
+///   never removes the directory.
+/// - [`RemoveSymlink`](Inverse::RemoveSymlink) — golem created the symlink;
+///   reverse `unlink`s it. (A symlink golem did not create is never touched —
+///   apply refuses to clobber a pre-existing entry rather than recording one.)
 /// - [`RemoveLineInFile`](Inverse::RemoveLineInFile) — golem appended the line;
 ///   reverse removes the first matching occurrence it added.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,8 +81,11 @@ pub enum Inverse {
     Nothing,
     RemoveAptPackage { name: String },
     DisableSystemdService { unit: String, prior_enabled: bool, prior_active: bool, started_only: bool },
-    RestoreFile { path: String, contents: String, mode: String },
+    RestoreFile { path: String, contents: String, perms: Perms },
     DeleteFile { path: String },
+    RemoveDirectory { path: String, created: Vec<String> },
+    RestoreDirMeta { path: String, prior_perms: Perms },
+    RemoveSymlink { path: String },
     RemoveLineInFile { path: String, line: String },
 }
 

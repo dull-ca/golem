@@ -87,7 +87,7 @@ fn service_firewall_allows_internal_sources_to_the_service_port() {
         .glyphs
         .iter()
         .find_map(|g| match g {
-            emet::ir::Glyph::File { path, contents, .. }
+            emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
                 if path == "/etc/nftables.d/mongod-lichess-primary.nft" =>
             {
                 Some(contents.clone())
@@ -108,7 +108,7 @@ fn ingress_site_block_proxies_to_the_named_service_over_ssl() {
         .glyphs
         .iter()
         .find_map(|g| match g {
-            emet::ir::Glyph::File { path, contents, .. }
+            emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
                 if path == "/etc/nginx/sites-enabled/lichess.org.conf" =>
             {
                 Some(contents.clone())

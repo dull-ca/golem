@@ -150,12 +150,13 @@ pub enum Expr {
     AptPackage(Box<Spanned<Expr>>),
     /// `systemdService { unit = e }` — the systemd-unit primitive constructor.
     SystemdService(Box<Spanned<Expr>>),
-    /// `file { path = …, contents = …, mode = … }` — a file glyph. Contents
-    /// are a concrete evaluated `String`, never a template (ADR 0004).
-    File {
+    /// `file { path, contents, mode }` / `directory { path, mode }` /
+    /// `symlink { path, target }` — the three surface spellings of the one
+    /// filesystem glyph, differing in the `entry` arm they build. Contents are a
+    /// concrete evaluated `String`, never a template (ADR 0004).
+    Filesystem {
         path: Box<Spanned<Expr>>,
-        contents: Box<Spanned<Expr>>,
-        mode: Box<Spanned<Expr>>,
+        entry: EntryExpr,
     },
     /// `lineInFile { path = …, line = … }` — a single-line glyph.
     LineInFile {
@@ -208,6 +209,23 @@ pub enum Expr {
         cond: Box<Spanned<Expr>>,
         then_: Box<Spanned<Expr>>,
         else_: Box<Spanned<Expr>>,
+    },
+}
+
+/// The `entry` arm of a [`Expr::Filesystem`], mirroring `scroll_format::Entry`:
+/// each spelling carries only the fields its arm gives meaning. `mode` on the
+/// surface is an octal `String` lowered to a `u16` in `eval`.
+#[derive(Debug, Clone)]
+pub enum EntryExpr {
+    File {
+        contents: Box<Spanned<Expr>>,
+        mode: Box<Spanned<Expr>>,
+    },
+    Directory {
+        mode: Box<Spanned<Expr>>,
+    },
+    Symlink {
+        target: Box<Spanned<Expr>>,
     },
 }
 
