@@ -754,6 +754,7 @@ where
 enum TopItem {
     Type(TypeDecl),
     Value(DeclItem),
+    Recovered,
 }
 
 fn module_parser<'src, I>(
@@ -788,7 +789,9 @@ where
             }
         });
 
-    let item = choice((type_decl_parser().map(TopItem::Type), value_item));
+    let item = choice((type_decl_parser().map(TopItem::Type), value_item)).recover_with(
+        skip_until(any().ignored(), just(Tok::VSemi).ignored(), || TopItem::Recovered),
+    );
 
     just(Tok::VSemi)
         .repeated()
@@ -1000,6 +1003,7 @@ pub fn parse(
         match item {
             TopItem::Type(td) => type_decls.push(td),
             TopItem::Value(di) => value_items.push(di),
+            TopItem::Recovered => {}
         }
     }
 

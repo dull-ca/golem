@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use emet::{compile, compile_file, Compiled, Error, Phase};
+use emet::{compile_all, compile_file_all, Compiled, Error, Phase};
 use scroll_format::{to_bytes, to_json, Manifest};
 
 const EMET_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -112,18 +112,18 @@ fn run_build(args: BuildArgs) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            match compile_file(p) {
+            match compile_file_all(p) {
                 Ok(compiled) => emit(compiled, &args),
-                Err(e) => {
-                    report_error(&p.display().to_string(), &src, &e);
+                Err(errors) => {
+                    report_errors(&p.display().to_string(), &src, &errors);
                     ExitCode::from(1)
                 }
             }
         }
-        None => match compile(DEMO) {
+        None => match compile_all(DEMO) {
             Ok(compiled) => emit(compiled, &args),
-            Err(e) => {
-                report_error("<demo>", DEMO, &e);
+            Err(errors) => {
+                report_errors("<demo>", DEMO, &errors);
                 ExitCode::from(1)
             }
         },
@@ -176,6 +176,12 @@ fn print_text(compiled: &Compiled) {
         for g in &s.glyphs {
             println!("    * {}", g.describe());
         }
+    }
+}
+
+fn report_errors(name: &str, src: &str, errors: &[Error]) {
+    for e in errors {
+        report_error(name, src, e);
     }
 }
 

@@ -61,29 +61,39 @@ pub struct Compiled {
 /// unnamed module exposing everything, so a single-file program compiles
 /// exactly as before.
 pub fn parse_source(src: &str) -> Result<Module, Error> {
-    let tokens = lexer::lex(src).map_err(|e| Error {
-        phase: Phase::Lex,
-        msg: e.msg,
-        span: e.span,
-        note: None,
+    parse_source_multi(src).map_err(|mut errors| errors.remove(0))
+}
+
+pub fn parse_source_multi(src: &str) -> Result<Module, Vec<Error>> {
+    let tokens = lexer::lex(src).map_err(|e| {
+        vec![Error {
+            phase: Phase::Lex,
+            msg: e.msg,
+            span: e.span,
+            note: None,
+        }]
     })?;
 
-    let header = header::split(tokens).map_err(|e| Error {
-        phase: Phase::Parse,
-        msg: e.msg,
-        span: e.span,
-        note: None,
+    let header = header::split(tokens).map_err(|e| {
+        vec![Error {
+            phase: Phase::Parse,
+            msg: e.msg,
+            span: e.span,
+            note: None,
+        }]
     })?;
 
     let laid = layout::layout_all(header.body);
-    parser::parse(&laid, header.name, header.exposing, header.imports).map_err(|mut errors| {
-        let first = errors.remove(0);
-        Error {
-            phase: Phase::Parse,
-            msg: first.msg,
-            span: first.span,
-            note: None,
-        }
+    parser::parse(&laid, header.name, header.exposing, header.imports).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|pe| Error {
+                phase: Phase::Parse,
+                msg: pe.msg,
+                span: pe.span,
+                note: None,
+            })
+            .collect()
     })
 }
 
@@ -91,27 +101,37 @@ pub fn parse_source(src: &str) -> Result<Module, Error> {
 /// error encountered. Imports are not resolved from disk here; use
 /// `compile_file` for a multi-module program.
 pub fn compile(src: &str) -> Result<Compiled, Error> {
-    let module = parse_source(src)?;
+    compile_all(src).map_err(|mut errors| errors.remove(0))
+}
 
-    let (_, main_ty) = infer::check_module(&module).map_err(|e| Error {
-        phase: Phase::Type,
-        msg: e.msg,
-        span: e.span,
-        note: e.note,
+pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
+    let module = parse_source_multi(src)?;
+
+    let (_, main_ty) = infer::check_module(&module).map_err(|e| {
+        vec![Error {
+            phase: Phase::Type,
+            msg: e.msg,
+            span: e.span,
+            note: e.note,
+        }]
     })?;
 
-    let scrolls = eval::run_module(&module).map_err(|e| Error {
-        phase: Phase::Analyze,
-        msg: e.msg,
-        span: 0..0,
-        note: None,
+    let scrolls = eval::run_module(&module).map_err(|e| {
+        vec![Error {
+            phase: Phase::Analyze,
+            msg: e.msg,
+            span: 0..0,
+            note: None,
+        }]
     })?;
 
-    analyze(&scrolls).map_err(|msg| Error {
-        phase: Phase::Analyze,
-        msg,
-        span: 0..0,
-        note: None,
+    analyze(&scrolls).map_err(|msg| {
+        vec![Error {
+            phase: Phase::Analyze,
+            msg,
+            span: 0..0,
+            note: None,
+        }]
     })?;
 
     Ok(Compiled { main_ty, scrolls })
@@ -122,7 +142,21 @@ pub fn compile(src: &str) -> Result<Compiled, Error> {
 /// the entry's directory), reject import cycles, then type-check and evaluate
 /// each module against the interfaces of what it imports.
 pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
-    let (main_ty, scrolls) = resolve::compile_entry(entry)?;
+    compile_file_all(entry).map_err(|mut errors| errors.remove(0))
+}
+
+pub fn compile_file_all(entry: &Path) -> Result<Compiled, Vec<Error>> {
+    let (main_ty, scrolls) = resolve::compile_entry(entry).map_err(|mut errors| {
+        if errors.is_empty() {
+            errors.push(Error {
+                phase: Phase::Analyze,
+                msg: "no entry module produced".to_string(),
+                span: 0..0,
+                note: None,
+            });
+        }
+        errors
+    })?;
     Ok(Compiled { main_ty, scrolls })
 }
 
@@ -131,10 +165,10 @@ pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
 /// (imports unresolved), the counterpart of `compile` on the tooling path;
 /// `analyze_project` is the multi-module counterpart of `compile_file`.
 pub fn analyze_source(src: &str) -> Analysis {
-    let module = match parse_source(src) {
+    let module = match parse_source_multi(src) {
         Ok(m) => m,
-        Err(e) => {
-            return Analysis { diagnostics: vec![e], index: QueryIndex::default() };
+        Err(errors) => {
+            return Analysis { diagnostics: errors, index: QueryIndex::default() };
         }
     };
     let no_imports = std::collections::HashMap::new();

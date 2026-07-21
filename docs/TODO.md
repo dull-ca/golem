@@ -98,10 +98,21 @@ monorepo. B's headline is model reconciliation.
 
 ### Diagnostics / tooling
 
-- **Multi-error parse recovery + rich CLI rendering.** The chumsky parser is set
-  up with `Rich` errors, but `compile()` surfaces only the first error. Wiring
-  true multi-error recovery needs the `Error` model + `main.rs` reworked to carry
-  and render multiple diagnostics.
+- **Multi-error parse recovery + rich CLI rendering — DONE (ADR 0022).** The
+  chumsky parser recovers past a bad declaration at the layout `;` boundary
+  (`skip_until` at the top-level `item`, syncing on `Tok::VSemi`) and so collects
+  several `Rich` errors in one run. A list-carrying surface threads them through:
+  `parse_source_multi` / `compile_all` / `compile_file_all` return `Vec<Error>`
+  (the resolve stage parses each module through the recovering path), while
+  `parse_source` / `compile` / `compile_file` stay as first-error wrappers so
+  existing callers are unchanged. `analyze_source` / `analyze_project` already
+  returned `Vec<Error>`, so the LSP now surfaces every parse error. `main.rs`
+  renders all diagnostics via ariadne (one report each). Type/eval/analyze stay
+  first-error — inference is sequential — so a `Vec<Error>` holds either several
+  parse errors or one later-phase error; the boundary is recorded in ADR 0022.
+  Recovery is scoped to top-level (and does not touch the `let`-block
+  `decls_parser`) to keep the ADR 0001 `parse-error(t)` / close-on-`in`
+  handshake intact.
 
 ### Cleanup
 

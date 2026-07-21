@@ -62,14 +62,17 @@ struct Interface {
 /// keeps each module's non-`Send` value env alive across the whole pass, so the
 /// work runs on the deep-stack eval thread rather than moving those envs across
 /// a thread boundary (see `eval::on_eval_thread`).
-pub fn compile_entry(entry: &Path) -> Result<(crate::ast::Type, Vec<crate::ir::Scroll>), Error> {
+pub fn compile_entry(
+    entry: &Path,
+) -> Result<(crate::ast::Type, Vec<crate::ir::Scroll>), Vec<Error>> {
     let dir = entry.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
 
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
     let entry_name = load_graph(entry, &dir, &mut loaded)?;
-    let order = topo_order(&entry_name, &loaded)?;
+    let order = topo_order(&entry_name, &loaded).map_err(|e| vec![e])?;
 
     eval::on_eval_thread(move || check_and_eval(entry_name, order, loaded))
+        .map_err(|e| vec![e])
 }
 
 pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
@@ -78,7 +81,7 @@ pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
     let entry_name = match load_graph(entry, &dir, &mut loaded) {
         Ok(name) => name,
-        Err(e) => return ProjectAnalysis { diagnostics: vec![e], indexes: HashMap::new() },
+        Err(errors) => return ProjectAnalysis { diagnostics: errors, indexes: HashMap::new() },
     };
     let order = match topo_order(&entry_name, &loaded) {
         Ok(order) => order,
@@ -187,16 +190,20 @@ fn load_graph(
     path: &Path,
     dir: &Path,
     loaded: &mut HashMap<String, Loaded>,
-) -> Result<String, Error> {
-    let source = std::fs::read_to_string(path).map_err(|e| Error {
-        phase: Phase::Parse,
-        msg: format!("cannot read {}: {e}", path.display()),
-        span: 0..0,
-        note: None,
+) -> Result<String, Vec<Error>> {
+    let source = std::fs::read_to_string(path).map_err(|e| {
+        vec![Error {
+            phase: Phase::Parse,
+            msg: format!("cannot read {}: {e}", path.display()),
+            span: 0..0,
+            note: None,
+        }]
     })?;
-    let module = crate::parse_source(&source).map_err(|mut e| {
-        e.msg = format!("{}: {}", path.display(), e.msg);
-        e
+    let module = crate::parse_source_multi(&source).map_err(|mut errors| {
+        for e in &mut errors {
+            e.msg = format!("{}: {}", path.display(), e.msg);
+        }
+        errors
     })?;
     let name = module.name.clone().unwrap_or_else(|| module_name_from_path(path));
 
@@ -209,12 +216,12 @@ fn load_graph(
         }
         let import_path = dir.join(format!("{}.emet", import.module));
         if !import_path.exists() {
-            return Err(Error {
+            return Err(vec![Error {
                 phase: Phase::Parse,
                 msg: format!("cannot find imported module `{}` at {}", import.module, import_path.display()),
                 span: import.span.clone(),
                 note: None,
-            });
+            }]);
         }
         load_graph(&import_path, dir, loaded)?;
     }
