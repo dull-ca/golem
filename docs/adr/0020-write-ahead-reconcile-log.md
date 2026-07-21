@@ -393,3 +393,42 @@ silently.
   addressing intact). The four-glyph contract (root `CLAUDE.md`) is unchanged: no
   fifth reconciler, no new resource kind — the config-propagation dependency is
   golemd reconciler logic, not a new glyph.
+
+## Addendum — revisions projected, commit durability at FULL (implementation)
+
+Two refinements the implementation settled on. Both tighten §2 and §6; neither
+changes the decision or the HTTP contract.
+
+### Revisions are projected, not stored
+
+§6 leaves an out: "`Revision` becomes a projection … reads it from the settled
+WAL." The implementation takes that literally — there is **no `revisions` table
+and no `append_revision`**. `revisions`/`revision`/`latest_revision_id` on the
+`PlanRoom` derive history from the `reconcile_attempt` and `wal_step` rows at read
+time (`wal::projected_revisions`): revision 1 is `Init`, then one `Reconcile` per
+`Committed` attempt, each attempt's outcomes folded from the WAL up to that
+attempt's last step. `settle` marks the attempt `Committed` and reads the
+projected latest revision back; it appends nothing.
+
+This closes the projection window §6 gestured at. When a revision was a separate
+appended row, a crash between "attempt committed" and "revision row written" could
+leave a settled attempt with no revision — the same performed-but-unrecorded shape
+this ADR exists to kill, one layer up. With the revision derived from the commit
+itself, a settled attempt yields exactly one revision *by construction*; there is
+no second write to lose. The `GET /revisions` surface (ADR 0014 §5) is unchanged —
+same shape, same `Init` + one-per-reconcile numbering — only its source moved from
+a stored row to a fold.
+
+### Commit durability is `synchronous = FULL`, not NORMAL
+
+§2 and the Consequences specify `PRAGMA synchronous = NORMAL`. The implementation
+uses **`FULL`**. The bracketing invariant needs the `Intended` row *durable* before
+the side effect runs, and "durable" here must mean survives power loss, not merely
+a process crash. On WAL-mode sqlite, NORMAL acknowledges a commit before the WAL
+frame is fsynced, so a power cut can lose an already-acknowledged `Intended` row —
+reopening the exact "performed but unrecorded" window (§ Context, Consequences item
+1) the log was built to close. FULL fsyncs each commit, so once `append_wal_step`
+returns, the row is on disk. The cost is one fsync per WAL step (two per op) rather
+than a deferred checkpoint; as §Consequences already argued, that is cheap next to
+the host side effects each op performs, and crash-*and-power-loss* correctness is
+worth it.

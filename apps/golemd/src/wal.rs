@@ -46,6 +46,16 @@ pub fn applied_outcomes(steps: &[WalStep]) -> Vec<Outcome> {
         .collect()
 }
 
+/// The `GET /revisions` history, projected from the settled WAL rather than
+/// stored (ADR 0020 §6). Revision 1 is always `Init` (the opening, dated from the
+/// earliest attempt); then one `Reconcile` per `Committed` attempt in
+/// `reconcile_id` order, numbered `2, 3, …`. Each `Reconcile`'s outcomes are
+/// [`applied_outcomes`] folded over the steps up to that attempt's last `seq`
+/// (`attempt_boundary_seq`), so the revision shows the applied set as it stood
+/// once that attempt settled. The latest revision therefore equals the current
+/// applied set by construction. A settled attempt yields exactly one revision, so
+/// no crash between committing an attempt and appending a separate revision row
+/// can lose one — that window is gone because there is no separate row.
 pub fn projected_revisions(attempts: &[ReconcileAttempt], steps: &[WalStep]) -> Vec<Revision> {
     let mut revisions = vec![Revision {
         id: 1,
@@ -69,10 +79,17 @@ pub fn projected_revisions(attempts: &[ReconcileAttempt], steps: &[WalStep]) -> 
     revisions
 }
 
+/// One projected revision by id, or `None` if no such revision exists. Projects
+/// the whole history and picks the match — the caller needs only one, but the
+/// fold is cheap and keeps a single source for the projection.
 pub fn projected_revision(attempts: &[ReconcileAttempt], steps: &[WalStep], id: u64) -> Option<Revision> {
     projected_revisions(attempts, steps).into_iter().find(|r| r.id == id)
 }
 
+/// The id of the newest projected revision: `1` (`Init`) plus the number of
+/// `Committed` attempts. Computed from the attempts alone — the steps are not
+/// needed to count revisions, only to fold their outcomes — so `settle` can read
+/// the latest id back cheaply after committing.
 pub fn latest_revision_id(attempts: &[ReconcileAttempt]) -> Option<u64> {
     let committed = attempts.iter().filter(|a| a.phase == AttemptPhase::Committed).count() as u64;
     Some(1 + committed)

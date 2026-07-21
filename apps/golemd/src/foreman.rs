@@ -353,9 +353,11 @@ impl Foreman {
     }
 
     /// Close a successful attempt: mark it `Committed`, refresh the applied-state
-    /// cache from the WAL fold, and append the `Reconcile` revision that projects
-    /// this attempt. The revision's outcomes are the same fold — history and the
-    /// applied set agree because both come from the one log.
+    /// cache from the WAL fold, and read back the `Reconcile` revision that
+    /// committing this attempt now projects. Nothing is appended — marking the
+    /// attempt `Committed` *is* what makes the revision exist
+    /// (`wal::projected_revisions`), so its outcomes are the same fold as the
+    /// cache. History and the applied set agree because both come from the one log.
     fn settle(&self, reconcile_id: u64, desired: &SelectedScroll) -> Result<Revision> {
         self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::Committed)?;
         let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
