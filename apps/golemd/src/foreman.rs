@@ -91,7 +91,7 @@ impl Foreman {
         let prior = self.planroom.applied_state()?;
         let prior_outcomes = prior.as_ref().map(|a| a.outcomes.as_slice()).unwrap_or(&[]);
         let ops = plan(prior_outcomes, &desired.scroll);
-        let outcomes = self.enact(&ops)?;
+        let outcomes = preserve_prior_inverses(self.enact(&ops)?, prior_outcomes);
         self.planroom.put_applied_state(&AppliedState {
             scroll_content_id: desired.content_id,
             scroll: desired.scroll,
@@ -252,9 +252,26 @@ fn empty_scroll(host: &str) -> Scroll {
     Scroll { name: host.to_string(), glyphs: vec![] }
 }
 
+fn preserve_prior_inverses(outcomes: Vec<Outcome>, prior: &[Outcome]) -> Vec<Outcome> {
+    outcomes
+        .into_iter()
+        .map(|outcome| match outcome.op {
+            GlyphOp::Noop { .. } => {
+                let key = outcome.op.key();
+                match prior.iter().find(|p| p.op.key() == key) {
+                    Some(recorded) => Outcome { inverse: recorded.inverse.clone(), ..outcome },
+                    None => outcome,
+                }
+            }
+            _ => outcome,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::Inverse;
     use crate::planroom::MemoryPlanRoom;
     use scroll_format::{Glyph, Manifest};
     use std::sync::{Arc, Mutex};
@@ -454,6 +471,68 @@ mod tests {
         assert_eq!(failing.calls(), 1);
         assert!(f.applied_state().unwrap().is_none());
         assert_eq!(f.revisions().unwrap().len(), 1);
+    }
+
+    struct HostModel {
+        present: Mutex<std::collections::BTreeMap<String, ContentId>>,
+        calls: Mutex<Vec<String>>,
+    }
+    impl HostModel {
+        fn new() -> Self {
+            Self { present: Mutex::new(std::collections::BTreeMap::new()), calls: Mutex::new(vec![]) }
+        }
+        fn present_keys(&self) -> Vec<String> {
+            self.present.lock().unwrap().keys().cloned().collect()
+        }
+    }
+    impl Reconciler for HostModel {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            let mut present = self.present.lock().unwrap();
+            let already = present.get(&key) == Some(&cid);
+            present.insert(key.clone(), cid);
+            self.calls.lock().unwrap().push(format!("apply {key}"));
+            Ok(Outcome {
+                op: GlyphOp::Install { cid, glyph: glyph.clone() },
+                cid,
+                inverse: if already { Inverse::Nothing } else { crate::reconciler::inverse_of(glyph) },
+                changed: !already,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            match &outcome.inverse {
+                Inverse::Nothing => {}
+                _ => {
+                    self.present.lock().unwrap().remove(&outcome.op.key());
+                }
+            }
+            self.calls.lock().unwrap().push(format!("reverse {}", outcome.op.key()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reapply_preserves_real_inverses_so_later_removal_reverts_host() {
+        let host = Arc::new(HostModel::new());
+        let f = foreman("h1", Box::new(host.clone()));
+
+        let s = manifest(vec![scroll("h1", vec![apt("nginx")])]);
+        f.apply_manifest(&s).unwrap();
+        f.apply_manifest(&s).unwrap();
+
+        let stored = f.applied_state().unwrap().unwrap();
+        let nginx = stored.outcomes.iter().find(|o| o.op.key() == "apt:nginx").unwrap();
+        assert_eq!(
+            nginx.inverse,
+            Inverse::RemoveAptPackage { name: "nginx".into() },
+            "re-apply must not overwrite the real inverse with Nothing"
+        );
+
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![])])).unwrap();
+
+        assert!(host.present_keys().is_empty(), "removal must revert the host");
+        assert!(host.calls.lock().unwrap().contains(&"reverse apt:nginx".to_string()));
+        assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
     }
 
     #[test]
