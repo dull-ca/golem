@@ -23,6 +23,11 @@ use ast::Type;
 use ir::{Glyph, Scroll};
 use query::QueryIndex;
 
+/// The result of an LSP-facing analysis pass: the diagnostics `compile` would
+/// report, plus the position index the editor queries for hover, completion,
+/// and go-to-definition (ADR 0018). `compile`/`emetc` never build this — the
+/// index is populated only when inference runs with a recorder (`analyze_*`),
+/// so the compile path carries no recording cost.
 pub struct Analysis {
     pub diagnostics: Vec<Error>,
     pub index: QueryIndex,
@@ -121,6 +126,10 @@ pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
     Ok(Compiled { main_ty, scrolls })
 }
 
+/// Analyze one source string for the LSP: parse, then run inference with a
+/// recorder to build the `QueryIndex` alongside any diagnostic. Single-file
+/// (imports unresolved), the counterpart of `compile` on the tooling path;
+/// `analyze_project` is the multi-module counterpart of `compile_file`.
 pub fn analyze_source(src: &str) -> Analysis {
     let module = match parse_source(src) {
         Ok(m) => m,
@@ -151,6 +160,10 @@ pub fn analyze_source(src: &str) -> Analysis {
     Analysis { diagnostics, index }
 }
 
+/// Analyze a multi-module program for the LSP: resolve the import graph and
+/// return a per-file `QueryIndex` plus diagnostics, so hover and cross-file
+/// go-to-definition work across a project. The `analyze_source` of a whole
+/// project.
 pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
     resolve::analyze_entry(entry)
 }

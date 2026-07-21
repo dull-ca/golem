@@ -86,6 +86,10 @@ generalizes to `Value::List(Vec<Value>)`.
 
 ### Glyphs stay non-matchable *for now* (matching is planned, deferred)
 
+> **Superseded by ADR 0017:** glyphs and the filesystem `Entry` are now
+> matchable, and the symmetric injection this section guards against was
+> replaced by one-way widening. The deferral below is the original record.
+
 Glyph pattern-matching is **not forbidden in principle** — it is deferred.
 Matching a glyph would be a trivial `case`; the interim hazard is **not**
 matching itself but ADR 0002's **symmetric permissive-injection** shortcut, which

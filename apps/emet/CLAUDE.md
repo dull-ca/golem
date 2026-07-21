@@ -1,10 +1,12 @@
 # CLAUDE.md
 
 Guidance for working in Emet. The compiler crate lives at `apps/emet/` and the
-LSP at `apps/emet-lsp/`, both members of the **golem** monorepo's Cargo
-workspace. This file is Emet-only — golem has its own root `CLAUDE.md` for the
-wider project. File paths below are relative to `apps/emet/`; source paths are
-under `apps/emet/src/`.
+LSP at `apps/emet-lsp/` — hover, completion, and go-to-definition, all served
+from the compiler's own inference engine (ADR 0018), so the editor and `emetc`
+never disagree. Both are members of the **golem** monorepo's Cargo workspace.
+This file is Emet-only — golem has its own root `CLAUDE.md` for the wider
+project. File paths below are relative to `apps/emet/`; source paths are under
+`apps/emet/src/`.
 
 ## Where Emet fits
 
@@ -109,10 +111,11 @@ An Elm-shaped, minimal module system for reuse across files:
   deferred — see `docs/TODO.md`).
 - **Types.** `String`, `Int`, `Float`, `Bool`,
   `Order`, `List a`, `Maybe a`, records, functions; the glyph types `AptPackage`,
-  `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; and
-  `Scroll`. (`Filesystem` is the single first-class type for `file`/`directory`/
-  `symlink` — the entry kind is an IR-level `Entry` sum, not a type distinction;
-  ADR 0019.)
+  `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; the
+  filesystem `Entry` sum (`File`/`Directory`/`Symlink`); and `Scroll`.
+  (`Filesystem` is the single first-class type for `file`/`directory`/`symlink`;
+  the entry kind is the `Entry` sum, carried on a `Filesystem` glyph's `entry`
+  field; ADR 0019.)
   (The transitional `Str`/`Glyphs` aliases are gone — `String` and `List Glyph`
   are the sole spellings; `Str`/`Glyphs` are now unknown-type errors.)
 - **`number` / `comparable` / `appendable`.** Elm's three bounded type
@@ -200,6 +203,16 @@ directory      { path, mode }              -> Glyph::Filesystem      key file:<p
 symlink        { path, target }            -> Glyph::Filesystem      key file:<path>
 lineInFile     { path, line }              -> Glyph::LineInFile      key fileline:<path>:<line>
 ```
+
+Glyphs and the filesystem `Entry` are **matchable** (ADR 0017): a `case` may
+destructure a built glyph or entry. The spelling splits by direction — the
+reserved lowercase words *build* (`aptPackage`, `systemdService`, `file`,
+`directory`, `symlink`, `lineInFile`), the PascalCase tags *match* (`AptPackage`,
+`SystemdService`, `Filesystem`, `LineInFile`; and on the entry, `File`,
+`Directory`, `Symlink`). The match tags exist only as patterns — they are not
+bound as values, so they cannot construct. Matching stays sound because a
+concrete glyph widens one-way into `Glyph` (never back), so a `Glyph`-typed
+value is always known to hold the sum, not an un-pinned variant.
 
 `file`/`directory`/`symlink` are three spellings of the one filesystem glyph,
 each building a different `Entry` arm (`build_constructor` enforces the per-arm

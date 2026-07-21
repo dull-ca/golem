@@ -2,14 +2,12 @@
 
 ## Status
 
-Accepted. **Interim caveat (added by ADR 0003/0008):** the permissive-injection
-mechanism below is *symmetric* unification and is sound only while glyphs have no
-elimination form. It is to be **superseded when glyph pattern-matching is
-implemented** — see ADR 0008 (glyph pattern-matching: planned, deferred,
-foundation kept variant-ready) and the design doc
-`docs/design/0001-elm-lite-type-system-and-value-language.md` §5. The precise
-framing: matching a glyph is not itself the hazard; the *symmetric injection
-under elimination* is.
+Accepted. **The permissive *symmetric* injection described below was
+superseded by ADR 0017:** it is now one-way widening (concrete glyph → `Glyph`,
+never the reverse), and glyphs are matchable. The type-system note below is the
+original interim mechanism, kept as the record; read ADR 0017 for what shipped.
+The framing that drove the change: matching a glyph was never the hazard — the
+*symmetric injection under elimination* was, and directed widening removes it.
 
 ## Context
 

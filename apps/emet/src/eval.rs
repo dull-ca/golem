@@ -239,6 +239,12 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
     }
 }
 
+/// Project a built [`Glyph`] into the `(tag, record)` a constructor pattern
+/// matches against (ADR 0017). A `Glyph` is not itself a `Value::Data`, so
+/// matching one reconstructs, on demand and read-only, the same shape
+/// `glyph_ctors` types the pattern at: the PascalCase tag plus a record of the
+/// glyph's fields. Nothing here mutates or rebuilds the glyph — it is a view
+/// used only to answer "which variant, and what fields?" during a match.
 fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
     match g {
         Glyph::AptPackage { name } => {
@@ -258,6 +264,11 @@ fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
     }
 }
 
+/// A `Filesystem` glyph's `entry` projects as a `Value::Data`, not a bare
+/// record, so it re-enters `match_pattern`'s sum-match arm exactly like a
+/// user constructor: a `File`/`Directory`/`Symlink` pattern discriminates the
+/// tag and binds the arm's field record. This is what lets a `case` nest a
+/// match on the entry inside a match on the glyph.
 fn entry_value(entry: &Entry) -> Value {
     let (ctor, fields): (&str, Value) = match entry {
         Entry::File { contents, perms } => (
@@ -275,6 +286,10 @@ fn entry_value(entry: &Entry) -> Value {
     Value::Data { ctor: ctor.to_string(), args: vec![fields] }
 }
 
+/// Reify typed [`Perms`] back to the surface shape a pattern binds: `mode` as
+/// an `Int` (the `u16` widened), `owner`/`group` as `Maybe String` (`Some` ->
+/// `Just`, `None` -> `Nothing`, via `maybe_str_value`). The inverse of the
+/// `perms_from_mode` lowering, projected for matching rather than storage.
 fn perms_value(perms: &Perms) -> Value {
     record_value(&[
         ("mode", Value::Int(perms.mode as i64)),

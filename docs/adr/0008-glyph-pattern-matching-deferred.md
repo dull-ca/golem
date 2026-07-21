@@ -2,8 +2,11 @@
 
 ## Status
 
-Proposed (a **stub / placeholder**: records a deferral and keeps the door open;
-does **not** design the full mechanism).
+**Superseded by ADR 0017.** This ADR recorded the deferral and named its
+preferred successor — route 2, directed nominal subsumption. ADR 0017 is that
+route landed: the symmetric injection arm was replaced by one-way widening
+(concrete glyph → `Glyph`), and `case` now matches glyphs and the filesystem
+`Entry`. The context and the two routes below remain the record of why.
 
 ## Context
 

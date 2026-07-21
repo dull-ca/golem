@@ -1,3 +1,10 @@
+//! The LSP feature layer (ADR 0018): translate an editor request at a cursor
+//! into an `emet` query and shape the answer for LSP. It holds **no language
+//! semantics** — every type, scope, and definition comes from `emet`'s single
+//! inference engine via `analyze_source`, so the adapter and the compiler can
+//! never disagree. What lives here is purely the LSP boundary: LSP UTF-16
+//! positions ↔ byte offsets, and `emet` types ↔ LSP payloads.
+
 use std::path::PathBuf;
 
 use lsp_types::{
@@ -5,6 +12,8 @@ use lsp_types::{
     Location, MarkupContent, MarkupKind, Position, Range, Uri,
 };
 
+/// The inferred type at the cursor, as a Markdown hover. `None` when no
+/// recorded expression covers the position.
 pub fn hover_at(source: &str, position: Position) -> Option<Hover> {
     let analysis = emet::analyze_source(source);
     let offset = offset_at(source, position);
@@ -18,6 +27,8 @@ pub fn hover_at(source: &str, position: Position) -> Option<Hover> {
     })
 }
 
+/// The names in scope at the cursor as completion items, each labeled with its
+/// rendered type.
 pub fn completion_at(source: &str, position: Position) -> Vec<CompletionItem> {
     let analysis = emet::analyze_source(source);
     let offset = offset_at(source, position);
@@ -34,6 +45,10 @@ pub fn completion_at(source: &str, position: Position) -> Vec<CompletionItem> {
         .collect()
 }
 
+/// The definition site of the name at the cursor. A same-file definition
+/// (`module: None`) resolves against `source`; a cross-file one names its owning
+/// module, resolved to a sibling `<Module>.emet` file whose own text is read to
+/// map the target span to a range.
 pub fn definition_at(uri: &Uri, source: &str, position: Position) -> Option<Location> {
     let analysis = emet::analyze_source(source);
     let offset = offset_at(source, position);
@@ -47,6 +62,10 @@ pub fn definition_at(uri: &Uri, source: &str, position: Position) -> Option<Loca
     }
 }
 
+/// Locate a cross-file definition: a definition in `module` lives in
+/// `<module>.emet` beside the current file (file path = module name, ADR 0016).
+/// Its source is read so the byte span from the exporter's interface can be
+/// mapped to a UTF-16 range in that file.
 fn sibling_module_location(
     uri: &Uri,
     module: &str,
@@ -63,6 +82,11 @@ fn sibling_module_location(
     })
 }
 
+/// Convert an LSP `Position` (zero-based line, UTF-16 code-unit column) to a
+/// byte offset into `source` — the index `emet`'s span-keyed queries expect.
+/// LSP columns count UTF-16 units, not bytes, so the column walk advances by
+/// each char's `len_utf16`. A position past the last line or column clamps to
+/// the end of source. `position_at` is the inverse, for reporting spans back.
 pub fn offset_at(source: &str, position: Position) -> usize {
     let mut line_start = 0usize;
     let mut line = 0u32;

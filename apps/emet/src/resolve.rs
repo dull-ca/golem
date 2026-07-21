@@ -42,6 +42,9 @@ impl ProjectAnalysis {
 /// constructor names (only for `Type(..)` open exports), and exposed type
 /// names with their parameter counts (`exposed_type_arities`, which
 /// `import_type_arities` feeds to inference so an importer may name the type).
+/// `exposed_def_spans` additionally maps each exposed name to the span of its
+/// definition in *this* module's source, so an importer's go-to-definition can
+/// jump across the file boundary (ADR 0018) — see `import_def_sites`.
 struct Interface {
     ty_env: TyEnv,
     value_env: Env,
@@ -370,6 +373,14 @@ fn import_constructors(
     ImportedConstructors { ctor_schemes, sum_ctors }
 }
 
+/// Resolve each name this module imports to the `DefSite` in its owning module
+/// (ADR 0018): the definition's span from the exporter's `exposed_def_spans`,
+/// tagged with the owning module so the LSP adapter can open the right file. The
+/// key mirrors how the name is used in this module — a qualified `Qual.value`
+/// for plain imports (honoring `as` aliases), the bare name for open-exposed
+/// constructors and `exposing`-listed items — so `definition_at` finds it at the
+/// use site. Fed into inference as `imported_defs`, the cross-file half of
+/// go-to-definition; the same-file half is `decl_def_sites`.
 fn import_def_sites(
     module: &Module,
     interfaces: &HashMap<String, Interface>,

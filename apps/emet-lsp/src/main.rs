@@ -1,3 +1,8 @@
+// The LSP server binary: a stdio JSON-RPC loop that owns the open-document
+// store and routes requests to the feature functions in `emet_lsp`. Full-sync
+// text: each change replaces the whole document. All language understanding is
+// in `emet` behind those functions; this file is transport and dispatch only.
+
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -14,6 +19,10 @@ use lsp_types::{
     Uri,
 };
 
+/// The latest full text of every open document, keyed by URI. Full-sync
+/// (`TextDocumentSyncKind::FULL`) means each edit notification carries the
+/// complete new text, which simply overwrites the stored copy — no incremental
+/// patching. Every request re-reads from here and re-analyzes.
 #[derive(Default)]
 struct Documents(HashMap<String, String>);
 
@@ -64,6 +73,9 @@ fn serve(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
     Ok(())
 }
 
+/// Dispatch one request to its feature function by LSP method: hover,
+/// completion, or go-to-definition. Each looks up the document's current text
+/// and delegates to `emet_lsp`; an unrecognized method returns a null result.
 fn handle_request(documents: &Documents, request: Request) -> Response {
     match request.method.as_str() {
         HoverRequest::METHOD => {

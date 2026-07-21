@@ -585,6 +585,21 @@ fn ctors() -> Vec<Ctor> {
     ]
 }
 
+/// The match-only glyph and `Entry` constructors (ADR 0017). Unlike `ctors()`,
+/// these are *not* bound into `ty_env`/`env` — construction stays the reserved
+/// lowercase words (`aptPackage`/`file`/…), so nothing here gives a way to
+/// *build* a glyph. They are registered only in the pattern-resolution
+/// registries `constructor_scheme` and `sum_type_constructors`, so their
+/// PascalCase tags (`AptPackage`, `File`, …) are reachable solely from a
+/// `case` pattern. The split spelling — lowercase to build, PascalCase to match
+/// — keeps the two directions from colliding on one name.
+///
+/// Each scheme is `field-record -> Glyph` (or `-> Entry`), the projection a
+/// match sees, mirroring what `eval::glyph_reified` reconstructs from a built
+/// glyph: `Filesystem` carries an `entry : Entry`, and `File`/`Directory` carry
+/// `perms`. `perms` is a plain closed record, not its own matchable sum, because
+/// it has one shape (`{ mode, owner, group }`) with no variants to discriminate
+/// — a pattern binds and reads its fields directly.
 fn glyph_ctors() -> Vec<Ctor> {
     vec![
         Ctor {

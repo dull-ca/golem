@@ -11,10 +11,15 @@
 //!     inadmissible concrete type is an error (`constraint_admits`), and two
 //!     bounded vars merge to the stronger bound (`merge_constraints`). This is
 //!     the one departure from pure HM.
-//!   * **Glyph injection** (ADR 0002). Each concrete glyph type unifies with
-//!     `Glyph` but not with the other glyph types (`glyph_injects`). The
-//!     symmetric arm is sound only while glyphs have no elimination form — see
-//!     the `NOTE` on that arm and ADR 0008.
+//!   * **Directed glyph widening** (ADR 0002/0017). A concrete glyph type
+//!     (`AptPackage`, …) widens *into* `Glyph`, one-way — never `Glyph` back
+//!     into a concrete subtype (`glyph_widens_into`, applied as a `unify` arm;
+//!     `widen_glyph_subtype`, applied at the joins that build a scroll's glyph
+//!     list). Replacing ADR 0002's symmetric injection with this directed rule
+//!     is what makes matching a `Glyph` sound: a `Glyph`-typed hole is never
+//!     silently satisfied by a concrete subtype, so a `case` on a glyph always
+//!     knows it holds the sum, not an un-pinned-down variant (ADR 0017 retires
+//!     the ADR 0008 deferral).
 //!   * **Signatures with type variables** (ADR 0003). A signature's `Rigid`
 //!     vars are instantiated to fresh unification vars, then unified with the
 //!     inferred body — the same machinery that already makes `id` polymorphic.
@@ -76,9 +81,18 @@ struct Infer {
     // see `constructor_scheme` / `sum_type_constructors`.
     user_ctor_schemes: HashMap<String, Scheme>,
     user_sum_ctors: HashMap<String, Vec<(String, usize)>>,
+    // Present only on the LSP path (`analyze_module`); `None` on the compile
+    // path, so `compile`/`emetc` do no recording work. When present, inference
+    // logs per-span types, scopes, and name uses into it as it runs.
     recorder: Option<Recorder>,
 }
 
+/// Accumulates the position index while inference runs (ADR 0018). Types are
+/// staged in `type_spans` with their vars still unresolved and finalized only
+/// after the whole module solves — see `analyze_module`. `def_frames` is a scope
+/// stack: as inference enters and leaves `let`/lambda/`case`-arm bodies, the
+/// binders each introduces are pushed and popped, so `record_use` resolves a
+/// name to the definition in innermost scope at that point.
 #[derive(Default)]
 struct Recorder {
     index: QueryIndex,
@@ -705,7 +719,12 @@ fn constraint_name(c: Constraint) -> &'static str {
 /// Promote a concrete glyph subtype (`AptPackage`, …) to `Glyph` before it is
 /// unified against a list element or a sibling branch, so a mixed list of
 /// glyphs infers as `List Glyph` rather than failing to unify the two concrete
-/// subtypes with each other (they inject into `Glyph`, not into each other).
+/// subtypes with each other (each widens into `Glyph`, not into another
+/// subtype). Recurses through `List <concrete>` -> `List Glyph`, which is what
+/// lets `scroll { glyphs = … }` still type-check: a list of assorted concrete
+/// glyphs is widened element-wise before it meets the expected `List Glyph`.
+/// Applied at every join that forms a glyph list — list literals, `if`/`case`
+/// branches, and the scroll `glyphs` field.
 fn widen_glyph_subtype(inf: &Infer, t: &Type) -> Type {
     match inf.prune(t) {
         Type::Con(name, args) if args.is_empty() && is_glyph_subtype(&name) => con("Glyph"),
@@ -720,6 +739,14 @@ fn is_glyph_subtype(name: &str) -> bool {
     matches!(name, "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile")
 }
 
+/// The directed widening arm of `unify` (ADR 0017): a concrete glyph subtype
+/// (`from`) satisfies a `Glyph` hole (`to`), and only in that direction. The
+/// argument order matters — `unify` calls this with the *found* type as `from`
+/// and the *expected* as `to`, so `AptPackage` found where `Glyph` is expected
+/// succeeds, while `Glyph` found where `AptPackage` is expected does not. That
+/// asymmetry is the whole soundness gain over ADR 0002's symmetric injection:
+/// a value typed `Glyph` is never narrowed back to a concrete variant it may
+/// not be, so a `case` on it is safe.
 fn glyph_widens_into(from: &str, from_args: &[Type], to: &str, to_args: &[Type]) -> bool {
     from_args.is_empty() && to_args.is_empty() && to == "Glyph" && is_glyph_subtype(from)
 }
@@ -1383,7 +1410,9 @@ fn infer_group(
 /// Arity of every built-in type constructor: the ground types (arity 0), the
 /// glyph/scroll types, and the generic `List`/`Maybe` (arity 1). User `type`
 /// decls extend this set; every type reference in a signature or variant field
-/// must resolve against one or the other.
+/// must resolve against one or the other. `Entry` is a built-in type now that a
+/// `Filesystem` glyph's `entry` field is matchable (ADR 0017/0019), so a
+/// signature or pattern may name it.
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "String" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile" | "Glyph"
@@ -1696,6 +1725,13 @@ pub fn check_module(m: &Module) -> Result<(TyEnv, Type), TypeError> {
     finish_main(&mut inf, &final_env)
 }
 
+/// The LSP entry point: run inference with a recorder and return the finished
+/// `QueryIndex` alongside any error. The load-bearing step is the closing loop.
+/// Types are recorded *as inference runs*, when they may still contain
+/// unification variables that later unify to something concrete; recording the
+/// final type at each span requires running `apply` over every staged type
+/// **after** the whole module has solved. Doing it here, once the substitution
+/// is complete, is what makes hover report `Int` rather than an unresolved `t7`.
 pub fn analyze_module(
     m: &Module,
     base: TyEnv,

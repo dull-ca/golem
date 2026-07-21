@@ -67,17 +67,24 @@ monorepo. B's headline is model reconciliation.
   just fails to *reject* the bogus signature. Add proper skolemization + escape
   checking to reject these.
 
-- **Glyph pattern-matching.** Glyphs are currently non-matchable; the
-  concrete-subtype + permissive-injection model (ADR 0002) is sound only while
-  nothing eliminates a glyph. The row machinery from ADR 0010 (row-polymorphic
-  records) makes this cheaper to add principally. Matching on glyphs is deferred
-  and kept open — the `Type` foundation is variant-ready so a principled model
-  (polymorphic/row variants or nominal subsumption) can be added additively.
-  See ADR 0008.
+- **Glyph pattern-matching — DONE (ADR 0017).** Glyphs and the filesystem
+  `Entry` are matchable: a `case` destructures a built glyph by its PascalCase
+  tag (`AptPackage`/`SystemdService`/`Filesystem`/`LineInFile`, and on the entry
+  `File`/`Directory`/`Symlink`) while the reserved lowercase words still build.
+  ADR 0002's symmetric injection was replaced by directed widening — a concrete
+  glyph widens one-way into `Glyph`, never back — which is the soundness gain
+  ADR 0008 named as its preferred route. Match-only constructors live in the
+  pattern-resolution registries (`prelude::glyph_ctors`), and `eval` reifies a
+  built glyph read-only for matching (`glyph_reified`/`entry_value`).
 
-- **`emet-lsp` depth.** `emet-lsp` (`apps/emet-lsp/`) is diagnostics-only
-  today. Add hover (inferred types), completion, and go-to-definition. These need
-  the compiler to expose position-indexed type/scope information the LSP can query.
+- **`emet-lsp` depth — DONE (ADR 0018).** `emet-lsp` (`apps/emet-lsp/`) now
+  serves hover (inferred types), completion (names in scope), and go-to-definition
+  (same-file and cross-file). Inference records position-indexed type, scope, and
+  definition information into a `QueryIndex` (`query.rs`) when run with a
+  `Recorder`, finalized by a post-solve `apply` pass so hover shows resolved
+  types; the recorder is optional, so `compile`/`emetc` pay no cost. The adapter
+  holds no language semantics — every answer comes from the one inference engine
+  via `analyze_source`/`analyze_project`.
 
 ### Diagnostics / tooling
 
