@@ -265,13 +265,8 @@ impl Infer {
             (Type::Var(v, c), _) => self.bind(*v, *c, &b, span),
             (_, Type::Var(v, c)) => self.bind(*v, *c, &a, span),
             (Type::Rigid(x), Type::Rigid(y)) if x == y => Ok(()),
-            // NOTE: this arm injects each concrete glyph type into the
-            // `Glyph` sum. `AptPackage` and `SystemdService` deliberately do NOT
-            // unify with each other, only with `Glyph`. Sound because glyphs are
-            // inert IR with no case-analysis form, so no expression inspects
-            // which variant a subsumed value is. See ADR 0002.
             (Type::Con(n1, a1), Type::Con(n2, a2))
-                if glyph_injects(n1, a1, n2, a2) || glyph_injects(n2, a2, n1, a1) =>
+                if glyph_widens_into(n2, a2, n1, a1) =>
             {
                 Ok(())
             }
@@ -640,6 +635,9 @@ fn constraint_name(c: Constraint) -> &'static str {
 fn widen_glyph_subtype(inf: &Infer, t: &Type) -> Type {
     match inf.prune(t) {
         Type::Con(name, args) if args.is_empty() && is_glyph_subtype(&name) => con("Glyph"),
+        Type::Con(name, args) if name == "List" && args.len() == 1 => {
+            Type::Con("List".to_string(), vec![widen_glyph_subtype(inf, &args[0])])
+        }
         pruned => pruned,
     }
 }
@@ -648,7 +646,7 @@ fn is_glyph_subtype(name: &str) -> bool {
     matches!(name, "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile")
 }
 
-fn glyph_injects(from: &str, from_args: &[Type], to: &str, to_args: &[Type]) -> bool {
+fn glyph_widens_into(from: &str, from_args: &[Type], to: &str, to_args: &[Type]) -> bool {
     from_args.is_empty() && to_args.is_empty() && to == "Glyph" && is_glyph_subtype(from)
 }
 
@@ -758,6 +756,7 @@ fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, T
             let nt = infer_expr(inf, env, name)?;
             inf.unify(&nt, &con("String"), &name.1)?;
             let gt = infer_expr(inf, env, glyphs)?;
+            let gt = widen_glyph_subtype(inf, &gt);
             let glyph_list = Type::Con("List".to_string(), vec![con("Glyph")]);
             inf.unify(&gt, &glyph_list, &glyphs.1)?;
             Ok(con("Scroll"))
@@ -1249,7 +1248,7 @@ fn infer_group(
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "String" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile" | "Glyph"
-        | "Scroll" | "Bool" | "Int" | "Float" | "Order" => Some(0),
+        | "Entry" | "Scroll" | "Bool" | "Int" | "Float" | "Order" => Some(0),
         "List" | "Maybe" => Some(1),
         _ => None,
     }
@@ -1443,6 +1442,7 @@ fn builtin_types() -> Vec<(String, usize)> {
         "Filesystem",
         "LineInFile",
         "Glyph",
+        "Entry",
         "Scroll",
         "Bool",
         "Int",

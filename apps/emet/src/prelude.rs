@@ -18,7 +18,9 @@
 //! `Order` are ordinary types defined by their constructors, not hardcoded into
 //! `unify`.
 
-use crate::ast::{Constraint, Scheme, Type};
+use std::collections::BTreeMap;
+
+use crate::ast::{Constraint, Row, Scheme, Type};
 use crate::eval::{apply_top, BuiltinFn, Env, Value};
 use crate::infer::TyEnv;
 
@@ -78,6 +80,25 @@ fn order() -> Type {
 
 fn fun(from: Type, to: Type) -> Type {
     Type::Fun(Box::new(from), Box::new(to))
+}
+
+fn glyph() -> Type {
+    Type::Con("Glyph".to_string(), vec![])
+}
+
+fn entry() -> Type {
+    Type::Con("Entry".to_string(), vec![])
+}
+
+fn record(fields: &[(&str, Type)]) -> Type {
+    Type::Record(
+        fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<BTreeMap<_, _>>(),
+        Row::Closed,
+    )
+}
+
+fn perms() -> Type {
+    record(&[("mode", int()), ("owner", maybe(string())), ("group", maybe(string()))])
 }
 
 fn scheme(vars: &[u32], ty: Type) -> Scheme {
@@ -564,6 +585,53 @@ fn ctors() -> Vec<Ctor> {
     ]
 }
 
+fn glyph_ctors() -> Vec<Ctor> {
+    vec![
+        Ctor {
+            name: "AptPackage",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("name", string())]), glyph())),
+            run: None,
+        },
+        Ctor {
+            name: "SystemdService",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("unit", string())]), glyph())),
+            run: None,
+        },
+        Ctor {
+            name: "Filesystem",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("path", string()), ("entry", entry())]), glyph())),
+            run: None,
+        },
+        Ctor {
+            name: "LineInFile",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("path", string()), ("line", string())]), glyph())),
+            run: None,
+        },
+        Ctor {
+            name: "File",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("contents", string()), ("perms", perms())]), entry())),
+            run: None,
+        },
+        Ctor {
+            name: "Directory",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("perms", perms())]), entry())),
+            run: None,
+        },
+        Ctor {
+            name: "Symlink",
+            arity: 1,
+            scheme: scheme(&[], fun(record(&[("target", string())]), entry())),
+            run: None,
+        },
+    ]
+}
+
 /// A primitive function: its Elm-accurate type scheme and the Rust
 /// implementation invoked once `arity` arguments have arrived.
 struct Builtin {
@@ -914,7 +982,11 @@ pub fn constructor_scheme(name: &str) -> Option<Scheme> {
         CONS => return Some(scheme(&[A], fun(var(A), fun(list(var(A)), list(var(A)))))),
         _ => {}
     }
-    ctors().into_iter().find(|c| c.name == name).map(|c| c.scheme)
+    ctors()
+        .into_iter()
+        .chain(glyph_ctors())
+        .find(|c| c.name == name)
+        .map(|c| c.scheme)
 }
 
 /// The constructors (name + arity) of a sum type, by result-type name — the
@@ -928,6 +1000,7 @@ pub fn sum_type_constructors(type_name: &str) -> Option<Vec<(String, usize)>> {
     }
     let members: Vec<(String, usize)> = ctors()
         .into_iter()
+        .chain(glyph_ctors())
         .filter(|c| result_type_name(&c.scheme.ty) == Some(type_name.to_string()))
         .map(|c| (c.name.to_string(), c.arity))
         .collect();

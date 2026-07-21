@@ -233,9 +233,75 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
                 .iter()
                 .zip(args.iter())
                 .all(|(p, a)| match_pattern(&p.0, a, bindings)),
+            Value::Glyph(g) => match_reified(name, subpats, glyph_reified(g), bindings),
             _ => false,
         },
     }
+}
+
+fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
+    match g {
+        Glyph::AptPackage { name } => {
+            ("AptPackage", record_value(&[("name", Value::Str(name.clone()))]))
+        }
+        Glyph::SystemdService { unit } => {
+            ("SystemdService", record_value(&[("unit", Value::Str(unit.clone()))]))
+        }
+        Glyph::Filesystem { path, entry } => (
+            "Filesystem",
+            record_value(&[("path", Value::Str(path.clone())), ("entry", entry_value(entry))]),
+        ),
+        Glyph::LineInFile { path, line } => (
+            "LineInFile",
+            record_value(&[("path", Value::Str(path.clone())), ("line", Value::Str(line.clone()))]),
+        ),
+    }
+}
+
+fn entry_value(entry: &Entry) -> Value {
+    let (ctor, fields): (&str, Value) = match entry {
+        Entry::File { contents, perms } => (
+            "File",
+            record_value(&[
+                ("contents", Value::Str(contents.clone())),
+                ("perms", perms_value(perms)),
+            ]),
+        ),
+        Entry::Directory { perms } => ("Directory", record_value(&[("perms", perms_value(perms))])),
+        Entry::Symlink { target } => {
+            ("Symlink", record_value(&[("target", Value::Str(target.clone()))]))
+        }
+    };
+    Value::Data { ctor: ctor.to_string(), args: vec![fields] }
+}
+
+fn perms_value(perms: &Perms) -> Value {
+    record_value(&[
+        ("mode", Value::Int(perms.mode as i64)),
+        ("owner", maybe_str_value(&perms.owner)),
+        ("group", maybe_str_value(&perms.group)),
+    ])
+}
+
+fn maybe_str_value(s: &Option<String>) -> Value {
+    match s {
+        Some(v) => Value::Data { ctor: "Just".to_string(), args: vec![Value::Str(v.clone())] },
+        None => Value::Data { ctor: "Nothing".to_string(), args: Vec::new() },
+    }
+}
+
+fn record_value(fields: &[(&str, Value)]) -> Value {
+    Value::Record(fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+}
+
+fn match_reified(
+    name: &str,
+    subpats: &[Spanned<Pattern>],
+    reified: (&str, Value),
+    bindings: &mut Vec<(String, Value)>,
+) -> bool {
+    let (tag, fields) = reified;
+    tag == name && subpats.len() == 1 && match_pattern(&subpats[0].0, &fields, bindings)
 }
 
 /// Apply a function value to one argument. A closure substitutes and evaluates
