@@ -623,6 +623,88 @@ impl Infer {
         }
     }
 
+    fn check_signature_generality(
+        &mut self,
+        inferred: &Type,
+        sig: &Type,
+        env: &TyEnv,
+        span: &Span,
+    ) -> Result<(), TypeError> {
+        let subst_snapshot = self.subst.clone();
+        let row_snapshot = self.row_subst.clone();
+        let next_snapshot = self.next;
+
+        let mut outer_free = HashSet::new();
+        self.ftv_env(env, &mut outer_free);
+
+        let instantiated = self.instantiate_signature(sig);
+        let instantiate_accepts = self.unify(inferred, &instantiated, span).is_ok();
+        self.subst = subst_snapshot.clone();
+        self.row_subst = row_snapshot.clone();
+
+        let mut mapping: HashMap<String, String> = HashMap::new();
+        let skolemized = self.skolemize(sig, &mut mapping);
+        let skolems: HashSet<String> = mapping.values().cloned().collect();
+        let skolemize_accepts = self.unify(inferred, &skolemized, span).is_ok()
+            && !self.skolems_escape_into(&skolems, &outer_free);
+        self.subst = subst_snapshot;
+        self.row_subst = row_snapshot;
+        self.next = next_snapshot;
+
+        if instantiate_accepts && !skolemize_accepts {
+            return Err(TypeError::new("signature is too general", span.clone())
+                .note("the body forces a signature type variable to a more specific type"));
+        }
+        Ok(())
+    }
+
+    fn skolemize(&mut self, t: &Type, mapping: &mut HashMap<String, String>) -> Type {
+        match t {
+            Type::Rigid(name) => match bounded_variable_constraint(name) {
+                Some(c) => self.fresh_constrained(c),
+                None => Type::Rigid(
+                    mapping
+                        .entry(name.clone())
+                        .or_insert_with(|| {
+                            let id = self.next;
+                            self.next += 1;
+                            format!("skolem${id}")
+                        })
+                        .clone(),
+                ),
+            },
+            Type::Con(name, args) => Type::Con(
+                name.clone(),
+                args.iter().map(|a| self.skolemize(a, mapping)).collect(),
+            ),
+            Type::Fun(a, b) => Type::Fun(
+                Box::new(self.skolemize(a, mapping)),
+                Box::new(self.skolemize(b, mapping)),
+            ),
+            Type::Record(fs, row) => Type::Record(
+                fs.iter().map(|(k, v)| (k.clone(), self.skolemize(v, mapping))).collect(),
+                row.clone(),
+            ),
+            Type::Var(v, c) => Type::Var(*v, *c),
+        }
+    }
+
+    fn skolems_escape_into(&self, skolems: &HashSet<String>, outer_free: &HashSet<u32>) -> bool {
+        outer_free
+            .iter()
+            .any(|v| self.mentions_skolem(skolems, &Type::Var(*v, Constraint::None)))
+    }
+
+    fn mentions_skolem(&self, skolems: &HashSet<String>, t: &Type) -> bool {
+        match self.prune(t) {
+            Type::Rigid(name) => skolems.contains(&name),
+            Type::Con(_, args) => args.iter().any(|a| self.mentions_skolem(skolems, a)),
+            Type::Fun(a, b) => self.mentions_skolem(skolems, &a) || self.mentions_skolem(skolems, &b),
+            Type::Record(fs, _) => fs.values().any(|v| self.mentions_skolem(skolems, v)),
+            Type::Var(_, _) => false,
+        }
+    }
+
     /// Elm's number defaulting: any still-unresolved `number` variable in `t`
     /// is pinned to `Int` (ADR 0007). Applied at top-level generalization so a
     /// literal like `3` used at no other type becomes `Int`.
@@ -713,6 +795,15 @@ fn constraint_name(c: Constraint) -> &'static str {
         Constraint::Number => "number",
         Constraint::Comparable => "comparable",
         Constraint::Appendable => "appendable",
+    }
+}
+
+fn bounded_variable_constraint(name: &str) -> Option<Constraint> {
+    match name {
+        "number" => Some(Constraint::Number),
+        "comparable" => Some(Constraint::Comparable),
+        "appendable" => Some(Constraint::Appendable),
+        _ => None,
     }
 }
 
@@ -1387,6 +1478,7 @@ fn infer_group(
             inf.rec_type(&name_span, &inferred);
         }
         if let Some(sig) = &decl.sig {
+            inf.check_signature_generality(&inferred, &sig.0, env, &sig.1)?;
             let sig_inst = inf.instantiate_signature(&sig.0);
             inf.unify(&inferred, &sig_inst, &sig.1)?;
         }

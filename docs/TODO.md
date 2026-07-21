@@ -60,12 +60,22 @@ monorepo. B's headline is model reconciliation.
   arities used for annotations. A type imported without `(..)` still keeps its
   constructors invisible to the importer (ADR 0016 §3).
 
-- **Skolem-escape check for over-general signatures.** Signature checking uses
-  instantiate-and-unify (design §4.3 / ADR 0003), which accepts an *over-general*
-  signature (e.g. `f : a -> a` on a monomorphic body) without error — it does not
-  grant false polymorphism (we generalize the inferred type, so it's sound), it
-  just fails to *reject* the bogus signature. Add proper skolemization + escape
-  checking to reject these.
+- **Skolem-escape check for over-general signatures — DONE.** Signature checking
+  no longer only instantiate-and-unifies (design §4.3 / ADR 0003): before the
+  polymorphic body is generalized, each declaration's signature is *also*
+  skolemized — every genuine signature type variable becomes a fresh, globally
+  unique rigid constant — and the body is unified against that skolemized
+  signature on a throwaway copy of the substitution. A signature the
+  instantiate-and-unify pass accepts but the skolemized pass rejects claimed more
+  polymorphism than the body delivers and is now a "signature is too general"
+  type error, so `f : a -> a` over `x + 1`, a signature keeping two vars distinct
+  the body forces equal, and a var the body forces to a concrete type are all
+  rejected, while `id`/`const`/`map` and polymorphic recursion still pass. The
+  three reserved bounded names (`number`/`comparable`/`appendable`) skolemize to
+  a fresh constraint-carrying variable rather than a rigid, matching the bound
+  they already ride through `bind`. Ordinary shape mismatches keep their original
+  "type mismatch" message — the skolem check only relabels the strictly
+  over-general case (`infer::check_signature_generality`). See ADR 0020.
 
 - **Glyph pattern-matching — DONE (ADR 0017).** Glyphs and the filesystem
   `Entry` are matchable: a `case` destructures a built glyph by its PascalCase
