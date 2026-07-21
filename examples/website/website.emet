@@ -1,3 +1,11 @@
+-- The web box of the self-hosted-CI loop (milestone 3): golem provisions the
+-- machine that serves the website image the builder pushed. It installs podman,
+-- drops in the same insecure-registry fragment for golem's registry at
+-- 10.0.2.2:5000, writes a quadlet .container that pulls
+-- 10.0.2.2:5000/golem-website:latest and publishes it on :80, and enables the
+-- generated service. Together with builder.emet this closes the loop: build and
+-- push on one golem-managed box, pull and serve on another, both fed by golem's
+-- own registry.
 module Main exposing (..)
 
 serviceName : String

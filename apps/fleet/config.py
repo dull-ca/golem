@@ -28,6 +28,10 @@ GUEST_CPUS = 2
 SSH_PORT_BASE = 2200
 GOLEMD_PORT_BASE = 8800
 GOLEMD_GUEST_PORT = 7474
+# A name's slot is `blake2b(name) mod PORT_SLOT_COUNT`, and its two forwarded
+# ports are `SSH_PORT_BASE + slot` and `GOLEMD_PORT_BASE + slot`. The count
+# bounds each range to 2200-2299 / 8800-8899 and caps the fleet at 100 distinct
+# slots.
 PORT_SLOT_COUNT = 100
 
 SSH_READY_TIMEOUT_S = 180
@@ -85,6 +89,13 @@ def paths() -> Paths:
 
 
 def slot_for_name(name: str) -> int:
+    """The port slot a name owns: `blake2b(name) mod PORT_SLOT_COUNT`. Hashing
+    the name (not its position in the boot list) means a name always maps to the
+    same slot — and thus the same ssh/golemd ports — no matter what else is
+    booted alongside it. The slots are collision-free across the fleet's known
+    host names (the lichess set plus the registry/builder/puller/website dogfood
+    boxes); a collision is only theoretically possible for arbitrary names
+    outside that set."""
     digest = hashlib.blake2b(name.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") % PORT_SLOT_COUNT
 
@@ -136,9 +147,11 @@ def plan_hosts(
     names: list[str],
     publish: Optional[dict[str, tuple[tuple[int, int], ...]]] = None,
 ) -> list[HostPlan]:
-    """Assign each name its slot's ports by list position — see the port scheme
-    on SSH_PORT_BASE. Order fixes the ports, so the same name list always lands
-    on the same ports. `publish` maps a host name to its extra forwards."""
+    """Assign each name the ports its slot earns via `slot_for_name` — ssh on
+    `SSH_PORT_BASE + slot`, golemd on `GOLEMD_PORT_BASE + slot`. The slot is
+    derived from the name alone, so a name always lands on the same ports
+    regardless of boot order or which other hosts are up. `publish` maps a host
+    name to its extra forwards."""
     publish = publish or {}
     plans: list[HostPlan] = []
     for name in names:

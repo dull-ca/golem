@@ -392,12 +392,19 @@ def kill_vm(record: VmRecord) -> None:
 
 
 def _has_persisted_disk(record: VmRecord | None) -> bool:
+    """Whether a known VM still has its overlay disk on disk — the test that
+    tells a resumable stopped VM apart from one whose `vm-<name>/` was wiped
+    (by `reset`/`--purge`) and must be created fresh."""
     return record is not None and Path(record.disk).exists()
 
 
 def _merge_publish(
     existing: list[tuple[int, int]], requested: tuple[tuple[int, int], ...]
 ) -> list[tuple[int, int]]:
+    """Union the recorded forwards with newly requested ones, keeping the
+    recorded ones first and in order and appending only forwards not already
+    present. This is what lets a resumed VM gain the `--publish` forwards it was
+    booted without, rather than demanding a `reset`."""
     merged = [(int(h), int(g)) for h, g in existing]
     for pair in requested:
         normalized = (int(pair[0]), int(pair[1]))
@@ -408,9 +415,10 @@ def _merge_publish(
 
 def resume_vm(paths: Paths, state: FleetState, record: VmRecord, plan: HostPlan) -> VmRecord:
     """Re-launch qemu for a stopped-but-present VM against its existing overlay
-    disk and seed ISO, preserving its recorded ports. Resume relaunches qemu
-    from scratch, so `plan.publish` may add forwards the stopped VM lacked; the
-    requested forwards are merged into the recorded set."""
+    disk and seed ISO, preserving its recorded ports so guest data written
+    before the stop survives. Resume relaunches qemu from scratch, so
+    `plan.publish` may add forwards the stopped VM lacked; `_merge_publish`
+    folds the requested forwards into the recorded set."""
     vm_dir = paths.vm_dir(record.name)
     disk = Path(record.disk)
     seed = vm_dir / "seed.iso"
