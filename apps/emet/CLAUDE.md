@@ -112,9 +112,16 @@ An Elm-shaped, minimal module system for reuse across files:
 - **`case … of` + `if`.** Compile-time **exhaustiveness and redundancy** checking;
   a non-exhaustive or redundant match is a compile error. `if` desugars to `case`
   on `Bool`. Arms must be laid out (inline single-line `case` is deferred).
-- **Numbers + operators.** `+ - * / // ^ < > <= >= == /= && || ++` with Elm
-  precedence; operators desugar to prelude built-ins. `/` is float division,
-  `//` integer; division / `modBy` / `remainderBy` by zero return `0` (total).
+  Patterns (`ast.rs::Pattern`): `_` (wildcard), a lowercase binder, a string
+  literal, `Upper p …` (constructor), and the list patterns `[]` (`Nil`),
+  `(head :: tail)` (`Cons`), and `[a, b, …]` (nested `Cons` ending in `Nil`).
+  `List` is treated as a two-constructor sum (`[]` / `::`) so the exhaustiveness
+  checker requires both cases — see below.
+- **Numbers + operators.** `+ - * / // ^ < > <= >= == /= && || ++ ::` with Elm
+  precedence; operators desugar to prelude built-ins. `::` (cons) is
+  right-associative at level 5, desugaring to the `cons` builtin. `/` is float
+  division, `//` integer; division / `modBy` / `remainderBy` by zero return `0`
+  (total).
 - **String interpolation.** `"port ${expr}"` (embedded expr must be `String`);
   desugars to `String.concat`. The IR carries only fully-evaluated concrete
   strings — no templating (not Ansible/Jinja).
@@ -154,6 +161,10 @@ implementation, not the tests, unless a test is provably wrong.
   with rigid vars for generics, the `number`/`comparable` constraint bounds
   threaded through `bind`, and the `case` exhaustiveness/redundancy check (what
   removes the runtime "no match" path; kept independent of totality per ADR 0011).
+  The check is Maranget's usefulness algorithm over the sum constructors; `List`
+  joins it as a synthetic two-constructor sum (`[]` / `::`, via
+  `prelude::sum_type_constructors` and `constructor_scheme`), so list patterns
+  are checked like any other sum with no list-specific code in the checker.
 
 ## The four primitives and `Scroll`
 

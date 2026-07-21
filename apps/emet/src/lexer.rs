@@ -374,6 +374,15 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             continue;
         }
 
+        // `::` is the cons operator, lexed before the single `:` (type
+        // annotation) so `head :: tail` does not read as two colons. Parsed as
+        // an ordinary infix `Op` (right-assoc, level 5) desugaring to the
+        // `cons` builtin; also the pattern separator in `(head :: tail)`.
+        if c == ':' && i + 1 < chars.len() && chars[i + 1] == ':' {
+            push!(Tok::Op("::".to_string()), 2);
+            continue;
+        }
+
         match c {
             '\\' => { push!(Tok::Backslash, 1); continue; }
             ':' => { push!(Tok::Colon, 1); continue; }

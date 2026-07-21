@@ -610,7 +610,11 @@ case scrut of
   (they are ordinary keywords in an expression), so `if` is layout-free.
 - Parser: `case_expr` = `case` expr `of` block-of-arms; `arm` = pattern `->`
   expr; `if_expr` = `if` expr `then` expr `else` expr. Patterns parse as: `_`,
-  lowercase ident (`Var`), `Upper` ident + sub-patterns (`Ctor`), string literal.
+  lowercase ident (`Var`), `Upper` ident + sub-patterns (`Ctor`), string literal,
+  and the **list patterns** `[]` (empty list), `(x :: xs)` (head/tail, mirroring
+  the `::` expression operator), and `[a, b, …]` — the last desugaring to nested
+  `x :: (y :: [])`, so only the two constructors `[]`/`::` reach inference and
+  matching.
 
 ### 8.2 Inference
 
@@ -638,6 +642,9 @@ matching arm — a runtime "no match" failure, which **breaks totality**. So:
   - If `st` is a known sum type `T` with constructor set `C`, the arms must
     cover every constructor in `C` (a `Var`/`_`/var-pattern arm covers the
     remainder). Missing constructors → error listing them (Elm-style message).
+    `List` participates as a synthetic two-constructor sum `{ [], :: }`, so a
+    `case` on a list is exhaustive exactly when it covers both `[]` and
+    `(x :: xs)` — no list-specific branch in the checker.
   - If `st` is `String` (infinite domain), exhaustiveness **requires** a
     catch-all (`_` or a var pattern), since string literals can never be
     exhaustive. Missing catch-all → error.
@@ -773,6 +780,7 @@ Elm precedence, then the low-precedence forms. chumsky supports this directly vi
 | 7 | `*` `/` `//` | left | mul, float-div, int-div |
 | 6 | `+` `-` | left | add, sub |
 | 5 | `++` | right | append (List/String) |
+| 5 | `::` | right | cons — prepend an element onto a list (→ `cons`) |
 | 4 | `==` `/=` `<` `>` `<=` `>=` | non-assoc | equality, comparison |
 | 3 | `&&` | right | boolean and |
 | 2 | `||` | right | boolean or |

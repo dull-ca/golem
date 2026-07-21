@@ -9,10 +9,13 @@ monorepo. B's headline is model reconciliation.
 
 ## A. Emet language backlog
 
-- **List patterns** (`case xs of [] -> … ; (x :: xs) -> …`). The main gap:
-  without a way to destructure a `List`, self-recursion (ADR 0011) cannot walk
-  one, so recursion over a fleet or a list of hosts is unwritable today. Highest
-  value language item.
+- **List patterns — DONE.** `case xs of [] -> … ; (x :: xs) -> …` now
+  destructures a `List`: `::` is a right-associative level-5 operator (→ the
+  `cons` builtin) and `[]` / `(head :: tail)` / `[a, b]` are patterns. This
+  closes the self-recursion gap (ADR 0011) — recursion can now walk a list of
+  hosts or glyphs. Exhaustiveness/redundancy covers lists by modeling `List` as
+  a synthetic two-constructor (`[]`/`::`) sum through the existing Maranget
+  checker (ADR 0005).
 
 - **Mutual recursion for value decls.** Decls are inferred left-to-right, so
   only self-recursion works; two decls that reference each other do not. Needs

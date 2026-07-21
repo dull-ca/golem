@@ -811,6 +811,21 @@ fn infer_pattern(
             Ok(())
         }
         Pattern::Str(_) => inf.unify(scrutinee, &con("String"), &pat.1),
+        // `[]` and `head :: tail` constrain the scrutinee to some `List elem`.
+        // `Cons` additionally binds its head at `elem` and its tail at the same
+        // list type — the recursive shape that lets a `case` walk a list.
+        Pattern::Nil => {
+            let elem = inf.fresh();
+            let list_ty = Type::Con("List".to_string(), vec![elem]);
+            inf.unify(scrutinee, &list_ty, &pat.1)
+        }
+        Pattern::Cons(head, tail) => {
+            let elem = inf.fresh();
+            let list_ty = Type::Con("List".to_string(), vec![elem.clone()]);
+            inf.unify(scrutinee, &list_ty, &pat.1)?;
+            infer_pattern(inf, env, head, &elem)?;
+            infer_pattern(inf, env, tail, &list_ty)
+        }
         Pattern::Ctor(name, subpats) => {
             let scheme = inf.constructor_scheme(name).ok_or_else(|| {
                 TypeError::new(format!("unknown constructor `{name}`"), pat.1.clone())
@@ -876,6 +891,16 @@ fn lower_pattern(pat: &Pattern) -> UPat {
         Pattern::Ctor(name, subs) => {
             UPat::Ctor(name.clone(), subs.iter().map(|s| lower_pattern(&s.0)).collect())
         }
+        // List patterns lower to the synthetic `[]`/`::` constructors, so the
+        // Maranget checker treats `List` as an ordinary two-constructor sum:
+        // a `case` is exhaustive exactly when it covers both, and a second `[]`
+        // (or an arm after a catch-all) is redundant. No list-specific code in
+        // the algorithm itself — see `prelude::sum_type_constructors`.
+        Pattern::Nil => UPat::Ctor(crate::prelude::NIL.to_string(), vec![]),
+        Pattern::Cons(head, tail) => UPat::Ctor(
+            crate::prelude::CONS.to_string(),
+            vec![lower_pattern(&head.0), lower_pattern(&tail.0)],
+        ),
     }
 }
 

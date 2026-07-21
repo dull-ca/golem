@@ -192,6 +192,17 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
             true
         }
         Pattern::Str(s) => matches!(value, Value::Str(v) if v == s),
+        Pattern::Nil => matches!(value, Value::List(items) if items.is_empty()),
+        Pattern::Cons(head, tail) => match value {
+            Value::List(items) => match items.split_first() {
+                Some((first, rest)) => {
+                    match_pattern(&head.0, first, bindings)
+                        && match_pattern(&tail.0, &Value::List(rest.to_vec()), bindings)
+                }
+                None => false,
+            },
+            _ => false,
+        },
         Pattern::Ctor(name, subpats) => match value {
             Value::Data { ctor, args } if ctor == name && args.len() == subpats.len() => subpats
                 .iter()

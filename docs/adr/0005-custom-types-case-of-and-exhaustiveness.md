@@ -127,3 +127,14 @@ the elimination machinery a future glyph model would reuse.
 - Cross-references ADR 0001 (layout / `parse-error(t)`), ADR 0002 (interim glyph
   subsumption), ADR 0008 (deferred glyph matching), and the design doc
   `docs/design/0001-…` §5–§8.
+
+## Addendum — list patterns
+
+The exhaustiveness/redundancy checker now covers lists. `List` is modeled as a
+two-constructor sum `{ [], :: }`: `[]` and `head :: tail` patterns lower to those
+synthetic constructors (`prelude::NIL`/`CONS`, with schemes `∀a. List a` and
+`∀a. a -> List a -> List a`), and `prelude::sum_type_constructors("List")`
+reports both as the complete signature. A `case` on a list is therefore
+exhaustive exactly when it covers both cases, and a redundant list arm is caught
+like any other. The Maranget algorithm itself is unchanged — only the synthetic
+constructors and their schemes were added, no list-specific code path.

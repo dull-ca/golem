@@ -530,6 +530,9 @@ fn operator_fixity(op: &str) -> Option<(u8, OpAssoc)> {
         "*" | "/" | "//" => (7, OpAssoc::Left),
         "+" | "-" => (6, OpAssoc::Left),
         "++" => (5, OpAssoc::Right),
+        // Cons shares level 5 and is right-associative, so `a :: b :: xs`
+        // groups as `a :: (b :: xs)` — a value prepended onto a list.
+        "::" => (5, OpAssoc::Right),
         "==" | "/=" | "<" | ">" | "<=" | ">=" => (4, OpAssoc::NonAssoc),
         "&&" => (3, OpAssoc::Right),
         "||" => (2, OpAssoc::Right),
@@ -549,6 +552,7 @@ fn operator_builtin(op: &str) -> &'static str {
         "//" => "idiv",
         "^" => "pow",
         "++" => "String.append",
+        "::" => "cons",
         "<" => "lt",
         ">" => "gt",
         "<=" => "le",
@@ -645,11 +649,31 @@ where
         let nullary_ctor = select! { Tok::Upper(u) => u }
             .map_with(|u, e| Spanned(Pattern::Ctor(u, vec![]), span_range(e.span())));
 
+        // A `[a, b, c]` literal pattern desugars right-to-left into nested
+        // `Cons` ending in `Nil` — `Cons(a, Cons(b, Cons(c, Nil)))` — so
+        // downstream inference and matching see only the two list constructors.
+        // `[]` folds to `Nil` directly.
+        let list_literal = pattern
+            .clone()
+            .separated_by(just(Tok::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Tok::LBracket), just(Tok::RBracket))
+            .map_with(|items: Vec<Spanned<Pattern>>, e| {
+                let whole = span_range(e.span());
+                let nil = Spanned(Pattern::Nil, whole.end..whole.end);
+                let folded = items.into_iter().rev().fold(nil, |tail, head| {
+                    let span = head.1.start..whole.end;
+                    Spanned(Pattern::Cons(Box::new(head), Box::new(tail)), span)
+                });
+                Spanned(folded.0, whole)
+            });
+
         let paren = pattern
             .clone()
             .delimited_by(just(Tok::LParen), just(Tok::RParen));
 
-        let atom = choice((wildcard, var, str_lit, nullary_ctor, paren));
+        let atom = choice((wildcard, var, str_lit, nullary_ctor, list_literal, paren));
 
         let applied_ctor = select! { Tok::Upper(u) => u }
             .map_with(|u, e| (u, span_range(e.span()).start))
@@ -659,7 +683,21 @@ where
                 Spanned(Pattern::Ctor(name, args), start..end)
             });
 
-        choice((applied_ctor, atom))
+        let ctor_or_atom = choice((applied_ctor, atom));
+
+        // An optional trailing `:: pattern` turns the head into a `Cons`
+        // (`(x :: xs)`, `(a :: b :: rest)`); the tail recurses through `pattern`
+        // so cons chains nest right-associatively, matching the expression form.
+        ctor_or_atom
+            .clone()
+            .then(just(Tok::Op("::".to_string())).ignore_then(pattern).or_not())
+            .map(|(head, tail)| match tail {
+                Some(tail) => {
+                    let span = head.1.start..tail.1.end;
+                    Spanned(Pattern::Cons(Box::new(head), Box::new(tail)), span)
+                }
+                None => head,
+            })
     })
 }
 

@@ -226,6 +226,12 @@ pub enum Pattern {
     Str(String),
     /// `Upper p1 p2 …` — a constructor applied to sub-patterns.
     Ctor(String, Vec<Spanned<Pattern>>),
+    /// `[]` — matches the empty list.
+    Nil,
+    /// `(head :: tail)` — matches a non-empty list, binding its head element
+    /// and its tail list. A `[a, b, c]` literal desugars to nested `Cons`
+    /// ending in `Nil`.
+    Cons(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
 }
 
 /// A top-level or `let` binding, optionally preceded by a matching signature:

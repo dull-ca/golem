@@ -126,6 +126,15 @@ fn list_concat_map(mut args: Vec<Value>) -> Value {
     Value::List(out)
 }
 
+fn list_cons(mut args: Vec<Value>) -> Value {
+    let xs = args.pop().unwrap();
+    let head = args.pop().unwrap();
+    let mut out = Vec::with_capacity(as_list(&xs).len() + 1);
+    out.push(head);
+    out.extend(as_list(&xs).iter().cloned());
+    Value::List(out)
+}
+
 fn list_append(mut args: Vec<Value>) -> Value {
     let ys = args.pop().unwrap();
     let xs = args.pop().unwrap();
@@ -594,6 +603,15 @@ fn builtins() -> Vec<Builtin> {
             scheme: scheme(&[A], fun(list(a()), fun(list(a()), list(a())))),
             run: list_append,
         },
+        // The desugaring target of the `::` operator: prepend an element onto a
+        // list. Has no surface spelling of its own (`::` is the only way to
+        // reach it), unlike the `List.`-qualified builtins around it.
+        Builtin {
+            name: "cons",
+            arity: 2,
+            scheme: scheme(&[A], fun(a(), fun(list(a()), list(a())))),
+            run: list_cons,
+        },
         Builtin {
             name: "List.filter",
             arity: 2,
@@ -861,15 +879,34 @@ fn builtins() -> Vec<Builtin> {
     ]
 }
 
-/// The type scheme of a data constructor, for pattern inference.
+/// The synthetic name of the nil list constructor, matched by an `[]` pattern.
+pub const NIL: &str = "[]";
+/// The synthetic name of the cons list constructor, matched by a `head :: tail`
+/// pattern. Its two argument types are the element type and the list type.
+pub const CONS: &str = "::";
+
+/// The type scheme of a data constructor, for pattern inference. Alongside the
+/// user/prelude sum constructors, the two synthetic list constructors `[]` and
+/// `::` have schemes `∀a. List a` and `∀a. a -> List a -> List a`, so list
+/// patterns type-check and drive the exhaustiveness checker like any sum type.
 pub fn constructor_scheme(name: &str) -> Option<Scheme> {
+    match name {
+        NIL => return Some(scheme(&[A], list(var(A)))),
+        CONS => return Some(scheme(&[A], fun(var(A), fun(list(var(A)), list(var(A)))))),
+        _ => {}
+    }
     ctors().into_iter().find(|c| c.name == name).map(|c| c.scheme)
 }
 
 /// The constructors (name + arity) of a sum type, by result-type name — the
-/// "complete signature" the exhaustiveness checker needs. `None` if no
-/// constructor produces this type (e.g. `String`).
+/// "complete signature" the exhaustiveness checker needs. `List` is treated as
+/// a two-constructor sum (`[]`, `::`) so a `case` on a list is exhaustive
+/// exactly when it covers both. `None` if no constructor produces this type
+/// (e.g. `String`).
 pub fn sum_type_constructors(type_name: &str) -> Option<Vec<(String, usize)>> {
+    if type_name == "List" {
+        return Some(vec![(NIL.to_string(), 0), (CONS.to_string(), 2)]);
+    }
     let members: Vec<(String, usize)> = ctors()
         .into_iter()
         .filter(|c| result_type_name(&c.scheme.ty) == Some(type_name.to_string()))
