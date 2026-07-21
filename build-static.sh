@@ -15,27 +15,37 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Tell cargo to use zig as the linker for the musl target.
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$(command -v zigcc 2>/dev/null || echo "")
-if [ -z "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" ]; then
-  cat > /tmp/zigcc <<'EOF'
+cat > /tmp/zigcc <<'EOF'
 #!/usr/bin/env bash
-exec zig cc -target x86_64-linux-musl "$@"
+args=()
+for a in "$@"; do
+  case "$a" in
+    --target=x86_64-unknown-linux-musl|--target=x86_64-unknown-linux-gnu) ;;
+    *) args+=("$a") ;;
+  esac
+done
+exec zig cc -target x86_64-linux-musl "${args[@]}"
 EOF
-  chmod +x /tmp/zigcc
-  export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=/tmp/zigcc
-fi
-export CC_x86_64_unknown_linux_musl=$CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
-export AR_x86_64_unknown_linux_musl=$(command -v zig)
-# zig as ar shim:
+chmod +x /tmp/zigcc
+
 cat > /tmp/zigar <<'EOF'
 #!/usr/bin/env bash
 exec zig ar "$@"
 EOF
 chmod +x /tmp/zigar
-export AR_x86_64_unknown_linux_musl=/tmp/zigar
 
-cargo build --release --target x86_64-unknown-linux-musl
+RUST_LLD="$(dirname "$(dirname "$(command -v rustc)")")/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"
+if [ ! -x "$RUST_LLD" ]; then
+  echo "rust-lld not found at $RUST_LLD" >&2
+  exit 1
+fi
+
+export CC_x86_64_unknown_linux_musl=/tmp/zigcc
+export AR_x86_64_unknown_linux_musl=/tmp/zigar
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$RUST_LLD"
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C linker-flavor=ld.lld -C link-self-contained=yes"
+
+cargo build --release --target x86_64-unknown-linux-musl -p golemd -p golemctl
 
 ls -lh target/x86_64-unknown-linux-musl/release/golemd \
        target/x86_64-unknown-linux-musl/release/golemctl
