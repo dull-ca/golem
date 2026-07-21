@@ -73,6 +73,34 @@ class BringUpResumeTest(unittest.TestCase):
         vm.bring_up(self.paths, self.state, plan, base_image=Path("/nonexistent.qcow2"))
         self.assertEqual(self.launched, [Path(record.disk)])
 
+    def test_resume_adds_new_publish_forwards(self) -> None:
+        self._stopped_record("test-fleet-fix")
+        plan = HostPlan(
+            name="test-fleet-fix",
+            ssh_port=2299,
+            golemd_port=8899,
+            publish=((8080, 80),),
+        )
+        resumed = vm.bring_up(
+            self.paths, self.state, plan, base_image=Path("/nonexistent.qcow2")
+        )
+        self.assertEqual(resumed.publish, [(8080, 80)])
+
+    def test_resume_merges_publish_forwards_without_duplicating(self) -> None:
+        record = self._stopped_record("test-fleet-fix")
+        record.publish = [(5000, 5000)]
+        self.state.put(record)
+        plan = HostPlan(
+            name="test-fleet-fix",
+            ssh_port=2299,
+            golemd_port=8899,
+            publish=((5000, 5000), (8080, 80)),
+        )
+        resumed = vm.bring_up(
+            self.paths, self.state, plan, base_image=Path("/nonexistent.qcow2")
+        )
+        self.assertEqual(resumed.publish, [(5000, 5000), (8080, 80)])
+
 
 if __name__ == "__main__":
     unittest.main()

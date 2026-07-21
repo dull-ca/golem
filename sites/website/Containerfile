@@ -1,0 +1,7 @@
+FROM docker.io/library/caddy:2-alpine
+
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY dist/ /var/www/html/
+
+EXPOSE 80
+ENTRYPOINT ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

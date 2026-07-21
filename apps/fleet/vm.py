@@ -395,21 +395,35 @@ def _has_persisted_disk(record: VmRecord | None) -> bool:
     return record is not None and Path(record.disk).exists()
 
 
-def resume_vm(paths: Paths, state: FleetState, record: VmRecord) -> VmRecord:
+def _merge_publish(
+    existing: list[tuple[int, int]], requested: tuple[tuple[int, int], ...]
+) -> list[tuple[int, int]]:
+    merged = [(int(h), int(g)) for h, g in existing]
+    for pair in requested:
+        normalized = (int(pair[0]), int(pair[1]))
+        if normalized not in merged:
+            merged.append(normalized)
+    return merged
+
+
+def resume_vm(paths: Paths, state: FleetState, record: VmRecord, plan: HostPlan) -> VmRecord:
     """Re-launch qemu for a stopped-but-present VM against its existing overlay
-    disk and seed ISO, preserving its recorded ports and publish forwards."""
+    disk and seed ISO, preserving its recorded ports. Resume relaunches qemu
+    from scratch, so `plan.publish` may add forwards the stopped VM lacked; the
+    requested forwards are merged into the recorded set."""
     vm_dir = paths.vm_dir(record.name)
     disk = Path(record.disk)
     seed = vm_dir / "seed.iso"
     if not seed.exists():
         seed = build_seed_iso(paths, vm_dir, record.name)
-    plan = HostPlan(
+    publish = _merge_publish(record.publish, plan.publish)
+    resume_plan = HostPlan(
         name=record.name,
         ssh_port=record.ssh_port,
         golemd_port=record.golemd_port,
-        publish=tuple((int(h), int(g)) for h, g in record.publish),
+        publish=tuple(publish),
     )
-    pid, pidfile, console_log = launch_qemu(vm_dir, plan, disk, seed)
+    pid, pidfile, console_log = launch_qemu(vm_dir, resume_plan, disk, seed)
     resumed = VmRecord(
         name=record.name,
         ssh_port=record.ssh_port,
@@ -418,7 +432,7 @@ def resume_vm(paths: Paths, state: FleetState, record: VmRecord) -> VmRecord:
         disk=str(disk),
         pidfile=str(pidfile),
         console_log=str(console_log),
-        publish=[(int(h), int(g)) for h, g in record.publish],
+        publish=publish,
     )
     state.put(resumed)
     wait_for_ssh(paths, resumed)
@@ -441,13 +455,7 @@ def bring_up(paths: Paths, state: FleetState, plan: HostPlan, base_image: Path) 
         return existing
     if _has_persisted_disk(existing):
         assert existing is not None
-        requested = [(int(h), int(g)) for h, g in plan.publish]
-        if requested and existing.publish != requested:
-            raise FleetError(
-                f"{plan.name} was booted with publish {existing.publish}; "
-                f"`fleet reset` before re-publishing {requested}"
-            )
-        return resume_vm(paths, state, existing)
+        return resume_vm(paths, state, existing, plan)
     vm_dir = paths.vm_dir(plan.name)
     if vm_dir.exists():
         shutil.rmtree(vm_dir)

@@ -1,0 +1,71 @@
+module Main exposing (..)
+
+serviceName : String
+serviceName = "golem-website"
+
+registryEndpoint : String
+registryEndpoint = "10.0.2.2:5000"
+
+websiteImage : String
+websiteImage = "${registryEndpoint}/${serviceName}:latest"
+
+publishedPort : Int
+publishedPort = 80
+
+insecureConfPath : String
+insecureConfPath = "/etc/containers/registries.conf.d/golem-registry.conf"
+
+insecureConfContents : String
+insecureConfContents =
+  String.join "\n"
+    [ "[[registry]]"
+    , "location = \"${registryEndpoint}\""
+    , "insecure = true"
+    , ""
+    ]
+
+quadletPath : String
+quadletPath = "/etc/containers/systemd/${serviceName}.container"
+
+serviceUnit : String
+serviceUnit = "${serviceName}.service"
+
+quadletContents : String
+quadletContents =
+  String.join "\n"
+    [ "[Unit]"
+    , "Description=Golem website: ${serviceName}"
+    , ""
+    , "[Container]"
+    , "Image=${websiteImage}"
+    , "ContainerName=${serviceName}"
+    , "PublishPort=${String.fromInt publishedPort}:80"
+    , ""
+    , "[Service]"
+    , "Restart=always"
+    , ""
+    , "[Install]"
+    , "WantedBy=multi-user.target default.target"
+    ]
+
+websiteGlyphs : List Glyph
+websiteGlyphs =
+  [ aptPackage { name = "podman" }
+  , file
+      { path = insecureConfPath
+      , contents = insecureConfContents
+      , mode = "0644"
+      }
+  , file
+      { path = quadletPath
+      , contents = quadletContents
+      , mode = "0644"
+      }
+  , systemdService { unit = serviceUnit }
+  ]
+
+web : Scroll
+web = scroll { name = "web", glyphs = websiteGlyphs }
+
+main : List Scroll
+main = [ web ]
