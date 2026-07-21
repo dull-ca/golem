@@ -1,0 +1,18 @@
+module Main exposing (..)
+
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , glyphs =
+        [ file
+            { path = "/etc/systemd/system/golem-hello.service"
+            , contents = "[Unit]\nDescription=Golem daemon-reload proof\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"
+            , mode = "0644"
+            }
+        , systemdService { unit = "golem-hello.service" }
+        ]
+    }
+
+main : List Scroll
+main = [ scaly ]

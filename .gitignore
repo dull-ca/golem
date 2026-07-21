@@ -39,3 +39,7 @@ sites/website/dist
 sites/website/.astro
 sites/website/bun.lockb
 
+# fleet test-harness runtime dir (ephemeral VMs, images, keys)
+/.fleet/
+apps/fleet/__pycache__/
+
