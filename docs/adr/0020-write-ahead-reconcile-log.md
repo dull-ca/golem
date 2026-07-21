@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (for review — do NOT implement).
+Accepted 2026-07-20; implementation to follow.
 
 Refines ADR 0014 (the reconcile loop and journal) and ADR 0015 (reversible
 reconcilers and content-addressed versioning). Neither is superseded: the pure

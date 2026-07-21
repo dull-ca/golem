@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed (for review — do not implement). Generalizes the `file` glyph
-introduced in ADR 0002 and reconciled in ADR 0015; does not supersede them
-until accepted.
+Accepted 2026-07-20; implementation to follow. Generalizes the `file` glyph
+introduced in ADR 0002 and reconciled in ADR 0015, superseding their `file`
+shape.
 
 ## Context
 
@@ -32,15 +32,24 @@ Two further shortcomings surfaced alongside the directory gap:
   time — a malformed mode is a runtime `Fatal`, not a compile error. There is no
   owner or group at all: golem writes every file as whatever uid golemd runs as.
 - **A directory and a symlink are as bottom-level as a file.** They are the same
-  kind of thing — a filesystem entry at a path, with permissions — differing only
-  in *what the entry is*. That is precisely an ADT: a sum over the entry kind.
+  kind of thing — a filesystem entry at a path — differing in *what the entry is*
+  and, crucially, in *which fields even mean anything*. A file has contents and
+  permissions; a directory has permissions but no contents; a symlink has a
+  target but neither contents nor a meaningful mode of its own (the target's
+  perms govern on Linux). That is precisely an ADT: a sum over the entry kind
+  where **each arm carries only the fields valid for it**, so a shared or
+  optional field that is meaningless for some arm never exists to be misfilled.
 
 The tension to resolve honestly: is a directory a **fifth glyph**, violating the
 invariant, or is `file` itself the special case of a more general **filesystem
-glyph** whose `kind` is `File | Directory | Symlink`? If the latter, the count
-stays four and the invariant holds — we are generalizing an existing primitive,
-not adding one. Elm/ADT modeling is the muse: model the entry kind as a sum, and
-`file`/`directory`/`symlink` become three spellings of one glyph.
+glyph** whose payload is a sum `File | Directory | Symlink`? If the latter, the
+count stays four and the invariant holds — we are generalizing an existing
+primitive, not adding one. Elm/ADT modeling is the muse: **make illegal states
+unrepresentable** (Dr. Dub's review ask). Model the entry as a sum where every
+arm carries exactly its own fields — `File` its `contents` and `perms`,
+`Directory` its `perms`, `Symlink` its `target` — so no arm can hold a field
+that is meaningless for it. `file`/`directory`/`symlink` become three spellings
+of one glyph.
 
 Constraints that bound any answer:
 
@@ -61,38 +70,45 @@ Constraints that bound any answer:
 
 ## Decision
 
-**Generalize `file` into one filesystem glyph carrying an ADT-typed `kind` and a
-structured permission record. Keep the glyph count at four.** `Directory` and
-`Symlink` are *variants of the entry kind*, not new glyphs — so the "four
-primitives" invariant holds by construction, exactly as `AptPackage |
-SystemdService` are two variants of one `Glyph` sum (ADR 0002), not two entries
-in a count of resources.
+**Generalize `file` into one filesystem glyph whose payload is a minimal,
+correct-by-construction entry sum `File | Directory | Symlink`, each arm carrying
+only the fields valid for it. Keep the glyph count at four.** `Directory` and
+`Symlink` are *variants of the entry*, not new glyphs — so the "four primitives"
+invariant holds by construction, exactly as `AptPackage | SystemdService` are two
+variants of one `Glyph` sum (ADR 0002), not two entries in a count of resources.
+The entry sum is designed so that **illegal states are unrepresentable** (Dr.
+Dub's review ask): there is no place to put contents on a symlink, or a mode on a
+symlink, because those fields do not exist on that arm.
 
 ### 1. The wire model (`scroll-format`)
 
 Replace `Glyph::File { path, contents, mode }` with a `Filesystem` glyph whose
-kind is an Elm-style sum and whose permissions are structured:
+payload is an Elm-style sum. `path` — the one field common to and meaningful for
+every entry — lives on the glyph; everything else lives *inside the arm that
+gives it meaning*:
 
 ```rust
 pub enum Glyph {
     AptPackage { name: String },
     SystemdService { unit: String },
-    Filesystem { path: String, kind: EntryKind, perms: Perms },
+    Filesystem { path: String, entry: Entry },
     LineInFile { path: String, line: String },
 }
 
-/// What lives at `path`. The sum is the whole point: a directory and a symlink
-/// are filesystem entries that differ only in kind, so they are variants, not
-/// new glyphs.
-pub enum EntryKind {
-    File { contents: String },   // contents inline, as today
-    Directory,                   // ensure the directory exists
-    Symlink { target: String },  // ensure a symlink to `target`
+/// What lives at `path`. Every arm carries ONLY the fields valid for it — no
+/// shared or optional field that is meaningless for some variant. This is the
+/// "make illegal states unrepresentable" discipline: a symlink cannot carry
+/// contents or a mode because those fields are not on its arm.
+pub enum Entry {
+    File { contents: String, perms: Perms }, // inline contents + permissions
+    Directory { perms: Perms },              // permissions, but no contents
+    Symlink { target: String },              // a target; no contents, no perms
 }
 
 /// Permissions as typed data, not a stringly `mode`. `mode` is the 12
 /// permission bits (setuid/setgid/sticky + rwxrwxrwx) as a `u16`; owner/group
 /// are names resolved to uid/gid at reconcile time, `None` = leave as-is.
+/// `Perms` appears only on the arms where it is meaningful (`File`, `Directory`).
 pub struct Perms {
     pub mode: u16,               // 0o0000..=0o7777
     pub owner: Option<String>,
@@ -100,12 +116,22 @@ pub struct Perms {
 }
 ```
 
-- **`kind` is the ADT.** `File { contents }` keeps a file's payload inside the
-  kind so the shape reads "an entry, which is a file with these contents" rather
-  than "an entry with optional contents that only mean something when it's a
-  file." A `Symlink`'s `target` and a `File`'s `contents` are each the datum that
-  *only that kind* carries — the classic reason to reach for a sum over a
-  record-with-nullable-fields.
+- **`entry` is the ADT, and each arm is minimal.** `contents` lives *only* on
+  `File`; `target` lives *only* on `Symlink`; `perms` lives *only* on `File` and
+  `Directory`. The shape reads "an entry, which is a file with these contents and
+  perms / a directory with these perms / a symlink to this target" — never "an
+  entry with optional contents/target/perms that only mean something for some
+  kinds." Each datum sits on exactly the arm that carries it; the sum makes the
+  meaningless combinations (a symlink's mode, a directory's contents) impossible
+  to even write down. This is the classic reason to reach for a sum-of-minimal-
+  records over one record-with-nullable-fields.
+- **`Symlink` carries no `perms` at all.** A symlink's own mode is not meaningful
+  on Linux — the target's permissions govern — so rather than a uniform `Perms`
+  the symlink arm *skips* it entirely. The earlier sketch's "uniform `Perms` on
+  every kind, symlink reconciler skips the `chmod`" is rejected precisely because
+  it makes an illegal state representable (a symlink with a mode). Dropping the
+  field is the correct-by-construction form: there is nothing to skip because
+  there is nothing to set.
 - **`mode` becomes a `u16`, not a `String`.** The 12 permission bits are exactly
   a bounded integer; `"0644"` was a `String` only because every glyph field was.
   A `u16` makes a malformed mode *unrepresentable in the IR* — the octal is
@@ -117,10 +143,6 @@ pub struct Perms {
   host at reconcile time (a name is portable across hosts in a way a raw uid is
   not). `None` means "do not manage ownership" — the honest default for the
   registry case, where the directory just needs to exist.
-- **`Perms` rides on every kind, including `Directory` and `Symlink`.** A
-  symlink's own mode is a near-no-op on Linux (the target's perms govern), but a
-  uniform `Perms` keeps the glyph rectangular; the symlink reconciler simply
-  skips the `chmod`.
 - **`key()` stays `file:<path>`** — one entry per path is one resource,
   regardless of kind, so the diff/versioning identity (ADR 0015 §2) is unchanged.
   Renaming the key namespace would be gratuitous churn. `describe()` gains a
@@ -132,41 +154,50 @@ Keep three ergonomic reserved constructors that **desugar to the one glyph** —
 surface stays close to today's `file { … }` while the IR unifies:
 
 ```
-file      { path, contents, mode }          -- File   { contents }
-directory { path, mode }                    -- Directory
-symlink   { path, target, mode }            -- Symlink { target }
+file      { path, contents, mode }          -- Entry::File   { contents, perms }
+directory { path, mode }                    -- Entry::Directory { perms }
+symlink   { path, target }                  -- Entry::Symlink { target }
 ```
 
 - `file`, `directory`, `symlink` are all reserved lowercase constructors
   (`is_reserved_constructor`), each requiring exactly its fields
-  (`build_constructor`), each building the single `Expr::Filesystem { path, kind,
-  perms }` with the right `kind`. This mirrors how `aptPackage` and
-  `systemdService` are distinct spellings that both inject into `Glyph` (ADR
-  0002). The surface grows two words; the IR grows zero glyphs.
+  (`build_constructor`), each building the single `Expr::Filesystem { path,
+  entry }` with the right `entry` arm. **The per-arm field set is enforced at the
+  surface**: `symlink` accepts no `mode` field (a symlink has no meaningful
+  mode), and `directory` accepts no `contents` — so the "illegal states
+  unrepresentable" property reaches all the way up to what an author can even
+  write. This mirrors how `aptPackage` and `systemdService` are distinct
+  spellings that both inject into `Glyph` (ADR 0002). The surface grows two
+  words; the IR grows zero glyphs.
 - **`mode` on the surface stays an octal literal** for authors (`0o755` /
   `"0755"`), lowered to the `u16` in `eval`. Owner/group are optional record
   fields defaulting to absent, so existing `file { path, contents, mode }`
   programs parse and lower unchanged — only their *target IR variant* differs.
-- **Type surface.** The first-class glyph type `File` (ADR 0002, used in
-  signatures like `webserver : String -> File`) is renamed/subsumed. Two honest
-  options, to settle at review:
-  1. One opaque `Filesystem` type that all three constructors produce (simplest;
-     loses the ability to say "returns specifically a directory" in a signature).
-  2. Keep `File`, add `Directory`/`Symlink` as sibling glyph types that inject
-     into `Glyph` exactly as the two service types do — more first-class, more
-     parser/infer surface. Recommendation: **(1)**, one `Filesystem` type, since
-     the three share every field but `kind` and no code eliminates on the glyph
-     type today (the ADR 0002/0008 injection is still elimination-free).
+- **Type surface — resolved.** The first-class glyph type `File` (ADR 0002, used
+  in signatures like `webserver : String -> File`) is renamed/subsumed. This
+  ADR's previously-open question — one opaque `Filesystem` type vs. `File` /
+  `Directory` / `Symlink` sibling glyph types — is **settled in favor of one
+  `Filesystem` type** that all three constructors produce. There is exactly one
+  `Glyph::Filesystem` reconciler kind, so the "four reconciler kinds" framing
+  holds unchanged; the entry sum lives *inside* that one kind as its payload,
+  making the illegal per-arm combinations unrepresentable without splitting the
+  glyph into three. Sibling glyph types are rejected: they would fracture one
+  reconciler into three, multiply the parser/infer surface, and buy a "returns
+  specifically a directory" precision no code needs, since nothing eliminates on
+  the glyph type today (the ADR 0002/0008 injection is still elimination-free).
+  The distinctions that *do* matter — contents vs. target, perms vs. no perms —
+  are captured by the `Entry` sum, which is where correctness-by-construction
+  belongs, not by a proliferation of top-level types.
 - **Interaction with the just-landed parameterized `type`/ADT support (ADR
-  0016).** It is tempting to let authors write `EntryKind` as an ordinary Emet
-  `type` and pass it to a *single* `filesystem { path, kind, perms }`
+  0016).** It is tempting to let authors write `Entry` as an ordinary Emet
+  `type` and pass it to a *single* `filesystem { path, entry }`
   constructor — the language now has the ADT machinery to express it. Rejected
   for the surface: the reserved glyph constructors are deliberately *not*
   ordinary records/types (they special-case field checking and injection), and
   coupling a golemd wire variant to a user-space `type` declaration would make
   the wire contract depend on library code — inverting the "language is
   untouched, capability lives in glyphs+reconcilers" invariant (ADR 0002
-  Consequences). `EntryKind` lives in `scroll-format` as the wire ADT; the
+  Consequences). `Entry` lives in `scroll-format` as the wire ADT; the
   surface exposes it only through the three fixed constructors. The new ADT
   support *does* pay off one level up: the userland library abstractions that
   compile down to these glyphs (registry volume, service dir, …) are now much
@@ -174,25 +205,29 @@ symlink   { path, target, mode }            -- Symlink { target }
 
 ### 3. The golemd reconciler (`reconcilers.rs`, ADR 0015 §4)
 
-`apply`/`reverse` gain the two new kinds; the existing `File` path is preserved
-verbatim under `EntryKind::File`.
+`apply`/`reverse` gain the two new arms; the existing `File` path is preserved
+verbatim under `Entry::File { contents, perms }`.
 
-- **`Directory` apply.** Observe the path. If it is already a directory with the
-  desired perms → `changed = false`, `Inverse::Nothing`. If absent →
+- **`Directory { perms }` apply.** Observe the path. If it is already a directory
+  with the desired perms → `changed = false`, `Inverse::Nothing`. If absent →
   `create_dir_all`, set perms/ownership, record a **new** inverse
   `Inverse::RemoveDirectory { path, created: <the deepest components golem
   actually created> }`. If it exists but perms differ → `chmod`/`chown`, record
   `Inverse::RestoreDirMeta { path, prior_perms }`.
-- **`Symlink` apply.** If the path is already a symlink to `target` → no-op. If
-  absent → `symlink(target, path)`, record `Inverse::RemoveSymlink { path }`. If
-  a different entry exists at the path → this is the one genuinely new hazard;
-  recommend **refuse** (a `Fatal`/`Retryable` error) rather than clobber a
-  pre-existing file, matching golem's "never touch state it did not create"
-  stance (§4 below).
+- **`Symlink { target }` apply.** No `perms` to apply — the arm carries none, so
+  there is no `chmod` step to write or skip. If the path is already a symlink to
+  `target` → no-op. If absent → `symlink(target, path)`, record
+  `Inverse::RemoveSymlink { path }`. If a different entry exists at the path →
+  this is the one genuinely new hazard; recommend **refuse** (a
+  `Fatal`/`Retryable` error) rather than clobber a pre-existing file, matching
+  golem's "never touch state it did not create" stance (§4 below).
 - **Permissions.** A shared `apply_perms(path, &Perms)` resolves owner/group
-  names to uid/gid, `chown`s when set, and `chmod`s to `mode`. Reused by the
-  `File` path too, which today only sets mode — so this *adds* owner/group to the
-  existing file glyph as a free consequence of the generalization.
+  names to uid/gid, `chown`s when set, and `chmod`s to `mode`. It is invoked
+  *only* from the arms that carry a `Perms` — `File` and `Directory` — so there
+  is no code path that could apply a mode to a symlink; the type forbids it.
+  Reused by the `File` path too, which today only sets mode — so this *adds*
+  owner/group to the existing file glyph as a free consequence of the
+  generalization.
 
 ### 4. Reverse / Inverse for a directory (created-by-us vs pre-existing)
 
@@ -221,8 +256,9 @@ to `lineInFile` and `aptPackage`: **golem reverses only what it created.**
 
 ### 5. Wire-format / `format_version` impact and migration
 
-- Replacing `File`'s fields and adding two `EntryKind` variants + a `Perms`
-  struct is a **`format_version` bump** (`1 → 2`) by the ADR 0012/0013 rule: the
+- Replacing `File`'s fields with the `Entry` sum (adding `Directory` and
+  `Symlink` arms) plus the `Perms` struct is a **`format_version` bump**
+  (`1 → 2`) by the ADR 0012/0013 rule: the
   postcard layout changes, and `check_format_version` will cleanly reject a v1
   manifest rather than misparse it. The `Inverse` enum in golemd's journal is
   *not* the manifest wire format, but it is a persisted, serialized type — its
@@ -243,7 +279,7 @@ to `lineInFile` and `aptPackage`: **golem reverses only what it created.**
 **Yes — and this ADR sharpens what "four primitives" means.** The invariant is
 about the *count of reconciler-owned resource kinds golemd must know how to
 enact*, not the count of surface spellings. `file`/`directory`/`symlink` are one
-glyph with one reconciler and one `key()` namespace; `EntryKind` is an internal
+glyph with one reconciler and one `key()` namespace; `Entry` is an internal
 sum exactly as `Glyph` itself is. golem gains a directory capability without a
 fifth reconciler, which is the letter and the spirit of ADR 0002/0015. The root
 `CLAUDE.md` should be updated to describe the primitive as a **filesystem glyph
@@ -274,25 +310,44 @@ the entry kind is a sum, not a new count.
    in any inverse). The capability genuinely does not exist below the glyph layer,
    so it must be added at the glyph layer. This is the ADR 0002 rule working as
    intended: a new *capability* is a new IR variant + reconciler; here the variant
-   is an `EntryKind` case, not a new `Glyph`.
-4. **Keep `mode: String`, add only the `kind` sum.** Rejected as a half-measure:
-   the wire format must break for `kind` regardless, so the `format_version` bump
+   is an `Entry` case, not a new `Glyph`.
+4. **Keep `mode: String`, add only the `Entry` sum.** Rejected as a half-measure:
+   the wire format must break for the sum regardless, so the `format_version` bump
    is already paid — fixing the stringly permissions in the same break is nearly
    free and avoids a *second* bump later. Typed permissions are the other half of
    "model this properly."
-5. **A user-space `type EntryKind` passed to one `filesystem` constructor** (lean
+5. **A user-space `type Entry` passed to one `filesystem` constructor** (lean
    on ADR 0016 ADTs). Rejected for the wire/surface coupling reason in §2: the
    glyph wire contract must not depend on a library `type` declaration. The ADT
    support pays off in the *abstractions above* the glyphs, not in the glyph
    definition itself.
+6. **One flat `Filesystem { path, kind, perms }` with a shared `perms` on every
+   entry** (an earlier draft of this ADR). Rejected on Dr. Dub's review: a shared
+   `perms` is meaningless for a `Symlink` (its mode is not honored on Linux) and a
+   shared `contents` would be meaningless for a `Directory` — a
+   record-with-fields-that-only-sometimes-apply is exactly the illegal-states
+   trap. The accepted model pushes `perms` and `contents` *into the arms that give
+   them meaning* (`File`, `Directory` for `perms`; `File` for `contents`), leaving
+   `path` — valid for all — as the only common field. **Make illegal states
+   unrepresentable**: a symlink with a mode, or a directory with contents, cannot
+   be constructed, serialized, or matched, because the fields do not exist on
+   those arms.
 
 ## Consequences
 
 - **golem can ensure directories and symlinks**, unblocking host bind-mount
   volumes (the registry dogfood) and any host-path need, without a fifth
   reconciler. The "four primitives" invariant holds — reframed as four
-  *reconciler kinds*, with the filesystem glyph carrying an internal entry-kind
-  sum.
+  *reconciler kinds*, with the single `Glyph::Filesystem` reconciler carrying an
+  internal `Entry` sum as its payload.
+- **Illegal filesystem states are unrepresentable** (Dr. Dub's review ask): the
+  `Entry` sum's arms are minimal and correct-by-construction — `File { contents,
+  perms }`, `Directory { perms }`, `Symlink { target }` — so `contents` exists
+  only where a file has them, `perms` only where a mode is meaningful, and
+  `target` only on a symlink. There is no shared or optional field that applies
+  to some arms and not others; a symlink-with-a-mode or a directory-with-contents
+  is not merely rejected at runtime, it cannot be written down at any layer
+  (surface constructor, IR, wire, or `case`).
 - **Permissions become typed data**: `mode` is a `u16` validated in `emetc` (a
   bad mode is now a compile error, not a reconcile-time `Fatal`), and
   owner/group arrive for *all* filesystem entries, including plain files —
@@ -313,9 +368,10 @@ the entry kind is a sum, not a new count.
   glyph type becomes `Filesystem`, subsuming `File` in signatures.
 - **Forecloses** a future where directories are a distinct top-level resource
   with their own key namespace or reconciler; commits golem to the "filesystem
-  entry is one primitive, kind is a sum" model. A later need for a fourth entry
-  kind (device node, fifo, hardlink) is then a new `EntryKind` variant (another
-  `format_version` bump), not a new glyph — the path this ADR establishes.
+  entry is one primitive, `Entry` is a minimal-per-arm sum" model. A later need
+  for a fourth entry kind (device node, fifo, hardlink) is then a new `Entry`
+  arm carrying only *its* fields (another `format_version` bump), not a new glyph
+  and not a widened shared record — the path this ADR establishes.
 - **Cross-references:** generalizes the `file` glyph of ADR 0002 and its
   reconciler/`Inverse` from ADR 0015; a `Glyph` variant/field change is pinned by
   `format_version` per ADR 0012/0013; the userland abstractions that compile down

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (for review — not yet implemented).
+Accepted 2026-07-20; implementation to follow.
 
 ## Context
 

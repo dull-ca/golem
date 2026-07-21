@@ -2,10 +2,9 @@
 
 ## Status
 
-Proposed (for review — **design only, not to be implemented from this ADR**).
-Supersedes the deferral in ADR 0008 when accepted; would flip ADR 0008 to
-"Superseded by 0017" and retire the interim symmetric-injection caveat on
-ADR 0002.
+Accepted 2026-07-20; implementation to follow. Supersedes the deferral in ADR
+0008: flip ADR 0008 to "Superseded by 0017" and retire the interim
+symmetric-injection caveat on ADR 0002.
 
 ## Context
 
