@@ -89,12 +89,14 @@ pub enum Inverse {
     RemoveLineInFile { path: String, line: String },
 }
 
-/// What a reconciler's `apply` returns and the journal stores per glyph: the
+/// What a reconciler's `apply` returns and golem records per glyph: the
 /// operation performed, its content id (the versioning axis), the [`Inverse`]
 /// to undo it, and `changed = false` when the host already matched (an
-/// idempotent no-op). The ordered list of these on a [`Revision`] is golem's
-/// reversal record — reversed LIFO for a rollback or a later `Remove`/`Replace`
-/// (ADR 0015 §1/§3).
+/// idempotent no-op) (ADR 0015 §1). Two roles: an `Outcome` is embedded in each
+/// [`WalStep`]'s `Done` row (the durable receipt), and the currently-applied set
+/// is a list of `Outcome`s folded out of the WAL (`wal::applied_outcomes`) —
+/// what `reconcile::plan` diffs the next scroll against. The [`Revision`] carries
+/// that same folded list as its projection of the attempt.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Outcome {
     pub op: GlyphOp,
@@ -126,9 +128,12 @@ pub struct Revision {
     pub outcomes: Vec<Outcome>,
 }
 
-/// The last manifest this node accepted: the applied scroll, its content id,
-/// and the [`Outcome`]s that enacted it. `reconcile::plan` diffs the next
-/// desired scroll against these `outcomes` to decide each glyph's operation.
+/// A read cache of the last manifest this node accepted: the applied scroll, its
+/// content id, and the [`Outcome`]s that enacted it. Under ADR 0020 this is no
+/// longer authoritative — the applied set is the fold of the WAL
+/// (`wal::applied_outcomes`), and this row is rebuilt from it. The `scroll`/
+/// `scroll_content_id` fields, which the WAL does not carry, are the reason the
+/// cache is kept at all.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppliedState {
     pub scroll_content_id: ContentId,
@@ -136,6 +141,11 @@ pub struct AppliedState {
     pub outcomes: Vec<Outcome>,
 }
 
+/// Which direction a [`WalStep`] drives the host (ADR 0020 §2): `Apply` brings a
+/// glyph to its target, `Reverse` undoes a prior `Apply` from its captured
+/// [`Inverse`]. A `Replace` that cannot update in place is recorded as a
+/// `Reverse` of the old version followed by an `Apply` of the new one; a rollback
+/// is a sequence of steps whose `action` is the opposite of the one it undoes.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WalAction {
@@ -143,6 +153,25 @@ pub enum WalAction {
     Reverse,
 }
 
+/// The lifecycle of one WAL step (ADR 0020 §1). A step is appended `Intended`
+/// before the reconciler is called and gains a terminal row after it returns:
+///
+/// - `Intended` — golem is about to touch the host but has not yet. An
+///   `Intended` row with no later terminal row for the same step is the recovery
+///   signal: the process died across the reconciler call and may or may not have
+///   performed the effect.
+/// - `Done` — the reconciler returned `Ok`; the row carries the captured
+///   [`Inverse`] and `changed`. A `Done` with no later `Reversed` for the same
+///   step is *currently applied*.
+/// - `Failed` — the reconciler gave up or hit a fatal error; no lasting host
+///   change is claimed (reconcilers observe host state first, so a partially-run
+///   `Failed` step is safe to re-drive or reverse).
+/// - `Reversed` — a previously `Done` step was later undone, by in-attempt
+///   rollback or a subsequent attempt's `Remove`/`Replace`. A step is never
+///   `Reversed` twice, which is what lets a rollback resume after a crash.
+///
+/// The store never `UPDATE`s a step; each transition is a new row (see
+/// [`WalStep`]), so the sequence of rows for a step *is* its history.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WalStepState {
@@ -152,6 +181,11 @@ pub enum WalStepState {
     Reversed,
 }
 
+/// Where a [`ReconcileAttempt`] is in its lifecycle (ADR 0020 §2). The phase
+/// advances `Planning` → `Enacting` → (`Committed` | `RollingBack` →
+/// `RolledBack`). Recovery reads it to decide what an interrupted attempt needs:
+/// an `Enacting` attempt is rolled back, a `RollingBack` one is resumed. Ingest
+/// of a new manifest is gated on the latest attempt being settled.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptPhase {
@@ -163,11 +197,19 @@ pub enum AttemptPhase {
 }
 
 impl AttemptPhase {
+    /// A settled attempt is finished: nothing about it is in flight, so recovery
+    /// leaves it alone and a new reconcile may open. Only the two terminal
+    /// phases settle; `Planning`/`Enacting`/`RollingBack` are all in-progress.
     pub fn is_settled(self) -> bool {
         matches!(self, AttemptPhase::Committed | AttemptPhase::RolledBack)
     }
 }
 
+/// One reconcile toward a scroll — the frame every [`WalStep`] belongs to (ADR
+/// 0020 §2). Opened before planning and closed once its steps settle. A committed
+/// attempt *is* the `Reconcile` [`Revision`] projected from the WAL, so an
+/// attempt and its revision are one durable record, not two writes that can
+/// diverge across a crash.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReconcileAttempt {
     pub reconcile_id: u64,
@@ -177,6 +219,13 @@ pub struct ReconcileAttempt {
     pub settled_at: Option<DateTime<Utc>>,
 }
 
+/// One transition of one glyph op within a [`ReconcileAttempt`] (ADR 0020 §2).
+/// Append-only: a state change is a new row with a higher `seq`, so a step's
+/// history is its rows in `seq` order. `step_ord` is the op's position in the
+/// plan and, with `action`, identifies which step a later row transitions —
+/// `seq` orders rows, `step_ord`+`action` groups them. `inverse` holds the state
+/// a `Reverse` intends to consume or the state an `Apply` captured; `changed` is
+/// populated once the step is `Done`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalStep {
     pub seq: u64,

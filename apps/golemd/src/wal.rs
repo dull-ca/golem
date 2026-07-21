@@ -1,7 +1,23 @@
+//! The fold from the write-ahead log to the currently-applied set (ADR 0020 §1).
+//! The applied set is never stored; it is computed from the append-only
+//! `wal_step` rows every time it is needed — by `reconcile::plan` (what to diff
+//! the next scroll against), by recovery, and to rebuild the `AppliedState`
+//! cache. Because it is a pure function of the log, a crash mid-attempt cannot
+//! leave a stale snapshot: the same rows always fold to the same set.
+
 use scroll_format::ContentId;
 
 use crate::journal::{Inverse, Outcome, WalAction, WalStep, WalStepState};
 
+/// The set of glyphs currently applied to the host, one [`Outcome`] per glyph
+/// key. For each key, the latest `Done` step that has not since been `Reversed`
+/// wins (so a re-apply's fresh inverse supersedes an older one, and a
+/// reverse-then-reapply is applied again). Only `Apply` steps survive the final
+/// filter: a `Reverse` step's terminal `Done` records that an undo completed, not
+/// that a glyph is present, so it must not appear in the applied set. `Intended`
+/// and `Failed` steps are ignored — neither claims a durable host change.
+/// Insertion order of first appearance is preserved so the diff sees glyphs in a
+/// stable order.
 pub fn applied_outcomes(steps: &[WalStep]) -> Vec<Outcome> {
     use std::collections::{BTreeMap, BTreeSet};
     let cancelled = cancelled_dones(steps);
@@ -26,6 +42,13 @@ pub fn applied_outcomes(steps: &[WalStep]) -> Vec<Outcome> {
         .collect()
 }
 
+/// The `seq`s of `Done` steps that a later `Reversed` marker undid. Each
+/// `Reversed` row is paired to the nearest earlier still-unpaired `Done` for the
+/// same `(step_ord, action, reconcile_id)` — the step it reverses. Pairing
+/// one-to-one (a `Reversed` claims a specific `Done`, and `!cancelled.contains`
+/// prevents two markers claiming the same one) keeps an apply→reverse→apply
+/// cycle honest: only the first `Done` is cancelled, and the re-applied `Done`
+/// stays live.
 fn cancelled_dones(steps: &[WalStep]) -> std::collections::BTreeSet<u64> {
     let mut cancelled = std::collections::BTreeSet::new();
     for marker in steps.iter().filter(|s| s.state == WalStepState::Reversed) {

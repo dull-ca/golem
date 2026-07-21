@@ -248,3 +248,17 @@ resolve the package without a refresh first. The refresh is per-glyph and
 idempotent — a single refresh per reconcile would be cheaper, but the stateless
 per-glyph adapter has no reconcile-scoped hook to hang one on without threading
 shared state through the `CommandRunner` port. See `reconcilers::apply_apt`.
+
+## Addendum: ADR 0020's WAL subsumes `preserve_prior_inverses` and the LIFO undo stack
+
+The `preserve_prior_inverses` post-processing pass (the "Noop must preserve
+inverses" addendum above) and the in-memory LIFO `UndoStep` stack (§5) are both
+removed. ADR 0020 makes the write-ahead log the authoritative applied set and
+inverse record: the applied set is folded from the append-only WAL
+(`wal::applied_outcomes`), so a `Noop` writes no step and cannot clobber a
+glyph's real inverse — the snapshot-overwrite bug that pass existed to prevent is
+structurally impossible in an append-only log. Rollback likewise no longer walks
+a live in-process stack; it reverses the attempt's still-applied `Done` steps
+newest-first straight from the WAL (`foreman::rollback_attempt`), which survives a
+crash and resumes. The `Inverse` model, content addressing, and the pure diff of
+this ADR are unchanged; only their storage moved. See ADR 0020.

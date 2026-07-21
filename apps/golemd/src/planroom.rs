@@ -1,11 +1,26 @@
-//! The plan room: golemd's local store of the current applied state plus the
-//! append-only revision journal (ADR 0014 §4). One record of applied state
-//! (the last scroll this node accepted, overwritten each reconcile) and an
-//! ever-growing revision log. The [`PlanRoom`] port has a `SqlitePlanRoom` for
-//! production and a `MemoryPlanRoom` for tests; both open with an `Init`
-//! revision. Bodies are stored as JSON for a legible journal even though the
-//! wire format is binary (ADR 0014 §4 — the local journal format is golemd's
-//! private choice).
+//! golemd's local durable store, behind the [`PlanRoom`] port (ADR 0014 §4, ADR
+//! 0020). Four tables:
+//!
+//! - `reconcile_attempt` and `wal_step` are the **write-ahead log** (ADR 0020).
+//!   Both are append-only: one `reconcile_attempt` row per reconcile, opened
+//!   before planning and phase-advanced as it runs; one `wal_step` row per state
+//!   transition of a glyph op, never updated in place. This log is the
+//!   authoritative record of what golem applied and how to reverse it.
+//! - `applied_state` is now a rebuildable **cache**, not the source of truth.
+//!   The applied set is derived by folding `wal_step` (`wal::applied_outcomes`);
+//!   this single row only exists to hold the scroll and its content id, which the
+//!   WAL does not carry, and is rewritten from the fold.
+//! - `revisions` is the `GET /revisions` history. `Init` on first open, one
+//!   `Reconcile` per committed attempt.
+//!
+//! The port's WAL surface — `open_attempt`/`set_attempt_phase`/`latest_attempt`/
+//! `attempts` over attempts, `append_wal_step`/`wal_steps`/`wal_steps_for` over
+//! steps — is what the foreman drives to bracket each side effect and what
+//! recovery reads to fold and resume. `SqlitePlanRoom` is production;
+//! `MemoryPlanRoom` gives tests the same semantics with no file (a shared
+//! roundtrip test pins the two to identical behaviour). Both open with an `Init`
+//! revision. Bodies are JSON for a legible log even though the wire format is
+//! binary — the local store format is golemd's private choice (ADR 0014 §4).
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -19,9 +34,14 @@ use crate::journal::{
     WalAction, WalStep, WalStepState,
 };
 
-/// Read/write the current applied state and append to the revision journal. Two
-/// adapters implement it identically (a shared roundtrip test pins that);
-/// nothing above this port knows whether state lives in sqlite or memory.
+/// Append to the WAL and revision log, read them back, and hold the applied-state
+/// cache. Two adapters implement it identically (a shared roundtrip test pins
+/// that); nothing above this port knows whether the store is sqlite or memory.
+/// The methods split by table: `applied_state`/`put_applied_state` for the cache
+/// row, `append_revision` and friends for history, `open_attempt`/
+/// `set_attempt_phase`/`latest_attempt`/`attempts` for the attempt frames, and
+/// `append_wal_step`/`wal_steps`/`wal_steps_for` for the per-op step log the
+/// foreman brackets side effects with.
 pub trait PlanRoom: Send + Sync {
     fn applied_state(&self) -> Result<Option<AppliedState>>;
     fn put_applied_state(&self, state: &AppliedState) -> Result<()>;
@@ -113,8 +133,13 @@ impl<P: PlanRoom + ?Sized> PlanRoom for std::sync::Arc<P> {
     }
 }
 
-/// The on-disk plan room: a WAL-mode sqlite file with a single-row
-/// `applied_state` table and an autoincrement `revisions` log.
+/// The on-disk store: a WAL-mode sqlite file. `synchronous = NORMAL` on WAL mode
+/// makes each `INSERT` durable at commit, which is what the intent-before/
+/// outcome-after bracketing relies on — a step's `Intended` row is on disk before
+/// the reconciler runs (each `append_wal_step` is its own committed transaction,
+/// never one transaction spanning the attempt). Adds the two ADR 0020 tables to
+/// the existing `applied_state` cache row and `revisions` log; `CREATE TABLE IF
+/// NOT EXISTS` makes reopening an older database a no-op.
 pub struct SqlitePlanRoom {
     conn: Mutex<Connection>,
 }

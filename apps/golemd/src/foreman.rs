@@ -1,3 +1,32 @@
+//! The write path: turn a manifest into host changes, durably and reversibly
+//! (ADR 0020). The foreman selects this host's scroll, diffs it against the
+//! currently-applied set (`wal::applied_outcomes`, folded from the WAL), and
+//! enacts the resulting ops through the [`Reconciler`] port — writing a
+//! write-ahead log around every side effect.
+//!
+//! **The bracketing invariant.** Every side effect is framed by two durable
+//! writes: an `Intended` [`WalStep`](crate::journal::WalStep) row is committed
+//! *before* `Reconciler::apply`/`reverse` is called, and a `Done`/`Failed` row
+//! *after* it returns (see [`Foreman::enact_apply`]/[`Foreman::enact_reverse`]).
+//! A crash can therefore land the daemon in "an effect was intended but its
+//! outcome was never recorded" — but never in "an effect happened and golem has
+//! no trace of it." That gap is what recovery closes; it is why the intent row
+//! comes first.
+//!
+//! **Recovery.** On construction, and again under the write lock before each
+//! reconcile, [`Foreman::recover`] settles any interrupted attempt before a new
+//! manifest is allowed in (ingest is gated on the latest attempt being settled,
+//! so a fresh manifest can never clobber an in-progress reversal). Recovery:
+//! [`Foreman::redrive_intended`] re-drives every `Intended`-without-terminal step
+//! idempotently (reconcilers observe host state first, so re-running converges
+//! whether or not the interrupted call took effect), then
+//! [`Foreman::rollback_attempt`] reverses the attempt's still-applied steps in
+//! reverse order. Both are resumable: a step already `Reversed` is never reversed
+//! again, so a rollback continues from wherever the log shows it stopped.
+//!
+//! Recovery and the reconcile write path share one `write` mutex, so only one
+//! attempt is ever in flight and recovery never races an incoming manifest.
+
 use anyhow::{bail, Result};
 use scroll_format::{from_bytes, AddressedScroll, ContentId, Entry, Glyph, Scroll};
 use std::sync::Mutex;
@@ -71,6 +100,14 @@ impl Foreman {
         }
     }
 
+    /// Plan and enact one manifest under the write lock. First recovers any
+    /// interrupted attempt, then refuses to proceed if the latest attempt is
+    /// still unsettled — this is the ingest gate that stops a new manifest from
+    /// overwriting an in-progress reversal (ADR 0020 §3). Diffs the desired
+    /// scroll against the WAL-folded applied set, opens an attempt, and enacts.
+    /// On success runs config propagation and settles; on failure rolls back the
+    /// steps applied this attempt and returns the error, leaving the node at its
+    /// last committed state.
     fn reconcile(&self, desired: SelectedScroll) -> Result<Revision> {
         let _w = self.write.lock().unwrap();
         self.recover_locked()?;
@@ -99,6 +136,15 @@ impl Foreman {
         }
     }
 
+    /// Run each planned op in order, one WAL step per side effect. `Noop` touches
+    /// nothing (and writes no step, so the prior `Done` and its inverse stay the
+    /// latest for that key — this is why ADR 0020 subsumes
+    /// `preserve_prior_inverses`). A `Replace` on a glyph that
+    /// [`replaces_in_place`] allows is a single `Apply` of the new version whose
+    /// captured inverse restores the old — no window where the resource is
+    /// absent; every other `Replace` and every `Remove` reverses the prior
+    /// outcome first. The first failing step propagates its error, and the caller
+    /// rolls the attempt back.
     fn enact(&self, reconcile_id: u64, ops: &[GlyphOp], prior: &[Outcome]) -> Result<()> {
         for (ord, op) in ops.iter().enumerate() {
             let ord = ord as u64;
@@ -125,6 +171,10 @@ impl Foreman {
         Ok(())
     }
 
+    /// One bracketed `apply`: append `Intended`, call the reconciler through the
+    /// retry spine, then append `Done` with the captured inverse and `changed`,
+    /// or `Failed`. The `Intended` write is committed before the reconciler runs,
+    /// so a crash across the call leaves a recoverable trace (ADR 0020 §2).
     fn enact_apply(
         &self,
         reconcile_id: u64,
@@ -174,6 +224,10 @@ impl Foreman {
         }
     }
 
+    /// One bracketed `reverse`: append `Intended` carrying the prior outcome's
+    /// inverse (the state to restore), reverse through the retry spine, then
+    /// append `Done`/`Failed`. Same intent-before ordering as
+    /// [`Foreman::enact_apply`].
     fn enact_reverse(
         &self,
         reconcile_id: u64,
@@ -221,6 +275,10 @@ impl Foreman {
         }
     }
 
+    /// The outcome whose inverse a `Reverse`/`Remove` step will consume. Normally
+    /// the recorded applied outcome for this key; if none is found (the applied
+    /// set does not know this glyph) it falls back to a synthesized inverse from
+    /// the glyph itself, so a reverse always has something to restore.
     fn prior_outcome(&self, prior: &[Outcome], key: &str, cid: ContentId, glyph: &Glyph) -> Outcome {
         prior.iter().find(|o| o.op.key() == key).cloned().unwrap_or(Outcome {
             op: GlyphOp::Install { cid, glyph: glyph.clone() },
@@ -230,6 +288,17 @@ impl Foreman {
         })
     }
 
+    /// After a successful enact, restart units whose backing files this attempt
+    /// changed (ADR 0020 §5). A unit-directory `file` that was `Replace`d keeps
+    /// the `systemdService` unit a `Noop` — the unit resource did not change, but
+    /// its input did — so the running unit would otherwise never pick up the new
+    /// config. Collect the distinct units mapped from this attempt's changed
+    /// files ([`unit_for_config_file`]) and `restart_unit` each, appended as its
+    /// own WAL steps (keyed `restart:<unit>`, inverse `Nothing` — a restart of a
+    /// running unit has no separate reversal; the unit's lifecycle stays owned by
+    /// its `systemdService` step), so a crash mid-propagation recovers like any
+    /// other step. Scoped to files golem itself wrote under unit directories, so
+    /// it never restarts units for host-managed config golem did not touch.
     fn propagate_config(&self, reconcile_id: u64) -> Result<()> {
         let steps = self.planroom.wal_steps_for(reconcile_id)?;
         let mut units: Vec<String> = Vec::new();
@@ -283,6 +352,10 @@ impl Foreman {
         Ok(())
     }
 
+    /// Close a successful attempt: mark it `Committed`, refresh the applied-state
+    /// cache from the WAL fold, and append the `Reconcile` revision that projects
+    /// this attempt. The revision's outcomes are the same fold — history and the
+    /// applied set agree because both come from the one log.
     fn settle(&self, reconcile_id: u64, desired: &SelectedScroll) -> Result<Revision> {
         self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::Committed)?;
         let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
@@ -298,6 +371,10 @@ impl Foreman {
         )
     }
 
+    /// Rewrite the `applied_state` cache row from the current WAL fold, reusing
+    /// the last cached scroll for the fields the WAL does not carry. Called after
+    /// a rollback and after recovery so the cache tracks the authoritative log;
+    /// does nothing when there is neither a prior cache nor any applied outcome.
     fn cache_applied_state(&self) -> Result<()> {
         let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
         let prior = self.planroom.applied_state()?;
@@ -312,6 +389,14 @@ impl Foreman {
         })
     }
 
+    /// Undo every still-applied step of an attempt, latest first, marking each
+    /// `Reversed`. Resumable and idempotent: it re-reads the WAL each iteration
+    /// and [`next_reversible`] only returns a `Done` step not already `Reversed`,
+    /// so a rollback interrupted by a crash continues from where the log stopped
+    /// and never reverses a step twice (ADR 0020 §3). A failed undo is logged and
+    /// the step is still marked `Reversed` — the reconcilers are idempotent, so a
+    /// re-drive on the next recovery converges. Reversing an `Apply` runs
+    /// `reverse`; reversing a `Reverse` re-`apply`s, restoring the old version.
     fn rollback_attempt(&self, reconcile_id: u64) -> Result<()> {
         self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::RollingBack)?;
         loop {
@@ -379,11 +464,22 @@ impl Foreman {
         unreachable!("loop returns or bails")
     }
 
+    /// Settle any interrupted attempt, under the write lock. Called once at
+    /// startup (from [`Foreman::new`]) and again by [`Foreman::reconcile`] before
+    /// each manifest, so recovery is always a precondition of ingest.
     pub fn recover(&self) -> Result<()> {
         let _w = self.write.lock().unwrap();
         self.recover_locked()
     }
 
+    /// The recovery algorithm (ADR 0020 §3), assuming the write lock is held. A
+    /// settled latest attempt needs nothing but a cache refresh. An unsettled one
+    /// died mid-flight: re-drive its incomplete `Intended` steps
+    /// ([`Foreman::redrive_intended`]), roll the attempt back
+    /// ([`Foreman::rollback_attempt`]) so the node returns to its last committed
+    /// applied set, mark it `RolledBack`, and rebuild the cache. A rollback
+    /// already in progress resumes rather than restarts, because
+    /// `rollback_attempt` skips already-`Reversed` steps.
     fn recover_locked(&self) -> Result<()> {
         let Some(attempt) = self.planroom.latest_attempt()? else { return Ok(()) };
         if attempt.phase.is_settled() {
@@ -395,6 +491,13 @@ impl Foreman {
         self.cache_applied_state()
     }
 
+    /// Resolve every `Intended` step of an interrupted attempt that has no
+    /// terminal row — the steps golem crashed across, where the side effect may
+    /// or may not have happened. Re-run each idempotently (`apply` re-`apply`s and
+    /// re-captures the inverse; `reverse` re-reverses) and record the result as
+    /// the step's `Done`/`Failed`, so rollback afterward sees a consistent log.
+    /// Safe because every reconciler observes host state first, so re-running
+    /// converges whether or not the interrupted call took effect (ADR 0020 §3).
     fn redrive_intended(&self, attempt: &ReconcileAttempt) -> Result<()> {
         let steps = self.planroom.wal_steps_for(attempt.reconcile_id)?;
         for step in &steps {
@@ -455,6 +558,10 @@ impl Foreman {
         Ok(())
     }
 
+    /// The currently-applied state, with `outcomes` always the live WAL fold —
+    /// the cache row supplies only the scroll and its content id. So a caller sees
+    /// the authoritative applied set even if the cache row lags. `None` only when
+    /// nothing has ever been applied and no cache exists.
     pub fn applied_state(&self) -> Result<Option<AppliedState>> {
         let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
         match self.planroom.applied_state()? {
@@ -485,6 +592,12 @@ fn empty_scroll(host: &str) -> Scroll {
     Scroll { name: host.to_string(), glyphs: vec![] }
 }
 
+/// Whether a `Replace` on this glyph can update in place — one `Apply` whose
+/// captured inverse restores the prior version — instead of reverse-then-apply
+/// (ADR 0020 §4). Only `Filesystem::File`: an atomic overwrite has no window
+/// where the file is absent and stays exactly reversible. `aptPackage` and
+/// `systemdService` have distinct reverse/re-apply effects (a package
+/// remove/install, a unit stop/start) and must stay reverse-then-apply.
 fn replaces_in_place(glyph: &Glyph) -> bool {
     matches!(glyph, Glyph::Filesystem { entry: Entry::File { .. }, .. })
 }
@@ -499,6 +612,10 @@ fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
     }
 }
 
+/// Whether an `Intended` step has any later terminal row (`Done`/`Failed`/
+/// `Reversed`) for the same step, matched by `step_ord`+`action` since a step's
+/// rows share those. An `Intended` with no terminal successor is what
+/// [`Foreman::redrive_intended`] must re-drive.
 fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
     steps.iter().any(|s| {
         s.seq > intended.seq
@@ -508,6 +625,10 @@ fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
     })
 }
 
+/// The latest `Done` step of the attempt not yet `Reversed` — the next one a
+/// rollback should undo. Scanning newest-first reverses in the opposite order to
+/// application (LIFO), and skipping already-`Reversed` steps is what makes
+/// [`Foreman::rollback_attempt`] resumable.
 fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
     steps
         .iter()
@@ -531,6 +652,12 @@ fn changed_file_path(op: &GlyphOp) -> Option<String> {
     }
 }
 
+/// The systemd unit a golem-written config file belongs to, or `None` if the
+/// path is not under a unit directory (ADR 0020 §5). Location is the whole
+/// signal: only files under [`UNIT_DIRECTORIES`] are treated as unit config. A
+/// drop-in under `foo.service.d/` maps to `foo.service`; a Podman quadlet
+/// `foo.container` maps to its generated `foo.service`; a `foo.service` file maps
+/// to itself.
 fn unit_for_config_file(path: &str) -> Option<String> {
     let under_unit_dir = UNIT_DIRECTORIES.iter().any(|dir| path.starts_with(dir));
     if !under_unit_dir {
