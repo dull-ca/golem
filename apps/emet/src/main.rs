@@ -12,13 +12,13 @@ const EMET_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const DEMO: &str = r#"-- Elm/Haskell-style: top-level decls, optional signatures, HM inference.
 
-webserver : Str -> SystemdService
+webserver : String -> SystemdService
 webserver unit = systemdService { unit = unit }
 
-basePkg : Str -> AptPackage
+basePkg : String -> AptPackage
 basePkg name = aptPackage { name = name }
 
--- no signature here: inferred as Str -> SystemdService
+-- no signature here: inferred as String -> SystemdService
 enable name =
   let unit = name
   in systemdService { unit = unit }

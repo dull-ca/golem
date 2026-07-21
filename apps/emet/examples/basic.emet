@@ -1,5 +1,5 @@
 -- Users define their own vocabulary as ordinary functions.
-webserver : Str -> SystemdService
+webserver : String -> SystemdService
 webserver unit = systemdService { unit = unit }
 
 package name =

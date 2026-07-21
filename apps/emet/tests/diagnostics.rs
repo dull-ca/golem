@@ -127,7 +127,7 @@ fn field_access_without_name() {
 
 #[test]
 fn signature_name_mismatch() {
-    let e = err("f : Str\ng = f");
+    let e = err("f : String\ng = f");
     assert_eq!(e.phase, Phase::Parse);
     assert!(e.msg.contains("signature names"), "msg: {}", e.msg);
     assert!(e.msg.contains("`f`"), "msg: {}", e.msg);
@@ -136,7 +136,7 @@ fn signature_name_mismatch() {
 
 #[test]
 fn signature_with_no_binding() {
-    let e = err(r#"f : Str"#);
+    let e = err(r#"f : String"#);
     assert_eq!(e.phase, Phase::Parse);
     assert!(
         e.msg.contains("no accompanying binding"),
@@ -147,7 +147,7 @@ fn signature_with_no_binding() {
 
 #[test]
 fn trailing_signature_with_no_binding() {
-    let e = err("f : Str\nf = \"a\"\ng : Str");
+    let e = err("f : String\nf = \"a\"\ng : String");
     assert_eq!(e.phase, Phase::Parse);
     assert!(
         e.msg.contains("no accompanying binding"),
@@ -159,7 +159,7 @@ fn trailing_signature_with_no_binding() {
 
 #[test]
 fn two_signatures_for_same_name() {
-    let e = err("f : Str\nf : Str\nf = \"a\"");
+    let e = err("f : String\nf : String\nf = \"a\"");
     assert_eq!(e.phase, Phase::Parse);
     assert!(e.msg.contains("unused signature"), "msg: {}", e.msg);
 }
@@ -194,4 +194,28 @@ fn missing_main_is_type_error_with_message() {
     let e = err(r#"foo = "bar""#);
     assert_eq!(e.phase, Phase::Type);
     assert!(e.msg.contains("main"), "msg: {}", e.msg);
+}
+
+#[test]
+fn str_alias_is_unknown_type_constructor() {
+    let e = err("f : Str -> Str\nf x = x\nmain = [ scroll { name = \"n\", glyphs = [] } ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(
+        e.msg.contains("unknown type constructor"),
+        "msg: {}",
+        e.msg
+    );
+    assert!(e.msg.contains("`Str`"), "msg: {}", e.msg);
+}
+
+#[test]
+fn glyphs_alias_is_unknown_type_constructor() {
+    let e = err("f : Glyphs\nf = []\nmain = [ scroll { name = \"n\", glyphs = [] } ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(
+        e.msg.contains("unknown type constructor"),
+        "msg: {}",
+        e.msg
+    );
+    assert!(e.msg.contains("`Glyphs`"), "msg: {}", e.msg);
 }

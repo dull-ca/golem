@@ -113,7 +113,7 @@ where
         let con_head = select! { Tok::Upper(u) => u };
 
         let nullary = con_head
-            .map_with(|u, e| Spanned(canonical_con(&u, vec![]), span_range(e.span())));
+            .map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
 
         let type_var = select! { Tok::Ident(name) => name }
             .map_with(|name, e| Spanned(Type::Rigid(name), span_range(e.span())));
@@ -152,7 +152,7 @@ where
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
             .map_with(|(head, args), e| {
                 Spanned(
-                    canonical_con(&head, args.into_iter().map(|a| a.0).collect()),
+                    type_con(&head, args.into_iter().map(|a| a.0).collect()),
                     span_range(e.span()),
                 )
             });
@@ -182,7 +182,7 @@ where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     let nullary = select! { Tok::Upper(u) => u }
-        .map_with(|u, e| Spanned(canonical_con(&u, vec![]), span_range(e.span())));
+        .map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
 
     let type_var = select! { Tok::Ident(name) => name }
         .map_with(|name, e| Spanned(Type::Rigid(name), span_range(e.span())));
@@ -914,18 +914,8 @@ fn take_field(
     })
 }
 
-/// Build the canonical `Type` for a type-constructor head, folding two surface
-/// aliases into their real form: `Str` → `String` (the ADR 0003 migration
-/// alias) and `Glyphs` → `List Glyph` (ADR 0002). Everything else is a plain
-/// `Con`.
-fn canonical_con(name: &str, args: Vec<Type>) -> Type {
-    match name {
-        "Str" if args.is_empty() => Type::Con("String".to_string(), vec![]),
-        "Glyphs" if args.is_empty() => {
-            Type::Con("List".to_string(), vec![Type::Con("Glyph".to_string(), vec![])])
-        }
-        _ => Type::Con(name.to_string(), args),
-    }
+fn type_con(name: &str, args: Vec<Type>) -> Type {
+    Type::Con(name.to_string(), args)
 }
 
 fn span_range(span: TokSpan) -> Span {

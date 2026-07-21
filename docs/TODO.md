@@ -89,9 +89,11 @@ monorepo. B's headline is model reconciliation.
 
 ### Cleanup
 
-- **Remove the transitional `Str` / `Glyphs` aliases.** `String` and `List Glyph`
-  are canonical; `Str` and `Glyphs` are accepted as one-migration-step aliases
-  (ADR 0003). Remove them once all examples/tests use the canonical spellings.
+- **Remove the transitional `Str` / `Glyphs` aliases — DONE.** `String` and
+  `List Glyph` are the only spellings; the parser no longer folds `Str` → `String`
+  or `Glyphs` → `List Glyph` (ADR 0003). All examples/tests use the canonical
+  spellings, and `Str`/`Glyphs` in a signature is now an ordinary "unknown type
+  constructor" error.
 
 - **Row polymorphism for record-parameter field access — DONE (design), see
   ADR 0010.** Field access needs a concrete record at the access site, so

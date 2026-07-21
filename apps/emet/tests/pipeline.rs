@@ -68,7 +68,7 @@ main = [ scroll { name = "test", glyphs = [ id (aptPackage { name = id "p" }) ] 
 #[test]
 fn signature_agreement_ok() {
     let src = r#"
-webserver : Str -> SystemdService
+webserver : String -> SystemdService
 webserver unit = systemdService { unit = unit }
 main : List Scroll
 main = [ scroll { name = "test", glyphs = [ webserver "nginx.service" ] } ]
@@ -79,7 +79,7 @@ main = [ scroll { name = "test", glyphs = [ webserver "nginx.service" ] } ]
 #[test]
 fn concrete_glyph_type_in_signature_checks() {
     let src = r#"
-basePkg : Str -> AptPackage
+basePkg : String -> AptPackage
 basePkg name = aptPackage { name = name }
 main = [ scroll { name = "test", glyphs = [ basePkg "nginx" ] } ]
 "#;
@@ -119,12 +119,12 @@ fn missing_main_is_type_error() {
 #[test]
 fn main_type_renders_as_canonical_spelling() {
     let src = r#"
-webserver : Str -> SystemdService
+webserver : String -> SystemdService
 webserver unit = systemdService { unit = unit }
 main : List Scroll
 main = [ scroll { name = "test", glyphs = [ webserver "nginx.service" ] } ]
 "#;
-    let c = compile(src).expect("aliases should compile");
+    let c = compile(src).expect("canonical spellings should compile");
     assert_eq!(c.main_ty.to_string(), "List Scroll");
 }
 
