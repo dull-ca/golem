@@ -1,0 +1,8 @@
+module Boxes exposing (Box(..), unbox)
+
+type Box a = Box a
+
+unbox : Box a -> a
+unbox b =
+  case b of
+    Box x -> x

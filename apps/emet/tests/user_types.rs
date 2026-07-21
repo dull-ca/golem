@@ -137,6 +137,89 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = suffix curre
 }
 
 #[test]
+fn box_type_constructs_matches_and_annotates() {
+    let src = r#"
+type Box a = Box a
+unwrap : Box a -> a
+unwrap b = case b of
+    Box x -> x
+main = [ scroll { name = "test", glyphs = [ systemdService { unit = unwrap (Box "boxed.service") } ] } ]
+"#;
+    assert_eq!(unit(src), "boxed.service");
+}
+
+#[test]
+fn two_parameter_pair_type_round_trips_both_fields() {
+    let src = r#"
+type Pair a b = Pair a b
+first : Pair a b -> a
+first p = case p of
+    Pair x _ -> x
+second : Pair a b -> b
+second p = case p of
+    Pair _ y -> y
+main = [ scroll { name = "test", glyphs = [ systemdService { unit = String.append (first (Pair "a" 1)) (String.fromInt (second (Pair "a" 1))) } ] } ]
+"#;
+    assert_eq!(unit(src), "a1");
+}
+
+#[test]
+fn result_type_with_two_distinct_parameters() {
+    let src = r#"
+type Result e a = Err e | Ok a
+recover : Result String String -> String
+recover r = case r of
+    Err e -> e
+    Ok a -> a
+main = [ scroll { name = "test", glyphs = [ systemdService { unit = recover (Ok "ok.service") }, systemdService { unit = recover (Err "err.service") } ] } ]
+"#;
+    let glyphs = single_scroll_glyphs(src);
+    assert_eq!(
+        glyphs,
+        vec![
+            Glyph::SystemdService { unit: "ok.service".into() },
+            Glyph::SystemdService { unit: "err.service".into() },
+        ]
+    );
+}
+
+#[test]
+fn parameterized_type_folded_recursively() {
+    // A recursive parameterized `Tree a` folded to a list of its leaf payloads,
+    // exercising the type parameter through a self-referential structure.
+    let src = r#"
+type Tree a = Leaf a | Branch (Tree a) (Tree a)
+leaves : Tree a -> List a
+leaves t = case t of
+    Leaf x -> [ x ]
+    Branch l r -> leaves l ++ leaves r
+main = [ scroll { name = "test", glyphs = List.map (\u -> systemdService { unit = u }) (leaves (Branch (Leaf "a.service") (Branch (Leaf "b.service") (Leaf "c.service")))) } ]
+"#;
+    let glyphs = single_scroll_glyphs(src);
+    assert_eq!(
+        glyphs,
+        vec![
+            Glyph::SystemdService { unit: "a.service".into() },
+            Glyph::SystemdService { unit: "b.service".into() },
+            Glyph::SystemdService { unit: "c.service".into() },
+        ]
+    );
+}
+
+#[test]
+fn non_exhaustive_case_on_parameterized_type_names_the_missing_constructor() {
+    let src = r#"
+type Result e a = Err e | Ok a
+recover r = case r of
+    Ok a -> a
+main = [ scroll { name = "test", glyphs = [ systemdService { unit = recover (Ok "ok.service") } ] } ]
+"#;
+    let e = err(src);
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("Err"), "expected the missing constructor named, got: {}", e.msg);
+}
+
+#[test]
 fn non_exhaustive_case_on_user_type_names_the_missing_constructor() {
     let src = r#"
 type Status = Up | Down

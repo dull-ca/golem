@@ -43,10 +43,13 @@ monorepo. B's headline is model reconciliation.
   deferred because it needs a `parse-error(t)`-style layout close, the same
   mechanism `let … in` uses (ADR 0001 / design §8.1).
 
-- **User-facing `type` declarations.** Non-parameterized user types work now:
-  single-constructor record-carrying types and nullary sum types (e.g. `type
-  Role = Web | Db`) parse, infer, and cross module boundaries. The general
-  *parameterized* `type Foo a = ...` (design §6) remains deferred.
+- **User-facing `type` declarations — DONE.** Both non-parameterized user types
+  (single-constructor record-carrying types, nullary sum types like `type Role =
+  Web | Db`) and *parameterized* ones (`type Box a = Box a`, `type Result e a =
+  Err e | Ok a`, recursive `type Tree a = Leaf | Node (Tree a) a (Tree a)`;
+  design §6) parse, infer, drive `case` exhaustiveness, are usable in signatures,
+  and cross module boundaries at arity > 0 via `exposing (T(..))`. Constructors
+  generalize over the declared type parameters (`Box : ∀a. a -> Box a`).
 
 - **Imported value constructors in scope for pattern-matching — DONE.** A
   type's constructors imported via `exposing (Type(..))` now resolve in

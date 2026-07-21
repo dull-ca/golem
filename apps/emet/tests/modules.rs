@@ -109,6 +109,19 @@ fn imported_open_type_exhaustiveness_crosses_module() {
 }
 
 #[test]
+fn parameterized_open_type_crosses_module() {
+    // An arity-1 `Box a` exported `Box(..)`: the importer annotates with it
+    // (`Box String`, `Box a -> a`), constructs it, and matches it — every path
+    // that depends on the imported type's arity being carried across the boundary.
+    let c = compile_fixture("BoxesEntry.emet").expect("imported parameterized Box(..) compiles");
+    assert_eq!(scroll_names(&c), vec!["boxed".to_string()]);
+    assert_eq!(
+        c.scrolls[0].glyphs.iter().map(|g| g.key()).collect::<Vec<_>>(),
+        vec!["systemd:boxed.service".to_string(), "systemd:matched.service".to_string()],
+    );
+}
+
+#[test]
 fn type_imported_without_open_is_not_matchable() {
     let err = compile_fixture("OpaqueMatchEntry.emet")
         .expect_err("matching constructors of a type imported without (..) must fail");
