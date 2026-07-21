@@ -81,13 +81,26 @@ impl<R: CommandRunner> HostReconciler<R> {
             return Err(EnactError::Retryable(format!("systemctl daemon-reload: {}", reloaded.stderr)));
         }
         let enabled = self.runner.run("systemctl", &["enable", "--now", unit])?;
-        if !enabled.succeeded() {
+        let started_only = if enabled.succeeded() {
+            false
+        } else if is_generated_unit(&enabled.stderr) {
+            let started = self.runner.run("systemctl", &["start", unit])?;
+            if !started.succeeded() {
+                return Err(EnactError::Retryable(format!("systemctl start {unit}: {}", started.stderr)));
+            }
+            true
+        } else {
             return Err(EnactError::Retryable(format!("systemctl enable --now {unit}: {}", enabled.stderr)));
-        }
+        };
         Ok(outcome(
             glyph,
             cid,
-            Inverse::DisableSystemdService { unit: unit.to_string(), prior_enabled, prior_active },
+            Inverse::DisableSystemdService {
+                unit: unit.to_string(),
+                prior_enabled,
+                prior_active,
+                started_only,
+            },
             true,
         ))
     }
@@ -108,7 +121,14 @@ impl<R: CommandRunner> HostReconciler<R> {
         Ok(())
     }
 
-    fn reverse_systemd(&self, unit: &str, prior_enabled: bool, prior_active: bool) -> EnactResult<()> {
+    fn reverse_systemd(&self, unit: &str, prior_enabled: bool, prior_active: bool, started_only: bool) -> EnactResult<()> {
+        if started_only {
+            let stopped = self.runner.run("systemctl", &["stop", unit])?;
+            if !stopped.succeeded() {
+                return Err(EnactError::Retryable(format!("systemctl stop {unit}: {}", stopped.stderr)));
+            }
+            return Ok(());
+        }
         if !prior_enabled {
             let disabled = self.runner.run("systemctl", &["disable", "--now", unit])?;
             if !disabled.succeeded() {
@@ -140,14 +160,18 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         match &outcome.inverse {
             Inverse::Nothing => Ok(()),
             Inverse::RemoveAptPackage { name } => self.reverse_apt(name),
-            Inverse::DisableSystemdService { unit, prior_enabled, prior_active } => {
-                self.reverse_systemd(unit, *prior_enabled, *prior_active)
+            Inverse::DisableSystemdService { unit, prior_enabled, prior_active, started_only } => {
+                self.reverse_systemd(unit, *prior_enabled, *prior_active, *started_only)
             }
             Inverse::RestoreFile { path, contents, mode } => restore_file(path, contents, mode),
             Inverse::DeleteFile { path } => delete_file(path),
             Inverse::RemoveLineInFile { path, line } => remove_line_in_file(path, line),
         }
     }
+}
+
+fn is_generated_unit(stderr: &str) -> bool {
+    stderr.contains("transient or generated")
 }
 
 fn outcome(glyph: &Glyph, cid: ContentId, inverse: Inverse, changed: bool) -> Outcome {
@@ -406,6 +430,78 @@ mod tests {
         rec.reverse(&outcome).unwrap();
         assert!(runner_of(&rec).is_enabled("app"));
         assert!(!runner_of(&rec).is_active("app"));
+    }
+
+    #[test]
+    fn systemd_generated_unit_falls_back_to_start() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_generated_service("app"));
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert!(outcome.changed);
+        assert!(runner_of(&rec).is_active("app"));
+
+        let log = runner_of(&rec).log();
+        assert!(
+            log.iter().any(|c| c == "systemctl enable --now app"),
+            "expected an enable attempt, log was {log:?}"
+        );
+        assert!(
+            log.iter().any(|c| c == "systemctl start app"),
+            "expected a start fallback after enable was refused, log was {log:?}"
+        );
+        assert_eq!(
+            outcome.inverse,
+            Inverse::DisableSystemdService {
+                unit: "app".into(),
+                prior_enabled: true,
+                prior_active: false,
+                started_only: true,
+            }
+        );
+    }
+
+    #[test]
+    fn systemd_generated_unit_reverse_stops_never_disables() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_generated_service("app"));
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert!(runner_of(&rec).is_active("app"));
+
+        rec.reverse(&outcome).unwrap();
+        assert!(!runner_of(&rec).is_active("app"));
+        assert!(runner_of(&rec).is_enabled("app"));
+
+        let log = runner_of(&rec).log();
+        assert!(
+            log.iter().any(|c| c == "systemctl stop app"),
+            "reverse must stop the started-only unit, log was {log:?}"
+        );
+        assert!(
+            !log.iter().any(|c| c.starts_with("systemctl disable")),
+            "reverse must never disable a unit golem only started, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_plain_unit_records_enabled_not_started_only() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", false, false));
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+        assert_eq!(
+            outcome.inverse,
+            Inverse::DisableSystemdService {
+                unit: "app".into(),
+                prior_enabled: false,
+                prior_active: false,
+                started_only: false,
+            }
+        );
     }
 
     fn runner_of<R: CommandRunner>(rec: &HostReconciler<R>) -> &R {

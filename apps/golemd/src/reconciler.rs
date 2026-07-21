@@ -48,7 +48,7 @@ pub fn inverse_of(glyph: &Glyph) -> Inverse {
     match glyph {
         Glyph::AptPackage { name } => Inverse::RemoveAptPackage { name: name.clone() },
         Glyph::SystemdService { unit } => {
-            Inverse::DisableSystemdService { unit: unit.clone(), prior_enabled: false, prior_active: false }
+            Inverse::DisableSystemdService { unit: unit.clone(), prior_enabled: false, prior_active: false, started_only: false }
         }
         Glyph::File { path, .. } => Inverse::DeleteFile { path: path.clone() },
         Glyph::LineInFile { path, line } => {

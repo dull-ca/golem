@@ -62,7 +62,7 @@ impl GlyphOp {
 pub enum Inverse {
     Nothing,
     RemoveAptPackage { name: String },
-    DisableSystemdService { unit: String, prior_enabled: bool, prior_active: bool },
+    DisableSystemdService { unit: String, prior_enabled: bool, prior_active: bool, started_only: bool },
     RestoreFile { path: String, contents: String, mode: String },
     DeleteFile { path: String },
     RemoveLineInFile { path: String, line: String },

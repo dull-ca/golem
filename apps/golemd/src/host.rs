@@ -60,6 +60,7 @@ pub mod fake {
         installed: BTreeSet<String>,
         enabled: BTreeSet<String>,
         active: BTreeSet<String>,
+        generated: BTreeSet<String>,
     }
 
     #[derive(Default)]
@@ -94,6 +95,16 @@ pub mod fake {
                 if active {
                     host.active.insert(unit.to_string());
                 }
+            }
+            runner
+        }
+
+        pub fn with_generated_service(unit: &str) -> Self {
+            let runner = Self::new();
+            {
+                let mut host = runner.host.lock().unwrap();
+                host.generated.insert(unit.to_string());
+                host.enabled.insert(unit.to_string());
             }
             runner
         }
@@ -161,6 +172,13 @@ pub mod fake {
                 }
                 ("systemctl", _) if args.first() == Some(&"enable") => {
                     let unit = args.last().copied().unwrap_or_default();
+                    if host.generated.contains(unit) {
+                        return Ok(CommandOutput {
+                            status: 1,
+                            stdout: String::new(),
+                            stderr: format!("Failed to enable unit: Unit {unit} is transient or generated."),
+                        });
+                    }
                     host.enabled.insert(unit.to_string());
                     host.active.insert(unit.to_string());
                     Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
