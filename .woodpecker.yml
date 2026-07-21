@@ -1,0 +1,57 @@
+# Woodpecker CI for Codeberg (ci.codeberg.org). Runs on every push and pull
+# request, entirely through the nix toolchain: test the whole Cargo workspace,
+# build the golemd/golemctl/emetc release binaries, build the static docs site
+# with bun, and build (not push) the Caddy website container. Image push waits
+# on a registry; see the caching notes at the bottom for the cachix speedup.
+when:
+  - event: push
+  - event: pull_request
+
+variables:
+  - &nix_image "nixos/nix:2.34.7"
+  - &nix_env
+    NIX_CONFIG: |
+      experimental-features = nix-command flakes
+      accept-flake-config = true
+
+steps:
+  nix:
+    image: *nix_image
+    environment: *nix_env
+    commands:
+      # test: run the whole workspace's tests through the nix toolchain.
+      - nix develop --command cargo test --workspace
+      # build binaries: release golemd/golemctl/emetc via the flake outputs.
+      - nix build .#golemd .#golemctl .#emetc --print-build-logs --out-link result-bins
+      - ls -l result-bins*/bin
+      # site: build the Astro/Starlight static site with bun into dist/.
+      - nix develop --command bash -c 'cd sites/website && bun install --frozen-lockfile && bun run build'
+      # website container (BUILD ONLY, no push): package dist/ into a Caddy
+      # image via dockerTools to prove it builds. dist/ is gitignored, so it is
+      # passed by path with --impure rather than read from the flake source.
+      - GOLEM_SITE_DIST="$CI_WORKSPACE/sites/website/dist" nix build --impure .#website-container --print-build-logs --out-link result-website
+      - ls -l result-website
+
+# Caching
+# -------
+# Shared ci.codeberg.org runners give each step a fresh container, so /nix is
+# empty every run and nothing persists across steps. Two mitigations:
+#
+# 1. No secret (active): all nix work runs in ONE step, so the /nix/store that
+#    `nix build .#golemd` populates is reused by every later command in the
+#    same container (bun/emetc/website all share it). cache.nixos.org still
+#    substitutes every nixpkgs dependency, so only golem's own crates compile.
+#
+# 2. Real speedup (deferred, needs a CACHIX_AUTH_TOKEN secret): a cachix cache
+#    persists golem's built store paths across runs. Set the secret in the
+#    Codeberg repo CI settings, replace `golem` with the cache name, then wrap
+#    the builds:
+#
+#      - nix profile install nixpkgs#cachix
+#      - cachix use golem
+#      - cachix watch-exec golem -- nix build .#golemd .#golemctl .#emetc
+#
+#    and declare the secret on the step:
+#
+#      secrets:
+#        - cachix_auth_token
