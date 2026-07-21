@@ -24,6 +24,10 @@ steps:
       # build binaries: release golemd/golemctl/emetc via the flake outputs.
       - nix build .#golemd .#golemctl .#emetc --print-build-logs --out-link result-bins
       - ls -l result-bins*/bin
+      # static binaries: portable static-musl golemd/golemctl (pkgsStatic) for
+      # deploying onto Debian guests without matching shared libraries.
+      - nix build .#golemd-static .#golemctl-static --print-build-logs --out-link result-static
+      - file result-static*/bin/golemd result-static*/bin/golemctl
       # site: build the Astro/Starlight static site with bun into dist/.
       - nix develop --command bash -c 'cd sites/website && bun install --frozen-lockfile && bun run build'
       # website container (BUILD ONLY, no push): package dist/ into a Caddy

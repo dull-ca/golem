@@ -10,6 +10,7 @@
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
+        pkgsStatic = pkgs.pkgsStatic;
 
         cargoLock = { lockFile = ./Cargo.lock; };
 
@@ -33,6 +34,28 @@
           inherit cargoLock;
           cargoBuildFlags = [ "-p" "golemctl" ];
           cargoTestFlags = [ "-p" "golemctl" ];
+        };
+
+        # Portable static-musl golemd/golemctl for Debian guests. A nix-dynamic
+        # binary links its interpreter as a /nix/store path, so it can't run off
+        # NixOS; pkgsStatic links everything (musl libc, bundled sqlite,
+        # rustls/ring crypto) into one file. `nix build .#golemd-static`.
+        golemd-static = pkgsStatic.rustPlatform.buildRustPackage {
+          pname = "golemd-static";
+          version = "0.1.0";
+          src = ./.;
+          inherit cargoLock;
+          cargoBuildFlags = [ "-p" "golemd" ];
+          doCheck = false;
+        };
+
+        golemctl-static = pkgsStatic.rustPlatform.buildRustPackage {
+          pname = "golemctl-static";
+          version = "0.1.0";
+          src = ./.;
+          inherit cargoLock;
+          cargoBuildFlags = [ "-p" "golemctl" ];
+          doCheck = false;
         };
 
         emetc = pkgs.rustPlatform.buildRustPackage {
@@ -104,7 +127,7 @@
       in
       {
         packages = {
-          inherit golemd golemctl emetc emet-lsp tree-sitter-emet website-container;
+          inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp tree-sitter-emet website-container;
           default = emetc;
         };
 
