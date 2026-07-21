@@ -43,3 +43,5 @@ sites/website/bun.lockb
 /.fleet/
 apps/fleet/__pycache__/
 
+__pycache__/
+*.pyc
