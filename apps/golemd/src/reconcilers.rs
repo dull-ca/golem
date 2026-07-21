@@ -188,6 +188,20 @@ impl<R: CommandRunner> HostReconciler<R> {
     }
 }
 
+impl<R: CommandRunner> HostReconciler<R> {
+    fn try_restart(&self, unit: &str) -> EnactResult<()> {
+        let reloaded = self.runner.run("systemctl", &["daemon-reload"])?;
+        if !reloaded.succeeded() {
+            return Err(EnactError::Retryable(format!("systemctl daemon-reload: {}", reloaded.stderr)));
+        }
+        let restarted = self.runner.run("systemctl", &["try-restart", unit])?;
+        if !restarted.succeeded() {
+            return Err(EnactError::Retryable(format!("systemctl try-restart {unit}: {}", restarted.stderr)));
+        }
+        Ok(())
+    }
+}
+
 impl<R: CommandRunner> Reconciler for HostReconciler<R> {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
         match glyph {
@@ -216,6 +230,10 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
             Inverse::RemoveSymlink { path } => remove_symlink(path),
             Inverse::RemoveLineInFile { path, line } => remove_line_in_file(path, line),
         }
+    }
+
+    fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+        self.try_restart(unit)
     }
 }
 

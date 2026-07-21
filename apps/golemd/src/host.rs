@@ -208,6 +208,9 @@ pub mod fake {
                     host.active.insert(unit.to_string());
                     Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
                 }
+                ("systemctl", _) if args.first() == Some(&"try-restart") => {
+                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                }
                 _ => Err(EnactError::Fatal(format!("unexpected command: {program} {}", args.join(" ")))),
             }
         }

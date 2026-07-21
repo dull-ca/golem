@@ -28,6 +28,9 @@ pub type EnactResult<T> = Result<T, EnactError>;
 pub trait Reconciler: Send + Sync {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome>;
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()>;
+    fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
+        Ok(())
+    }
 }
 
 impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
@@ -36,6 +39,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     }
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
         (**self).reverse(outcome)
+    }
+    fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+        (**self).restart_unit(unit)
     }
 }
 

@@ -17,3 +17,4 @@ pub mod planroom;
 pub mod reconcile;
 pub mod reconciler;
 pub mod reconcilers;
+pub mod wal;

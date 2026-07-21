@@ -135,3 +135,58 @@ pub struct AppliedState {
     pub scroll: Scroll,
     pub outcomes: Vec<Outcome>,
 }
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalAction {
+    Apply,
+    Reverse,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalStepState {
+    Intended,
+    Done,
+    Failed,
+    Reversed,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptPhase {
+    Planning,
+    Enacting,
+    RollingBack,
+    Committed,
+    RolledBack,
+}
+
+impl AttemptPhase {
+    pub fn is_settled(self) -> bool {
+        matches!(self, AttemptPhase::Committed | AttemptPhase::RolledBack)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconcileAttempt {
+    pub reconcile_id: u64,
+    pub started_at: DateTime<Utc>,
+    pub scroll_content_id: Option<ContentId>,
+    pub phase: AttemptPhase,
+    pub settled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalStep {
+    pub seq: u64,
+    pub reconcile_id: u64,
+    pub step_ord: u64,
+    pub glyph_key: String,
+    pub action: WalAction,
+    pub state: WalStepState,
+    pub op: GlyphOp,
+    pub inverse: Option<Inverse>,
+    pub changed: Option<bool>,
+    pub at: DateTime<Utc>,
+}

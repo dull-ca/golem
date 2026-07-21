@@ -1,20 +1,17 @@
-//! The reconcile loop (ADR 0014 §3). One manifest in: select this host's scroll,
-//! diff it against the last applied state (`reconcile::plan`), enact each glyph
-//! op through the `Reconciler` port with the retry spine, and journal the
-//! ordered outcomes. All-or-nothing: if any op fails fatally or exhausts its
-//! retries, the ops already applied this reconcile are undone LIFO and nothing
-//! is persisted, so the node stays at its last good scroll.
-
 use anyhow::{bail, Result};
-use scroll_format::{from_bytes, AddressedScroll, ContentId, Scroll};
+use scroll_format::{from_bytes, AddressedScroll, ContentId, Entry, Glyph, Scroll};
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::warn;
 
-use crate::journal::{AppliedState, GlyphOp, Outcome, Revision, RevisionKind};
+use crate::journal::{
+    AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, RevisionKind,
+    WalAction, WalStep, WalStepState,
+};
 use crate::planroom::PlanRoom;
 use crate::reconcile::plan;
 use crate::reconciler::{EnactError, EnactResult, Reconciler};
+use crate::wal::applied_outcomes;
 
 pub struct Foreman {
     host: String,
@@ -25,31 +22,27 @@ pub struct Foreman {
     write: Mutex<()>,
 }
 
-/// This host's scroll from the manifest, with its content id. A manifest with
-/// no scroll named for this host yields an empty scroll (removing everything).
 pub struct SelectedScroll {
     pub content_id: ContentId,
     pub scroll: Scroll,
 }
 
-/// One entry on the undo stack built as ops succeed, replayed in reverse on a
-/// mid-reconcile failure: `Reverse` undoes a glyph just applied; `Reapply`
-/// re-installs the prior glyph that a `Remove`/`Replace` had reversed.
-enum UndoStep {
-    Reverse(Outcome),
-    Reapply(scroll_format::Glyph, ContentId),
-}
+const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/systemd"];
 
 impl Foreman {
     pub fn new(host: String, planroom: Box<dyn PlanRoom>, reconciler: Box<dyn Reconciler>) -> Self {
-        Self {
+        let foreman = Self {
             host,
             planroom,
             reconciler,
             max_attempts: 5,
             retry_delay: Duration::from_millis(200),
             write: Mutex::new(()),
+        };
+        if let Err(e) = foreman.recover() {
+            warn!(?e, "startup recovery failed");
         }
+        foreman
     }
 
     pub fn with_retry(mut self, max_attempts: u32, retry_delay: Duration) -> Self {
@@ -62,16 +55,12 @@ impl Foreman {
         &self.host
     }
 
-    /// The ingest entry point: decode the manifest bytes, select this host's
-    /// scroll, and reconcile toward it. Returns the journal `Revision` recorded.
     pub fn apply_manifest(&self, bytes: &[u8]) -> Result<Revision> {
         let manifest = from_bytes(bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
         let selected = self.select(&manifest.scrolls);
         self.reconcile(selected)
     }
 
-    /// Pick the scroll named for this host out of the fleet manifest; if the
-    /// fleet does not mention this host, an empty scroll (drives full removal).
     fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
         match scrolls.iter().find(|a| a.scroll.name == self.host) {
             Some(a) => SelectedScroll { content_id: a.content_id, scroll: a.scroll.clone() },
@@ -82,100 +71,158 @@ impl Foreman {
         }
     }
 
-    /// Serialize writers, diff the desired scroll against the prior outcomes,
-    /// enact the plan, and — only if the whole plan succeeds — store the new
-    /// applied state and append a `Reconcile` revision. A failed `enact` returns
-    /// its error with nothing persisted.
     fn reconcile(&self, desired: SelectedScroll) -> Result<Revision> {
         let _w = self.write.lock().unwrap();
-        let prior = self.planroom.applied_state()?;
-        let prior_outcomes = prior.as_ref().map(|a| a.outcomes.as_slice()).unwrap_or(&[]);
-        let ops = plan(prior_outcomes, &desired.scroll);
-        // Post-process the enacted outcomes before storing them: a Noop enacted
-        // this reconcile carries an empty inverse, so carry the prior real
-        // inverse forward for it — otherwise storing it would erase golem's
-        // ability to reverse an unchanged glyph. See preserve_prior_inverses.
-        let outcomes = preserve_prior_inverses(self.enact(&ops)?, prior_outcomes);
-        self.planroom.put_applied_state(&AppliedState {
-            scroll_content_id: desired.content_id,
-            scroll: desired.scroll,
-            outcomes: outcomes.clone(),
-        })?;
-        self.planroom
-            .append_revision(RevisionKind::Reconcile, Some(desired.content_id), &outcomes)
+        self.recover_locked()?;
+        if let Some(attempt) = self.planroom.latest_attempt()? {
+            if !attempt.phase.is_settled() {
+                bail!("reconcile {} is unsettled ({:?}); refusing new manifest", attempt.reconcile_id, attempt.phase);
+            }
+        }
+        let prior = applied_outcomes(&self.planroom.wal_steps()?);
+        let ops = plan(&prior, &desired.scroll);
+
+        let attempt = self.planroom.open_attempt(Some(desired.content_id))?;
+        self.planroom.set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)?;
+
+        match self.enact(attempt.reconcile_id, &ops, &prior) {
+            Ok(()) => {
+                self.propagate_config(attempt.reconcile_id)?;
+                self.settle(attempt.reconcile_id, &desired)
+            }
+            Err(e) => {
+                self.rollback_attempt(attempt.reconcile_id)?;
+                self.planroom.set_attempt_phase(attempt.reconcile_id, AttemptPhase::RolledBack)?;
+                self.cache_applied_state()?;
+                Err(e)
+            }
+        }
     }
 
-    /// Apply the plan in order, pushing an [`UndoStep`] as each op succeeds and
-    /// collecting the [`Outcome`]s to journal. `Replace` is reverse-then-apply so
-    /// the host is never left with two versions half-present; `Remove` reverses
-    /// the prior outcome and produces no new one. On any failure the undo stack
-    /// is replayed LIFO (`rollback`) and the error propagates.
-    fn enact(&self, ops: &[GlyphOp]) -> Result<Vec<Outcome>> {
-        let mut state: Vec<Outcome> = Vec::new();
-        let mut undo: Vec<UndoStep> = Vec::new();
-        for op in ops {
-            let step = match op {
-                GlyphOp::Install { cid, glyph } | GlyphOp::Noop { cid, glyph } => {
-                    match self.attempt(op, || self.reconciler.apply(glyph, *cid)) {
-                        Ok(mut outcome) => {
-                            outcome.op = op.clone();
-                            undo.push(UndoStep::Reverse(outcome.clone()));
-                            Ok(Some(outcome))
-                        }
-                        Err(e) => Err(e),
-                    }
+    fn enact(&self, reconcile_id: u64, ops: &[GlyphOp], prior: &[Outcome]) -> Result<()> {
+        for (ord, op) in ops.iter().enumerate() {
+            let ord = ord as u64;
+            match op {
+                GlyphOp::Noop { .. } => {}
+                GlyphOp::Install { cid, glyph } => {
+                    self.enact_apply(reconcile_id, ord, op, glyph, *cid, None)?;
                 }
                 GlyphOp::Replace { old_cid, new_cid, glyph } => {
-                    let prior = self.prior_outcome(&op.key(), *old_cid, glyph);
-                    match self.attempt_reverse(op, &prior) {
-                        Ok(()) => {
-                            undo.push(UndoStep::Reapply(glyph.clone(), *old_cid));
-                            match self.attempt(op, || self.reconciler.apply(glyph, *new_cid)) {
-                                Ok(mut outcome) => {
-                                    outcome.op = op.clone();
-                                    undo.push(UndoStep::Reverse(outcome.clone()));
-                                    Ok(Some(outcome))
-                                }
-                                Err(e) => Err(e),
-                            }
-                        }
-                        Err(e) => Err(e),
+                    if replaces_in_place(glyph) {
+                        self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None)?;
+                    } else {
+                        let prior_outcome = self.prior_outcome(prior, &op.key(), *old_cid, glyph);
+                        self.enact_reverse(reconcile_id, ord, op, &prior_outcome)?;
+                        self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None)?;
                     }
                 }
                 GlyphOp::Remove { cid, glyph } => {
-                    let prior = self.prior_outcome(&op.key(), *cid, glyph);
-                    match self.attempt_reverse(op, &prior) {
-                        Ok(()) => {
-                            undo.push(UndoStep::Reapply(glyph.clone(), *cid));
-                            Ok(None)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-            };
-            match step {
-                Ok(Some(outcome)) => state.push(outcome),
-                Ok(None) => {}
-                Err(e) => {
-                    self.rollback(undo);
-                    return Err(e);
+                    let prior_outcome = self.prior_outcome(prior, &op.key(), *cid, glyph);
+                    self.enact_reverse(reconcile_id, ord, op, &prior_outcome)?;
                 }
             }
         }
-        Ok(state)
+        Ok(())
     }
 
-    /// The recorded outcome for `key` — carrying the real captured inverse — so
-    /// a `Remove`/`Replace` reverses exactly what apply did. Falls back to a
-    /// synthesized "golem added it" inverse if the journal has no record.
-    fn prior_outcome(&self, key: &str, cid: ContentId, glyph: &scroll_format::Glyph) -> Outcome {
-        let recorded = self
-            .planroom
-            .applied_state()
-            .ok()
-            .flatten()
-            .and_then(|a| a.outcomes.into_iter().find(|o| o.op.key() == key));
-        recorded.unwrap_or(Outcome {
+    fn enact_apply(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        glyph: &Glyph,
+        cid: ContentId,
+        intended_inverse: Option<&Inverse>,
+    ) -> Result<()> {
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Intended,
+            op,
+            intended_inverse,
+            None,
+        )?;
+        match self.attempt(op, || self.reconciler.apply(glyph, cid)) {
+            Ok(outcome) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Apply,
+                    WalStepState::Done,
+                    op,
+                    Some(&outcome.inverse),
+                    Some(outcome.changed),
+                )?;
+                Ok(())
+            }
+            Err(e) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Apply,
+                    WalStepState::Failed,
+                    op,
+                    None,
+                    None,
+                )?;
+                Err(e)
+            }
+        }
+    }
+
+    fn enact_reverse(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        prior_outcome: &Outcome,
+    ) -> Result<()> {
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Reverse,
+            WalStepState::Intended,
+            op,
+            Some(&prior_outcome.inverse),
+            None,
+        )?;
+        match self.attempt_reverse(op, prior_outcome) {
+            Ok(()) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Reverse,
+                    WalStepState::Done,
+                    op,
+                    Some(&prior_outcome.inverse),
+                    Some(true),
+                )?;
+                Ok(())
+            }
+            Err(e) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Reverse,
+                    WalStepState::Failed,
+                    op,
+                    None,
+                    None,
+                )?;
+                Err(e)
+            }
+        }
+    }
+
+    fn prior_outcome(&self, prior: &[Outcome], key: &str, cid: ContentId, glyph: &Glyph) -> Outcome {
+        prior.iter().find(|o| o.op.key() == key).cloned().unwrap_or(Outcome {
             op: GlyphOp::Install { cid, glyph: glyph.clone() },
             cid,
             inverse: crate::reconciler::inverse_of(glyph),
@@ -183,24 +230,121 @@ impl Foreman {
         })
     }
 
-    /// Replay the undo stack in reverse (LIFO) after a mid-reconcile failure,
-    /// returning the host to its pre-reconcile state. A failing rollback step is
-    /// logged, not propagated — the reconcile already failed.
-    fn rollback(&self, undo: Vec<UndoStep>) {
-        for step in undo.into_iter().rev() {
-            let result = match step {
-                UndoStep::Reverse(outcome) => self.reconciler.reverse(&outcome),
-                UndoStep::Reapply(glyph, cid) => self.reconciler.apply(&glyph, cid).map(|_| ()),
-            };
-            if let Err(e) = result {
-                warn!(?e, "rollback step failed");
+    fn propagate_config(&self, reconcile_id: u64) -> Result<()> {
+        let steps = self.planroom.wal_steps_for(reconcile_id)?;
+        let mut units: Vec<String> = Vec::new();
+        for step in &steps {
+            if step.state != WalStepState::Done || step.changed != Some(true) {
+                continue;
+            }
+            if let Some(path) = changed_file_path(&step.op) {
+                if let Some(unit) = unit_for_config_file(&path) {
+                    if !units.contains(&unit) {
+                        units.push(unit);
+                    }
+                }
             }
         }
+        if units.is_empty() {
+            return Ok(());
+        }
+        let ord = steps.iter().map(|s| s.step_ord).max().map(|m| m + 1).unwrap_or(0);
+        for (n, unit) in units.into_iter().enumerate() {
+            let glyph = Glyph::SystemdService { unit: unit.clone() };
+            let cid = scroll_format::content_id_of_glyph(&glyph);
+            let op = GlyphOp::Noop { cid, glyph: glyph.clone() };
+            let step_ord = ord + n as u64;
+            self.planroom.append_wal_step(
+                reconcile_id,
+                step_ord,
+                &format!("restart:{unit}"),
+                WalAction::Apply,
+                WalStepState::Intended,
+                &op,
+                Some(&Inverse::Nothing),
+                None,
+            )?;
+            let restarted = self.reconciler.restart_unit(&unit);
+            let state = match &restarted {
+                Ok(()) => WalStepState::Done,
+                Err(_) => WalStepState::Failed,
+            };
+            self.planroom.append_wal_step(
+                reconcile_id,
+                step_ord,
+                &format!("restart:{unit}"),
+                WalAction::Apply,
+                state,
+                &op,
+                Some(&Inverse::Nothing),
+                Some(false),
+            )?;
+        }
+        Ok(())
     }
 
-    /// The retry spine around one enact call: retry `Retryable` failures up to
-    /// `max_attempts` with `retry_delay` between, give up loudly after the last,
-    /// and bail immediately on `Fatal`.
+    fn settle(&self, reconcile_id: u64, desired: &SelectedScroll) -> Result<Revision> {
+        self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::Committed)?;
+        let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
+        self.planroom.put_applied_state(&AppliedState {
+            scroll_content_id: desired.content_id,
+            scroll: desired.scroll.clone(),
+            outcomes: outcomes.clone(),
+        })?;
+        self.planroom.append_revision(
+            RevisionKind::Reconcile,
+            Some(desired.content_id),
+            &outcomes,
+        )
+    }
+
+    fn cache_applied_state(&self) -> Result<()> {
+        let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
+        let prior = self.planroom.applied_state()?;
+        if prior.is_none() && outcomes.is_empty() {
+            return Ok(());
+        }
+        let scroll = prior.map(|a| a.scroll).unwrap_or_else(|| empty_scroll(&self.host));
+        self.planroom.put_applied_state(&AppliedState {
+            scroll_content_id: scroll_format::content_id(&scroll),
+            scroll,
+            outcomes,
+        })
+    }
+
+    fn rollback_attempt(&self, reconcile_id: u64) -> Result<()> {
+        self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::RollingBack)?;
+        loop {
+            let steps = self.planroom.wal_steps_for(reconcile_id)?;
+            let Some(target) = next_reversible(&steps) else { break };
+            let cid = applied_cid_of(&target.op, target.action);
+            let outcome = Outcome {
+                op: target.op.clone(),
+                cid,
+                inverse: target.inverse.clone().unwrap_or(Inverse::Nothing),
+                changed: target.changed.unwrap_or(false),
+            };
+            let undone = match target.action {
+                WalAction::Apply => self.reconciler.reverse(&outcome),
+                WalAction::Reverse => self.reconciler.apply(target.op.glyph(), cid).map(|_| ()),
+            };
+            if let Err(e) = undone {
+                warn!(?e, "rollback step failed");
+            }
+            self.planroom.append_wal_step(
+                reconcile_id,
+                target.step_ord,
+                &target.glyph_key,
+                target.action,
+                WalStepState::Reversed,
+                &target.op,
+                target.inverse.as_ref(),
+                target.changed,
+            )?;
+        }
+        Ok(())
+    }
+
     fn attempt(&self, op: &GlyphOp, mut run: impl FnMut() -> EnactResult<Outcome>) -> Result<Outcome> {
         for n in 1..=self.max_attempts {
             match run() {
@@ -235,8 +379,93 @@ impl Foreman {
         unreachable!("loop returns or bails")
     }
 
+    pub fn recover(&self) -> Result<()> {
+        let _w = self.write.lock().unwrap();
+        self.recover_locked()
+    }
+
+    fn recover_locked(&self) -> Result<()> {
+        let Some(attempt) = self.planroom.latest_attempt()? else { return Ok(()) };
+        if attempt.phase.is_settled() {
+            return self.cache_applied_state();
+        }
+        self.redrive_intended(&attempt)?;
+        self.rollback_attempt(attempt.reconcile_id)?;
+        self.planroom.set_attempt_phase(attempt.reconcile_id, AttemptPhase::RolledBack)?;
+        self.cache_applied_state()
+    }
+
+    fn redrive_intended(&self, attempt: &ReconcileAttempt) -> Result<()> {
+        let steps = self.planroom.wal_steps_for(attempt.reconcile_id)?;
+        for step in &steps {
+            if step.state != WalStepState::Intended || has_terminal(&steps, step) {
+                continue;
+            }
+            let redriven = match step.action {
+                WalAction::Apply => {
+                    let cid = applied_cid_of(&step.op, WalAction::Apply);
+                    self.reconciler.apply(step.op.glyph(), cid).map(Some)
+                }
+                WalAction::Reverse => {
+                    let outcome = Outcome {
+                        op: step.op.clone(),
+                        cid: applied_cid_of(&step.op, WalAction::Reverse),
+                        inverse: step.inverse.clone().unwrap_or(Inverse::Nothing),
+                        changed: step.changed.unwrap_or(true),
+                    };
+                    self.reconciler.reverse(&outcome).map(|_| None)
+                }
+            };
+            match redriven {
+                Ok(outcome) => {
+                    let (inverse, changed) = match step.action {
+                        WalAction::Apply => {
+                            let o = outcome.expect("apply returns an outcome");
+                            (o.inverse, o.changed)
+                        }
+                        WalAction::Reverse => {
+                            (step.inverse.clone().unwrap_or(Inverse::Nothing), true)
+                        }
+                    };
+                    self.planroom.append_wal_step(
+                        attempt.reconcile_id,
+                        step.step_ord,
+                        &step.glyph_key,
+                        step.action,
+                        WalStepState::Done,
+                        &step.op,
+                        Some(&inverse),
+                        Some(changed),
+                    )?;
+                }
+                Err(_) => {
+                    self.planroom.append_wal_step(
+                        attempt.reconcile_id,
+                        step.step_ord,
+                        &step.glyph_key,
+                        step.action,
+                        WalStepState::Failed,
+                        &step.op,
+                        None,
+                        None,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn applied_state(&self) -> Result<Option<AppliedState>> {
-        self.planroom.applied_state()
+        let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
+        match self.planroom.applied_state()? {
+            Some(cached) => Ok(Some(AppliedState { outcomes, ..cached })),
+            None if outcomes.is_empty() => Ok(None),
+            None => Ok(Some(AppliedState {
+                scroll_content_id: scroll_format::content_id(&empty_scroll(&self.host)),
+                scroll: empty_scroll(&self.host),
+                outcomes,
+            })),
+        }
     }
 
     pub fn revisions(&self) -> Result<Vec<Revision>> {
@@ -256,40 +485,70 @@ fn empty_scroll(host: &str) -> Scroll {
     Scroll { name: host.to_string(), glyphs: vec![] }
 }
 
-/// Carry each still-present glyph's real inverse forward across an idempotent
-/// re-apply, so the stored applied state keeps — per glyph — the inverse that
-/// removes it.
-///
-/// A `Noop` outcome (the host already matched at the desired CID) carries
-/// [`Inverse::Nothing`]: apply changed nothing this reconcile, so it captured
-/// nothing to undo. Persisting that empty inverse would clobber the real
-/// inverse captured at the glyph's original `Install`, and golem would lose the
-/// ability to reverse the glyph forever — recorded state and host diverge
-/// permanently. So for a `Noop`, look up the prior recorded outcome by
-/// [`Glyph::key`] and keep its inverse.
-///
-/// `Install` and `Replace` keep their own freshly captured inverse: an install
-/// just captured the state that undoes it, and a `Replace`'s inverse is the
-/// *new* version's undo (the upgrade's), which must not be overwritten with the
-/// prior version's. `Remove` produces no outcome — the glyph is gone.
-///
-/// Without this, apply → re-apply → apply-empty left a registry container
-/// running while golem recorded zero glyphs (reproduced live via the dogfood
-/// registry; ADR 0015 addendum).
-fn preserve_prior_inverses(outcomes: Vec<Outcome>, prior: &[Outcome]) -> Vec<Outcome> {
-    outcomes
-        .into_iter()
-        .map(|outcome| match outcome.op {
-            GlyphOp::Noop { .. } => {
-                let key = outcome.op.key();
-                match prior.iter().find(|p| p.op.key() == key) {
-                    Some(recorded) => Outcome { inverse: recorded.inverse.clone(), ..outcome },
-                    None => outcome,
-                }
-            }
-            _ => outcome,
-        })
-        .collect()
+fn replaces_in_place(glyph: &Glyph) -> bool {
+    matches!(glyph, Glyph::Filesystem { entry: Entry::File { .. }, .. })
+}
+
+fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
+    match op {
+        GlyphOp::Install { cid, .. } | GlyphOp::Noop { cid, .. } | GlyphOp::Remove { cid, .. } => *cid,
+        GlyphOp::Replace { new_cid, old_cid, .. } => match action {
+            WalAction::Apply => *new_cid,
+            WalAction::Reverse => *old_cid,
+        },
+    }
+}
+
+fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
+    steps.iter().any(|s| {
+        s.seq > intended.seq
+            && s.step_ord == intended.step_ord
+            && s.action == intended.action
+            && matches!(s.state, WalStepState::Done | WalStepState::Failed | WalStepState::Reversed)
+    })
+}
+
+fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
+    steps
+        .iter()
+        .rev()
+        .find(|s| s.state == WalStepState::Done && !reversed_after(steps, s))
+}
+
+fn reversed_after(steps: &[WalStep], done: &WalStep) -> bool {
+    steps.iter().any(|s| {
+        s.seq > done.seq
+            && s.step_ord == done.step_ord
+            && s.action == done.action
+            && s.state == WalStepState::Reversed
+    })
+}
+
+fn changed_file_path(op: &GlyphOp) -> Option<String> {
+    match op.glyph() {
+        Glyph::Filesystem { path, entry: Entry::File { .. } } => Some(path.clone()),
+        _ => None,
+    }
+}
+
+fn unit_for_config_file(path: &str) -> Option<String> {
+    let under_unit_dir = UNIT_DIRECTORIES.iter().any(|dir| path.starts_with(dir));
+    if !under_unit_dir {
+        return None;
+    }
+    if let Some(component) = path.find(".service.d/") {
+        let stem = &path[..component];
+        let name = stem.rsplit('/').next()?;
+        return Some(format!("{name}.service"));
+    }
+    let file = path.rsplit('/').next()?;
+    if let Some(stem) = file.strip_suffix(".container") {
+        return Some(format!("{stem}.service"));
+    }
+    if file.ends_with(".service") {
+        return Some(file.to_string());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -429,7 +688,7 @@ mod tests {
         f.apply_manifest(&bytes).unwrap();
         rec.calls.lock().unwrap().clear();
         f.apply_manifest(&bytes).unwrap();
-        assert_eq!(rec.calls(), vec!["apply apt:nginx"]);
+        assert!(rec.calls().is_empty(), "a Noop enacts no side effect");
         assert_eq!(f.revisions().unwrap().len(), 3);
     }
 
