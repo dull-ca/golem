@@ -139,6 +139,9 @@ pub mod fake {
                         Ok(CommandOutput { status: 1, stdout: String::new(), stderr: "no packages found".into() })
                     }
                 }
+                // The apt apply refreshes the package list before install;
+                // model the refresh as a no-op success so it does not trip the
+                // unmodeled-command Fatal below.
                 ("apt-get", ["update"]) => {
                     Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
                 }
@@ -175,6 +178,9 @@ pub mod fake {
                 }
                 ("systemctl", _) if args.first() == Some(&"enable") => {
                     let unit = args.last().copied().unwrap_or_default();
+                    // A generated unit (a Podman quadlet) is enabled by its
+                    // generator, so real systemd refuses enable with this exact
+                    // text — the signal the apply's start fallback keys on.
                     if host.generated.contains(unit) {
                         return Ok(CommandOutput {
                             status: 1,

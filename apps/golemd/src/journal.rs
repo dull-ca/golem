@@ -49,9 +49,13 @@ impl GlyphOp {
 ///   package, so reverse removes it. (A package already present at apply time
 ///   records `Nothing` and is left alone.)
 /// - [`DisableSystemdService`](Inverse::DisableSystemdService) — records the
-///   unit's `prior_enabled`/`prior_active` at apply time; reverse restores
-///   exactly that (disable if golem enabled it, stop if golem started it, else
-///   leave it — see `reconcilers::reverse_systemd`).
+///   unit's `prior_enabled`/`prior_active` at apply time, plus `started_only`:
+///   set when `enable` was refused (a generated/quadlet unit) and golem could
+///   only `start` the unit. Reverse of a `started_only` unit *stops* it and
+///   never disables it — golem never enabled it. Otherwise reverse restores the
+///   recorded prior enabled/active state (disable if golem enabled it, stop if
+///   golem started an inactive unit, else leave it — see
+///   `reconcilers::reverse_systemd`).
 /// - [`RestoreFile`](Inverse::RestoreFile) — golem overwrote an existing file;
 ///   reverse rewrites the prior contents+mode.
 /// - [`DeleteFile`](Inverse::DeleteFile) — golem created the file; reverse

@@ -217,3 +217,34 @@ Debian box via the fleet harness (`apps/fleet/`).
 The reverse path deliberately does not reload. Reverse never writes a unit
 file, so the unit is already loaded; deleting a unit golem wrote is the `file`
 glyph's own inverse, not something the systemd reverse needs to account for.
+
+## Addendum: idempotent re-apply must preserve inverses across a Noop
+
+The applied state holds, per still-present glyph, the inverse that removes it
+(§1). A re-apply that changes nothing enacts a `Noop`, and a `Noop` carries
+`Inverse::Nothing` — this reconcile captured nothing to undo. Storing that empty
+inverse over the glyph's recorded state overwrites the real inverse captured at
+its original `Install`. Recorded state and host then diverge permanently: golem
+believes it has nothing to reverse, while the glyph is still present on the host
+with no way to take it back.
+
+So the enacted outcomes are post-processed before they are persisted: for a
+`Noop` glyph, the prior recorded inverse (keyed by `Glyph::key()`) is carried
+forward; `Install` and `Replace` keep their freshly captured inverse (a
+`Replace`'s inverse is the new version's undo and must not be overwritten with
+the old version's); `Remove` drops the glyph. See
+`foreman::preserve_prior_inverses`.
+
+Reproduced live via the registry dogfood: apply → re-apply → apply-empty left
+the container running while golem recorded zero glyphs, because the re-apply had
+clobbered the container's inverse with `Nothing` and the final empty scroll then
+had nothing to reverse.
+
+## Addendum: the apt reconciler may refresh the package list
+
+The `aptPackage` reconciler runs `apt-get update` before an install. A fresh
+Debian cloud image ships with an empty package list, so an install would fail to
+resolve the package without a refresh first. The refresh is per-glyph and
+idempotent — a single refresh per reconcile would be cheaper, but the stateless
+per-glyph adapter has no reconcile-scoped hook to hang one on without threading
+shared state through the `CommandRunner` port. See `reconcilers::apply_apt`.

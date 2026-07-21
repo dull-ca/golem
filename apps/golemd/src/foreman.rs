@@ -91,6 +91,10 @@ impl Foreman {
         let prior = self.planroom.applied_state()?;
         let prior_outcomes = prior.as_ref().map(|a| a.outcomes.as_slice()).unwrap_or(&[]);
         let ops = plan(prior_outcomes, &desired.scroll);
+        // Post-process the enacted outcomes before storing them: a Noop enacted
+        // this reconcile carries an empty inverse, so carry the prior real
+        // inverse forward for it — otherwise storing it would erase golem's
+        // ability to reverse an unchanged glyph. See preserve_prior_inverses.
         let outcomes = preserve_prior_inverses(self.enact(&ops)?, prior_outcomes);
         self.planroom.put_applied_state(&AppliedState {
             scroll_content_id: desired.content_id,
@@ -252,6 +256,26 @@ fn empty_scroll(host: &str) -> Scroll {
     Scroll { name: host.to_string(), glyphs: vec![] }
 }
 
+/// Carry each still-present glyph's real inverse forward across an idempotent
+/// re-apply, so the stored applied state keeps — per glyph — the inverse that
+/// removes it.
+///
+/// A `Noop` outcome (the host already matched at the desired CID) carries
+/// [`Inverse::Nothing`]: apply changed nothing this reconcile, so it captured
+/// nothing to undo. Persisting that empty inverse would clobber the real
+/// inverse captured at the glyph's original `Install`, and golem would lose the
+/// ability to reverse the glyph forever — recorded state and host diverge
+/// permanently. So for a `Noop`, look up the prior recorded outcome by
+/// [`Glyph::key`] and keep its inverse.
+///
+/// `Install` and `Replace` keep their own freshly captured inverse: an install
+/// just captured the state that undoes it, and a `Replace`'s inverse is the
+/// *new* version's undo (the upgrade's), which must not be overwritten with the
+/// prior version's. `Remove` produces no outcome — the glyph is gone.
+///
+/// Without this, apply → re-apply → apply-empty left a registry container
+/// running while golem recorded zero glyphs (reproduced live via the dogfood
+/// registry; ADR 0015 addendum).
 fn preserve_prior_inverses(outcomes: Vec<Outcome>, prior: &[Outcome]) -> Vec<Outcome> {
     outcomes
         .into_iter()

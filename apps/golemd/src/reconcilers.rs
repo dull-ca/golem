@@ -48,6 +48,16 @@ impl<R: CommandRunner> HostReconciler<R> {
         Self { runner }
     }
 
+    /// Install `name` if absent, capturing an [`Inverse::RemoveAptPackage`] so
+    /// reverse removes only a package golem installed. `apt-get update` runs
+    /// before the install: a fresh Debian cloud image ships with an empty
+    /// package list, so `install` would fail to resolve the package without a
+    /// refresh first.
+    ///
+    /// The refresh is per-glyph and idempotent — every apt install pays for one.
+    /// A single refresh per reconcile would be cheaper, but this stateless
+    /// per-glyph adapter has no reconcile-scoped hook to hang one update on
+    /// without threading shared state through the port.
     fn apply_apt(&self, name: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
         if self.apt_installed(name)? {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
@@ -74,6 +84,19 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// ([`Self::reverse_systemd`]) does not reload — reverse never writes a unit
     /// file, so the unit is already loaded, and deleting a unit golem wrote is
     /// the `file` glyph's own inverse.
+    ///
+    /// A generated unit refuses `enable`. A Podman quadlet is already enabled by
+    /// its generator through an `[Install]` section, so `systemctl enable --now`
+    /// rejects it as "transient or generated" rather than starting it. On that
+    /// specific failure, fall back to `systemctl start` and record
+    /// `started_only` so reverse *stops* the unit and never disables it — golem
+    /// only started the unit, it never enabled it. Any other enable failure
+    /// stays `Retryable`.
+    ///
+    /// The generated-unit test is a stderr substring today
+    /// ([`is_generated_unit`]). A structural probe — `systemctl is-enabled`
+    /// returning `generated` — is the more robust future signal, independent of
+    /// systemd's error wording.
     fn apply_systemd(&self, unit: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
         let prior_enabled = self.systemd_enabled(unit)?;
         let prior_active = self.systemd_active(unit)?;
@@ -125,6 +148,12 @@ impl<R: CommandRunner> HostReconciler<R> {
         Ok(())
     }
 
+    /// Restore the unit's prior state. A `started_only` unit — one golem could
+    /// only start because `enable` refused it (a generated/quadlet unit) — is
+    /// stopped, never disabled: golem never enabled it, so its enabled state is
+    /// the generator's to own. Otherwise restore the recorded prior state:
+    /// disable if golem enabled it, stop if golem started an inactive unit, else
+    /// leave it.
     fn reverse_systemd(&self, unit: &str, prior_enabled: bool, prior_active: bool, started_only: bool) -> EnactResult<()> {
         if started_only {
             let stopped = self.runner.run("systemctl", &["stop", unit])?;
@@ -174,6 +203,10 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
     }
 }
 
+/// Whether a failed `enable` was refused because the unit is generated —
+/// detected by systemd's "transient or generated" error text. A substring match
+/// on stderr, not a structural check; see [`HostReconciler::apply_systemd`] for
+/// why and the sturdier signal to move to.
 fn is_generated_unit(stderr: &str) -> bool {
     stderr.contains("transient or generated")
 }
