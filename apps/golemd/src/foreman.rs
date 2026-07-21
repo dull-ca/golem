@@ -34,8 +34,8 @@ use std::time::Duration;
 use tracing::warn;
 
 use crate::journal::{
-    AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, RevisionKind,
-    WalAction, WalStep, WalStepState,
+    AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
+    WalStep, WalStepState,
 };
 use crate::planroom::PlanRoom;
 use crate::reconcile::plan;
@@ -362,13 +362,11 @@ impl Foreman {
         self.planroom.put_applied_state(&AppliedState {
             scroll_content_id: desired.content_id,
             scroll: desired.scroll.clone(),
-            outcomes: outcomes.clone(),
+            outcomes,
         })?;
-        self.planroom.append_revision(
-            RevisionKind::Reconcile,
-            Some(desired.content_id),
-            &outcomes,
-        )
+        self.planroom
+            .revision(self.planroom.latest_revision_id()?.expect("a committed attempt projects a revision"))
+            .map(|rev| rev.expect("the latest revision id resolves"))
     }
 
     /// Rewrite the `applied_state` cache row from the current WAL fold, reusing
@@ -681,7 +679,7 @@ fn unit_for_config_file(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Inverse;
+    use crate::journal::{Inverse, RevisionKind};
     use crate::planroom::MemoryPlanRoom;
     use scroll_format::{Glyph, Manifest};
     use std::sync::{Arc, Mutex};

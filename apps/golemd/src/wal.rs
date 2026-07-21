@@ -5,9 +5,13 @@
 //! cache. Because it is a pure function of the log, a crash mid-attempt cannot
 //! leave a stale snapshot: the same rows always fold to the same set.
 
+use chrono::{DateTime, Utc};
 use scroll_format::ContentId;
 
-use crate::journal::{Inverse, Outcome, WalAction, WalStep, WalStepState};
+use crate::journal::{
+    AttemptPhase, Inverse, Outcome, ReconcileAttempt, Revision, RevisionKind, WalAction, WalStep,
+    WalStepState,
+};
 
 /// The set of glyphs currently applied to the host, one [`Outcome`] per glyph
 /// key. For each key, the latest `Done` step that has not since been `Reversed`
@@ -40,6 +44,55 @@ pub fn applied_outcomes(steps: &[WalStep]) -> Vec<Outcome> {
         .filter(|step| step.action == WalAction::Apply)
         .map(|step| outcome_of(step))
         .collect()
+}
+
+pub fn projected_revisions(attempts: &[ReconcileAttempt], steps: &[WalStep]) -> Vec<Revision> {
+    let mut revisions = vec![Revision {
+        id: 1,
+        created_at: opening_time(attempts),
+        kind: RevisionKind::Init,
+        scroll_content_id: None,
+        outcomes: vec![],
+    }];
+    let committed = attempts.iter().filter(|a| a.phase == AttemptPhase::Committed);
+    for (position, attempt) in committed.enumerate() {
+        let boundary = attempt_boundary_seq(steps, attempt.reconcile_id);
+        let folded = applied_outcomes(&steps_through(steps, boundary));
+        revisions.push(Revision {
+            id: 2 + position as u64,
+            created_at: attempt.settled_at.unwrap_or(attempt.started_at),
+            kind: RevisionKind::Reconcile,
+            scroll_content_id: attempt.scroll_content_id,
+            outcomes: folded,
+        });
+    }
+    revisions
+}
+
+pub fn projected_revision(attempts: &[ReconcileAttempt], steps: &[WalStep], id: u64) -> Option<Revision> {
+    projected_revisions(attempts, steps).into_iter().find(|r| r.id == id)
+}
+
+pub fn latest_revision_id(attempts: &[ReconcileAttempt]) -> Option<u64> {
+    let committed = attempts.iter().filter(|a| a.phase == AttemptPhase::Committed).count() as u64;
+    Some(1 + committed)
+}
+
+fn opening_time(attempts: &[ReconcileAttempt]) -> DateTime<Utc> {
+    attempts.iter().map(|a| a.started_at).min().unwrap_or_else(Utc::now)
+}
+
+fn attempt_boundary_seq(steps: &[WalStep], reconcile_id: u64) -> u64 {
+    steps
+        .iter()
+        .filter(|s| s.reconcile_id == reconcile_id)
+        .map(|s| s.seq)
+        .max()
+        .unwrap_or(0)
+}
+
+fn steps_through(steps: &[WalStep], boundary: u64) -> Vec<WalStep> {
+    steps.iter().filter(|s| s.seq <= boundary).cloned().collect()
 }
 
 /// The `seq`s of `Done` steps that a later `Reversed` marker undid. Each
