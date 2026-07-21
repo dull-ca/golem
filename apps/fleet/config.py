@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 
 # The default host set: the six lichess server names. `up` boots these unless
@@ -86,17 +87,55 @@ def paths() -> Paths:
 
 @dataclass(frozen=True)
 class HostPlan:
-    """A host's name paired with the two forwarded ports its slot earns."""
+    """A host's name paired with the two forwarded ports its slot earns, plus
+    any extra published host→guest tcp forwards (host_port, guest_port)."""
 
     name: str
     ssh_port: int
     golemd_port: int
+    publish: tuple[tuple[int, int], ...] = ()
 
 
-def plan_hosts(names: list[str]) -> list[HostPlan]:
+def _parse_port_pair(text: str) -> tuple[int, int]:
+    if ":" in text:
+        host_text, guest_text = text.split(":", 1)
+    else:
+        host_text = guest_text = text
+    return int(host_text), int(guest_text)
+
+
+def parse_publish(
+    specs: Optional[list[str]], names: list[str]
+) -> dict[str, tuple[tuple[int, int], ...]]:
+    """Parse `--publish` specs into a host → forwards map. Each spec is either
+    `NAME=HOST:GUEST` (published only on that host) or a bare `HOST:GUEST`
+    (published on every booted host); a bare `PORT` means the same port on both
+    sides. The forwards for each host preserve spec order."""
+    result: dict[str, list[tuple[int, int]]] = {}
+    for spec in specs or []:
+        text = spec.strip()
+        if not text:
+            continue
+        if "=" in text:
+            target, port_spec = text.split("=", 1)
+            targets = [target.strip()]
+        else:
+            port_spec = text
+            targets = list(names)
+        pair = _parse_port_pair(port_spec.strip())
+        for target in targets:
+            result.setdefault(target, []).append(pair)
+    return {name: tuple(pairs) for name, pairs in result.items()}
+
+
+def plan_hosts(
+    names: list[str],
+    publish: Optional[dict[str, tuple[tuple[int, int], ...]]] = None,
+) -> list[HostPlan]:
     """Assign each name its slot's ports by list position — see the port scheme
     on SSH_PORT_BASE. Order fixes the ports, so the same name list always lands
-    on the same ports."""
+    on the same ports. `publish` maps a host name to its extra forwards."""
+    publish = publish or {}
     plans: list[HostPlan] = []
     for index, name in enumerate(names):
         plans.append(
@@ -104,6 +143,7 @@ def plan_hosts(names: list[str]) -> list[HostPlan]:
                 name=name,
                 ssh_port=SSH_PORT_BASE + index,
                 golemd_port=GOLEMD_PORT_BASE + index,
+                publish=publish.get(name, ()),
             )
         )
     return plans

@@ -70,22 +70,33 @@ def _target_records(state: FleetState, hosts: Optional[str]) -> list[VmRecord]:
 def up(
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
     count: Optional[int] = typer.Option(None, "--count", help="Boot the first N lichess hosts."),
+    publish: Optional[list[str]] = typer.Option(
+        None,
+        "--publish",
+        "-p",
+        help="Extra tcp forward, repeatable: NAME=HOST:GUEST for one host, or HOST:GUEST for every booted host.",
+    ),
 ) -> None:
     """Boot VMs: ensure the base image and keypair, then bring up each host.
     Pass `--hosts` for named VMs or `--count N` for the first N lichess hosts;
-    with neither, boots the full lichess set. Already-running VMs are left be."""
+    with neither, boots the full lichess set. Already-running VMs are left be.
+    `--publish` forwards an extra guest port to the host: `--publish
+    registry=5000:5000` exposes only the registry guest's `:5000` on host
+    `:5000` (a bare `5000:5000` would clash across hosts sharing a host port)."""
     p = paths()
     state = _state()
     names = _resolve_hosts(hosts, count)
-    plans = plan_hosts(names)
+    publish_map = config.parse_publish(publish, names) or None
+    plans = plan_hosts(names, publish_map)
     console.print("[bold]Ensuring base image…[/bold]")
     base_image = vm.ensure_base_image(p)
     console.print(f"  base image: {base_image}")
     vm.ensure_ssh_key(p)
     for plan in plans:
+        extra = "".join(f", :{h}→:{g}" for h, g in plan.publish)
         console.print(
             f"[bold]Booting {plan.name}[/bold] "
-            f"(ssh {plan.ssh_port}, golemd {plan.golemd_port})…"
+            f"(ssh {plan.ssh_port}, golemd {plan.golemd_port}{extra})…"
         )
         record = vm.bring_up(p, state, plan, base_image)
         console.print(f"  [green]{record.name} up[/green] pid={record.pid}")

@@ -8,14 +8,16 @@ without re-deriving anything. Written eagerly on every mutation.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 
 @dataclass
 class VmRecord:
     """One booted guest: its two forwarded ports, the qemu pid, and the paths
-    to its overlay disk, pidfile, and serial-console log."""
+    to its overlay disk, pidfile, and serial-console log. `publish` records the
+    extra host→guest tcp forwards (host_port, guest_port) requested at boot, so
+    a stopped VM brought back up re-forwards the same ports."""
 
     name: str
     ssh_port: int
@@ -24,6 +26,7 @@ class VmRecord:
     disk: str
     pidfile: str
     console_log: str
+    publish: list[tuple[int, int]] = field(default_factory=list)
 
 
 class FleetState:
@@ -40,6 +43,7 @@ class FleetState:
         raw = json.loads(self._path.read_text())
         for entry in raw.get("vms", []):
             record = VmRecord(**entry)
+            record.publish = [(int(h), int(g)) for h, g in record.publish]
             self._vms[record.name] = record
 
     def _save(self) -> None:

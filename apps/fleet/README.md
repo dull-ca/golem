@@ -54,6 +54,28 @@ offset on every base:
 golemd listens on `0.0.0.0:7474` inside the guest; QEMU forwards `8800+i` on
 localhost to it, so the CLI reaches each daemon over plain HTTP.
 
+## Extra port forwards and cross-VM traffic
+
+Each guest runs behind user-mode (SLIRP) networking and is isolated from the
+other guests: only ssh and golemd are forwarded to the host. Two facts make
+one guest reach a service on another:
+
+- `up --publish` forwards an extra guest port to the host. `--publish
+  registry=5000:5000` binds host `127.0.0.1:5000` to the `registry` guest's
+  `:5000`; a bare `--publish 5000:5000` publishes on every booted host (which
+  clashes if they share a host port, so name the host for a single service).
+  The forwards are recorded per VM, so a stopped VM brought back up re-forwards
+  the same ports. Because the port scheme is positional, boot the whole set in
+  one `up` so each name keeps its slot's ports.
+- In SLIRP every guest reaches the host at `10.0.2.2`. So a guest reaches
+  another guest's *published* port at `10.0.2.2:<host_port>`: the connection
+  lands on the host's loopback, which QEMU forwards into the publishing guest.
+
+Together these give a host-gateway rendezvous. `examples/registry/` uses it:
+the `registry` guest publishes its `:5000`, and the `builder`/`puller` guests
+push and pull from `10.0.2.2:5000` — one golem-hosted registry shared across
+machines, no shared L2 segment required.
+
 ## Ephemeral state
 
 Everything the harness writes lives under `.fleet/` at the repo root:

@@ -1,0 +1,35 @@
+module Main exposing (..)
+
+registryEndpoint : String
+registryEndpoint = "10.0.2.2:5000"
+
+insecureConfPath : String
+insecureConfPath = "/etc/containers/registries.conf.d/golem-registry.conf"
+
+insecureConfContents : String
+insecureConfContents =
+  String.join "\n"
+    [ "[[registry]]"
+    , "location = \"${registryEndpoint}\""
+    , "insecure = true"
+    , ""
+    ]
+
+clientGlyphs : List Glyph
+clientGlyphs =
+  [ aptPackage { name = "podman" }
+  , file
+      { path = insecureConfPath
+      , contents = insecureConfContents
+      , mode = "0644"
+      }
+  ]
+
+builder : Scroll
+builder = scroll { name = "builder", glyphs = clientGlyphs }
+
+puller : Scroll
+puller = scroll { name = "puller", glyphs = clientGlyphs }
+
+main : List Scroll
+main = [ builder, puller ]

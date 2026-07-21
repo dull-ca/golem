@@ -246,11 +246,13 @@ def launch_qemu(
     """
     pidfile = vm_dir / "qemu.pid"
     console_log = vm_dir / "console.log"
-    hostfwd = (
-        f"user,id=net0,"
-        f"hostfwd=tcp:127.0.0.1:{plan.ssh_port}-:22,"
-        f"hostfwd=tcp:127.0.0.1:{plan.golemd_port}-:{config.GOLEMD_GUEST_PORT}"
-    )
+    forwards = [
+        f"hostfwd=tcp:127.0.0.1:{plan.ssh_port}-:22",
+        f"hostfwd=tcp:127.0.0.1:{plan.golemd_port}-:{config.GOLEMD_GUEST_PORT}",
+    ]
+    for host_port, guest_port in plan.publish:
+        forwards.append(f"hostfwd=tcp:127.0.0.1:{host_port}-:{guest_port}")
+    hostfwd = "user,id=net0," + ",".join(forwards)
     argv = [
         "qemu-system-x86_64",
         "-name",
@@ -395,6 +397,12 @@ def bring_up(paths: Paths, state: FleetState, plan: HostPlan, base_image: Path) 
     fresh overlay and seed ISO, launch qemu, record it, and wait for ssh."""
     existing = state.get(plan.name)
     if existing and is_running(existing):
+        requested = [(int(h), int(g)) for h, g in plan.publish]
+        if requested and existing.publish != requested:
+            raise FleetError(
+                f"{plan.name} is already running with publish {existing.publish}; "
+                f"stop it (`fleet down {plan.name}`) before re-publishing {requested}"
+            )
         return existing
     vm_dir = paths.vm_dir(plan.name)
     if vm_dir.exists():
@@ -411,6 +419,7 @@ def bring_up(paths: Paths, state: FleetState, plan: HostPlan, base_image: Path) 
         disk=str(disk),
         pidfile=str(pidfile),
         console_log=str(console_log),
+        publish=[(int(h), int(g)) for h, g in plan.publish],
     )
     state.put(record)
     wait_for_ssh(paths, record)
