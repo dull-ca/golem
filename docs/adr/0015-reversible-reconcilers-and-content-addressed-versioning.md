@@ -204,3 +204,16 @@ choice for Phase 3, [RATIFY] if inline-only is acceptable for the first cut.)
   by ADR 0002/0009. Higher-level abstractions that compile to these four glyphs
   are authored in Emet per ADR 0016 — golemd never grows a fifth reconciler for
   them.
+
+## Addendum: systemd apply reloads before enable
+
+The `systemdService` reconciler runs `systemctl daemon-reload` before
+`systemctl enable --now <unit>`. A freshly written unit file — whether golem
+wrote it directly (a `file` glyph earlier in the same scroll) or a Podman
+quadlet generated it — is invisible to systemd until a reload; without it,
+`enable` fails on a unit systemd has never seen. Found running golem on a real
+Debian box via the fleet harness (`apps/fleet/`).
+
+The reverse path deliberately does not reload. Reverse never writes a unit
+file, so the unit is already loaded; deleting a unit golem wrote is the `file`
+glyph's own inverse, not something the systemd reverse needs to account for.

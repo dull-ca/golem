@@ -13,6 +13,11 @@
 //! - These adapters are exercised via the fake `CommandRunner` and tempfiles;
 //!   the end-to-end run against a real Debian box (install → upgrade →
 //!   decommission) is deferred to a later phase.
+//!
+//! The `systemdService` apply runs `daemon-reload` before `enable --now`: a
+//! freshly written unit file — whether golem wrote it directly or a Podman
+//! quadlet generated it — is invisible to systemd until a reload. Found running
+//! golem on a real Debian box (ADR 0015 addendum).
 
 use std::fs;
 use std::io::Write;
@@ -59,11 +64,21 @@ impl<R: CommandRunner> HostReconciler<R> {
         Ok(query.succeeded() && query.stdout.contains("install ok installed"))
     }
 
+    /// Enable and start `unit`, reloading first so a just-written unit file is
+    /// visible to systemd. `daemon-reload` runs before `enable --now`; a failed
+    /// reload is `Retryable`, same as a failed enable. The reverse path
+    /// ([`Self::reverse_systemd`]) does not reload — reverse never writes a unit
+    /// file, so the unit is already loaded, and deleting a unit golem wrote is
+    /// the `file` glyph's own inverse.
     fn apply_systemd(&self, unit: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
         let prior_enabled = self.systemd_enabled(unit)?;
         let prior_active = self.systemd_active(unit)?;
         if prior_enabled && prior_active {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
+        }
+        let reloaded = self.runner.run("systemctl", &["daemon-reload"])?;
+        if !reloaded.succeeded() {
+            return Err(EnactError::Retryable(format!("systemctl daemon-reload: {}", reloaded.stderr)));
         }
         let enabled = self.runner.run("systemctl", &["enable", "--now", unit])?;
         if !enabled.succeeded() {
@@ -332,6 +347,22 @@ mod tests {
         let cid = glyph_content_id(&glyph);
         assert!(rec.apply(&glyph, cid).unwrap().changed);
         assert!(!rec.apply(&glyph, cid).unwrap().changed);
+    }
+
+    #[test]
+    fn systemd_daemon_reloads_before_enable() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", false, false));
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        rec.apply(&glyph, cid).unwrap();
+
+        let log = runner_of(&rec).log();
+        let reload = log.iter().position(|c| c == "systemctl daemon-reload");
+        let enable = log.iter().position(|c| c == "systemctl enable --now app");
+        assert!(reload.is_some(), "expected a daemon-reload, log was {log:?}");
+        assert!(enable.is_some(), "expected an enable --now, log was {log:?}");
+        assert!(reload < enable, "daemon-reload must precede enable, log was {log:?}");
     }
 
     #[test]

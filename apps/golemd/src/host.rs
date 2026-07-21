@@ -138,6 +138,11 @@ pub mod fake {
                     host.installed.remove(name);
                     Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
                 }
+                // The systemd apply reloads before enabling; model it as a
+                // no-op so it does not trip the unmodeled-command Fatal below.
+                ("systemctl", ["daemon-reload"]) => {
+                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                }
                 ("systemctl", _) if args.first() == Some(&"is-enabled") => {
                     let unit = args.last().copied().unwrap_or_default();
                     if host.enabled.contains(unit) {
