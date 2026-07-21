@@ -14,7 +14,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme};
+use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme, Span};
+use crate::query::QueryIndex;
 use crate::eval::{self, Env};
 use crate::infer::{self, ImportedConstructors, TyEnv};
 use crate::{Error, Phase};
@@ -23,6 +24,17 @@ struct Loaded {
     module: Module,
     path: PathBuf,
     source: String,
+}
+
+pub struct ProjectAnalysis {
+    pub diagnostics: Vec<Error>,
+    pub indexes: HashMap<PathBuf, QueryIndex>,
+}
+
+impl ProjectAnalysis {
+    pub fn index_for(&self, path: &Path) -> Option<&QueryIndex> {
+        self.indexes.get(path)
+    }
 }
 
 /// The importable surface of a processed library module: its full type and
@@ -38,6 +50,7 @@ struct Interface {
     exposed_type_arities: HashMap<String, usize>,
     exposed_ctor_schemes: HashMap<String, Scheme>,
     exposed_sum_ctors: HashMap<String, Vec<(String, usize)>>,
+    exposed_def_spans: HashMap<String, Span>,
 }
 
 /// Compile a multi-module program from its entry file to `main`'s type and the
@@ -54,6 +67,64 @@ pub fn compile_entry(entry: &Path) -> Result<(crate::ast::Type, Vec<crate::ir::S
     let order = topo_order(&entry_name, &loaded)?;
 
     eval::on_eval_thread(move || check_and_eval(entry_name, order, loaded))
+}
+
+pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
+    let dir = entry.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+
+    let mut loaded: HashMap<String, Loaded> = HashMap::new();
+    let entry_name = match load_graph(entry, &dir, &mut loaded) {
+        Ok(name) => name,
+        Err(e) => return ProjectAnalysis { diagnostics: vec![e], indexes: HashMap::new() },
+    };
+    let order = match topo_order(&entry_name, &loaded) {
+        Ok(order) => order,
+        Err(e) => return ProjectAnalysis { diagnostics: vec![e], indexes: HashMap::new() },
+    };
+
+    let mut interfaces: HashMap<String, Interface> = HashMap::new();
+    let mut diagnostics: Vec<Error> = Vec::new();
+    let mut indexes: HashMap<PathBuf, QueryIndex> = HashMap::new();
+
+    for name in &order {
+        let loaded_mod = &loaded[name];
+
+        let base_ty = match import_ty_env(&loaded_mod.module, &interfaces, loaded_mod) {
+            Ok(env) => env,
+            Err(e) => {
+                diagnostics.push(e);
+                continue;
+            }
+        };
+        let imported_types = import_type_arities(&loaded_mod.module, &interfaces);
+        let imported_ctors = import_constructors(&loaded_mod.module, &interfaces);
+        let imported_defs = import_def_sites(&loaded_mod.module, &interfaces);
+
+        let (error, index) = infer::analyze_module(
+            &loaded_mod.module,
+            base_ty.clone(),
+            &imported_types,
+            &imported_ctors,
+            imported_defs,
+            0..loaded_mod.source.len(),
+        );
+        if let Some(e) = error {
+            diagnostics.push(type_error(loaded_mod, e));
+        }
+        indexes.insert(loaded_mod.path.clone(), index);
+
+        if name != &entry_name {
+            if let Ok(final_ty) =
+                infer::check_library(&loaded_mod.module, base_ty, &imported_types, &imported_ctors)
+            {
+                let iface =
+                    interface_of(&loaded_mod.module, final_ty, eval::prelude_env());
+                interfaces.insert(name.clone(), iface);
+            }
+        }
+    }
+
+    ProjectAnalysis { diagnostics, indexes }
 }
 
 fn check_and_eval(
@@ -299,6 +370,49 @@ fn import_constructors(
     ImportedConstructors { ctor_schemes, sum_ctors }
 }
 
+fn import_def_sites(
+    module: &Module,
+    interfaces: &HashMap<String, Interface>,
+) -> HashMap<String, crate::query::DefSite> {
+    let mut defs = HashMap::new();
+    for import in &module.imports {
+        let iface = &interfaces[&import.module];
+        let owner = import.module.clone();
+        let qualifier = import.alias.clone().unwrap_or_else(|| import.module.clone());
+        for value in &iface.exposed_values {
+            if let Some(span) = iface.exposed_def_spans.get(value) {
+                defs.insert(
+                    format!("{qualifier}.{value}"),
+                    crate::query::DefSite { span: span.clone(), module: Some(owner.clone()) },
+                );
+            }
+        }
+        for ctor in &iface.exposed_constructors {
+            if let Some(span) = iface.exposed_def_spans.get(ctor) {
+                defs.insert(
+                    ctor.clone(),
+                    crate::query::DefSite { span: span.clone(), module: Some(owner.clone()) },
+                );
+            }
+        }
+        if let ImportExposing::Explicit(items) = &import.exposing {
+            for item in items {
+                let name = match item {
+                    Exposed::Value(name) => name,
+                    Exposed::Type { name, .. } => name,
+                };
+                if let Some(span) = iface.exposed_def_spans.get(name) {
+                    defs.insert(
+                        name.clone(),
+                        crate::query::DefSite { span: span.clone(), module: Some(owner.clone()) },
+                    );
+                }
+            }
+        }
+    }
+    defs
+}
+
 fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) -> Env {
     let mut env = eval::prelude_env();
     for import in &module.imports {
@@ -407,6 +521,26 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         }
     }
 
+    let mut exposed_def_spans: HashMap<String, Span> = HashMap::new();
+    for decl in &module.decls {
+        if exposed_values.contains(&decl.name) {
+            let name_span = decl.span.start..decl.span.start + decl.name.len();
+            exposed_def_spans.insert(decl.name.clone(), name_span);
+        }
+    }
+    for td in &module.type_decls {
+        if exposed_type_arities.contains_key(&td.name) {
+            let name_span = td.span.start..td.span.start + td.name.len();
+            exposed_def_spans.insert(td.name.clone(), name_span);
+        }
+        for variant in &td.variants {
+            if exposed_constructors.contains(&variant.name) {
+                let name_span = variant.span.start..variant.span.start + variant.name.len();
+                exposed_def_spans.insert(variant.name.clone(), name_span);
+            }
+        }
+    }
+
     Interface {
         ty_env,
         value_env,
@@ -415,6 +549,7 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         exposed_type_arities,
         exposed_ctor_schemes,
         exposed_sum_ctors,
+        exposed_def_spans,
     }
 }
 

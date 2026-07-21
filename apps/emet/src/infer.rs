@@ -40,6 +40,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::*;
+use crate::query::{DefSite, QueryIndex, ScopeId};
 
 pub struct TypeError {
     pub msg: String,
@@ -75,6 +76,51 @@ struct Infer {
     // see `constructor_scheme` / `sum_type_constructors`.
     user_ctor_schemes: HashMap<String, Scheme>,
     user_sum_ctors: HashMap<String, Vec<(String, usize)>>,
+    recorder: Option<Recorder>,
+}
+
+#[derive(Default)]
+struct Recorder {
+    index: QueryIndex,
+    next_scope: ScopeId,
+    def_frames: Vec<HashMap<String, DefSite>>,
+    type_spans: Vec<(Span, Type)>,
+}
+
+impl Recorder {
+    fn open_scope(&mut self, region: Span, env: &TyEnv, added: HashMap<String, DefSite>) -> ScopeId {
+        let id = self.next_scope;
+        self.next_scope += 1;
+        let names: Vec<(String, Scheme)> =
+            env.entries().map(|(n, s)| (n.clone(), s.clone())).collect();
+        self.index.scope_table.insert(id, names);
+        self.index.scopes.push((region, id));
+        self.def_frames.push(added);
+        id
+    }
+
+    fn close_scope(&mut self) {
+        self.def_frames.pop();
+    }
+
+    fn resolve_def(&self, name: &str) -> Option<DefSite> {
+        for frame in self.def_frames.iter().rev() {
+            if let Some(site) = frame.get(name) {
+                return Some(site.clone());
+            }
+        }
+        None
+    }
+
+    fn record_use(&mut self, span: Span, name: &str) {
+        if let Some(site) = self.resolve_def(name) {
+            self.index.defs.push((span, site));
+        }
+    }
+
+    fn record_type(&mut self, span: Span, ty: Type) {
+        self.type_spans.push((span, ty));
+    }
 }
 
 impl Infer {
@@ -115,6 +161,34 @@ impl Infer {
 }
 
 impl Infer {
+    fn recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    fn rec_type(&mut self, span: &Span, ty: &Type) {
+        if let Some(r) = &mut self.recorder {
+            r.record_type(span.clone(), ty.clone());
+        }
+    }
+
+    fn rec_use(&mut self, span: &Span, name: &str) {
+        if let Some(r) = &mut self.recorder {
+            r.record_use(span.clone(), name);
+        }
+    }
+
+    fn rec_open_scope(&mut self, region: Span, env: &TyEnv, added: HashMap<String, DefSite>) {
+        if let Some(r) = &mut self.recorder {
+            r.open_scope(region, env, added);
+        }
+    }
+
+    fn rec_close_scope(&mut self) {
+        if let Some(r) = &mut self.recorder {
+            r.close_scope();
+        }
+    }
+
     fn fresh(&mut self) -> Type {
         self.fresh_constrained(Constraint::None)
     }
@@ -687,6 +761,9 @@ impl TyEnv {
     pub fn bind(self, k: String, s: Scheme) -> TyEnv {
         self.insert(k, s)
     }
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &Scheme)> {
+        self.0.iter()
+    }
 }
 
 fn mono(t: Type) -> Scheme {
@@ -694,6 +771,12 @@ fn mono(t: Type) -> Scheme {
 }
 
 fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, TypeError> {
+    let ty = infer_expr_inner(inf, env, e)?;
+    inf.rec_type(&e.1, &ty);
+    Ok(ty)
+}
+
+fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, TypeError> {
     let span = &e.1;
     match &e.0 {
         Expr::Str(_) => Ok(con("String")),
@@ -703,13 +786,19 @@ fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, T
         Expr::Float(_) => Ok(con("Float")),
 
         Expr::Var(name) => match env.get(name) {
-            Some(s) => Ok(inf.instantiate(s)),
+            Some(s) => {
+                inf.rec_use(span, name);
+                Ok(inf.instantiate(s))
+            }
             None => Err(TypeError::new(format!("unknown name `{name}`"), span.clone())
                 .note("not bound by any declaration, `let`, or lambda parameter")),
         },
 
         Expr::Ctor(name) => match env.get(name) {
-            Some(s) => Ok(inf.instantiate(s)),
+            Some(s) => {
+                inf.rec_use(span, name);
+                Ok(inf.instantiate(s))
+            }
             None => Err(TypeError::new(format!("unknown constructor `{name}`"), span.clone())),
         },
 
@@ -775,7 +864,11 @@ fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, T
         Expr::Lam { param, body } => {
             let tv = inf.fresh();
             let env2 = env.insert(param.clone(), mono(tv.clone()));
+            let mut added = HashMap::new();
+            added.insert(param.clone(), DefSite { span: span.clone(), module: None });
+            inf.rec_open_scope(body.1.clone(), &env2, added);
             let bt = infer_expr(inf, &env2, body)?;
+            inf.rec_close_scope();
             Ok(Type::Fun(Box::new(tv), Box::new(bt)))
         }
 
@@ -790,7 +883,11 @@ fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, T
 
         Expr::Let { decls, body } => {
             let env2 = infer_decls(inf, env, decls, false)?;
-            infer_expr(inf, &env2, body)
+            let added = decl_def_sites(decls);
+            inf.rec_open_scope(span.clone(), &env2, added);
+            let bt = infer_expr(inf, &env2, body)?;
+            inf.rec_close_scope();
+            Ok(bt)
         }
 
         Expr::Record(fields) => {
@@ -820,9 +917,12 @@ fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, T
             for arm in arms {
                 let mut arm_env = env.clone();
                 infer_pattern(inf, &mut arm_env, &arm.pat, &st)?;
+                let added = pattern_def_sites(&arm.pat);
+                inf.rec_open_scope(arm.body.1.clone(), &arm_env, added);
                 let bt = infer_expr(inf, &arm_env, &arm.body)?;
                 let bt = widen_glyph_subtype(inf, &bt);
                 inf.unify(&result, &bt, &arm.body.1)?;
+                inf.rec_close_scope();
             }
             check_exhaustive(inf, &st, arms, span)?;
             Ok(inf.apply(&result))
@@ -867,6 +967,10 @@ fn infer_pattern(
     pat: &Spanned<Pattern>,
     scrutinee: &Type,
 ) -> Result<(), TypeError> {
+    if inf.recording() {
+        let scrut = inf.apply(scrutinee);
+        inf.rec_type(&pat.1, &scrut);
+    }
     match &pat.0 {
         Pattern::Wildcard => Ok(()),
         Pattern::Var(name) => {
@@ -1163,6 +1267,37 @@ fn missing_constructors(inf: &Infer, scrutinee: &Type, matrix: &[Vec<UPat>]) -> 
     }
 }
 
+fn decl_def_sites(decls: &[Decl]) -> HashMap<String, DefSite> {
+    decls
+        .iter()
+        .map(|d| (d.name.clone(), DefSite { span: d.span.clone(), module: None }))
+        .collect()
+}
+
+fn pattern_def_sites(pat: &Spanned<Pattern>) -> HashMap<String, DefSite> {
+    let mut out = HashMap::new();
+    collect_pattern_binders(pat, &mut out);
+    out
+}
+
+fn collect_pattern_binders(pat: &Spanned<Pattern>, out: &mut HashMap<String, DefSite>) {
+    match &pat.0 {
+        Pattern::Var(name) => {
+            out.insert(name.clone(), DefSite { span: pat.1.clone(), module: None });
+        }
+        Pattern::Ctor(_, subs) => {
+            for sub in subs {
+                collect_pattern_binders(sub, out);
+            }
+        }
+        Pattern::Cons(head, tail) => {
+            collect_pattern_binders(head, out);
+            collect_pattern_binders(tail, out);
+        }
+        _ => {}
+    }
+}
+
 /// Turn a decl (name, params, body) into an expression type: params become
 /// nested lambdas.
 fn decl_as_lambda(decl: &Decl) -> Spanned<Expr> {
@@ -1220,6 +1355,10 @@ fn infer_group(
         let lam = decl_as_lambda(decl);
         let inferred = infer_expr(inf, &body_env, &lam)?;
         inf.unify(self_ty, &inferred, &decl.span)?;
+        if inf.recording() {
+            let name_span = decl.span.start..decl.span.start + decl.name.len();
+            inf.rec_type(&name_span, &inferred);
+        }
         if let Some(sig) = &decl.sig {
             let sig_inst = inf.instantiate_signature(&sig.0);
             inf.unify(&inferred, &sig_inst, &sig.1)?;
@@ -1555,6 +1694,61 @@ pub fn check_module(m: &Module) -> Result<(TyEnv, Type), TypeError> {
     validate_signature_refs(&m.type_decls, &m.decls, &no_imports)?;
     let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
     finish_main(&mut inf, &final_env)
+}
+
+pub fn analyze_module(
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+    imported_ctors: &ImportedConstructors,
+    imported_defs: HashMap<String, DefSite>,
+    file_span: Span,
+) -> (Option<TypeError>, QueryIndex) {
+    let mut inf = Infer { recorder: Some(Recorder::default()), ..Infer::default() };
+    inf.seed_imported_constructors(imported_ctors);
+
+    let error = run_recorded(&mut inf, m, base, imported_types, imported_defs, file_span);
+
+    let mut recorder = inf.recorder.take().expect("recorder present");
+    for (span, ty) in std::mem::take(&mut recorder.type_spans) {
+        recorder.index.types.push((span, inf.apply(&ty)));
+    }
+    (error, recorder.index)
+}
+
+fn run_recorded(
+    inf: &mut Infer,
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+    imported_defs: HashMap<String, DefSite>,
+    file_span: Span,
+) -> Option<TypeError> {
+    let env = match register_type_decls(inf, &base, &m.type_decls, imported_types) {
+        Ok(env) => env,
+        Err(e) => return Some(e),
+    };
+    if let Err(e) = validate_signature_refs(&m.type_decls, &m.decls, imported_types) {
+        return Some(e);
+    }
+    let mut top_defs = imported_defs;
+    top_defs.extend(decl_def_sites(&m.decls));
+    let top_scope = inf
+        .recorder
+        .as_mut()
+        .map(|r| r.open_scope(file_span, &base, top_defs));
+    let result = infer_decls(inf, &env, &m.decls, true);
+    match result {
+        Ok(final_env) => {
+            if let (Some(r), Some(id)) = (&mut inf.recorder, top_scope) {
+                let names: Vec<(String, Scheme)> =
+                    final_env.entries().map(|(n, s)| (n.clone(), s.clone())).collect();
+                r.index.scope_table.insert(id, names);
+            }
+            None
+        }
+        Err(e) => Some(e),
+    }
 }
 
 fn finish_main(inf: &mut Infer, final_env: &TyEnv) -> Result<(TyEnv, Type), TypeError> {

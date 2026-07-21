@@ -24,6 +24,15 @@ fn read_message(reader: &mut impl BufRead) -> serde_json::Value {
     serde_json::from_slice(&body).unwrap()
 }
 
+fn read_response(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
+    loop {
+        let message = read_message(reader);
+        if message.get("id").and_then(|m| m.as_i64()) == Some(id) {
+            return message;
+        }
+    }
+}
+
 fn read_until_publish(reader: &mut impl BufRead) -> serde_json::Value {
     loop {
         let message = read_message(reader);
@@ -113,6 +122,23 @@ fn initialize_and_publish_diagnostics_over_stdio() {
     let valid = read_until_publish(&mut stdout);
     assert_eq!(valid["params"]["uri"], "file:///valid.emet");
     assert!(valid["params"]["diagnostics"].as_array().unwrap().is_empty());
+
+    let hover = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///valid.emet" },
+            "position": { "line": 1, "character": 0 }
+        }
+    });
+    stdin.write_all(frame(&hover).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+    let hover_response = read_response(&mut stdout, 3);
+    let hover_text = hover_response["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markup value");
+    assert!(hover_text.contains("Scroll"), "hover text: {hover_text}");
 
     let shutdown = serde_json::json!({
         "jsonrpc": "2.0",

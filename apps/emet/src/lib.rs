@@ -13,6 +13,7 @@ pub mod layout;
 pub mod lexer;
 pub mod parser;
 pub mod prelude;
+pub mod query;
 pub mod resolve;
 
 use std::path::Path;
@@ -20,6 +21,12 @@ use std::path::Path;
 use ast::Module;
 use ast::Type;
 use ir::{Glyph, Scroll};
+use query::QueryIndex;
+
+pub struct Analysis {
+    pub diagnostics: Vec<Error>,
+    pub index: QueryIndex,
+}
 
 /// A compilation error, tagged by phase, with a source span for diagnostics.
 #[derive(Debug)]
@@ -112,6 +119,40 @@ pub fn compile(src: &str) -> Result<Compiled, Error> {
 pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
     let (main_ty, scrolls) = resolve::compile_entry(entry)?;
     Ok(Compiled { main_ty, scrolls })
+}
+
+pub fn analyze_source(src: &str) -> Analysis {
+    let module = match parse_source(src) {
+        Ok(m) => m,
+        Err(e) => {
+            return Analysis { diagnostics: vec![e], index: QueryIndex::default() };
+        }
+    };
+    let no_imports = std::collections::HashMap::new();
+    let no_ctors = infer::ImportedConstructors::default();
+    let (error, index) = infer::analyze_module(
+        &module,
+        prelude::ty_env(),
+        &no_imports,
+        &no_ctors,
+        std::collections::HashMap::new(),
+        0..src.len(),
+    );
+    let diagnostics = error
+        .map(|e| {
+            vec![Error {
+                phase: Phase::Type,
+                msg: e.msg,
+                span: e.span,
+                note: e.note,
+            }]
+        })
+        .unwrap_or_default();
+    Analysis { diagnostics, index }
+}
+
+pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
+    resolve::analyze_entry(entry)
 }
 
 /// Pre-apply analysis over the IR graph. It detects conflicting declarations
