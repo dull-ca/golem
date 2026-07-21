@@ -78,8 +78,8 @@ prelude.rs (TyEnv, Env) for constructors (Just/Nothing/True/False/LT/EQ/GT) and
 lib.rs     compile() drives the single-file stages; compile_file() runs the
            multi-module resolve stage; analyze() does per-scroll IR checks
 main.rs    CLI (`emetc build`); default emits the binary manifest (stdout/`-o`),
-           `--text` the readable plan, `--json` the debug view, or the first
-           error (ariadne), per scroll
+           `--text` the readable plan, `--json` the debug view, or all
+           diagnostics (ariadne) — one report per error (ADR 0022)
 ```
 
 ## Module system (ADR 0016)
@@ -107,8 +107,8 @@ An Elm-shaped, minimal module system for reuse across files:
 - **HM + generics.** Signatures may mention type variables and applied
   constructors (`map : (a -> b) -> List a -> List b`); let-generalization makes
   unannotated decls polymorphic. Signatures are checked against the inferred type
-  (instantiate-and-unify; the skolem-escape check for over-general signatures is
-  deferred — see `docs/TODO.md`).
+  (instantiate-and-unify), and a second pass rejects a signature more general
+  than its body — the skolem-escape check (ADR 0021).
 - **Types.** `String`, `Int`, `Float`, `Bool`,
   `Order`, `List a`, `Maybe a`, records, functions; the glyph types `AptPackage`,
   `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; the
@@ -178,7 +178,9 @@ implementation, not the tests, unless a test is provably wrong.
   single-line `let x = e in e` parse. `of` opens a `case` block (closed by
   dedent, no `in`); adding new layout-opening keywords needs new close rules.
 - **Algorithm W (`infer.rs`).** generalize / instantiate, signature unification
-  with rigid vars for generics, the `number`/`comparable`/`appendable` constraint
+  with rigid vars for generics plus the skolem-escape check that rejects an
+  over-general signature (`check_signature_generality`, ADR 0021), the
+  `number`/`comparable`/`appendable` constraint
   bounds threaded through `bind`, the per-SCC group inference (`depgraph` +
   `infer_group`) that supports self/mutual recursion by binding a group
   monomorphic before generalizing it against the pre-group env, and the `case`

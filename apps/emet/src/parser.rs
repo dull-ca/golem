@@ -52,6 +52,17 @@
 //! chumsky reports errors as `Rich<Tok, TokSpan>`; `parse` converts each into
 //! a `ParseError` carrying a message and a source byte span, which
 //! `main.rs` feeds to `ariadne` for rendering.
+//!
+//! The top-level `item` recovers past a bad declaration (ADR 0022). The layout
+//! pass already emits a virtual `;` (`Tok::VSemi`) between top-level decls, so
+//! that token is the sync point: on a parse failure `skip_until` consumes tokens
+//! up to the next `VSemi`, records the `Rich` error, and yields a
+//! `TopItem::Recovered` sentinel that `parse` drops. The enclosing `.repeated()`
+//! then restarts at the following decl, so two malformed decls produce two
+//! errors and `parse` returns a `Vec<ParseError>`. Recovery is scoped to the
+//! top level — the `let`-block `decls_parser` stays first-error, so a skip
+//! cannot swallow the `in` or the virtual `}` the `parse-error(t)` handshake
+//! (ADR 0001) depends on.
 
 use std::collections::BTreeMap;
 

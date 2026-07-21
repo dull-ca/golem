@@ -62,6 +62,11 @@ struct Interface {
 /// keeps each module's non-`Send` value env alive across the whole pass, so the
 /// work runs on the deep-stack eval thread rather than moving those envs across
 /// a thread boundary (see `eval::on_eval_thread`).
+///
+/// The error type is `Vec<Error>` (ADR 0022): `load_graph` parses each module
+/// through the recovering path, so a build reports every parse error in a bad
+/// file at once. Later phases stay first-error, so the vec is either several
+/// parse errors or one type/eval/analyze error.
 pub fn compile_entry(
     entry: &Path,
 ) -> Result<(crate::ast::Type, Vec<crate::ir::Scroll>), Vec<Error>> {
@@ -186,6 +191,10 @@ fn check_and_eval(
 /// keyed by module name in `loaded`. An import resolves to `<Name>.emet` beside
 /// the entry file; a missing file is a parse-phase error. Returns this module's
 /// name.
+///
+/// Parses through `parse_source_multi`, so a malformed module yields every parse
+/// error it contains (each prefixed with the file path) as the `Vec<Error>`
+/// (ADR 0022), rather than only the first.
 fn load_graph(
     path: &Path,
     dir: &Path,

@@ -64,6 +64,14 @@ pub fn parse_source(src: &str) -> Result<Module, Error> {
     parse_source_multi(src).map_err(|mut errors| errors.remove(0))
 }
 
+/// The multi-error variant of `parse_source` (ADR 0022). The parser recovers
+/// past a malformed top-level declaration and reports every independent one, so
+/// a failed parse comes back as a `Vec<Error>`. Lex and header failures are
+/// still fatal and single — there is nothing to recover past before layout has
+/// run — but they are wrapped in a one-element vec so the caller has one shape
+/// to handle. Only parse-phase errors ever arrive as a list; later phases
+/// (type, eval, analyze) stay first-error. `parse_source` is the first-error
+/// wrapper kept for existing callers.
 pub fn parse_source_multi(src: &str) -> Result<Module, Vec<Error>> {
     let tokens = lexer::lex(src).map_err(|e| {
         vec![Error {
@@ -104,6 +112,12 @@ pub fn compile(src: &str) -> Result<Compiled, Error> {
     compile_all(src).map_err(|mut errors| errors.remove(0))
 }
 
+/// The multi-error variant of `compile` (ADR 0022). The returned `Vec<Error>`
+/// holds *either* several parse errors (the parser recovers at declaration
+/// boundaries and collects all of them) *or* a single later-phase error — never
+/// a mix. Type, eval, and analyze are sequential and unwind at the first
+/// failure, so only the parse phase produces a list. `compile` remains the
+/// first-error wrapper.
 pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
     let module = parse_source_multi(src)?;
 
@@ -145,6 +159,11 @@ pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
     compile_file_all(entry).map_err(|mut errors| errors.remove(0))
 }
 
+/// The multi-error variant of `compile_file` (ADR 0022). Each module in the
+/// import graph is parsed through the recovering path, so a build reports every
+/// parse error in the offending file; as in `compile_all`, the resulting
+/// `Vec<Error>` is either several parse errors or one later-phase error.
+/// `compile_file` remains the first-error wrapper.
 pub fn compile_file_all(entry: &Path) -> Result<Compiled, Vec<Error>> {
     let (main_ty, scrolls) = resolve::compile_entry(entry).map_err(|mut errors| {
         if errors.is_empty() {

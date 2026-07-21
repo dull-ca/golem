@@ -112,6 +112,8 @@ constructors (`parser::type_con` special-cases nothing).
    Deferred: the instantiate-and-unify check accepts every *correct* program and
    only fails to *reject* an over-general annotation — a soundness-of-rejection
    gap, not an evaluation bug. Skolem-escape checking is a later hardening step.
+   **Since implemented — ADR 0021** adds it atop this instantiate-and-unify
+   check, closing that gap.
 
 ## Consequences
 
@@ -124,11 +126,12 @@ constructors (`parser::type_con` special-cases nothing).
   threaded through `bind`, and a `Rigid` case is added at the signature boundary.
 - `Str → String` is **decided** and the migration is **done** — the transitional
   `Str`/`Glyphs` aliases are removed; `Str`/`Glyphs` are now unknown-type errors.
-- Over-general signatures are accepted until skolem-escape checking lands
-  (documented, bounded, non-evaluation-affecting).
+- Over-general signatures were accepted until skolem-escape checking landed
+  (documented, bounded, non-evaluation-affecting); **ADR 0021** now rejects them.
 - Preserves ADR 0002: glyph subsumption becomes explicit `Con`-head arms; the
   symmetric injection is **interim** and superseded by ADR 0008 before any glyph
   elimination.
 - Cross-references ADR 0007 (numbers / constrained vars), ADR 0008 (glyph
-  pattern-matching), and the design doc
+  pattern-matching), ADR 0021 (skolem-escape check for over-general signatures),
+  and the design doc
   `docs/design/0001-elm-lite-type-system-and-value-language.md` §4.

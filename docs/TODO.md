@@ -75,7 +75,7 @@ monorepo. B's headline is model reconciliation.
   a fresh constraint-carrying variable rather than a rigid, matching the bound
   they already ride through `bind`. Ordinary shape mismatches keep their original
   "type mismatch" message — the skolem check only relabels the strictly
-  over-general case (`infer::check_signature_generality`). See ADR 0020.
+  over-general case (`infer::check_signature_generality`). See ADR 0021.
 
 - **Glyph pattern-matching — DONE (ADR 0017).** Glyphs and the filesystem
   `Entry` are matchable: a `case` destructures a built glyph by its PascalCase

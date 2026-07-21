@@ -333,6 +333,10 @@ because sigs are ground. For `map : (a -> b) -> List a -> List b` we must:
    (a wrongly-general signature still evaluates fine; it just should have been
    rejected).
 
+   **Implemented — ADR 0021.** The skolem-escape check now runs as a second pass
+   over the instantiate-and-unify one: over-general signatures are rejected, and
+   the gap is closed.
+
 3. **Generalization already works** — once the body unifies with the
    instantiated signature, `generalize` quantifies the remaining free vars, and
    the decl becomes polymorphic exactly as `id` does today.
@@ -1150,7 +1154,8 @@ where a `Scroll` is the per-host grouping of glyphs.
   yet (that arrives with the machine-attributes work).
 
 ### Later / deferred (explicit non-goals for "Elm-lite")
-- Skolem-escape checking for over-general signatures (§4.3 hardening).
+- Skolem-escape checking for over-general signatures (§4.3 hardening) —
+  **implemented, ADR 0021.**
 - One-line inline `case` (needs a `parse-error(t)`-style close rule per ADR
   0001).
 - **Glyph pattern-matching** — planned but deferred; foundation kept
@@ -1206,6 +1211,7 @@ where a `Scroll` is the per-host grouping of glyphs.
    (`f : a -> a` on a monomorphic body) until skolem-escape checking lands.
    This is a soundness-of-*rejection* gap, not an evaluation bug. Acceptable as
    staged? Recommendation: yes, with the ADR noting it. **User awareness.**
+   **Resolved — ADR 0021** landed the check; the gap is closed.
 4. **Constructor/builtin value representation.** `Value::Data` +
    `Value::Builtin` vs. encoding everything as `Closure`. Recommendation:
    explicit `Data`/`Builtin` variants (clearer eval, better totality argument).

@@ -23,6 +23,11 @@
 //!   * **Signatures with type variables** (ADR 0003). A signature's `Rigid`
 //!     vars are instantiated to fresh unification vars, then unified with the
 //!     inferred body — the same machinery that already makes `id` polymorphic.
+//!     A second pass then rejects a signature *more general* than the body
+//!     (`check_signature_generality`, ADR 0021): the same signature is also
+//!     skolemized and unified, and a signature the instantiate pass accepts but
+//!     the skolemize pass rejects is over-general. This closes the
+//!     soundness-of-rejection gap ADR 0003 left open.
 //!   * **Exhaustiveness + redundancy** (ADR 0005). `check_exhaustive` runs
 //!     Maranget's usefulness algorithm over each `case`, guaranteeing totality
 //!     of the elimination form.
@@ -623,6 +628,26 @@ impl Infer {
         }
     }
 
+    /// Reject a signature more general than the body it annotates (ADR 0021 —
+    /// the soundness-of-*rejection* gap ADR 0003 left open). A signature is
+    /// over-general iff two passes disagree: instantiate-and-unify accepts it but
+    /// skolemize-and-unify rejects it. `f : a -> a` over `\x -> x + 1` is the
+    /// canonical case — `a` unifies happily with a fresh variable, but forcing
+    /// the skolem `a` stands for to `Int` is a mismatch.
+    ///
+    /// Both passes run on a throwaway copy of the state: `subst`, `row_subst`,
+    /// and `next` are snapshotted up front and restored before returning, so
+    /// neither trial binding survives. The real signature unification and
+    /// generalization in `infer_group` run afterward against untouched state —
+    /// this check only decides whether to raise the error, never what type the
+    /// decl gets.
+    ///
+    /// `outer_free` is captured *before* either pass: the type variables free in
+    /// the surrounding env at entry. A skolem surfacing in one of those means it
+    /// escaped its signature's scope, which the skolemize pass also treats as
+    /// rejection (`skolems_escape_into`). The group's own recursion vars are not
+    /// in `outer_free` — they are bound monomorphically in the body env, not the
+    /// outer env — so polymorphic recursion is not falsely flagged.
     fn check_signature_generality(
         &mut self,
         inferred: &Type,
@@ -658,6 +683,19 @@ impl Infer {
         Ok(())
     }
 
+    /// Turn a signature's type variables into rigid constants for the strict
+    /// pass. Each distinct `Rigid` name becomes a fresh, globally unique
+    /// `skolem$n` (all occurrences of one name share it, via `mapping`), so
+    /// unification can no longer bind it away: forcing a skolem to a concrete
+    /// type, or unifying two distinct skolems, is a plain type mismatch and
+    /// fails — which is exactly how over-generality is caught.
+    ///
+    /// The three reserved bounded names (`number`/`comparable`/`appendable`) are
+    /// the exception: they skolemize to a fresh *constrained* `Var`, not a rigid.
+    /// They are not universally quantifiable — they already carry a bound the
+    /// body may legitimately satisfy at a concrete type — so treating them as
+    /// rigid would reject correct programs (`double : number -> number` over
+    /// `\x -> x + x`).
     fn skolemize(&mut self, t: &Type, mapping: &mut HashMap<String, String>) -> Type {
         match t {
             Type::Rigid(name) => match bounded_variable_constraint(name) {
@@ -689,6 +727,13 @@ impl Infer {
         }
     }
 
+    /// Did any skolem leak into the outer environment? After the strict unify,
+    /// a skolem reachable from a variable that was free in the outer env before
+    /// the check escaped its signature's scope, which is over-general just as a
+    /// forced skolem is. The scope is deliberately the *pre-existing* outer free
+    /// vars only (`outer_free`, captured before unifying) — not the group's own
+    /// recursion vars, so a self- or mutually-recursive decl calling itself at
+    /// its own type is not mistaken for an escape.
     fn skolems_escape_into(&self, skolems: &HashSet<String>, outer_free: &HashSet<u32>) -> bool {
         outer_free
             .iter()
@@ -798,6 +843,11 @@ fn constraint_name(c: Constraint) -> &'static str {
     }
 }
 
+/// The constraint class a reserved bounded-variable name denotes, or `None` for
+/// an ordinary type variable. `number`/`comparable`/`appendable` are not free
+/// type variables but Elm's bounded ones (ADR 0007), so `skolemize` maps them to
+/// a constrained `Var` rather than a rigid skolem — the bounded-name exemption
+/// in the signature-generality check.
 fn bounded_variable_constraint(name: &str) -> Option<Constraint> {
     match name {
         "number" => Some(Constraint::Number),
