@@ -42,17 +42,25 @@ or a prebuilt `manifest.bin`; relative paths anchor at the repo root.
 
 ## Port scheme
 
-Each VM claims a slot `i` by its position in the boot list and takes the same
-offset on every base:
+Each VM claims a slot derived from its **name**, not its position in the boot
+list: `slot = blake2b(name) mod 100`, so a given name always lands on the same
+ports no matter what else is booted, and booting one host alone gets the same
+ports it would in the full set. ssh forwards to `2200+slot`, golemd to
+`8800+slot`:
 
-| slot | ssh (host → guest 22) | golemd (host → guest 7474) |
-|------|-----------------------|----------------------------|
-| 0    | 2200                  | 8800                       |
-| 1    | 2201                  | 8801                       |
-| …    | 2200+i                | 8800+i                     |
+| name     | slot | ssh (host → guest 22) | golemd (host → guest 7474) |
+|----------|------|-----------------------|----------------------------|
+| registry | 65   | 2265                  | 8865                       |
+| builder  | 3    | 2203                  | 8803                       |
+| puller   | 68   | 2268                  | 8868                       |
 
-golemd listens on `0.0.0.0:7474` inside the guest; QEMU forwards `8800+i` on
+golemd listens on `0.0.0.0:7474` inside the guest; QEMU forwards `8800+slot` on
 localhost to it, so the CLI reaches each daemon over plain HTTP.
+
+The slots are collision-free across the default lichess host set plus the
+`registry`/`builder`/`puller` dogfood names. Ports for an already-created VM are
+read from its `state.json` record, so VMs booted under the old positional scheme
+keep the ports they were assigned — the name→slot map only governs a fresh boot.
 
 ## Extra port forwards and cross-VM traffic
 
@@ -65,8 +73,7 @@ one guest reach a service on another:
   `:5000`; a bare `--publish 5000:5000` publishes on every booted host (which
   clashes if they share a host port, so name the host for a single service).
   The forwards are recorded per VM, so a stopped VM brought back up re-forwards
-  the same ports. Because the port scheme is positional, boot the whole set in
-  one `up` so each name keeps its slot's ports.
+  the same ports.
 - In SLIRP every guest reaches the host at `10.0.2.2`. So a guest reaches
   another guest's *published* port at `10.0.2.2:<host_port>`: the connection
   lands on the host's loopback, which QEMU forwards into the publishing guest.
@@ -86,11 +93,18 @@ Everything the harness writes lives under `.fleet/` at the repo root:
 - `vm-<name>/` — one per guest: its overlay disk, cloud-init seed, pidfile, and
   serial-console log.
 
-`down` stops a VM but leaves its disk and state, so it can be brought back up.
-`reset` kills every VM and deletes all per-VM data and the state file — all
-guest data is lost — but keeps the cached image and keypair for a fast next
-`up`. `reset --purge` drops those too, so the next `up` re-downloads the image
-and regenerates the key.
+`down` stops a VM's qemu process but keeps its overlay disk, seed, and state
+record. A later `up` on that name **resumes** it — re-launching qemu against the
+existing disk on its recorded ports — so guest data written before `down`
+survives. Only `reset` wipes: it kills every VM and deletes all per-VM data and
+the state file — all guest data is lost — but keeps the cached image and keypair
+for a fast next `up`. `reset --purge` drops those too, so the next `up`
+re-downloads the image and regenerates the key.
+
+A guest keeps only data it has flushed to disk. `down` sends qemu SIGTERM, which
+does not sync the guest's page cache, so a write made moments before `down` can
+be lost across the cycle; run `sync` in the guest before `down` if a very recent
+write must survive.
 
 ## Smoke fixtures
 

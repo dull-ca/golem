@@ -391,10 +391,45 @@ def kill_vm(record: VmRecord) -> None:
         return
 
 
+def _has_persisted_disk(record: VmRecord | None) -> bool:
+    return record is not None and Path(record.disk).exists()
+
+
+def resume_vm(paths: Paths, state: FleetState, record: VmRecord) -> VmRecord:
+    """Re-launch qemu for a stopped-but-present VM against its existing overlay
+    disk and seed ISO, preserving its recorded ports and publish forwards."""
+    vm_dir = paths.vm_dir(record.name)
+    disk = Path(record.disk)
+    seed = vm_dir / "seed.iso"
+    if not seed.exists():
+        seed = build_seed_iso(paths, vm_dir, record.name)
+    plan = HostPlan(
+        name=record.name,
+        ssh_port=record.ssh_port,
+        golemd_port=record.golemd_port,
+        publish=tuple((int(h), int(g)) for h, g in record.publish),
+    )
+    pid, pidfile, console_log = launch_qemu(vm_dir, plan, disk, seed)
+    resumed = VmRecord(
+        name=record.name,
+        ssh_port=record.ssh_port,
+        golemd_port=record.golemd_port,
+        pid=pid,
+        disk=str(disk),
+        pidfile=str(pidfile),
+        console_log=str(console_log),
+        publish=[(int(h), int(g)) for h, g in record.publish],
+    )
+    state.put(resumed)
+    wait_for_ssh(paths, resumed)
+    return resumed
+
+
 def bring_up(paths: Paths, state: FleetState, plan: HostPlan, base_image: Path) -> VmRecord:
     """Ensure one guest is up and return its record. Idempotent: a VM already
-    running is returned as-is. Otherwise wipe any stale `vm-<name>/`, make a
-    fresh overlay and seed ISO, launch qemu, record it, and wait for ssh."""
+    running is returned as-is. A stopped VM whose overlay disk survives is
+    resumed against that disk (its recorded ports kept); only a name with no
+    persisted disk is created fresh."""
     existing = state.get(plan.name)
     if existing and is_running(existing):
         requested = [(int(h), int(g)) for h, g in plan.publish]
@@ -404,6 +439,15 @@ def bring_up(paths: Paths, state: FleetState, plan: HostPlan, base_image: Path) 
                 f"stop it (`fleet down {plan.name}`) before re-publishing {requested}"
             )
         return existing
+    if _has_persisted_disk(existing):
+        assert existing is not None
+        requested = [(int(h), int(g)) for h, g in plan.publish]
+        if requested and existing.publish != requested:
+            raise FleetError(
+                f"{plan.name} was booted with publish {existing.publish}; "
+                f"`fleet reset` before re-publishing {requested}"
+            )
+        return resume_vm(paths, state, existing)
     vm_dir = paths.vm_dir(plan.name)
     if vm_dir.exists():
         shutil.rmtree(vm_dir)

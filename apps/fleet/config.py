@@ -6,6 +6,7 @@ so nothing escapes the checkout and `reset` can wipe it wholesale.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,12 +25,10 @@ GUEST_USER = "golem"
 GUEST_MEMORY_MB = 2048
 GUEST_CPUS = 2
 
-# Each VM claims one slot `i` (its index in the boot list) and takes the same
-# offset on every base: ssh on 2200+i, golemd on 8800+i (forwarded to the
-# guest's 7474). Slot 0 → ssh 2200, golemd 8800; slot 1 → 2201/8801; and so on.
 SSH_PORT_BASE = 2200
 GOLEMD_PORT_BASE = 8800
 GOLEMD_GUEST_PORT = 7474
+PORT_SLOT_COUNT = 100
 
 SSH_READY_TIMEOUT_S = 180
 SSH_POLL_INTERVAL_S = 3
@@ -85,6 +84,11 @@ def paths() -> Paths:
     return Paths(root=repo_root())
 
 
+def slot_for_name(name: str) -> int:
+    digest = hashlib.blake2b(name.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % PORT_SLOT_COUNT
+
+
 @dataclass(frozen=True)
 class HostPlan:
     """A host's name paired with the two forwarded ports its slot earns, plus
@@ -137,12 +141,13 @@ def plan_hosts(
     on the same ports. `publish` maps a host name to its extra forwards."""
     publish = publish or {}
     plans: list[HostPlan] = []
-    for index, name in enumerate(names):
+    for name in names:
+        slot = slot_for_name(name)
         plans.append(
             HostPlan(
                 name=name,
-                ssh_port=SSH_PORT_BASE + index,
-                golemd_port=GOLEMD_PORT_BASE + index,
+                ssh_port=SSH_PORT_BASE + slot,
+                golemd_port=GOLEMD_PORT_BASE + slot,
                 publish=publish.get(name, ()),
             )
         )
