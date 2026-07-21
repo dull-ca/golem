@@ -139,6 +139,9 @@ pub mod fake {
                         Ok(CommandOutput { status: 1, stdout: String::new(), stderr: "no packages found".into() })
                     }
                 }
+                ("apt-get", ["update"]) => {
+                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                }
                 ("apt-get", _) if args.first() == Some(&"install") => {
                     let name = args.last().copied().unwrap_or_default();
                     host.installed.insert(name.to_string());

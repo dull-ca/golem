@@ -52,6 +52,10 @@ impl<R: CommandRunner> HostReconciler<R> {
         if self.apt_installed(name)? {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
         }
+        let updated = self.runner.run("apt-get", &["update"])?;
+        if !updated.succeeded() {
+            return Err(EnactError::Retryable(format!("apt-get update: {}", updated.stderr)));
+        }
         let installed = self.runner.run("apt-get", &["install", "-y", name])?;
         if !installed.succeeded() {
             return Err(EnactError::Retryable(format!("apt-get install {name}: {}", installed.stderr)));
@@ -362,6 +366,22 @@ mod tests {
 
         rec.reverse(&outcome).unwrap();
         assert!(runner_of(&rec).is_installed("nginx"));
+    }
+
+    #[test]
+    fn apt_updates_package_list_before_installing() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = apt("nginx");
+        let cid = glyph_content_id(&glyph);
+
+        rec.apply(&glyph, cid).unwrap();
+
+        let log = runner_of(&rec).log();
+        let update = log.iter().position(|c| c == "apt-get update");
+        let install = log.iter().position(|c| c == "apt-get install -y nginx");
+        assert!(update.is_some(), "expected an apt-get update, log was {log:?}");
+        assert!(install.is_some(), "expected an apt-get install, log was {log:?}");
+        assert!(update < install, "apt-get update must precede install, log was {log:?}");
     }
 
     #[test]
