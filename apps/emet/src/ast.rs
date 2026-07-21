@@ -67,6 +67,9 @@ pub enum Constraint {
     /// Elm's `comparable`: admits `Int`, `Float`, `String`. Comparison and
     /// equality operators require it.
     Comparable,
+    /// Elm's `appendable`: admits `String` and `List a`. The `++` operator
+    /// requires it.
+    Appendable,
 }
 
 impl std::fmt::Display for Type {

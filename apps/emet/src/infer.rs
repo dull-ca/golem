@@ -216,7 +216,16 @@ impl Infer {
             if *w == v {
                 return Ok(());
             }
-            let merged = merge_constraints(c, *cw);
+            let merged = merge_constraints(c, *cw).ok_or_else(|| {
+                TypeError::new(
+                    format!(
+                        "no type satisfies both `{}` and `{}`",
+                        constraint_name(c),
+                        constraint_name(*cw)
+                    ),
+                    span.clone(),
+                )
+            })?;
             if merged == *cw {
                 self.subst.insert(v, Type::Var(*w, merged));
             } else {
@@ -574,19 +583,27 @@ impl Infer {
     }
 }
 
-/// The stronger of two bounds when two constrained vars unify: `None` is the
-/// identity, `Number ⊂ Comparable`, so `Number ∧ Comparable = Number`.
-fn merge_constraints(a: Constraint, b: Constraint) -> Constraint {
+/// The stronger of two bounds when two constrained vars unify, or `None` when
+/// no type can satisfy both. `Constraint::None` is the identity; `Number ⊂
+/// Comparable`, so `Number ∧ Comparable = Number`. `Appendable` (`String`/`List
+/// a`) shares no admissible type with `Number` or `Comparable`, so merging it
+/// with either is unsatisfiable and rejected.
+fn merge_constraints(a: Constraint, b: Constraint) -> Option<Constraint> {
     match (a, b) {
-        (Constraint::None, other) | (other, Constraint::None) => other,
-        (Constraint::Number, _) | (_, Constraint::Number) => Constraint::Number,
-        (Constraint::Comparable, Constraint::Comparable) => Constraint::Comparable,
+        (Constraint::None, other) | (other, Constraint::None) => Some(other),
+        (Constraint::Number, Constraint::Number) => Some(Constraint::Number),
+        (Constraint::Comparable, Constraint::Comparable) => Some(Constraint::Comparable),
+        (Constraint::Appendable, Constraint::Appendable) => Some(Constraint::Appendable),
+        (Constraint::Number, Constraint::Comparable) | (Constraint::Comparable, Constraint::Number) => {
+            Some(Constraint::Number)
+        }
+        _ => None,
     }
 }
 
 /// Whether a concrete type satisfies a bound: `number` admits `Int`/`Float`,
-/// `comparable` also admits `String`. A non-`Con` type (var, function, record)
-/// is only admissible under `None`.
+/// `comparable` also admits `String`, `appendable` admits `String`/`List a`. A
+/// non-`Con` type (var, function, record) is only admissible under `None`.
 fn constraint_admits(c: Constraint, t: &Type) -> bool {
     let head = match t {
         Type::Con(name, _) => name.as_str(),
@@ -596,6 +613,7 @@ fn constraint_admits(c: Constraint, t: &Type) -> bool {
         Constraint::None => true,
         Constraint::Number => matches!(head, "Int" | "Float"),
         Constraint::Comparable => matches!(head, "Int" | "Float" | "String"),
+        Constraint::Appendable => matches!(head, "String" | "List"),
     }
 }
 
@@ -604,6 +622,7 @@ fn constraint_name(c: Constraint) -> &'static str {
         Constraint::None => "unconstrained",
         Constraint::Number => "number",
         Constraint::Comparable => "comparable",
+        Constraint::Appendable => "appendable",
     }
 }
 

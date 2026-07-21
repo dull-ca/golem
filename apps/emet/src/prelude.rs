@@ -30,6 +30,7 @@ const B: u32 = u32::MAX - 1;
 
 const N: u32 = u32::MAX - 2;
 const C: u32 = u32::MAX - 3;
+const P: u32 = u32::MAX - 4;
 
 fn var(n: u32) -> Type {
     Type::Var(n, Constraint::None)
@@ -41,6 +42,10 @@ fn number(n: u32) -> Type {
 
 fn comparable(n: u32) -> Type {
     Type::Var(n, Constraint::Comparable)
+}
+
+fn appendable(n: u32) -> Type {
+    Type::Var(n, Constraint::Appendable)
 }
 
 fn list(elem: Type) -> Type {
@@ -90,6 +95,7 @@ fn constraint_for(v: u32) -> Constraint {
     match v {
         N => Constraint::Number,
         C => Constraint::Comparable,
+        P => Constraint::Appendable,
         _ => Constraint::None,
     }
 }
@@ -423,6 +429,13 @@ fn string_append(mut args: Vec<Value>) -> Value {
     Value::Str(format!("{}{}", as_string(&a), as_string(&b)))
 }
 
+fn append(args: Vec<Value>) -> Value {
+    match &args[0] {
+        Value::List(_) => list_append(args),
+        _ => string_append(args),
+    }
+}
+
 fn string_concat(mut args: Vec<Value>) -> Value {
     let parts = args.pop().unwrap();
     let mut out = String::new();
@@ -665,6 +678,12 @@ fn builtins() -> Vec<Builtin> {
             arity: 2,
             scheme: scheme(&[], fun(string(), fun(string(), string()))),
             run: string_append,
+        },
+        Builtin {
+            name: "append",
+            arity: 2,
+            scheme: scheme(&[P], fun(appendable(P), fun(appendable(P), appendable(P)))),
+            run: append,
         },
         Builtin {
             name: "String.concat",

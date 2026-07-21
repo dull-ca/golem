@@ -551,7 +551,7 @@ fn operator_builtin(op: &str) -> &'static str {
         "/" => "fdiv",
         "//" => "idiv",
         "^" => "pow",
-        "++" => "String.append",
+        "++" => "append",
         "::" => "cons",
         "<" => "lt",
         ">" => "gt",

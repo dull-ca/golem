@@ -22,14 +22,16 @@ monorepo. B's headline is model reconciliation.
   the inferencer to group a strongly-connected component and generalize it
   together.
 
-- **Full `appendable` `++`.** `++` is currently bound to `String.append` only
-  (`String -> String -> String`). Elm's `++` is `appendable -> appendable ->
-  appendable` (String *or* List). We deliberately did **not** add a third
-  `appendable` constraint alongside `number`/`comparable` (ADR 0007); lists use
-  `List.append` / `List.concat` for now. To generalize: either add an
-  `appendable` bounded constraint (mirrors `number`/`comparable`) or make `++`
-  a runtime-dispatching builtin with an inference rule that unifies both operands
-  and the result to one String-or-List type. See ADR 0007.
+- **Full `appendable` `++` — DONE.** `++` is now `appendable -> appendable ->
+  appendable`, satisfied by `String` and `List a` only, mirroring Elm exactly.
+  `appendable` joins `number`/`comparable` as a third `Constraint` bounded type
+  variable (ADR 0007), threaded through `bind`/`unify`/`merge_constraints`/
+  `constraint_admits` in `infer.rs`; `merge_constraints` now rejects the
+  unsatisfiable merges (`appendable` shares no type with `number`/`comparable`).
+  `++` desugars to a single `append` prelude builtin carrying the `appendable`
+  scheme, which dispatches at eval time to string or list concatenation on the
+  runtime value. `List.append` / `List.concat` remain for explicit use;
+  interpolation still desugars to `String.concat`.
 
 - **One-line inline `case`.** `case … of` currently requires laid-out arms (each
   on its own line). A single-line `case x of A -> a` inside a larger expression is
