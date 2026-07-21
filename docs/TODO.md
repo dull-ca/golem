@@ -38,10 +38,9 @@ monorepo. B's headline is model reconciliation.
   runtime value. `List.append` / `List.concat` remain for explicit use;
   interpolation still desugars to `String.concat`.
 
-- **One-line inline `case`.** `case … of` currently requires laid-out arms (each
-  on its own line). A single-line `case x of A -> a` inside a larger expression is
-  deferred because it needs a `parse-error(t)`-style layout close, the same
-  mechanism `let … in` uses (ADR 0001 / design §8.1).
+- **One-line inline `case` — WON'T DO** (Dr. Dub, 2026-07-20). `case … of`
+  requires laid-out arms; a single-line `case x of A -> a` inside a larger
+  expression stays unsupported. Dropped as not worth the layout-close machinery.
 
 - **User-facing `type` declarations — DONE.** Both non-parameterized user types
   (single-constructor record-carrying types, nullary sum types like `type Role =
