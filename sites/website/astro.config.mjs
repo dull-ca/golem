@@ -52,6 +52,16 @@ export default defineConfig({
         {
           label: "Reference",
           items: [
+            {
+              label: "The Emet language",
+              items: [
+                { label: "Values & types", link: "/reference/language/values-and-types/" },
+                { label: "Functions", link: "/reference/language/functions/" },
+                { label: "Pattern matching", link: "/reference/language/pattern-matching/" },
+                { label: "Modules", link: "/reference/language/modules/" },
+                { label: "The prelude", link: "/reference/language/prelude/" },
+              ],
+            },
             { label: "CLI", link: "/reference/cli/" },
             { label: "The four glyphs", link: "/reference/primitives/" },
             { label: "The Quadlet library", link: "/reference/workloads/" },

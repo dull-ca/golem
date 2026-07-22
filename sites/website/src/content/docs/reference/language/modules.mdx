@@ -1,0 +1,98 @@
+---
+title: Modules
+description: Emet module headers, imports with aliases and exposing lists, qualified access, the single main entry point, and the emet.json library search path.
+---
+
+One module per file; the file path is the module name. Reuse across files goes
+through `module` / `import`. See ADR 0016.
+
+## Module header
+
+An optional header names the module and lists what it exposes. It sits at
+column zero, above the declarations.
+
+```emet
+module Fleet exposing (internalNetwork, endpoint)
+
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address p = "${address}:${String.fromInt p}"
+```
+
+`exposing (..)` exposes everything. An explicit list names values and types;
+a type may expose its constructors with `Type(..)`:
+
+```emet
+module Roles exposing (Role(..), glyphsFor)
+```
+
+A file with **no** `module` line is a valid entry module that exposes
+everything.
+
+## Imports
+
+An `import` line, also at column zero, brings a module into scope.
+
+```emet
+import Fleet
+import Fleet as F
+import Fleet exposing (internalNetwork)
+```
+
+- `import Fleet` — qualified access only (`Fleet.endpoint`).
+- `import Fleet as F` — qualified under the alias (`F.endpoint`).
+- `import Fleet exposing (internalNetwork)` — the named values usable
+  unqualified.
+
+Only exposed names are importable. A type exposed with `Type(..)` brings its
+constructors into the importer — usable both to build values and to
+pattern-match, with the exhaustiveness checker seeing the full constructor set.
+A type exposed without `(..)` keeps its constructors private, so it cannot be
+matched in the importer. See ADR 0017.
+
+## Qualified access
+
+`Alias.name` (or `Module.name`) reaches an exposed member. This reuses the same
+dotted-name resolution as the built-in modules (`List.map`, `String.fromInt`).
+See ADR 0006 and the [prelude](/reference/language/prelude/).
+
+## The `main` entry point
+
+Exactly one module — the entry — declares `main : List Scroll`. Every other
+module is a library. A library that declares `main` is a compile error. See
+ADR 0009.
+
+```emet
+main : List Scroll
+main =
+  [ scroll { name = "web", glyphs = [ aptPackage { name = "nginx" } ] } ]
+```
+
+## The library search path
+
+`import Foo` resolves `Foo.emet` over a search path, first match winning. See
+ADR 0024.
+
+1. The entry file's own directory.
+2. Each `source-directories` entry of the nearest `emet.json`.
+
+The nearest `emet.json` is found by walking up the entry file's ancestor
+directories. Without an `emet.json`, resolution is entry-directory-only — the
+original ADR 0016 behavior.
+
+```json
+{ "source-directories": ["lib"] }
+```
+
+With that `emet.json` at the repo root, any entry resolves `import Quadlet` to
+`lib/Quadlet.emet`. The entry directory keeps precedence over
+`source-directories`.
+
+## See also
+
+- [Values and types](/reference/language/values-and-types/) — literals, types, user sums.
+- [Functions](/reference/language/functions/) — declarations, `let`, `if`.
+- [Pattern matching](/reference/language/pattern-matching/) — `case` and patterns.
+- [Prelude](/reference/language/prelude/) — the standard-library functions.

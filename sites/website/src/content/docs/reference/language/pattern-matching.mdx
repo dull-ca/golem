@@ -1,0 +1,96 @@
+---
+title: Pattern matching
+description: The Emet case expression, its pattern forms, list and constructor patterns, and compile-time exhaustiveness and redundancy checking.
+---
+
+`case` is the sole elimination form for sum types and lists. For the branching
+`if` form see [functions](/reference/language/functions/).
+
+## `case … of`
+
+```emet
+type Role = Web | Db
+
+glyphsFor : Role -> List Glyph
+glyphsFor role =
+  case role of
+    Web -> [ aptPackage { name = "nginx" } ]
+    Db  -> [ aptPackage { name = "postgresql" } ]
+```
+
+An arm is `pattern -> expr`. The arms of a `case` are laid out by the offside
+rule — each arm on its own line, indented past `of`. A binder in a pattern is
+in scope in that arm's body.
+
+## Pattern forms
+
+| Pattern | Matches | Example |
+| --- | --- | --- |
+| variable | anything; binds it | `n` |
+| wildcard `_` | anything; binds nothing | `_` |
+| Int literal | an equal `Int` | `0` |
+| Float literal | an equal `Float` | `3.14` |
+| String literal | an equal `String` | `"nginx"` |
+| constructor | a value of that constructor | `Just x`, `Web` |
+| empty list | `[]` | `[]` |
+| cons | a non-empty list | `(x :: xs)` |
+| list literal | a list of fixed length | `[a, b]` |
+
+`Char` and `String` literal *patterns* differ: string literal patterns match,
+but `Char` literal patterns are not yet supported (a `Char` scrutinee is
+matched with a variable or wildcard). See ADR 0025.
+
+### Constructor patterns
+
+`Upper p1 p2 …` matches a constructor applied to sub-patterns. Constructors of
+built-in sums (`Just` / `Nothing`, `True` / `False`, `LT` / `EQ` / `GT`) and of
+user `type` declarations both work:
+
+```emet
+unwrap : Maybe Int -> Int
+unwrap m =
+  case m of
+    Just n  -> n
+    Nothing -> 0
+```
+
+Constructors imported from another module with `Type(..)` match too, and the
+exhaustiveness checker sees the imported type's full constructor set. See
+ADR 0017 and [modules](/reference/language/modules/).
+
+A built glyph or filesystem entry is matchable: `AptPackage`,
+`SystemdService`, `Filesystem`, `LineInFile`, and the entry tags `File`,
+`Directory`, `Symlink` are match-only PascalCase patterns. See
+[the four glyphs](/reference/primitives/) and ADR 0017.
+
+### List patterns
+
+`[]` matches the empty list; `(x :: xs)` matches a non-empty list, binding its
+head and tail. A `[a, b, c]` literal matches a list of exactly that length and
+desugars to nested `::` ending in `[]`.
+
+```emet
+firstOr : Int -> List Int -> Int
+firstOr fallback xs =
+  case xs of
+    []        -> fallback
+    (x :: _)  -> x
+```
+
+`List` is checked as a two-constructor sum (`[]` and `::`), so a `case` on a
+list must cover both.
+
+## Exhaustiveness and redundancy
+
+A non-exhaustive `case` — one that fails to cover some value — is a compile
+error, reported with the missing constructors. A redundant arm — one that can
+never match because earlier arms already cover it — is also a compile error.
+Both are checked at compile time, so no arm falls through at runtime. See
+ADR 0005.
+
+## See also
+
+- [Values and types](/reference/language/values-and-types/) — literals, types, user sums.
+- [Functions](/reference/language/functions/) — declarations, `let`, `if`.
+- [Modules](/reference/language/modules/) — `module`, `import`, the search path.
+- [Prelude](/reference/language/prelude/) — the standard-library functions.
