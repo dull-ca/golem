@@ -18,6 +18,7 @@ use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme, Span
 use crate::query::QueryIndex;
 use crate::eval::{self, Env};
 use crate::infer::{self, ImportedConstructors, TyEnv};
+use crate::manifest::{self, SearchPath};
 use crate::{Error, Phase};
 
 struct Loaded {
@@ -70,10 +71,10 @@ struct Interface {
 pub fn compile_entry(
     entry: &Path,
 ) -> Result<(crate::ast::Type, Vec<crate::ir::Scroll>), Vec<Error>> {
-    let dir = entry.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let search_path = manifest::search_path_for(entry);
 
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
-    let entry_name = load_graph(entry, &dir, &mut loaded)?;
+    let entry_name = load_graph(entry, &search_path, &mut loaded)?;
     let order = topo_order(&entry_name, &loaded).map_err(|e| vec![e])?;
 
     eval::on_eval_thread(move || check_and_eval(entry_name, order, loaded))
@@ -81,10 +82,10 @@ pub fn compile_entry(
 }
 
 pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
-    let dir = entry.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let search_path = manifest::search_path_for(entry);
 
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
-    let entry_name = match load_graph(entry, &dir, &mut loaded) {
+    let entry_name = match load_graph(entry, &search_path, &mut loaded) {
         Ok(name) => name,
         Err(errors) => return ProjectAnalysis { diagnostics: errors, indexes: HashMap::new() },
     };
@@ -197,7 +198,7 @@ fn check_and_eval(
 /// (ADR 0022), rather than only the first.
 fn load_graph(
     path: &Path,
-    dir: &Path,
+    search_path: &SearchPath,
     loaded: &mut HashMap<String, Loaded>,
 ) -> Result<String, Vec<Error>> {
     let source = std::fs::read_to_string(path).map_err(|e| {
@@ -223,18 +224,37 @@ fn load_graph(
         if loaded.contains_key(&import.module) {
             continue;
         }
-        let import_path = dir.join(format!("{}.emet", import.module));
-        if !import_path.exists() {
-            return Err(vec![Error {
+        let import_path = find_module(&import.module, search_path).ok_or_else(|| {
+            vec![Error {
                 phase: Phase::Parse,
-                msg: format!("cannot find imported module `{}` at {}", import.module, import_path.display()),
+                msg: missing_module_message(&import.module, search_path),
                 span: import.span.clone(),
                 note: None,
-            }]);
-        }
-        load_graph(&import_path, dir, loaded)?;
+            }]
+        })?;
+        load_graph(&import_path, search_path, loaded)?;
     }
     Ok(name)
+}
+
+fn find_module(module: &str, search_path: &SearchPath) -> Option<PathBuf> {
+    for dir in search_path.directories() {
+        let candidate = dir.join(format!("{module}.emet"));
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn missing_module_message(module: &str, search_path: &SearchPath) -> String {
+    let searched = search_path
+        .directories()
+        .iter()
+        .map(|dir| dir.join(format!("{module}.emet")).display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("cannot find imported module `{module}` (searched {searched})")
 }
 
 fn module_name_from_path(path: &Path) -> String {

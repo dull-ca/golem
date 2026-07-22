@@ -11,6 +11,7 @@ pub mod infer;
 pub mod ir;
 pub mod layout;
 pub mod lexer;
+pub mod manifest;
 pub mod parser;
 pub mod prelude;
 pub mod query;
