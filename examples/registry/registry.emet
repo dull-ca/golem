@@ -1,3 +1,12 @@
+-- The registry box of the self-hosted-CI loop (milestone 3): golem provisions
+-- the machine that stores the website image the builder pushes and the web box
+-- pulls. One internally-exposed `Workload` — the docker.io registry:2 container
+-- on :5000, backed by a named `golem-registry-data` volume — which lowers to the
+-- podman apt, the `.volume` unit, the `.container` quadlet, its service, and the
+-- internal firewall opening.
+--
+-- Authored against the shared `Quadlet` library, resolved from `lib/` via the
+-- repo-root `emet.json` (ADR 0024).
 module Main exposing (..)
 
 import Quadlet exposing

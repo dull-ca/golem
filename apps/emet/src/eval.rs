@@ -98,6 +98,14 @@ impl std::fmt::Debug for Value {
     }
 }
 
+/// The evaluation environment: names to values, behind an `Rc` so a closure can
+/// capture it by an O(1) refcount bump instead of copying the whole map. A bare
+/// `BTreeMap` here made capture a deep clone: every closure a top-level decl
+/// enclosed copied the entire environment, and each added decl grew both the map
+/// and the number of closures cloning it — O(2^N) in the count of reachable
+/// decls, minutes for a few dozen (see `tests/scaling.rs`). With the `Rc`,
+/// `Closure::env` shares the map, and `insert` clones it copy-on-write only when
+/// a binding is actually added.
 #[derive(Debug, Clone, Default)]
 pub struct Env(Rc<BTreeMap<String, Value>>);
 impl Env {

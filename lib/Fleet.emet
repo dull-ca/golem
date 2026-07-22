@@ -1,3 +1,6 @@
+-- Shared fleet facts (the internal CIDR, an `address:port` helper) every host
+-- reads, resolved from the library search path (ADR 0024) rather than copied per
+-- entry directory.
 module Fleet exposing (internalNetwork, endpoint)
 
 internalNetwork : String

@@ -1,3 +1,12 @@
+-- The lichess fleet's own ergonomic helpers (ADR 0023 layer c): user Emet built
+-- on the shipped `Quadlet` library, not part of it. `dockerImage`/`workload`/
+-- `service` are thin shortcuts over `Workload` for this fleet's common shapes —
+-- a docker.io image, a no-ingress workload, an internally-exposed service.
+--
+-- `ingress` stays hand-rolled nginx (its own `aptPackage`/`file`/`lineInFile`/
+-- `systemdService` glyphs) because a reverse proxy is a *different* container's
+-- config, not a property of the upstream workload — so it is not a quadlet
+-- `Workload` and does not go through the library (ADR 0023 §7).
 module Lichess exposing
   ( dockerImage
   , workload

@@ -70,9 +70,10 @@ parser.rs  chumsky over the laid-out tokens -> Module (exprs, patterns, types,
 infer.rs   Algorithm W: unify / generalize / instantiate; signature + generics
            checks; number/comparable constraints; case exhaustiveness/redundancy
 eval.rs    typed Module -> Vec<Scroll> (may not terminate; depth-guarded)
-resolve.rs multi-module stage (ADR 0016): load the import graph from disk,
-           reject cycles, order imports before importers, then check + eval each
-           module against the harvested interfaces of what it imports
+resolve.rs multi-module stage (ADR 0016): load the import graph from disk over
+           the `emet.json` library search path (ADR 0024; `manifest.rs`), reject
+           cycles, order imports before importers, then check + eval each module
+           against the harvested interfaces of what it imports
 prelude.rs (TyEnv, Env) for constructors (Just/Nothing/True/False/LT/EQ/GT) and
            the total built-in combinators (List./Maybe./String./numeric/compare)
 lib.rs     compile() drives the single-file stages; compile_file() runs the
@@ -89,6 +90,12 @@ An Elm-shaped, minimal module system for reuse across files:
 - **`module Name exposing (..)`** / `exposing (a, B, Type(..))` header, one
   module per file, **file path = module name**. The header is optional: a file
   with no `module` line is a valid entry module that exposes everything.
+- **`import Foo` resolves over a search path (ADR 0024, `manifest.rs`):** the
+  entry file's own directory first, then each `source-directories` entry of the
+  nearest `emet.json` (found by walking up from the entry file), first
+  `Foo.emet` winning. No `emet.json` = entry-directory-only, the original ADR
+  0016 behavior. The repo-root `emet.json` names `lib/`, so any entry resolves
+  `import Quadlet` to `lib/Quadlet.emet`.
 - **`import Foo` / `import Foo as F` / `import Foo exposing (bar)`.** Qualified
   access `Foo.bar` reuses the same dotted-name resolution as built-ins
   (`List.map`; ADR 0006). Only exposed values, types, and — for `Type(..)` —

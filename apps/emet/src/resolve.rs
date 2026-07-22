@@ -1,9 +1,11 @@
 //! The resolve / import-graph stage (ADR 0016), which runs before inference for
 //! a multi-module program. It loads the entry file, follows its `import` lines
-//! to the modules they name (file path = module name, resolved relative to the
-//! entry's directory), rejects import cycles, orders the modules so every
-//! import precedes its importer, then type-checks and evaluates each module
-//! against the *interfaces* of the modules it imports.
+//! to the modules they name (file path = module name, resolved over the ADR 0024
+//! search path — the entry directory first, then the `source-directories` of the
+//! nearest `emet.json`, first match winning; see `manifest::search_path_for`),
+//! rejects import cycles, orders the modules so every import precedes its
+//! importer, then type-checks and evaluates each module against the *interfaces*
+//! of the modules it imports.
 //!
 //! An [`Interface`] is the harvested public surface of an already-processed
 //! library: the type env and value env plus which names it exposes. Only
@@ -189,9 +191,10 @@ fn check_and_eval(
 }
 
 /// Parse the module at `path` and recursively load every module it imports,
-/// keyed by module name in `loaded`. An import resolves to `<Name>.emet` beside
-/// the entry file; a missing file is a parse-phase error. Returns this module's
-/// name.
+/// keyed by module name in `loaded`. An import resolves to the first
+/// `<Name>.emet` found along `search_path` (ADR 0024, `find_module`); a name
+/// found in no search directory is a parse-phase error naming every directory
+/// tried. Returns this module's name.
 ///
 /// Parses through `parse_source_multi`, so a malformed module yields every parse
 /// error it contains (each prefixed with the file path) as the `Vec<Error>`

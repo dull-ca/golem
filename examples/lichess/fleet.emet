@@ -1,3 +1,21 @@
+-- The lichess fleet: the entry module. Each `Scroll` is one host's inventory,
+-- built by mapping the `Lichess` helpers over that host's workloads, services,
+-- and ingresses; `main` lists all six hosts, so compiling this file emits a
+-- manifest of six scrolls — golemd on each host selects and enacts only its own.
+--
+-- Per-host inventory:
+--   scaly — one fishnet workload (chess-analysis worker, no inbound port).
+--   manta — the leroyjenkins edge workloads, the lila app + redis services,
+--           and the public lichess.org / lichess1.org ingresses.
+--   orbit — the lila-* microservices (http, engine, gif, fishnet, ip2proxy,
+--           push) plus their public ingresses.
+--   talos — a fishnet worker, the monitoring/infra services (influx, prometheus,
+--           alertmanager, loki, dns, ntp, syslog), and their ingresses.
+--   kaiju — the primary mongod service.
+--   zulip — the zulip stack (app, email, postgres, redis) and its ingress.
+--
+-- `Lichess` and `Fleet` are resolved from `lib/` via the repo-root `emet.json`
+-- (ADR 0024), so this entry directory carries no copy of the shared library.
 module Main exposing (..)
 
 import Lichess exposing

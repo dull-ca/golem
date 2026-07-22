@@ -153,9 +153,10 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
 }
 
 /// Full pipeline for a multi-module program: load the entry file, discover and
-/// load its imported modules from disk (file path = module name, relative to
-/// the entry's directory), reject import cycles, then type-check and evaluate
-/// each module against the interfaces of what it imports.
+/// load its imported modules from disk (file path = module name, resolved over
+/// the ADR 0024 search path — entry directory first, then the `emet.json`
+/// library directories), reject import cycles, then type-check and evaluate each
+/// module against the interfaces of what it imports.
 pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
     compile_file_all(entry).map_err(|mut errors| errors.remove(0))
 }
@@ -214,10 +215,11 @@ pub fn analyze_source(src: &str) -> Analysis {
     Analysis { diagnostics, index }
 }
 
-/// Analyze a multi-module program for the LSP: resolve the import graph and
-/// return a per-file `QueryIndex` plus diagnostics, so hover and cross-file
-/// go-to-definition work across a project. The `analyze_source` of a whole
-/// project.
+/// Analyze a multi-module program for the LSP: resolve the import graph over the
+/// same ADR 0024 search path as `compile_file` and return a per-file
+/// `QueryIndex` plus diagnostics, so hover and cross-file go-to-definition work
+/// across a project — including into library modules under `emet.json`'s
+/// `source-directories`. The `analyze_source` of a whole project.
 pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
     resolve::analyze_entry(entry)
 }

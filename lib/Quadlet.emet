@@ -1,3 +1,22 @@
+-- The shipped, strongly-typed Podman-Quadlet library (ADR 0023 layer b):
+-- Debian + systemd + Podman specific, and lowering entirely to the four glyphs.
+-- It models the two quadlet unit kinds golem actually writes — a `.container`
+-- and the separate `.volume` unit it references by a mount line — so the types
+-- mirror the files on disk rather than an invented middle layer.
+--
+-- `Mount` is a sum because a named-volume mount and a host-path mount are
+-- genuinely different: `FromVolume` names a `.volume` unit and emits no
+-- directory; `FromHost` names a host path and emits a `directory` glyph source
+-- (ADR 0019) so the bind-mount source exists before the unit starts.
+--
+-- `image` takes `registry`, `name`, and `tag` as three explicit arguments — no
+-- single-string `"docker.io/library/registry:2"` parse, because Emet has no
+-- `String.split` to break one apart (the ADR 0023 §1 smart-constructor idea,
+-- pared to what the language can express).
+--
+-- Lowering: a `Workload` becomes a `ContainerUnit` plus the `VolumeUnit`s its
+-- `FromVolume` mounts reference (`workloadUnit`/`derivedVolumeUnits`), and those
+-- lower to glyphs (`containerUnitGlyphs`/`volumeUnitGlyphs`).
 module Quadlet exposing
   ( Ref(..)
   , Image(..)

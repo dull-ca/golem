@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted. Import resolution scope extended by ADR 0024 (a `emet.json`
+library search path beyond the entry directory); this ADR's cycle rejection,
+single-`main`, and visibility rules are unchanged.
 
 ## Context
 

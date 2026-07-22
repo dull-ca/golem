@@ -1,9 +1,10 @@
 //! Compilation must scale near-linearly in the number of reachable top-level
-//! declarations. A prior implementation captured each closure's environment by
-//! deep clone, so every added declaration doubled the work of evaluating the
-//! module — exponential blow-up that made even a few dozen trivial declarations
-//! take minutes. These tests pin the fix: a program that is a wall of
-//! independent declarations compiles in well under a second.
+//! declarations. These tests guard the historical exponential-env-capture bug:
+//! when the evaluation environment was a bare `BTreeMap`, each closure captured
+//! it by deep clone, so every added declaration grew both the map and the number
+//! of closures copying it — O(2^N), minutes for a few dozen trivial decls. The
+//! fix put the map behind an `Rc` (see `eval::Env`). A program that is a wall of
+//! independent declarations must now compile in well under a second.
 
 use std::sync::mpsc;
 use std::thread;
