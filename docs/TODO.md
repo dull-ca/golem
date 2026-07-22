@@ -96,6 +96,25 @@ monorepo. B's headline is model reconciliation.
   holds no language semantics — every answer comes from the one inference engine
   via `analyze_source`/`analyze_project`.
 
+- **`Char` primitive + Elm-faithful `String`/`Char` modules — Accepted,
+  implemented (ADR 0025).** A `Char` base type (one Unicode scalar; char literals
+  `'c'` with `'\n'`/`'\t'`/`'\\'`/`'\''`/`'\u{...}'` escapes; comparable/orderable
+  like Elm) plus the full `elm/core` `Char` and `String` surface — 12 `Char.*`
+  and 35 new `String.*` builtins
+  (`toList`/`fromList`/`map`/`filter`/`foldl`/`foldr`/`split`/`slice`/`contains`/
+  `indexes`/`pad*`/ the `Char.is*` predicates, …), all scalar-indexed to match
+  `String.length`. Skips locale variants (`toLocaleUpper`/`Lower`). Tests green
+  (`apps/emet/tests/char_and_string.rs`, one Elm-parity assertion per function).
+
+- **Tuple type + `String.uncons` — DEFERRED (decided, Dr. Dub).** `elm/core`'s
+  `String.uncons : String -> Maybe (Char, String)` and every other
+  tuple-returning function are out of reach because Emet has **no tuple type**.
+  We do **not** deviate to a record (`Maybe { head, tail }`) — that would break
+  faithfulness to `elm/core` (ADR 0025 §4). The real fix is a future, separate
+  **"tuple type" ADR** (type syntax, inference, pattern matching, IR
+  implications); once tuples exist, `uncons` is added with its exact Elm
+  signature. Char/String-literal *patterns* in `case` are deferred with it.
+
 ### Diagnostics / tooling
 
 - **Multi-error parse recovery + rich CLI rendering — DONE (ADR 0022).** The

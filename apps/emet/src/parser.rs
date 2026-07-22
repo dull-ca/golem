@@ -306,6 +306,9 @@ where
         let float_lit = select! { Tok::Float(x) => x }
             .map_with(|x, e| Spanned(Expr::Float(x), span_range(e.span())));
 
+        let char_lit = select! { Tok::Char(c) => c }
+            .map_with(|c, e| Spanned(Expr::Char(c), span_range(e.span())));
+
         let var = select! {
             Tok::Ident(name) if !is_reserved_constructor(&name) => name
         }
@@ -388,7 +391,7 @@ where
             .clone()
             .delimited_by(just(Tok::LParen), just(Tok::RParen));
 
-        let atom = choice((interpolated, str_lit, float_lit, int_lit, constructor, var, qualified, ctor, paren, list, record));
+        let atom = choice((interpolated, str_lit, char_lit, float_lit, int_lit, constructor, var, qualified, ctor, paren, list, record));
 
         let postfix = atom.foldl(
             just(Tok::Dot).ignore_then(field_name()).repeated(),

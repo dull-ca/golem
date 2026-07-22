@@ -39,6 +39,8 @@ pub enum Tok {
     InterpEnd,
     Int(i64),
     Float(f64),
+    /// A char literal `'c'` — one Unicode scalar (ADR 0025).
+    Char(char),
     /// A maximal-munch run of operator characters (`+`, `<=`, `++`, …).
     Op(String),
 
@@ -91,6 +93,7 @@ impl fmt::Display for Tok {
             InterpEnd => write!(f, "}}"),
             Int(n) => write!(f, "{n}"),
             Float(x) => write!(f, "{x}"),
+            Char(c) => write!(f, "{c:?}"),
             Op(s) => write!(f, "{s}"),
             Let => write!(f, "let"),
             In => write!(f, "in"),
@@ -220,10 +223,136 @@ fn emit_string_segment(
     })
 }
 
+struct UnicodeEscape {
+    scalar: char,
+    next_i: usize,
+    next_col: usize,
+}
+
+/// Decode a `\u{HHHH}` escape into one scalar, `backslash` indexing the `\`.
+/// The braces are required. Shared by string and char scanning — the single
+/// source of truth for `\u{...}` so both spell it identically. An empty
+/// `\u{}`, a non-hex body, or a value that is not a valid scalar (out of the
+/// codepoint range, or a surrogate) is a lex error.
+fn scan_unicode_escape(
+    chars: &[char],
+    byte_at: &[usize],
+    backslash: usize,
+    backslash_col: usize,
+    literal_start_byte: usize,
+) -> Result<UnicodeEscape, LexError> {
+    let bad = |chars_len: usize| LexError {
+        msg: "invalid \\u{...} escape".into(),
+        span: literal_start_byte..byte_at[chars_len.min(chars.len())],
+    };
+    if backslash + 2 >= chars.len() || chars[backslash + 2] != '{' {
+        return Err(bad(backslash + 2));
+    }
+    let mut j = backslash + 3;
+    let mut digits = String::new();
+    while j < chars.len() && chars[j] != '}' {
+        digits.push(chars[j]);
+        j += 1;
+    }
+    if j >= chars.len() {
+        return Err(bad(j));
+    }
+    let code = u32::from_str_radix(&digits, 16).map_err(|_| bad(j + 1))?;
+    let scalar = char::from_u32(code).ok_or_else(|| bad(j + 1))?;
+    let consumed = (j + 1) - backslash;
+    Ok(UnicodeEscape {
+        scalar,
+        next_i: j + 1,
+        next_col: backslash_col + consumed,
+    })
+}
+
+struct CharLiteral {
+    scalar: char,
+    next_i: usize,
+    next_col: usize,
+}
+
+/// Scan a `'…'` char literal, `open` indexing the opening `'`. The content is
+/// either one plain scalar or one escape — `\n`, `\t`, `\\`, `\'`, or
+/// `\u{...}` (shared with string scanning via `scan_unicode_escape`) — then a
+/// closing `'`. Each of these is a lex error: an empty `''`, a multi-scalar
+/// `'ab'`, an unterminated `'a`, a raw newline inside the quotes, or a bad
+/// `\u{...}` (ADR 0025).
+fn scan_char_literal(
+    chars: &[char],
+    byte_at: &[usize],
+    open: usize,
+    open_col: usize,
+    open_byte: usize,
+) -> Result<CharLiteral, LexError> {
+    let unterminated = |chars_len: usize| LexError {
+        msg: "unterminated char literal".into(),
+        span: open_byte..byte_at[chars_len.min(chars.len())],
+    };
+    let empty = |chars_len: usize| LexError {
+        msg: "empty char literal".into(),
+        span: open_byte..byte_at[chars_len.min(chars.len())],
+    };
+    let too_many = |chars_len: usize| LexError {
+        msg: "char literal must be a single scalar".into(),
+        span: open_byte..byte_at[chars_len.min(chars.len())],
+    };
+    let content = open + 1;
+    if content >= chars.len() {
+        return Err(unterminated(content));
+    }
+    let first = chars[content];
+    if first == '\'' {
+        return Err(empty(content + 1));
+    }
+    if first == '\n' {
+        return Err(unterminated(content));
+    }
+    let (scalar, after, after_col) = if first == '\\' {
+        if content + 1 >= chars.len() {
+            return Err(unterminated(content + 1));
+        }
+        let next = chars[content + 1];
+        if next == 'u' {
+            let scan = scan_unicode_escape(chars, byte_at, content, open_col + 1, open_byte)?;
+            (scan.scalar, scan.next_i, scan.next_col)
+        } else {
+            let repl = match next {
+                'n' => '\n',
+                't' => '\t',
+                '\\' => '\\',
+                '\'' => '\'',
+                _ => {
+                    return Err(LexError {
+                        msg: "invalid char literal escape".into(),
+                        span: open_byte..byte_at[(content + 2).min(chars.len())],
+                    })
+                }
+            };
+            (repl, content + 2, open_col + 3)
+        }
+    } else {
+        (first, content + 1, open_col + 2)
+    };
+    if after >= chars.len() {
+        return Err(unterminated(after));
+    }
+    if chars[after] != '\'' {
+        return Err(too_many(after + 1));
+    }
+    Ok(CharLiteral {
+        scalar,
+        next_i: after + 1,
+        next_col: after_col + 1,
+    })
+}
+
 /// Consume characters of one string segment up to the next `"` or `${`,
 /// resolving backslash escapes (`\n`, `\t`, `\"`, `\\`, `\${` → literal `${`,
-/// and `\x` → `x` for anything else). A raw newline or end-of-input before the
-/// closing quote is an "unterminated string literal" error.
+/// `\u{...}` → the decoded scalar via `scan_unicode_escape`, and `\x` → `x` for
+/// anything else). A raw newline or end-of-input before the closing quote is an
+/// "unterminated string literal" error.
 fn scan_string_segment(
     chars: &[char],
     byte_at: &[usize],
@@ -265,6 +394,13 @@ fn scan_string_segment(
                 literal.push('{');
                 i += 3;
                 col += 3;
+                continue;
+            }
+            if next == 'u' {
+                let scan = scan_unicode_escape(chars, byte_at, i, col, string_start_byte)?;
+                literal.push(scan.scalar);
+                i = scan.next_i;
+                col = scan.next_col;
                 continue;
             }
             let repl = match next {
@@ -472,6 +608,24 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             toks.push(Token { tok: Tok::Op(sym), span: start_byte..end_byte, line, col: start_col, first_on_line });
             i = j;
             col += len;
+            continue;
+        }
+
+        // char literal. A *leading* `'` opens one; a `'` mid-word stays a
+        // prime in an identifier (`x'`), reached via `is_ident_cont` in the
+        // ident branch below, so the two never collide (ADR 0025).
+        if c == '\'' {
+            let lit = scan_char_literal(&chars, &byte_at, i, start_col, start_byte)?;
+            let end_byte = byte_at[lit.next_i];
+            toks.push(Token {
+                tok: Tok::Char(lit.scalar),
+                span: start_byte..end_byte,
+                line,
+                col: start_col,
+                first_on_line,
+            });
+            i = lit.next_i;
+            col = lit.next_col;
             continue;
         }
 

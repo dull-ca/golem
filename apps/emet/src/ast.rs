@@ -143,6 +143,10 @@ pub enum Expr {
     Int(i64),
     /// Float literal. Always `Float`.
     Float(f64),
+    /// Char literal `'c'` — exactly one Unicode scalar. Typed `Con("Char")`,
+    /// mirroring `Str`'s `Con("String")`. Char *patterns* (`'c'` in a `case`)
+    /// are deferred (ADR 0025).
+    Char(char),
     Var(String),
     /// `aptPackage { name = e }` — the apt-package primitive constructor.
     /// Reserved lowercase word; parsed as this variant, not a record. One of

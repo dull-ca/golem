@@ -829,7 +829,9 @@ fn constraint_admits(c: Constraint, t: &Type) -> bool {
     match c {
         Constraint::None => true,
         Constraint::Number => matches!(head, "Int" | "Float"),
-        Constraint::Comparable => matches!(head, "Int" | "Float" | "String"),
+        // `Char` joins Int/Float/String here to stay Elm-faithful — Elm's
+        // `Char` is comparable, ordered by codepoint (ADR 0025).
+        Constraint::Comparable => matches!(head, "Int" | "Float" | "String" | "Char"),
         Constraint::Appendable => matches!(head, "String" | "List"),
     }
 }
@@ -952,6 +954,9 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
         Expr::Int(_) => Ok(inf.fresh_constrained(Constraint::Number)),
 
         Expr::Float(_) => Ok(con("Float")),
+
+        // Mirrors `Expr::Str => con("String")` (ADR 0025).
+        Expr::Char(_) => Ok(con("Char")),
 
         Expr::Var(name) => match env.get(name) {
             Some(s) => {
@@ -1557,8 +1562,8 @@ fn infer_group(
 /// signature or pattern may name it.
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
-        "String" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile" | "Glyph"
-        | "Entry" | "Scroll" | "Bool" | "Int" | "Float" | "Order" => Some(0),
+        "String" | "Char" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
+        | "Glyph" | "Entry" | "Scroll" | "Bool" | "Int" | "Float" | "Order" => Some(0),
         "List" | "Maybe" => Some(1),
         _ => None,
     }
@@ -1747,6 +1752,7 @@ fn register_type_decls(
 fn builtin_types() -> Vec<(String, usize)> {
     [
         "String",
+        "Char",
         "AptPackage",
         "SystemdService",
         "Filesystem",

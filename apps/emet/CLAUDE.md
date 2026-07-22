@@ -75,7 +75,9 @@ resolve.rs multi-module stage (ADR 0016): load the import graph from disk over
            cycles, order imports before importers, then check + eval each module
            against the harvested interfaces of what it imports
 prelude.rs (TyEnv, Env) for constructors (Just/Nothing/True/False/LT/EQ/GT) and
-           the total built-in combinators (List./Maybe./String./numeric/compare)
+           the total built-in combinators (List./Maybe./String./Char./numeric/
+           compare); the Elm-faithful Char/String surface is scalar-indexed to
+           agree with String.length's chars().count() (ADR 0025)
 lib.rs     compile() drives the single-file stages; compile_file() runs the
            multi-module resolve stage; analyze() does per-scroll IR checks
 main.rs    CLI (`emetc build`); default emits the binary manifest (stdout/`-o`),
@@ -116,7 +118,7 @@ An Elm-shaped, minimal module system for reuse across files:
   unannotated decls polymorphic. Signatures are checked against the inferred type
   (instantiate-and-unify), and a second pass rejects a signature more general
   than its body — the skolem-escape check (ADR 0021).
-- **Types.** `String`, `Int`, `Float`, `Bool`,
+- **Types.** `String`, `Char`, `Int`, `Float`, `Bool`,
   `Order`, `List a`, `Maybe a`, records, functions; the glyph types `AptPackage`,
   `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; the
   filesystem `Entry` sum (`File`/`Directory`/`Symlink`); and `Scroll`.
@@ -125,6 +127,9 @@ An Elm-shaped, minimal module system for reuse across files:
   field; ADR 0019.)
   (The transitional `Str`/`Glyphs` aliases are gone — `String` and `List Glyph`
   are the sole spellings; `Str`/`Glyphs` are now unknown-type errors.)
+  `Char` is one Unicode scalar (char literals `'c'`, escapes
+  `'\n'`/`'\t'`/`'\\'`/`'\''`/`'\u{...}'`), comparable/orderable by codepoint
+  like Elm; it is authoring-time only and never reaches the wire (ADR 0025).
 - **`number` / `comparable` / `appendable`.** Elm's three bounded type
   variables — the one place emet leaves pure HM. No user-defined typeclasses.
   Integer literals are `number` (default `Int`); float literals are `Float`.

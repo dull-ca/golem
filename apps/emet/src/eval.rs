@@ -35,6 +35,10 @@ pub enum Value {
     Str(String),
     Int(i64),
     Float(f64),
+    /// One Unicode scalar — the runtime form of an `Expr::Char` (ADR 0025).
+    /// Authoring-time only: `Char` never reaches the wire, since every glyph
+    /// field is a `String`.
+    Char(char),
     Glyph(Glyph),
     Scroll(Scroll),
     List(Vec<Value>),
@@ -72,6 +76,7 @@ impl std::fmt::Debug for Value {
             Value::Str(s) => f.debug_tuple("Str").field(s).finish(),
             Value::Int(n) => f.debug_tuple("Int").field(n).finish(),
             Value::Float(x) => f.debug_tuple("Float").field(x).finish(),
+            Value::Char(c) => f.debug_tuple("Char").field(c).finish(),
             Value::Glyph(g) => f.debug_tuple("Glyph").field(g).finish(),
             Value::Scroll(s) => f.debug_tuple("Scroll").field(s).finish(),
             Value::List(vs) => f.debug_tuple("List").field(vs).finish(),
@@ -127,6 +132,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::Str(s) => Value::Str(s.clone()),
         Expr::Int(n) => Value::Int(*n),
         Expr::Float(x) => Value::Float(*x),
+        Expr::Char(c) => Value::Char(*c),
         Expr::Var(name) => env.get(name).cloned().unwrap_or_else(|| unreachable!("unbound {name}")),
         Expr::AptPackage(name) => Value::Glyph(Glyph::AptPackage {
             name: as_str(eval(env, name, depth)?),

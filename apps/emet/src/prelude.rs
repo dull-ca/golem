@@ -74,6 +74,11 @@ fn string() -> Type {
     Type::Con("String".to_string(), vec![])
 }
 
+// The `Char` base type, beside `string()`/`int()` (ADR 0025).
+fn char() -> Type {
+    Type::Con("Char".to_string(), vec![])
+}
+
 fn order() -> Type {
     Type::Con("Order".to_string(), vec![])
 }
@@ -271,6 +276,14 @@ fn as_string(v: &Value) -> &str {
     }
 }
 
+// Unwrap a `Value::Char`, beside `as_string` (ADR 0025).
+fn as_char(v: &Value) -> char {
+    match v {
+        Value::Char(c) => *c,
+        _ => unreachable!("expected Char"),
+    }
+}
+
 fn boolean(b: bool) -> Value {
     data(if b { "True" } else { "False" }, vec![])
 }
@@ -364,6 +377,8 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
         (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        // Codepoint order — Elm's `Char` comparison (ADR 0025).
+        (Value::Char(x), Value::Char(y)) => x.cmp(y),
         _ => unreachable!("comparable operands share a type"),
     }
 }
@@ -522,6 +537,411 @@ fn list_sum(mut args: Vec<Value>) -> Value {
         }
         _ => Value::Int(items.iter().map(as_int).sum()),
     }
+}
+
+// The Elm-faithful `Char` surface (ADR 0025 §2). Every function mirrors its
+// `elm/core` `Char` counterpart in name, signature, and semantics; a `Char` is
+// one Unicode scalar, so these agree with the scalar indexing the `String`
+// functions below use (`String.length` counts `chars()`). The `is*` predicates
+// are Elm's ASCII-oriented definitions. All total.
+
+fn char_to_code(mut args: Vec<Value>) -> Value {
+    Value::Int(as_char(&args.pop().unwrap()) as i64)
+}
+
+// Total, following Elm: an out-of-range code or a surrogate yields the Unicode
+// replacement character `U+FFFD` rather than trapping or returning `Maybe`.
+fn char_from_code(mut args: Vec<Value>) -> Value {
+    let code = as_int(&args.pop().unwrap());
+    let scalar = u32::try_from(code).ok().and_then(char::from_u32).unwrap_or('\u{FFFD}');
+    Value::Char(scalar)
+}
+
+fn char_to_upper(mut args: Vec<Value>) -> Value {
+    let c = as_char(&args.pop().unwrap());
+    Value::Char(c.to_uppercase().next().unwrap_or(c))
+}
+
+fn char_to_lower(mut args: Vec<Value>) -> Value {
+    let c = as_char(&args.pop().unwrap());
+    Value::Char(c.to_lowercase().next().unwrap_or(c))
+}
+
+fn char_is_upper(mut args: Vec<Value>) -> Value {
+    boolean(as_char(&args.pop().unwrap()).is_ascii_uppercase())
+}
+
+fn char_is_lower(mut args: Vec<Value>) -> Value {
+    boolean(as_char(&args.pop().unwrap()).is_ascii_lowercase())
+}
+
+fn char_is_alpha(mut args: Vec<Value>) -> Value {
+    boolean(as_char(&args.pop().unwrap()).is_ascii_alphabetic())
+}
+
+fn char_is_alpha_num(mut args: Vec<Value>) -> Value {
+    boolean(as_char(&args.pop().unwrap()).is_ascii_alphanumeric())
+}
+
+fn char_is_digit(mut args: Vec<Value>) -> Value {
+    boolean(as_char(&args.pop().unwrap()).is_ascii_digit())
+}
+
+fn char_is_oct_digit(mut args: Vec<Value>) -> Value {
+    boolean(matches!(as_char(&args.pop().unwrap()), '0'..='7'))
+}
+
+fn char_is_hex_digit(mut args: Vec<Value>) -> Value {
+    boolean(as_char(&args.pop().unwrap()).is_ascii_hexdigit())
+}
+
+fn char_is_space(mut args: Vec<Value>) -> Value {
+    boolean(matches!(
+        as_char(&args.pop().unwrap()),
+        ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}'
+    ))
+}
+
+// The Elm-faithful `String` surface (ADR 0025 §3): `elm/core` names, argument
+// order, and total/clamping semantics. Every length, index, and slice bound is
+// a Unicode scalar index (`chars()`), never a byte or grapheme offset, so these
+// agree with `String.length`'s `chars().count()` and with the `Char` functions
+// above (ADR 0025 §5). Combining marks and modifier sequences therefore count
+// as several scalars — Elm's own caveat, kept.
+
+fn string_is_empty(mut args: Vec<Value>) -> Value {
+    boolean(as_string(&args.pop().unwrap()).is_empty())
+}
+
+fn string_reverse(mut args: Vec<Value>) -> Value {
+    Value::Str(as_string(&args.pop().unwrap()).chars().rev().collect())
+}
+
+fn string_repeat(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let n = as_int(&args.pop().unwrap());
+    if n <= 0 {
+        Value::Str(String::new())
+    } else {
+        Value::Str(as_string(&s).repeat(n as usize))
+    }
+}
+
+fn string_replace(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let after = args.pop().unwrap();
+    let before = args.pop().unwrap();
+    let before = as_string(&before);
+    if before.is_empty() {
+        return Value::Str(as_string(&s).to_string());
+    }
+    Value::Str(as_string(&s).replace(before, as_string(&after)))
+}
+
+// An empty separator splits into one single-scalar string per character, as in
+// Elm; otherwise a plain substring split.
+fn string_split(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let sep = args.pop().unwrap();
+    let s = as_string(&s);
+    let sep = as_string(&sep);
+    let parts: Vec<Value> = if sep.is_empty() {
+        s.chars().map(|c| Value::Str(c.to_string())).collect()
+    } else {
+        s.split(sep).map(|p| Value::Str(p.to_string())).collect()
+    };
+    Value::List(parts)
+}
+
+// Trim, then split on runs of whitespace. NOTE: `split_whitespace` keys on
+// Rust's `char::is_whitespace` (Unicode), a negligible divergence from Elm's
+// JS `\s` set — the two disagree only on exotic separators.
+fn string_words(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let trimmed = as_string(&s).trim();
+    let parts: Vec<Value> = if trimmed.is_empty() {
+        vec![Value::Str(String::new())]
+    } else {
+        trimmed.split_whitespace().map(|w| Value::Str(w.to_string())).collect()
+    };
+    Value::List(parts)
+}
+
+// Break on line terminators, recognizing `\r\n`, a lone `\r`, and `\n`. Emet
+// has no `\r` escape to author a lone `\r`, but it is handled for strings that
+// acquire one at runtime.
+fn string_lines(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let s = as_string(&s);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\r' && i + 1 < chars.len() && chars[i + 1] == '\n' {
+            lines.push(Value::Str(std::mem::take(&mut current)));
+            i += 2;
+        } else if c == '\n' || c == '\r' {
+            lines.push(Value::Str(std::mem::take(&mut current)));
+            i += 1;
+        } else {
+            current.push(c);
+            i += 1;
+        }
+    }
+    lines.push(Value::Str(current));
+    Value::List(lines)
+}
+
+// Elm's `slice` bound resolution, shared by `String.slice`: a negative index
+// counts from the end (`idx + len`), then both ends clamp into `0..=len`. If
+// the resolved bounds cross (`lo >= hi`) the result is empty.
+fn scalar_slice(s: &str, start: i64, end: i64) -> String {
+    let scalars: Vec<char> = s.chars().collect();
+    let len = scalars.len() as i64;
+    let resolve = |idx: i64| -> i64 {
+        let shifted = if idx < 0 { idx + len } else { idx };
+        shifted.clamp(0, len)
+    };
+    let lo = resolve(start);
+    let hi = resolve(end);
+    if lo >= hi {
+        String::new()
+    } else {
+        scalars[lo as usize..hi as usize].iter().collect()
+    }
+}
+
+fn string_slice(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let end = as_int(&args.pop().unwrap());
+    let start = as_int(&args.pop().unwrap());
+    Value::Str(scalar_slice(as_string(&s), start, end))
+}
+
+fn string_left(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let n = as_int(&args.pop().unwrap());
+    if n < 1 {
+        Value::Str(String::new())
+    } else {
+        Value::Str(as_string(&s).chars().take(n as usize).collect())
+    }
+}
+
+fn string_right(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let n = as_int(&args.pop().unwrap());
+    if n < 1 {
+        return Value::Str(String::new());
+    }
+    let scalars: Vec<char> = as_string(&s).chars().collect();
+    let take = (n as usize).min(scalars.len());
+    Value::Str(scalars[scalars.len() - take..].iter().collect())
+}
+
+fn string_drop_left(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let n = as_int(&args.pop().unwrap());
+    if n < 1 {
+        Value::Str(as_string(&s).to_string())
+    } else {
+        Value::Str(as_string(&s).chars().skip(n as usize).collect())
+    }
+}
+
+fn string_drop_right(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let n = as_int(&args.pop().unwrap());
+    if n < 1 {
+        return Value::Str(as_string(&s).to_string());
+    }
+    let scalars: Vec<char> = as_string(&s).chars().collect();
+    let keep = scalars.len().saturating_sub(n as usize);
+    Value::Str(scalars[..keep].iter().collect())
+}
+
+fn string_contains(mut args: Vec<Value>) -> Value {
+    let haystack = args.pop().unwrap();
+    let needle = args.pop().unwrap();
+    boolean(as_string(&haystack).contains(as_string(&needle)))
+}
+
+fn string_starts_with(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let prefix = args.pop().unwrap();
+    boolean(as_string(&s).starts_with(as_string(&prefix)))
+}
+
+fn string_ends_with(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let suffix = args.pop().unwrap();
+    boolean(as_string(&s).ends_with(as_string(&suffix)))
+}
+
+// Scalar indices of every (possibly overlapping) match. An empty needle yields
+// `[]`, matching Elm. Backs both `String.indexes` and its deliberate alias
+// `String.indices`, which share this one function.
+fn string_indexes(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let needle = args.pop().unwrap();
+    let needle = as_string(&needle);
+    if needle.is_empty() {
+        return Value::List(Vec::new());
+    }
+    let haystack: Vec<char> = as_string(&s).chars().collect();
+    let pat: Vec<char> = needle.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + pat.len() <= haystack.len() {
+        if haystack[i..i + pat.len()] == pat[..] {
+            out.push(Value::Int(i as i64));
+        }
+        i += 1;
+    }
+    Value::List(out)
+}
+
+fn string_to_list(mut args: Vec<Value>) -> Value {
+    Value::List(as_string(&args.pop().unwrap()).chars().map(Value::Char).collect())
+}
+
+fn string_from_list(mut args: Vec<Value>) -> Value {
+    let xs = args.pop().unwrap();
+    Value::Str(as_list(&xs).iter().map(as_char).collect())
+}
+
+fn string_from_char(mut args: Vec<Value>) -> Value {
+    Value::Str(as_char(&args.pop().unwrap()).to_string())
+}
+
+fn string_cons(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let c = as_char(&args.pop().unwrap());
+    Value::Str(format!("{c}{}", as_string(&s)))
+}
+
+fn string_to_upper(mut args: Vec<Value>) -> Value {
+    Value::Str(as_string(&args.pop().unwrap()).to_uppercase())
+}
+
+fn string_to_lower(mut args: Vec<Value>) -> Value {
+    Value::Str(as_string(&args.pop().unwrap()).to_lowercase())
+}
+
+fn string_trim(mut args: Vec<Value>) -> Value {
+    Value::Str(as_string(&args.pop().unwrap()).trim().to_string())
+}
+
+fn string_trim_left(mut args: Vec<Value>) -> Value {
+    Value::Str(as_string(&args.pop().unwrap()).trim_start().to_string())
+}
+
+fn string_trim_right(mut args: Vec<Value>) -> Value {
+    Value::Str(as_string(&args.pop().unwrap()).trim_end().to_string())
+}
+
+// Center-pad to width `n`. An odd deficit favors the left: ceil of the half
+// goes left, floor goes right, as in Elm.
+fn string_pad(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let pad = as_char(&args.pop().unwrap());
+    let n = as_int(&args.pop().unwrap());
+    let s = as_string(&s);
+    let deficit = n - s.chars().count() as i64;
+    let half = deficit as f64 / 2.0;
+    let left = half.ceil().max(0.0) as usize;
+    let right = half.floor().max(0.0) as usize;
+    let mut out = String::new();
+    out.extend(std::iter::repeat(pad).take(left));
+    out.push_str(s);
+    out.extend(std::iter::repeat(pad).take(right));
+    Value::Str(out)
+}
+
+fn string_pad_left(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let pad = as_char(&args.pop().unwrap());
+    let n = as_int(&args.pop().unwrap());
+    let s = as_string(&s);
+    let deficit = (n - s.chars().count() as i64).max(0) as usize;
+    let mut out: String = std::iter::repeat(pad).take(deficit).collect();
+    out.push_str(s);
+    Value::Str(out)
+}
+
+fn string_pad_right(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let pad = as_char(&args.pop().unwrap());
+    let n = as_int(&args.pop().unwrap());
+    let s = as_string(&s);
+    let deficit = (n - s.chars().count() as i64).max(0) as usize;
+    let mut out = s.to_string();
+    out.extend(std::iter::repeat(pad).take(deficit));
+    Value::Str(out)
+}
+
+fn string_map(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let mapped: String = as_string(&s)
+        .chars()
+        .map(|c| as_char(&apply_top(f.clone(), Value::Char(c))))
+        .collect();
+    Value::Str(mapped)
+}
+
+fn string_filter(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let kept: String = as_string(&s)
+        .chars()
+        .filter(|c| matches!(as_data(&apply_top(f.clone(), Value::Char(*c))), ("True", _)))
+        .collect();
+    Value::Str(kept)
+}
+
+fn string_foldl(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let init = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let mut acc = init;
+    for c in as_string(&s).chars() {
+        acc = apply_top(apply_top(f.clone(), Value::Char(c)), acc);
+    }
+    acc
+}
+
+fn string_foldr(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let init = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let mut acc = init;
+    for c in as_string(&s).chars().rev() {
+        acc = apply_top(apply_top(f.clone(), Value::Char(c)), acc);
+    }
+    acc
+}
+
+fn string_any(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    boolean(
+        as_string(&s)
+            .chars()
+            .any(|c| matches!(as_data(&apply_top(f.clone(), Value::Char(c))), ("True", _))),
+    )
+}
+
+fn string_all(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    boolean(
+        as_string(&s)
+            .chars()
+            .all(|c| matches!(as_data(&apply_top(f.clone(), Value::Char(c))), ("True", _))),
+    )
 }
 
 /// A sum-type value constructor. A nullary one (`run: None`) evaluates directly
@@ -809,6 +1229,288 @@ fn builtins() -> Vec<Builtin> {
             arity: 1,
             scheme: scheme(&[], fun(string(), maybe(float()))),
             run: string_to_float,
+        },
+        Builtin {
+            name: "Char.toCode",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), int())),
+            run: char_to_code,
+        },
+        Builtin {
+            name: "Char.fromCode",
+            arity: 1,
+            scheme: scheme(&[], fun(int(), char())),
+            run: char_from_code,
+        },
+        Builtin {
+            name: "Char.toUpper",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), char())),
+            run: char_to_upper,
+        },
+        Builtin {
+            name: "Char.toLower",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), char())),
+            run: char_to_lower,
+        },
+        Builtin {
+            name: "Char.isUpper",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_upper,
+        },
+        Builtin {
+            name: "Char.isLower",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_lower,
+        },
+        Builtin {
+            name: "Char.isAlpha",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_alpha,
+        },
+        Builtin {
+            name: "Char.isAlphaNum",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_alpha_num,
+        },
+        Builtin {
+            name: "Char.isDigit",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_digit,
+        },
+        Builtin {
+            name: "Char.isOctDigit",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_oct_digit,
+        },
+        Builtin {
+            name: "Char.isHexDigit",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_hex_digit,
+        },
+        Builtin {
+            name: "Char.isSpace",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), bool_ty())),
+            run: char_is_space,
+        },
+        Builtin {
+            name: "String.isEmpty",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), bool_ty())),
+            run: string_is_empty,
+        },
+        Builtin {
+            name: "String.reverse",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: string_reverse,
+        },
+        Builtin {
+            name: "String.repeat",
+            arity: 2,
+            scheme: scheme(&[], fun(int(), fun(string(), string()))),
+            run: string_repeat,
+        },
+        Builtin {
+            name: "String.replace",
+            arity: 3,
+            scheme: scheme(&[], fun(string(), fun(string(), fun(string(), string())))),
+            run: string_replace,
+        },
+        Builtin {
+            name: "String.split",
+            arity: 2,
+            scheme: scheme(&[], fun(string(), fun(string(), list(string())))),
+            run: string_split,
+        },
+        Builtin {
+            name: "String.words",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), list(string()))),
+            run: string_words,
+        },
+        Builtin {
+            name: "String.lines",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), list(string()))),
+            run: string_lines,
+        },
+        Builtin {
+            name: "String.slice",
+            arity: 3,
+            scheme: scheme(&[], fun(int(), fun(int(), fun(string(), string())))),
+            run: string_slice,
+        },
+        Builtin {
+            name: "String.left",
+            arity: 2,
+            scheme: scheme(&[], fun(int(), fun(string(), string()))),
+            run: string_left,
+        },
+        Builtin {
+            name: "String.right",
+            arity: 2,
+            scheme: scheme(&[], fun(int(), fun(string(), string()))),
+            run: string_right,
+        },
+        Builtin {
+            name: "String.dropLeft",
+            arity: 2,
+            scheme: scheme(&[], fun(int(), fun(string(), string()))),
+            run: string_drop_left,
+        },
+        Builtin {
+            name: "String.dropRight",
+            arity: 2,
+            scheme: scheme(&[], fun(int(), fun(string(), string()))),
+            run: string_drop_right,
+        },
+        Builtin {
+            name: "String.contains",
+            arity: 2,
+            scheme: scheme(&[], fun(string(), fun(string(), bool_ty()))),
+            run: string_contains,
+        },
+        Builtin {
+            name: "String.startsWith",
+            arity: 2,
+            scheme: scheme(&[], fun(string(), fun(string(), bool_ty()))),
+            run: string_starts_with,
+        },
+        Builtin {
+            name: "String.endsWith",
+            arity: 2,
+            scheme: scheme(&[], fun(string(), fun(string(), bool_ty()))),
+            run: string_ends_with,
+        },
+        Builtin {
+            name: "String.indexes",
+            arity: 2,
+            scheme: scheme(&[], fun(string(), fun(string(), list(int())))),
+            run: string_indexes,
+        },
+        Builtin {
+            name: "String.indices",
+            arity: 2,
+            scheme: scheme(&[], fun(string(), fun(string(), list(int())))),
+            run: string_indexes,
+        },
+        Builtin {
+            name: "String.toList",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), list(char()))),
+            run: string_to_list,
+        },
+        Builtin {
+            name: "String.fromList",
+            arity: 1,
+            scheme: scheme(&[], fun(list(char()), string())),
+            run: string_from_list,
+        },
+        Builtin {
+            name: "String.fromChar",
+            arity: 1,
+            scheme: scheme(&[], fun(char(), string())),
+            run: string_from_char,
+        },
+        Builtin {
+            name: "String.cons",
+            arity: 2,
+            scheme: scheme(&[], fun(char(), fun(string(), string()))),
+            run: string_cons,
+        },
+        Builtin {
+            name: "String.toUpper",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: string_to_upper,
+        },
+        Builtin {
+            name: "String.toLower",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: string_to_lower,
+        },
+        Builtin {
+            name: "String.trim",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: string_trim,
+        },
+        Builtin {
+            name: "String.trimLeft",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: string_trim_left,
+        },
+        Builtin {
+            name: "String.trimRight",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: string_trim_right,
+        },
+        Builtin {
+            name: "String.pad",
+            arity: 3,
+            scheme: scheme(&[], fun(int(), fun(char(), fun(string(), string())))),
+            run: string_pad,
+        },
+        Builtin {
+            name: "String.padLeft",
+            arity: 3,
+            scheme: scheme(&[], fun(int(), fun(char(), fun(string(), string())))),
+            run: string_pad_left,
+        },
+        Builtin {
+            name: "String.padRight",
+            arity: 3,
+            scheme: scheme(&[], fun(int(), fun(char(), fun(string(), string())))),
+            run: string_pad_right,
+        },
+        Builtin {
+            name: "String.map",
+            arity: 2,
+            scheme: scheme(&[], fun(fun(char(), char()), fun(string(), string()))),
+            run: string_map,
+        },
+        Builtin {
+            name: "String.filter",
+            arity: 2,
+            scheme: scheme(&[], fun(fun(char(), bool_ty()), fun(string(), string()))),
+            run: string_filter,
+        },
+        Builtin {
+            name: "String.foldl",
+            arity: 3,
+            scheme: scheme(&[B], fun(fun(char(), fun(b(), b())), fun(b(), fun(string(), b())))),
+            run: string_foldl,
+        },
+        Builtin {
+            name: "String.foldr",
+            arity: 3,
+            scheme: scheme(&[B], fun(fun(char(), fun(b(), b())), fun(b(), fun(string(), b())))),
+            run: string_foldr,
+        },
+        Builtin {
+            name: "String.any",
+            arity: 2,
+            scheme: scheme(&[], fun(fun(char(), bool_ty()), fun(string(), bool_ty()))),
+            run: string_any,
+        },
+        Builtin {
+            name: "String.all",
+            arity: 2,
+            scheme: scheme(&[], fun(fun(char(), bool_ty()), fun(string(), bool_ty()))),
+            run: string_all,
         },
         Builtin {
             name: "toFloat",

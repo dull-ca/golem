@@ -62,7 +62,7 @@ fn free_vars_expr(
                 }
             }
         }
-        Expr::Str(_) | Expr::Int(_) | Expr::Float(_) | Expr::Ctor(_) => {}
+        Expr::Str(_) | Expr::Int(_) | Expr::Float(_) | Expr::Char(_) | Expr::Ctor(_) => {}
         Expr::AptPackage(x) | Expr::SystemdService(x) => free_vars_expr(x, bound, names, refs),
         Expr::Filesystem { path, entry } => {
             free_vars_expr(path, bound, names, refs);
