@@ -33,7 +33,6 @@ fn file_contents<'a>(s: &'a emet::ir::Scroll, path: &str) -> &'a str {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn workload_lowers_to_podman_apt_container_volume_service_firewall_and_directory() {
     let c = compiled();
     let s = scroll(&c, "registry");
@@ -51,7 +50,6 @@ fn workload_lowers_to_podman_apt_container_volume_service_firewall_and_directory
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn host_mount_source_becomes_a_directory_glyph() {
     let c = compiled();
     let s = scroll(&c, "registry");
@@ -67,7 +65,6 @@ fn host_mount_source_becomes_a_directory_glyph() {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn container_unit_file_renders_every_typed_key() {
     let c = compiled();
     let unit = file_contents(scroll(&c, "registry"), "/etc/containers/systemd/registry.container");
@@ -82,7 +79,6 @@ fn container_unit_file_renders_every_typed_key() {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn volume_unit_file_renders_the_dot_volume_quadlet() {
     let c = compiled();
     let vol =
@@ -92,7 +88,6 @@ fn volume_unit_file_renders_the_dot_volume_quadlet() {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn each_published_port_gets_its_own_firewall_rule() {
     let c = compiled();
     let s = scroll(&c, "registry");
@@ -103,7 +98,6 @@ fn each_published_port_gets_its_own_firewall_rule() {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn public_exposure_opens_each_port_to_the_world_plus_a_shared_chain_line() {
     let c = compiled();
     let s = scroll(&c, "web");
@@ -117,7 +111,6 @@ fn public_exposure_opens_each_port_to_the_world_plus_a_shared_chain_line() {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn a_digest_pinned_image_renders_with_an_at_sign() {
     let c = compiled();
     let unit = file_contents(scroll(&c, "web"), "/etc/containers/systemd/web.container");
@@ -128,7 +121,6 @@ fn a_digest_pinned_image_renders_with_an_at_sign() {
 }
 
 #[test]
-#[ignore = "blocked on exponential-inference scaling; full quadlet library does not type-check in tolerable time"]
 fn an_unexposed_workload_emits_no_firewall_glyph() {
     let c = compiled();
     let s = scroll(&c, "worker");

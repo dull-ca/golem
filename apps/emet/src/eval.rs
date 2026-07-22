@@ -99,7 +99,7 @@ impl std::fmt::Debug for Value {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Env(BTreeMap<String, Value>);
+pub struct Env(Rc<BTreeMap<String, Value>>);
 impl Env {
     fn get(&self, k: &str) -> Option<&Value> {
         self.0.get(k)
@@ -108,9 +108,9 @@ impl Env {
         self.0.get(k).cloned()
     }
     pub fn insert(&self, k: String, v: Value) -> Env {
-        let mut m = self.0.clone();
+        let mut m = (*self.0).clone();
         m.insert(k, v);
-        Env(m)
+        Env(Rc::new(m))
     }
 }
 
