@@ -1,0 +1,323 @@
+module Workload exposing
+  ( Ref(..)
+  , Image(..)
+  , image
+  , imageAt
+  , imageRef
+  , Proto(..)
+  , Port(..)
+  , tcp
+  , udp
+  , EnvVar(..)
+  , env
+  , Restart(..)
+  , Access(..)
+  , Relabel(..)
+  , Mount(..)
+  , fromVolume
+  , fromHost
+  , VolumeUnit(..)
+  , volumeUnit
+  , ContainerUnit(..)
+  , Expose(..)
+  , Workload(..)
+  , derivedVolumeUnits
+  , volumeUnitGlyphs
+  , containerUnitGlyphs
+  , workloadUnit
+  , workloadGlyphs
+  )
+
+import Fleet exposing (internalNetwork)
+
+type Ref
+  = Tag String
+  | Digest String
+
+type Image = Image
+  { registry : String
+  , name     : String
+  , ref      : Ref
+  }
+
+image : String -> String -> String -> Image
+image registry name tag =
+  Image { registry = registry, name = name, ref = Tag tag }
+
+imageAt : String -> String -> String -> Image
+imageAt registry name digest =
+  Image { registry = registry, name = name, ref = Digest digest }
+
+imageRef : Image -> String
+imageRef img =
+  case img of
+    Image spec ->
+      case spec.ref of
+        Tag t -> "${spec.registry}/${spec.name}:${t}"
+        Digest d -> "${spec.registry}/${spec.name}@${d}"
+
+type Proto = TCP | UDP
+
+type Port = Port { host : Int, container : Int, proto : Proto }
+
+tcp : Int -> Int -> Port
+tcp host container = Port { host = host, container = container, proto = TCP }
+
+udp : Int -> Int -> Port
+udp host container = Port { host = host, container = container, proto = UDP }
+
+protoSuffix : Proto -> String
+protoSuffix proto =
+  case proto of
+    TCP -> "tcp"
+    UDP -> "udp"
+
+publishPortLine : Port -> String
+publishPortLine p =
+  case p of
+    Port spec ->
+      "PublishPort=${String.fromInt spec.host}:${String.fromInt spec.container}/${protoSuffix spec.proto}"
+
+type EnvVar = EnvVar { name : String, value : String }
+
+env : String -> String -> EnvVar
+env name value = EnvVar { name = name, value = value }
+
+environmentLine : EnvVar -> String
+environmentLine e =
+  case e of
+    EnvVar spec -> "Environment=${spec.name}=${spec.value}"
+
+type Restart = Always | OnFailure | No
+
+restartValue : Restart -> String
+restartValue r =
+  case r of
+    Always -> "always"
+    OnFailure -> "on-failure"
+    No -> "no"
+
+type Access = ReadWrite | ReadOnly
+
+type Relabel = NoRelabel | Shared | Private
+
+accessSuffix : Access -> String
+accessSuffix a =
+  case a of
+    ReadWrite -> ""
+    ReadOnly -> ":ro"
+
+relabelSuffix : Relabel -> String
+relabelSuffix r =
+  case r of
+    NoRelabel -> ""
+    Shared -> ":z"
+    Private -> ":Z"
+
+type Mount
+  = FromVolume { volume : String, at : String, access : Access, relabel : Relabel }
+  | FromHost { source : String, at : String, access : Access, relabel : Relabel }
+
+fromVolume : String -> String -> Access -> Relabel -> Mount
+fromVolume volume at access relabel =
+  FromVolume { volume = volume, at = at, access = access, relabel = relabel }
+
+fromHost : String -> String -> Access -> Relabel -> Mount
+fromHost source at access relabel =
+  FromHost { source = source, at = at, access = access, relabel = relabel }
+
+volumeLine : Mount -> String
+volumeLine m =
+  case m of
+    FromVolume spec ->
+      "Volume=${spec.volume}.volume:${spec.at}${relabelSuffix spec.relabel}${accessSuffix spec.access}"
+    FromHost spec ->
+      "Volume=${spec.source}:${spec.at}${relabelSuffix spec.relabel}${accessSuffix spec.access}"
+
+hostSourceGlyphs : Mount -> List Glyph
+hostSourceGlyphs m =
+  case m of
+    FromVolume _ -> []
+    FromHost spec -> [ directory { path = spec.source, mode = "0755" } ]
+
+type VolumeUnit = VolumeUnit { name : String, driver : String }
+
+volumeUnit : String -> VolumeUnit
+volumeUnit name = VolumeUnit { name = name, driver = "local" }
+
+derivedVolumeUnits : List Mount -> List VolumeUnit
+derivedVolumeUnits mounts =
+  List.concatMap derivedVolumeUnit mounts
+
+derivedVolumeUnit : Mount -> List VolumeUnit
+derivedVolumeUnit m =
+  case m of
+    FromVolume spec -> [ volumeUnit spec.volume ]
+    FromHost _ -> []
+
+volumeUnitContents : VolumeUnit -> String
+volumeUnitContents v =
+  case v of
+    VolumeUnit spec ->
+      String.join "\n"
+        [ "[Volume]"
+        , "Driver=${spec.driver}"
+        ]
+
+volumeUnitGlyphs : VolumeUnit -> List Glyph
+volumeUnitGlyphs v =
+  case v of
+    VolumeUnit spec ->
+      [ file
+          { path = "/etc/containers/systemd/${spec.name}.volume"
+          , contents = volumeUnitContents v
+          , mode = "0644"
+          }
+      ]
+
+type ContainerUnit = ContainerUnit
+  { name         : String
+  , image        : Image
+  , exec         : Maybe String
+  , publishPorts : List Port
+  , mounts       : List Mount
+  , volumeUnits  : List VolumeUnit
+  , environment  : List EnvVar
+  , restart      : Restart
+  , wantedBy     : List String
+  }
+
+execLines : Maybe String -> List String
+execLines exec =
+  case exec of
+    Nothing -> []
+    Just command -> [ "Exec=${command}" ]
+
+containerUnitContents : ContainerUnit -> String
+containerUnitContents u =
+  case u of
+    ContainerUnit spec ->
+      String.join "\n"
+        (List.concat
+          [ [ "[Unit]"
+            , "Description=Golem workload: ${spec.name}"
+            , ""
+            , "[Container]"
+            , "Image=${imageRef spec.image}"
+            , "ContainerName=${spec.name}"
+            ]
+          , execLines spec.exec
+          , List.map publishPortLine spec.publishPorts
+          , List.map volumeLine spec.mounts
+          , List.map environmentLine spec.environment
+          , [ ""
+            , "[Service]"
+            , "Restart=${restartValue spec.restart}"
+            , ""
+            , "[Install]"
+            , "WantedBy=${String.join " " spec.wantedBy}"
+            ]
+          ])
+
+containerUnitGlyphs : ContainerUnit -> List Glyph
+containerUnitGlyphs u =
+  case u of
+    ContainerUnit spec ->
+      List.concat
+        [ [ aptPackage { name = "podman" } ]
+        , List.concatMap hostSourceGlyphs spec.mounts
+        , List.concatMap volumeUnitGlyphs spec.volumeUnits
+        , [ file
+              { path = "/etc/containers/systemd/${spec.name}.container"
+              , contents = containerUnitContents u
+              , mode = "0644"
+              }
+          , systemdService { unit = "${spec.name}.service" }
+          ]
+        ]
+
+type Expose = Unexposed | Internal | Public
+
+type Workload = Workload
+  { name    : String
+  , image   : Image
+  , env     : List EnvVar
+  , ports   : List Port
+  , volumes : List Mount
+  , restart : Restart
+  , expose  : Expose
+  }
+
+workloadUnit : Workload -> ContainerUnit
+workloadUnit w =
+  case w of
+    Workload spec ->
+      ContainerUnit
+        { name = spec.name
+        , image = spec.image
+        , exec = Nothing
+        , publishPorts = spec.ports
+        , mounts = spec.volumes
+        , volumeUnits = derivedVolumeUnits spec.volumes
+        , environment = spec.env
+        , restart = spec.restart
+        , wantedBy = [ "multi-user.target", "default.target" ]
+        }
+
+firewallPath : String -> Port -> String
+firewallPath name p =
+  case p of
+    Port spec -> "/etc/nftables.d/${name}-${String.fromInt spec.host}.nft"
+
+internalRule : String -> Port -> String
+internalRule name p =
+  case p of
+    Port spec ->
+      String.join "\n"
+        [ "table inet filter {"
+        , "  chain input {"
+        , "    tcp dport ${String.fromInt spec.host} ip saddr ${internalNetwork} accept comment \"${name}\""
+        , "  }"
+        , "}"
+        ]
+
+publicRule : String -> Port -> String
+publicRule name p =
+  case p of
+    Port spec ->
+      String.join "\n"
+        [ "table inet filter {"
+        , "  chain input {"
+        , "    tcp dport ${String.fromInt spec.host} accept comment \"${name}\""
+        , "  }"
+        , "}"
+        ]
+
+ingressLine : String -> Port -> String
+ingressLine name p =
+  case p of
+    Port spec -> "tcp dport ${String.fromInt spec.host} accept comment \"ingress ${name}\""
+
+portFirewallGlyphs : String -> Expose -> Port -> List Glyph
+portFirewallGlyphs name expose p =
+  case expose of
+    Unexposed -> []
+    Internal ->
+      [ file { path = firewallPath name p, contents = internalRule name p, mode = "0644" } ]
+    Public ->
+      [ file { path = firewallPath name p, contents = publicRule name p, mode = "0644" }
+      , lineInFile { path = "/etc/nftables.d/ingress.nft", line = ingressLine name p }
+      ]
+
+firewallGlyphs : Workload -> List Glyph
+firewallGlyphs w =
+  case w of
+    Workload spec ->
+      List.concatMap (portFirewallGlyphs spec.name spec.expose) spec.ports
+
+workloadGlyphs : Workload -> List Glyph
+workloadGlyphs w =
+  List.concat
+    [ containerUnitGlyphs (workloadUnit w)
+    , firewallGlyphs w
+    ]

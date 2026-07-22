@@ -1,0 +1,63 @@
+module Main exposing (..)
+
+import Workload exposing
+  ( Image
+  , image
+  , imageAt
+  , tcp
+  , env
+  , Restart(..)
+  , Access(..)
+  , Relabel(..)
+  , fromVolume
+  , fromHost
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+
+registry : Workload
+registry =
+  Workload
+    { name = "registry"
+    , image = image "docker.io/library" "registry" "2"
+    , env = [ env "REGISTRY_LOG_LEVEL" "info" ]
+    , ports = [ tcp 5000 5000 ]
+    , volumes =
+        [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private
+        , fromHost "/srv/registry/uploads" "/uploads" ReadOnly NoRelabel
+        ]
+    , restart = Always
+    , expose = Internal
+    }
+
+web : Workload
+web =
+  Workload
+    { name = "web"
+    , image = imageAt "docker.io/library" "caddy" "sha256:abc123"
+    , env = []
+    , ports = [ tcp 443 443, tcp 80 80 ]
+    , volumes = []
+    , restart = Always
+    , expose = Public
+    }
+
+worker : Workload
+worker =
+  Workload
+    { name = "worker"
+    , image = image "docker.io/library" "fishnet" "latest"
+    , env = []
+    , ports = []
+    , volumes = []
+    , restart = OnFailure
+    , expose = Unexposed
+    }
+
+main : List Scroll
+main =
+  [ scroll { name = "registry", glyphs = workloadGlyphs registry }
+  , scroll { name = "web", glyphs = workloadGlyphs web }
+  , scroll { name = "worker", glyphs = workloadGlyphs worker }
+  ]
