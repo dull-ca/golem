@@ -490,6 +490,14 @@ container, and stays a plain `file` — this library does not absorb it.
   exhaustive `case` of ADR 0005; supersedes the lichess `Workload`/`Service`/
   `Ingress` of `examples/lichess/Lichess.emet`.
 
+## Addendum — as shipped
+
+The shipped `image` constructor (`lib/Quadlet.emet`) is three-arg, `image
+registry name tag`, not the single-string `image "docker.io/library/registry:2"`
+sketched in §1: Emet has no `String.split` to break one string apart, so the
+single-string form (and full parse/validation) is deferred until it exists.
+`imageAt registry name digest` is its digest-pinned counterpart.
+
 ## Open decisions for review (Dr. Dub)
 
 - **How much of the quadlet surface to model now vs. incrementally.**
