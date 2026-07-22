@@ -36,7 +36,7 @@ planned scrolls (1):
 
 Add more glyphs; order is kept:
 
-```elm
+```emet
 main : List Scroll
 main =
   [ scroll
@@ -57,7 +57,7 @@ are `file` and `lineInFile`.
 Repeating a block per host is waste. A declaration is `name args = body`,
 with an optional signature line above it:
 
-```elm
+```emet
 webHost : String -> Scroll
 webHost name =
   scroll
@@ -81,7 +81,7 @@ A config file's body is built by the language and fully evaluated before it
 reaches the `contents` field. There is no templating downstream — the glyph
 carries the final string:
 
-```elm
+```emet
 renderConfig : Int -> String
 renderConfig port =
   String.join "\n"
@@ -120,7 +120,7 @@ a placeholder.
 Emet is Hindley-Milner typed. `renderConfig` above is `Int -> String`; call
 it with a `String` and the compiler rejects it. `case` must be exhaustive:
 
-```elm
+```emet
 type Role = Web | Db
 
 glyphsFor : Role -> List Glyph
@@ -149,7 +149,7 @@ mistake finds you before any bytes leave your laptop.
 A file is a module. Expose names with `module … exposing (…)` and pull them
 in with `import`:
 
-```elm
+```emet
 module Fleet exposing (internalNetwork, endpoint)
 
 internalNetwork : String
@@ -159,7 +159,7 @@ endpoint : String -> Int -> String
 endpoint address port = "${address}:${String.fromInt port}"
 ```
 
-```elm
+```emet
 module Main exposing (..)
 
 import Fleet exposing (internalNetwork)
@@ -173,25 +173,37 @@ uses them.
 
 ## Higher-level shapes are yours to build
 
-There is no built-in "container," "service," or "ingress." Those are Emet
-functions that return a `List Glyph`. A container workload, for example,
-lowers to a podman package, a quadlet `file`, and a `systemdService`:
+There is no built-in "container," "service," or "ingress." A container is an
+Emet value that lowers to a `List Glyph`. golem ships one such library —
+[`Quadlet`](/reference/workloads/), a strongly-typed model of Podman quadlets
+— and a `Workload` from it lowers to a podman package, a `.container` quadlet
+`file`, a `systemdService`, and any firewall openings its ports need:
 
-```elm
-containerGlyphs : String -> String -> List Glyph
-containerGlyphs name image =
-  [ aptPackage { name = "podman" }
-  , file
-      { path = "/etc/containers/systemd/${name}.container"
-      , contents = quadletContents name image
-      , mode = "0644"
-      }
-  , systemdService { unit = "${name}.service" }
-  ]
+```emet
+import Quadlet exposing
+  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registry : Workload
+registry =
+  Workload
+    { name = "registry"
+    , image = image "docker.io/library" "registry" "2"
+    , env = []
+    , ports = [ tcp 5000 5000 ]
+    , volumes = []
+    , restart = Always
+    , expose = Internal
+    }
+
+glyphs : List Glyph
+glyphs = workloadGlyphs registry
 ```
 
-Read it, copy it, change it. The [service abstraction guide](/guides/app-and-db/)
-builds this up in full.
+`Workload` is a record you fill in and `workloadGlyphs` is the lowering — no
+new engine kind, just data checked by the type system. The
+[service abstraction guide](/guides/app-and-db/) builds a thin helper on top
+of it, and the [Quadlet reference](/reference/workloads/) documents every
+field.
 
 <Aside type="note" title="No JSON, no YAML, no templating">
   Emet has no JSON/YAML intermediary and no Jinja-style templating. Every

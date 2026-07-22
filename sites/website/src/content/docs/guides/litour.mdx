@@ -1,127 +1,113 @@
 ---
 title: A tour of the lichess fleet
-description: The real multi-host lichess deploy, authored in Emet — a shared library of Workload / Service / Ingress abstractions that all lower to the four glyphs.
+description: The real multi-host lichess deploy in Emet — the shipped Quadlet library, a fleet's own helpers on top of it, and the four glyphs it all lowers to.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
 The capstone example is the [lichess](https://lichess.org) fleet: six hosts
 running dozens of containerized services behind nginx ingress. It lives in
-`examples/lichess/` and compiles as-is. This is a tour of how it is built —
-a shared library of abstractions, a fleet that uses them, and the glyphs it
-all lowers to.
+`examples/lichess/` and compiles as-is. It is also the clearest place to see
+golem's three layers at once:
 
-The example is three files:
+- **(a) the four glyphs** — `aptPackage`, `systemdService`, `file`, `lineInFile`
+  — the only kinds the agent enacts.
+- **(b) [`Quadlet`](/reference/workloads/)** — golem's shipped, strongly-typed
+  Podman-quadlet library. It lowers to (a).
+- **(c) `Lichess.emet`** — this fleet's own ergonomic helpers, built on (b).
 
-- `Fleet.emet` — shared fleet-wide facts.
-- `Lichess.emet` — the library: `Workload`, `Service`, `Ingress`
-  abstractions and their glyph-lowering.
-- `fleet.emet` — the fleet itself: every host as a `Scroll`.
+The example is three files: `Fleet.emet` (shared facts), `Lichess.emet` (the
+layer-c helpers), and `fleet.emet` (the six hosts). Everything higher-level
+lowers to the four glyphs — no fifth kind.
 
-## Shared facts as a module
+## Layer b: the shipped `Quadlet` library
 
-Cross-host facts are ordinary Emet values in an imported module — no
-placeholder substitution, no templating:
+A container on a Debian box is a Podman quadlet — a `.container` unit systemd
+runs, plus the `.volume` units it mounts. `Quadlet` models those as typed
+values. The image is not a string; it is a registry, a name, and a tag:
 
-```elm
-module Fleet exposing (internalNetwork, endpoint)
+```emet
+type Ref = Tag String | Digest String
 
-internalNetwork : String
-internalNetwork = "10.0.0.0/8"
+type Image = Image { registry : String, name : String, ref : Ref }
 
-endpoint : String -> Int -> String
-endpoint address port = "${address}:${String.fromInt port}"
+image : String -> String -> String -> Image
+image registry name tag = Image { registry = registry, name = name, ref = Tag tag }
 ```
 
-`internalNetwork` is a `String` any module can import and use. If another
-host needs to reach a service, that address is a value passed as data and
-checked by the type system — not a string the resolver hopes to fill in
-later.
+A published port carries its protocol; the restart policy is a closed enum; a
+volume mount is a sum, because a named volume and a host path lower differently:
 
-## The library: three abstractions
+```emet
+type Port = Port { host : Int, container : Int, proto : Proto }
 
-`Lichess.emet` defines the vocabulary and its lowering. Each abstraction is a
-record type plus a function returning `List Glyph`.
+type Restart = Always | OnFailure | No
 
-### Workload — a plain container
+type Mount
+  = FromVolume { volume : String, at : String, access : Access, relabel : Relabel }
+  | FromHost   { source : String, at : String, access : Access, relabel : Relabel }
+```
 
-```elm
-type Workload = Workload { name : String, image : String }
+The ergonomic surface is `Workload`, which folds all of this — image, env,
+ports, volumes, restart, and firewall exposure — into one record, and
+`workloadGlyphs` lowers it to the four glyphs. The
+[Quadlet reference](/reference/workloads/) documents every type; the point here
+is that this library is *shipped* and *typed*, not hand-rolled per fleet.
 
-containerGlyphs : String -> String -> List Glyph
-containerGlyphs name image =
-  [ aptPackage { name = "podman" }
-  , file
-      { path = quadletPath name
-      , contents = quadletContents name image
-      , mode = "0644"
-      }
-  , systemdService { unit = serviceUnit name }
+## Layer c: the fleet's own helpers
+
+`Lichess.emet` is not part of the library — it is this fleet's shorthand for the
+shapes it repeats, written on top of `Workload`. `dockerImage` pins the
+registry; `service` is a workload with one port, opened to the internal network:
+
+```emet
+import Quadlet exposing
+  ( Image, image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+dockerImage : String -> String -> Image
+dockerImage name tag = image "docker.io" name tag
+
+service : String -> Image -> Int -> List Glyph
+service name img port =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = img
+      , env = []
+      , ports = [ tcp port port ]
+      , volumes = []
+      , restart = Always
+      , expose = Internal
+      })
+```
+
+`workload` is the same with no port and `expose = Unexposed`. These are thin —
+they just pin the fields this fleet always sets the same way and delegate to the
+shipped `workloadGlyphs`. A different fleet would grow different helpers over the
+same library.
+
+### Ingress stays hand-rolled
+
+`ingress` is the one shape that does **not** go through `Workload`, on purpose. A
+reverse proxy is a *different* container's config — the nginx front door in front
+of a service, not a property of the service itself — so it is its own set of
+glyphs:
+
+```emet
+ingress : String -> String -> Int -> List Glyph
+ingress name upstream port =
+  [ aptPackage { name = "nginx" }
+  , file { path = nginxSitePath name, contents = nginxSite name upstream, mode = "0644" }
+  , file { path = nftablesPath "ingress-${name}", contents = ingressRule name port, mode = "0644" }
+  , lineInFile { path = "/etc/nftables.d/ingress.nft", line = ingressLine name port }
+  , systemdService { unit = "nginx.service" }
   ]
-
-workloadGlyphs : Workload -> List Glyph
-workloadGlyphs w =
-  case w of
-    Workload spec -> containerGlyphs spec.name spec.image
 ```
 
-A workload lowers to three glyphs: podman, the quadlet `file`, the unit.
-
-### Service — a workload that opens a port
-
-```elm
-type Service = Service { name : String, image : String, port : Int }
-
-serviceGlyphs : Service -> List Glyph
-serviceGlyphs s =
-  case s of
-    Service spec ->
-      List.append
-        (containerGlyphs spec.name spec.image)
-        [ file
-            { path = nftablesPath spec.name
-            , contents = firewallOpening spec.name spec.port
-            , mode = "0644"
-            }
-        ]
-```
-
-A service is a workload plus one `file` glyph carrying an nftables fragment
-that opens the port to `internalNetwork`. Four glyphs.
-
-### Ingress — public HTTPS via nginx
-
-```elm
-type Ingress = Ingress { name : String, service : String, from : String, port : Int }
-
-ingressGlyphs : Ingress -> List Glyph
-ingressGlyphs i =
-  case i of
-    Ingress spec ->
-      [ aptPackage { name = "nginx" }
-      , file
-          { path = nginxSitePath spec.name
-          , contents = nginxSite spec.name spec.service
-          , mode = "0644"
-          }
-      , file
-          { path = nftablesPath "ingress-${spec.name}"
-          , contents = firewallOpening "ingress ${spec.name}" spec.port
-          , mode = "0644"
-          }
-      , lineInFile
-          { path = "/etc/nftables.d/ingress.nft"
-          , line = ingressOpening spec.name spec.port
-          }
-      , systemdService { unit = serviceUnit "nginx" }
-      ]
-```
-
-Ingress is the one place all four glyphs appear: the nginx package, the site
-`file`, a per-ingress firewall `file`, a shared-file `lineInFile` (one accept
-rule appended to `/etc/nftables.d/ingress.nft`), and the nginx unit. The
-site config and firewall rules are rendered by `String.join` at compile time
-— the `nginxSite` and `firewallOpening` helpers are plain string functions.
+Ingress is the one place all four glyphs appear together: the nginx package, the
+site-config `file`, a per-ingress firewall `file`, one `lineInFile` appended to
+the shared `/etc/nftables.d/ingress.nft`, and the nginx unit. The site config and
+firewall rules are rendered by `String.join` at compile time.
 
 <Aside type="note" title="lineInFile vs file, on purpose">
   The per-ingress firewall is its own `file` — golem owns it entirely. The
@@ -131,87 +117,107 @@ site config and firewall rules are rendered by `String.join` at compile time
   [The four glyphs](/reference/primitives/).
 </Aside>
 
-## The host binder
-
-One helper turns a name and its glyphs into a scroll:
-
-```elm
-host : String -> List Glyph -> Scroll
-host name glyphs = scroll { name = name, glyphs = glyphs }
-```
-
 ## The fleet
 
-`fleet.emet` imports the library and defines each host as a `Scroll`. A host
-is a `List.concat` of abstraction calls:
+`fleet.emet` imports the layer-c helpers and defines each host as a `Scroll` — a
+`List.concat` of helper calls:
 
-```elm
+```emet
 module Main exposing (..)
 
-import Lichess exposing
-  ( Workload(..), Service(..), Ingress(..)
-  , workloadGlyphs, serviceGlyphs, ingressGlyphs, host )
+import Lichess exposing ( dockerImage, workload, service, ingress, host )
 
 manta : Scroll
 manta =
   host "manta"
     (List.concat
-      [ workloadGlyphs (Workload { name = "leroyjenkins-lila", image = "lichess-org/leroyjenkins:latest" })
-      , serviceGlyphs (Service { name = "lila", image = "lichess-org/lila:latest", port = 9663 })
-      , serviceGlyphs (Service { name = "redis-server", image = "redis:7", port = 6379 })
-      , ingressGlyphs (Ingress { name = "lichess.org", service = "lila", from = "world", port = 443 })
+      [ workload "leroyjenkins-lila" (dockerImage "lichess-org/leroyjenkins" "latest")
+      , service "lila" (dockerImage "lichess-org/lila" "latest") 9663
+      , service "redis-server" (dockerImage "redis" "7") 6379
+      , ingress "lichess.org" "lila" 443
       ])
 
 scaly : Scroll
-scaly = host "scaly" (workloadGlyphs (Workload { name = "fishnet", image = "lichess-org/fishnet:latest" }))
+scaly = host "scaly" (workload "fishnet" (dockerImage "lichess-org/fishnet" "latest"))
 
 main : List Scroll
 main = [ scaly, manta, orbit, talos, kaiju, zulip ]
 ```
 
-Six hosts, one `main`. `scaly` runs a single networkless workload; `manta`
-fronts lila with ingress; `kaiju` is one mongo service; `talos` runs the
-monitoring stack. Every host reads as the shapes you care about, and every
-shape lowers to the four glyphs.
+Six hosts, one `main`. `scaly` runs a single networkless workload; `manta` fronts
+lila with ingress; `kaiju` is one mongo service; `talos` runs the monitoring
+stack. Every host reads as the shapes you care about, and every shape lowers to
+the four glyphs.
 
-## Compile and apply
+## Cross-host facts are values, not templates
 
-```bash
-# The whole fleet to a binary manifest.
-emetc build examples/lichess/fleet.emet -o fleet.manifest
+`Fleet.emet` holds the shared facts every host reads — the internal CIDR, an
+`address:port` helper — as ordinary Emet values:
 
-# Eyeball one host's plan.
-emetc build examples/lichess/fleet.emet --text
+```emet
+module Fleet exposing (internalNetwork, endpoint)
 
-# Ship it. The agent for host 'manta' selects manta's scroll.
-golemctl apply fleet.manifest http://127.0.0.1:7474
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
 ```
 
-The manifest carries all six scrolls. Each `golemd` selects its own by
-`--host` name and ignores the rest — see
-[Manifest format](/reference/bundle-format/). `examples/lichess/run.sh`
-drives this end-to-end against a golemd container.
+`service`'s firewall opening reads `internalNetwork` as imported data, checked by
+the type system — not a placeholder a resolver hopes to fill in later. Both
+`Lichess` and `Fleet` resolve from the search path the repo-root `emet.json`
+names, so the entry directory carries no copy.
+
+## Compile and inspect
+
+```bash
+# Eyeball one host's plan — real glyph counts, real keys.
+cargo run -q -p emet -- build examples/lichess/fleet.emet --text
+```
+
+`scaly`'s single workload lowers to three glyphs; `manta`'s workloads, services,
+and two ingresses to twenty-four:
+
+```
+planned scrolls (6):
+  scroll `scaly` (3 glyphs):
+    * ensure apt package `podman` installed
+    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0644)
+    * enable + start systemd unit `fishnet.service`
+  scroll `manta` (24 glyphs):
+    * ensure apt package `podman` installed
+    * ensure file `/etc/containers/systemd/leroyjenkins-lila.container` (mode 0644)
+    * enable + start systemd unit `leroyjenkins-lila.service`
+    …
+    * ensure file `/etc/nftables.d/lila-9663.nft` (mode 0644)
+    …
+    * ensure line `tcp dport 443 accept comment "ingress lichess.org"` present in file `/etc/nftables.d/ingress.nft`
+    * enable + start systemd unit `nginx.service`
+```
+
+The manifest carries all six scrolls; each `golemd` selects its own by `--host`
+name and ignores the rest — see [Manifest format](/reference/bundle-format/). To
+run the whole thing against ephemeral VMs, see
+[Deploy a fleet to VMs](/tutorials/the-vm-harness/).
 
 ## What you just saw
 
-The fleet is authored in the vocabulary of the problem — workloads,
-services, ingresses, an internal network — and none of that vocabulary
-reaches the agent. It all lowers to `aptPackage`, `systemdService`, `file`,
-and `lineInFile`, checked by Emet's type system on the way down.
+The fleet is authored in the vocabulary of the problem — workloads, services,
+ingresses, an internal network — and none of that vocabulary reaches the agent.
+It all lowers to `aptPackage`, `systemdService`, `file`, and `lineInFile`,
+checked by Emet's type system on the way down.
 
-- **Abstractions are functions.** `Workload`, `Service`, `Ingress` are Emet
-  types and functions in a library module, not engine features.
-- **Cross-host facts are values.** `internalNetwork` is imported and passed
-  as data — no placeholder resolution.
-- **Rendering is compile-time.** nginx sites and nftables rules are built by
-  `String.join`; the glyphs carry final strings.
-- **Upgrade and removal are content-addressed.** Bump an image tag,
-  recompile, re-apply — only the changed glyphs are replaced. See
+- **The library is shipped and typed.** `Image`, `Port`, `Mount`, `Workload`
+  come from `Quadlet` — you fill in records, not `Image=` strings.
+- **Helpers are yours.** `dockerImage`, `service`, `ingress` are this fleet's
+  layer-c shortcuts, not engine features.
+- **Ingress is not a workload.** A reverse proxy is a different container's
+  config, so it stays hand-rolled glyphs — the library models runtimes, not
+  proxies.
+- **Upgrade and removal are content-addressed.** Bump an image tag, recompile,
+  re-apply — only the changed glyphs are replaced. See
   [Reversible reconcile](/reference/honest-convergence/).
 
 ## Where to next
 
+- Every `Quadlet` type in detail: **[The Quadlet library](/reference/workloads/)**
+- Run this on real boxes: **[Deploy a fleet to VMs](/tutorials/the-vm-harness/)**
 - The mechanism underneath: **[Reversible reconcile](/reference/honest-convergence/)**
-- The bytes the agent consumes: **[Manifest format](/reference/bundle-format/)**
-- Build the same abstractions from scratch:
-  **[A service abstraction](/guides/app-and-db/)**

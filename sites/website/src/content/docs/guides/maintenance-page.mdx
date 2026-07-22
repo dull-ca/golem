@@ -13,7 +13,7 @@ function is the API surface you build for your fleet.** Once you have
 
 ## The template
 
-```elm
+```emet
 htmlPath : String -> String
 htmlPath id = "/var/www/maintenance/${id}/index.html"
 
@@ -84,7 +84,7 @@ file paths, so two maintenance pages on the same host never collide:
 
 ## Using it
 
-```elm
+```emet
 main : List Scroll
 main =
   [ scroll
@@ -111,7 +111,7 @@ only want to ensure **one line** is present in a file someone else owns —
 that is `lineInFile`. Say the maintenance page's server block must be
 `include`d from a shared nginx entrypoint:
 
-```elm
+```emet
 includeLine : String -> Glyph
 includeLine host =
   lineInFile

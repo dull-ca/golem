@@ -42,10 +42,19 @@ export default defineConfig({
           ],
         },
         {
+          label: "Deploy a fleet",
+          items: [
+            { label: "Deploy to VMs", link: "/tutorials/the-vm-harness/" },
+            { label: "A registry on the fleet", link: "/tutorials/registry-on-the-fleet/" },
+            { label: "The website loop", link: "/tutorials/website-loop/" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { label: "CLI", link: "/reference/cli/" },
             { label: "The four glyphs", link: "/reference/primitives/" },
+            { label: "The Quadlet library", link: "/reference/workloads/" },
             { label: "Manifest format", link: "/reference/bundle-format/" },
             { label: "Architecture", link: "/reference/architecture/" },
             { label: "Reversible reconcile", link: "/reference/honest-convergence/" },

@@ -91,13 +91,26 @@ See [Architecture](/reference/architecture/) for each stage.
 
 - **[A first glyph](/guides/hello-agent/)** — the smallest fleet: one
   host, one package, one unit.
-- **[A service abstraction](/guides/app-and-db/)** — build a `service`
-  helper in Emet that lowers to a container quadlet, a unit, and a
-  firewall fragment.
+- **[A service abstraction](/guides/app-and-db/)** — a thin helper on the
+  shipped `Quadlet` library that lowers to a container quadlet, a unit, and
+  a firewall fragment.
 - **[A maintenance page](/guides/maintenance-page/)** — a parameterized
   Emet function built from `file` and `lineInFile`.
 - **[A tour of the lichess fleet](/guides/litour/)** — the real
-  multi-host lichess deploy, authored in Emet with a shared library.
+  multi-host lichess deploy: the shipped library, a fleet's helpers on it,
+  and the four glyphs it lowers to.
+
+## Deploy a fleet
+
+Hands-on walkthroughs against ephemeral Debian VMs — golemd's real
+reconcilers, the way we ran them.
+
+- **[Deploy a fleet to VMs](/tutorials/the-vm-harness/)** — boot a VM,
+  deploy golemd, apply a scroll, read the journal, reverse it.
+- **[A registry on the fleet](/tutorials/registry-on-the-fleet/)** — run a
+  container registry on one VM; push and pull from others.
+- **[The website loop](/tutorials/website-loop/)** — golem building,
+  storing, and serving golem's own docs.
 
 ## What is not built yet
 

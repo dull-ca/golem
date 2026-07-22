@@ -27,7 +27,7 @@ substitution, no `${…}` in the compiled output. String interpolation and
 
 Ensure an apt package is installed.
 
-```elm
+```emet
 aptPackage { name = "nginx" }
 ```
 
@@ -47,7 +47,7 @@ a package it did not install.
 
 Ensure a systemd unit is enabled and started.
 
-```elm
+```emet
 systemdService { unit = "nginx.service" }
 ```
 
@@ -66,7 +66,7 @@ enabled, leave it.
 
 Ensure a file exists with fixed contents and mode.
 
-```elm
+```emet
 file
   { path = "/etc/app/site.conf"
   , contents = "[server]\nlisten = 8080\n"
@@ -83,12 +83,31 @@ file
 Glyph key: `file:<path>`.
 
 `mode` is a plain string like `"0644"` — the field carries the octal text,
-not a number. There is no `owner`/`group` field.
+not a number.
 
 **Reversibility.** On apply, `golemd` reads the prior contents and mode
 (or notes the file was absent), then writes the desired contents atomically
 (temp file + rename). On reverse it restores the prior bytes and mode, or
 deletes the file if golem created it.
+
+### `directory` and `symlink` — the same glyph, two more spellings
+
+`file` is one of three surface spellings of the filesystem glyph. The other
+two build a directory or a symlink at a path:
+
+```emet
+directory { path = "/var/lib/registry", mode = "0755" }
+
+symlink { path = "/etc/nginx/sites-enabled/site.conf", target = "/etc/nginx/sites-available/site.conf" }
+```
+
+Each arm carries only its own fields — `directory` takes no `contents`,
+`symlink` takes neither `contents` nor `mode` — so a symlink with a mode or a
+directory with contents cannot be written down. All three share the
+`file:<path>` key, reconcile through the one filesystem reconciler, and
+reverse the same way (restore the prior entry, or remove what golem created).
+A `Quadlet` [`FromHost`](/reference/workloads/) mount emits a `directory` for
+its bind-mount source; you rarely write one by hand.
 
 <Aside type="tip" title="Contents are built in Emet">
   A config file's body is produced by the language — string interpolation
@@ -101,7 +120,7 @@ deletes the file if golem created it.
 
 Ensure a single line is present in a file.
 
-```elm
+```emet
 lineInFile
   { path = "/etc/nftables.d/ingress.nft"
   , line = "tcp dport 443 accept comment \"ingress lila\""
@@ -136,23 +155,28 @@ per host, never fleet-wide.
 
 ## Building abstractions
 
-You rarely write raw glyphs beyond the smallest hosts. Instead, write an
-ordinary Emet function that returns a `List Glyph`:
+You rarely write raw glyphs beyond the smallest hosts. Instead you compose
+them — either with your own function returning a `List Glyph`, or with the
+shipped [`Quadlet`](/reference/workloads/) library, whose `Workload` lowers a
+typed container spec down to exactly these glyphs:
 
-```elm
-containerGlyphs : String -> String -> List Glyph
-containerGlyphs name image =
-  [ aptPackage { name = "podman" }
-  , file
-      { path = "/etc/containers/systemd/${name}.container"
-      , contents = quadletContents name image
-      , mode = "0644"
-      }
-  , systemdService { unit = "${name}.service" }
-  ]
+```emet
+import Quadlet exposing ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registry : List Glyph
+registry =
+  workloadGlyphs
+    (Workload
+      { name = "registry"
+      , image = image "docker.io/library" "registry" "2"
+      , env = [], ports = [ tcp 5000 5000 ], volumes = []
+      , restart = Always, expose = Internal
+      })
 ```
 
-Now `containerGlyphs "lila" "…"` is your project's word for "a container
-workload," and it lowers to three glyphs the agent already understands.
-See the [service abstraction guide](/guides/app-and-db/) and the
+That lowers to the podman `aptPackage`, the `.container` quadlet `file`, its
+`systemdService`, and one nftables `file` for the internal port opening — four
+glyphs the agent already understands, no fifth kind. See the
+[Quadlet reference](/reference/workloads/), the
+[service abstraction guide](/guides/app-and-db/), and the
 [lichess tour](/guides/litour/) for the full pattern.
