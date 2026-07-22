@@ -1,80 +1,56 @@
--- The lichess abstraction library: three shapes an operator thinks in, each
--- lowered to the four golem glyphs.
---
---   Workload — a container with no inbound traffic. Lowers to a podman
---              apt package + a quadlet `.container` unit file + a systemd
---              service that runs it.
---   Service  — a Workload that listens on a port, so it also gets an nftables
---              rule opening that port to the internal network only.
---   Ingress  — a public HTTPS front door: nginx apt package + a TLS
---              reverse-proxy site file + the nftables openings (a per-site rule
---              file and one line appended to the shared ingress chain) + the
---              nginx service.
---
--- Nothing here is a golemd resource kind — these are ordinary Emet values that
--- evaluate to `List Glyph`. `internalNetwork` comes from the shared `Fleet`
--- module so every host firewalls to the same CIDR.
-
 module Lichess exposing
-  ( Workload(..)
-  , Service(..)
-  , Ingress(..)
-  , workloadGlyphs
-  , serviceGlyphs
-  , ingressGlyphs
+  ( dockerImage
+  , workload
+  , service
+  , ingress
   , host
   )
 
 import Fleet exposing (internalNetwork)
+import Quadlet exposing
+  ( Image
+  , image
+  , tcp
+  , Restart(..)
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
 
-type Workload = Workload { name : String, image : String }
+dockerImage : String -> String -> Image
+dockerImage name tag = image "docker.io" name tag
 
-type Service = Service { name : String, image : String, port : Int }
+workload : String -> Image -> List Glyph
+workload name img =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = img
+      , env = []
+      , ports = []
+      , volumes = []
+      , restart = Always
+      , expose = Unexposed
+      })
 
-type Ingress = Ingress { name : String, service : String, from : String, port : Int }
-
-quadletPath : String -> String
-quadletPath name = "/etc/containers/systemd/${name}.container"
-
-nftablesPath : String -> String
-nftablesPath name = "/etc/nftables.d/${name}.nft"
+service : String -> Image -> Int -> List Glyph
+service name img port =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = img
+      , env = []
+      , ports = [ tcp port port ]
+      , volumes = []
+      , restart = Always
+      , expose = Internal
+      })
 
 nginxSitePath : String -> String
 nginxSitePath name = "/etc/nginx/sites-enabled/${name}.conf"
 
-serviceUnit : String -> String
-serviceUnit name = "${name}.service"
-
-quadletContents : String -> String -> String
-quadletContents name image =
-  String.join "\n"
-    [ "[Unit]"
-    , "Description=Golem workload: ${name}"
-    , ""
-    , "[Container]"
-    , "Image=${image}"
-    , "ContainerName=${name}"
-    , ""
-    , "[Service]"
-    , "Restart=always"
-    , ""
-    , "[Install]"
-    , "WantedBy=multi-user.target default.target"
-    ]
-
-firewallOpening : String -> Int -> String
-firewallOpening name port =
-  String.join "\n"
-    [ "table inet filter {"
-    , "  chain input {"
-    , "    tcp dport ${String.fromInt port} ip saddr ${internalNetwork} accept comment \"${name}\""
-    , "  }"
-    , "}"
-    ]
-
-ingressOpening : String -> Int -> String
-ingressOpening name port =
-  "tcp dport ${String.fromInt port} accept comment \"ingress ${name}\""
+nftablesPath : String -> String
+nftablesPath name = "/etc/nftables.d/${name}.nft"
 
 nginxSite : String -> String -> String
 nginxSite name upstream =
@@ -100,56 +76,39 @@ nginxSite name upstream =
     , "}"
     ]
 
-containerGlyphs : String -> String -> List Glyph
-containerGlyphs name image =
-  [ aptPackage { name = "podman" }
+ingressRule : String -> Int -> String
+ingressRule name port =
+  String.join "\n"
+    [ "table inet filter {"
+    , "  chain input {"
+    , "    tcp dport ${String.fromInt port} ip saddr ${internalNetwork} accept comment \"ingress ${name}\""
+    , "  }"
+    , "}"
+    ]
+
+ingressLine : String -> Int -> String
+ingressLine name port =
+  "tcp dport ${String.fromInt port} accept comment \"ingress ${name}\""
+
+ingress : String -> String -> Int -> List Glyph
+ingress name upstream port =
+  [ aptPackage { name = "nginx" }
   , file
-      { path = quadletPath name
-      , contents = quadletContents name image
+      { path = nginxSitePath name
+      , contents = nginxSite name upstream
       , mode = "0644"
       }
-  , systemdService { unit = serviceUnit name }
+  , file
+      { path = nftablesPath "ingress-${name}"
+      , contents = ingressRule name port
+      , mode = "0644"
+      }
+  , lineInFile
+      { path = "/etc/nftables.d/ingress.nft"
+      , line = ingressLine name port
+      }
+  , systemdService { unit = "nginx.service" }
   ]
-
-workloadGlyphs : Workload -> List Glyph
-workloadGlyphs w =
-  case w of
-    Workload spec -> containerGlyphs spec.name spec.image
-
-serviceGlyphs : Service -> List Glyph
-serviceGlyphs s =
-  case s of
-    Service spec ->
-      List.append
-        (containerGlyphs spec.name spec.image)
-        [ file
-            { path = nftablesPath spec.name
-            , contents = firewallOpening spec.name spec.port
-            , mode = "0644"
-            }
-        ]
-
-ingressGlyphs : Ingress -> List Glyph
-ingressGlyphs i =
-  case i of
-    Ingress spec ->
-      [ aptPackage { name = "nginx" }
-      , file
-          { path = nginxSitePath spec.name
-          , contents = nginxSite spec.name spec.service
-          , mode = "0644"
-          }
-      , file
-          { path = nftablesPath "ingress-${spec.name}"
-          , contents = firewallOpening "ingress ${spec.name}" spec.port
-          , mode = "0644"
-          }
-      , lineInFile
-          { path = "/etc/nftables.d/ingress.nft"
-          , line = ingressOpening spec.name spec.port
-          }
-      , systemdService { unit = serviceUnit "nginx" }
-      ]
 
 host : String -> List Glyph -> Scroll
 host name glyphs = scroll { name = name, glyphs = glyphs }

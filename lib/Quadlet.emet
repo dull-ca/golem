@@ -1,4 +1,4 @@
-module Workload exposing
+module Quadlet exposing
   ( Ref(..)
   , Image(..)
   , image

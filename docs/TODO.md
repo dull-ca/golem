@@ -176,6 +176,22 @@ standalone project.
   Nickel layer (`nickel/`, the `.ncl` examples, and golemctl's `nickel export`
   shell-out) was retired.
 
+- **Quadlet workload library + shared module search path — DONE (ADR 0023 /
+  ADR 0024).** A repo-root `emet.json` (`{ "source-directories": ["lib"] }`)
+  gives every entry under the repo a shared library search path, so `import
+  Quadlet` / `import Fleet` resolve to `lib/Quadlet.emet` / `lib/Fleet.emet`
+  with no caller or flag change. The strongly-typed Podman-Quadlet library
+  (`Image`/`Ref`, `Port`/`Proto`, `EnvVar`, `Restart`, `Mount`, `VolumeUnit`,
+  `ContainerUnit`, the ergonomic `Workload` with `env`, and the
+  `workloadGlyphs`/`containerUnitGlyphs`/`volumeUnitGlyphs`/`derivedVolumeUnits`
+  lowerings) moved out of the test fixture into `lib/Quadlet.emet`. The registry
+  and website dogfoods (`examples/registry/`, `examples/website/`) re-express on
+  `Quadlet.Workload` instead of hand-rolled quadlet strings, and the lichess
+  fleet (`examples/lichess/`) rebuilds its `workload`/`service`/`ingress`
+  shortcuts as layer-c helpers over `Quadlet` (ADR 0023's three layers). No
+  golemd/scroll-format change and no `format_version` bump — an Emet library
+  above the four glyphs.
+
 - **golem crates as flake outputs.** Add golem's own crates (`golemd` /
   `golemctl`) as `flake.nix` outputs. Needs their static-build specifics worked
   out.

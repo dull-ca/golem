@@ -1,55 +1,29 @@
 module Main exposing (..)
 
-registryName : String
-registryName = "registry"
+import Quadlet exposing
+  ( image
+  , tcp
+  , Restart(..)
+  , Access(..)
+  , Relabel(..)
+  , fromVolume
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
 
-registryImage : String
-registryImage = "docker.io/library/registry:2"
-
-publishedPort : Int
-publishedPort = 5000
-
-storeVolume : String
-storeVolume = "golem-registry-data"
-
-quadletPath : String
-quadletPath = "/etc/containers/systemd/${registryName}.container"
-
-serviceUnit : String
-serviceUnit = "${registryName}.service"
-
-quadletContents : String
-quadletContents =
-  String.join "\n"
-    [ "[Unit]"
-    , "Description=Golem container registry: ${registryName}"
-    , ""
-    , "[Container]"
-    , "Image=${registryImage}"
-    , "ContainerName=${registryName}"
-    , "PublishPort=${String.fromInt publishedPort}:5000"
-    , "Volume=${storeVolume}:/var/lib/registry:Z"
-    , ""
-    , "[Service]"
-    , "Restart=always"
-    , ""
-    , "[Install]"
-    , "WantedBy=multi-user.target default.target"
-    ]
-
-registryGlyphs : List Glyph
-registryGlyphs =
-  [ aptPackage { name = "podman" }
-  , file
-      { path = quadletPath
-      , contents = quadletContents
-      , mode = "0644"
-      }
-  , systemdService { unit = serviceUnit }
-  ]
-
-registry : Scroll
-registry = scroll { name = registryName, glyphs = registryGlyphs }
+registry : Workload
+registry =
+  Workload
+    { name = "registry"
+    , image = image "docker.io/library" "registry" "2"
+    , env = []
+    , ports = [ tcp 5000 5000 ]
+    , volumes =
+        [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private ]
+    , restart = Always
+    , expose = Internal
+    }
 
 main : List Scroll
-main = [ registry ]
+main = [ scroll { name = "registry", glyphs = workloadGlyphs registry } ]

@@ -1,96 +1,73 @@
--- The lichess fleet: the entry module. Each `Scroll` is one host's inventory,
--- built by mapping the `Lichess` abstractions over that host's workloads,
--- services, and ingresses; `main` lists all six. Compiling this file emits a
--- manifest of six scrolls (scaly 3, manta 24, orbit 34, talos 46, kaiju 4,
--- zulip 21 glyphs) — golemd on each host selects and enacts only its own.
---
--- Per-host inventory:
---   scaly — one fishnet workload (chess-analysis worker, no inbound port).
---   manta — the leroyjenkins edge workloads, the lila app + redis services,
---           and the public lichess.org / lichess1.org ingresses.
---   orbit — the lila-* microservices (http, engine, gif, fishnet, ip2proxy,
---           push) plus their public ingresses.
---   talos — a fishnet worker and the observability/infra stack (influx,
---           prometheus, loki, alertmanager, dns, ntp, syslog) with monitoring
---           ingresses.
---   kaiju — the primary mongo database service.
---   zulip — the zulip chat stack (app, email, postgres, redis) and its ingress.
-
 module Main exposing (..)
 
 import Lichess exposing
-  ( Workload(..)
-  , Service(..)
-  , Ingress(..)
-  , workloadGlyphs
-  , serviceGlyphs
-  , ingressGlyphs
+  ( dockerImage
+  , workload
+  , service
+  , ingress
   , host
   )
 
-fishnet : Workload
-fishnet = Workload { name = "fishnet", image = "lichess-org/fishnet:latest" }
-
 scaly : Scroll
-scaly = host "scaly" (workloadGlyphs fishnet)
+scaly = host "scaly" (workload "fishnet" (dockerImage "lichess-org/fishnet" "latest"))
 
 manta : Scroll
 manta =
   host "manta"
     (List.concat
-      [ workloadGlyphs (Workload { name = "leroyjenkins-lila", image = "lichess-org/leroyjenkins:latest" })
-      , workloadGlyphs (Workload { name = "leroyjenkins-nginx", image = "lichess-org/leroyjenkins:latest" })
-      , serviceGlyphs (Service { name = "lila", image = "lichess-org/lila:latest", port = 9663 })
-      , serviceGlyphs (Service { name = "redis-server", image = "redis:7", port = 6379 })
-      , ingressGlyphs (Ingress { name = "lichess.org", service = "lila", from = "world", port = 443 })
-      , ingressGlyphs (Ingress { name = "lichess1.org", service = "lila", from = "world", port = 443 })
+      [ workload "leroyjenkins-lila" (dockerImage "lichess-org/leroyjenkins" "latest")
+      , workload "leroyjenkins-nginx" (dockerImage "lichess-org/leroyjenkins" "latest")
+      , service "lila" (dockerImage "lichess-org/lila" "latest") 9663
+      , service "redis-server" (dockerImage "redis" "7") 6379
+      , ingress "lichess.org" "lila" 443
+      , ingress "lichess1.org" "lila" 443
       ])
 
 orbit : Scroll
 orbit =
   host "orbit"
     (List.concat
-      [ serviceGlyphs (Service { name = "lila-http", image = "lichess-org/lila-http:latest", port = 9080 })
-      , serviceGlyphs (Service { name = "lila-engine", image = "lichess-org/lila-engine:latest", port = 9666 })
-      , serviceGlyphs (Service { name = "lila-gif", image = "lichess-org/lila-gif:latest", port = 6175 })
-      , serviceGlyphs (Service { name = "lila-fishnet", image = "lichess-org/lila-fishnet:latest", port = 9665 })
-      , serviceGlyphs (Service { name = "lila-ip2proxy", image = "lichess-org/lila-ip2proxy:latest", port = 1929 })
-      , serviceGlyphs (Service { name = "lila-push", image = "lichess-org/lila-push:latest", port = 9054 })
-      , ingressGlyphs (Ingress { name = "http.lichess.org", service = "lila-http", from = "world", port = 443 })
-      , ingressGlyphs (Ingress { name = "engine.lichess.ovh", service = "lila-engine", from = "world", port = 443 })
+      [ service "lila-http" (dockerImage "lichess-org/lila-http" "latest") 9080
+      , service "lila-engine" (dockerImage "lichess-org/lila-engine" "latest") 9666
+      , service "lila-gif" (dockerImage "lichess-org/lila-gif" "latest") 6175
+      , service "lila-fishnet" (dockerImage "lichess-org/lila-fishnet" "latest") 9665
+      , service "lila-ip2proxy" (dockerImage "lichess-org/lila-ip2proxy" "latest") 1929
+      , service "lila-push" (dockerImage "lichess-org/lila-push" "latest") 9054
+      , ingress "http.lichess.org" "lila-http" 443
+      , ingress "engine.lichess.ovh" "lila-engine" 443
       ])
 
 talos : Scroll
 talos =
   host "talos"
     (List.concat
-      [ workloadGlyphs (Workload { name = "fishnet", image = "lichess-org/fishnet:latest" })
-      , serviceGlyphs (Service { name = "influxd", image = "influxdb:2", port = 8086 })
-      , serviceGlyphs (Service { name = "alertmanager", image = "prom/alertmanager:latest", port = 9093 })
-      , serviceGlyphs (Service { name = "prometheus", image = "prom/prometheus:latest", port = 9090 })
-      , serviceGlyphs (Service { name = "loki", image = "grafana/loki:latest", port = 3100 })
-      , serviceGlyphs (Service { name = "dns", image = "lichess-org/dnsmasq:latest", port = 53 })
-      , serviceGlyphs (Service { name = "ntpd", image = "cturra/ntp:latest", port = 123 })
-      , serviceGlyphs (Service { name = "rsyslogd", image = "rsyslog/rsyslog:latest", port = 514 })
-      , ingressGlyphs (Ingress { name = "monitor.lichess.ovh", service = "prometheus", from = "world", port = 443 })
-      , ingressGlyphs (Ingress { name = "prom.lichess.ovh", service = "prometheus", from = "world", port = 443 })
-      , ingressGlyphs (Ingress { name = "alertmanager.lichess.ovh", service = "alertmanager", from = "world", port = 443 })
+      [ workload "fishnet" (dockerImage "lichess-org/fishnet" "latest")
+      , service "influxd" (dockerImage "influxdb" "2") 8086
+      , service "alertmanager" (dockerImage "prom/alertmanager" "latest") 9093
+      , service "prometheus" (dockerImage "prom/prometheus" "latest") 9090
+      , service "loki" (dockerImage "grafana/loki" "latest") 3100
+      , service "dns" (dockerImage "lichess-org/dnsmasq" "latest") 53
+      , service "ntpd" (dockerImage "cturra/ntp" "latest") 123
+      , service "rsyslogd" (dockerImage "rsyslog/rsyslog" "latest") 514
+      , ingress "monitor.lichess.ovh" "prometheus" 443
+      , ingress "prom.lichess.ovh" "prometheus" 443
+      , ingress "alertmanager.lichess.ovh" "alertmanager" 443
       ])
 
 kaiju : Scroll
 kaiju =
   host "kaiju"
-    (serviceGlyphs (Service { name = "mongod-lichess-primary", image = "mongo:7", port = 27017 }))
+    (service "mongod-lichess-primary" (dockerImage "mongo" "7") 27017)
 
 zulip : Scroll
 zulip =
   host "zulip"
     (List.concat
-      [ serviceGlyphs (Service { name = "zulip", image = "zulip/docker-zulip:latest", port = 80 })
-      , serviceGlyphs (Service { name = "zulip-email", image = "zulip/docker-zulip:latest", port = 25 })
-      , serviceGlyphs (Service { name = "postgresql", image = "zulip/zulip-postgresql:14", port = 5432 })
-      , serviceGlyphs (Service { name = "redis", image = "redis:7", port = 6379 })
-      , ingressGlyphs (Ingress { name = "hq.lichess.ovh", service = "zulip", from = "world", port = 443 })
+      [ service "zulip" (dockerImage "zulip/docker-zulip" "latest") 80
+      , service "zulip-email" (dockerImage "zulip/docker-zulip" "latest") 25
+      , service "postgresql" (dockerImage "zulip/zulip-postgresql" "14") 5432
+      , service "redis" (dockerImage "redis" "7") 6379
+      , ingress "hq.lichess.ovh" "zulip" 443
       ])
 
 main : List Scroll

@@ -1,24 +1,16 @@
--- The web box of the self-hosted-CI loop (milestone 3): golem provisions the
--- machine that serves the website image the builder pushed. It installs podman,
--- drops in the same insecure-registry fragment for golem's registry at
--- 10.0.2.2:5000, writes a quadlet .container that pulls
--- 10.0.2.2:5000/golem-website:latest and publishes it on :80, and enables the
--- generated service. Together with builder.emet this closes the loop: build and
--- push on one golem-managed box, pull and serve on another, both fed by golem's
--- own registry.
 module Main exposing (..)
 
-serviceName : String
-serviceName = "golem-website"
+import Quadlet exposing
+  ( image
+  , tcp
+  , Restart(..)
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
 
 registryEndpoint : String
 registryEndpoint = "10.0.2.2:5000"
-
-websiteImage : String
-websiteImage = "${registryEndpoint}/${serviceName}:latest"
-
-publishedPort : Int
-publishedPort = 80
 
 insecureConfPath : String
 insecureConfPath = "/etc/containers/registries.conf.d/golem-registry.conf"
@@ -32,48 +24,29 @@ insecureConfContents =
     , ""
     ]
 
-quadletPath : String
-quadletPath = "/etc/containers/systemd/${serviceName}.container"
-
-serviceUnit : String
-serviceUnit = "${serviceName}.service"
-
-quadletContents : String
-quadletContents =
-  String.join "\n"
-    [ "[Unit]"
-    , "Description=Golem website: ${serviceName}"
-    , ""
-    , "[Container]"
-    , "Image=${websiteImage}"
-    , "ContainerName=${serviceName}"
-    , "PublishPort=${String.fromInt publishedPort}:80"
-    , ""
-    , "[Service]"
-    , "Restart=always"
-    , ""
-    , "[Install]"
-    , "WantedBy=multi-user.target default.target"
-    ]
+website : Workload
+website =
+  Workload
+    { name = "golem-website"
+    , image = image registryEndpoint "golem-website" "latest"
+    , env = []
+    , ports = [ tcp 80 80 ]
+    , volumes = []
+    , restart = Always
+    , expose = Public
+    }
 
 websiteGlyphs : List Glyph
 websiteGlyphs =
-  [ aptPackage { name = "podman" }
-  , file
-      { path = insecureConfPath
-      , contents = insecureConfContents
-      , mode = "0644"
-      }
-  , file
-      { path = quadletPath
-      , contents = quadletContents
-      , mode = "0644"
-      }
-  , systemdService { unit = serviceUnit }
-  ]
-
-web : Scroll
-web = scroll { name = "web", glyphs = websiteGlyphs }
+  List.concat
+    [ [ file
+          { path = insecureConfPath
+          , contents = insecureConfContents
+          , mode = "0644"
+          }
+      ]
+    , workloadGlyphs website
+    ]
 
 main : List Scroll
-main = [ web ]
+main = [ scroll { name = "web", glyphs = websiteGlyphs } ]

@@ -58,7 +58,7 @@ fn a_service_lowers_to_workload_plus_firewall_opening() {
     assert!(k.contains(&"apt:podman".to_string()));
     assert!(k.contains(&"file:/etc/containers/systemd/mongod-lichess-primary.container".to_string()));
     assert!(k.contains(&"systemd:mongod-lichess-primary.service".to_string()));
-    assert!(k.contains(&"file:/etc/nftables.d/mongod-lichess-primary.nft".to_string()));
+    assert!(k.contains(&"file:/etc/nftables.d/mongod-lichess-primary-27017.nft".to_string()));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn service_firewall_allows_internal_sources_to_the_service_port() {
         .iter()
         .find_map(|g| match g {
             emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
-                if path == "/etc/nftables.d/mongod-lichess-primary.nft" =>
+                if path == "/etc/nftables.d/mongod-lichess-primary-27017.nft" =>
             {
                 Some(contents.clone())
             }
