@@ -1,6 +1,8 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
+import emetGrammar from "./src/grammars/emet.tmLanguage.json" with { type: "json" };
+
 // https://astro.build/config
 export default defineConfig({
   site: "https://golem.example",
@@ -9,6 +11,11 @@ export default defineConfig({
       title: "Golem",
       description:
         "Small-fleet declarative orchestrator for bare-metal Debian boxes.",
+      expressiveCode: {
+        shiki: {
+          langs: [{ ...emetGrammar, aliases: ["emet"] }],
+        },
+      },
       social: {
         codeberg: "https://codeberg.org/dull/golem",
       },
