@@ -660,6 +660,49 @@ where
         let str_lit = select! { Tok::Str(s) => s }
             .map_with(|s, e| Spanned(Pattern::Str(s), span_range(e.span())));
 
+        // `int_lit`/`char_lit` reuse the same span-carrying `select!` shapes
+        // `expr_parser` uses for literal expressions (ADR 0026 §2), building the
+        // matching `Pattern` variant.
+        let int_lit = select! { Tok::Int(n) => n }
+            .map_with(|n, e| Spanned(Pattern::Int(n), span_range(e.span())));
+
+        let char_lit = select! { Tok::Char(c) => c }
+            .map_with(|c, e| Spanned(Pattern::Char(c), span_range(e.span())));
+
+        // The pattern-side unary-minus fold (ADR 0026 §5). The lexer never puts
+        // `-` inside a numeric token, and pattern position has no `unary` layer
+        // to fold it, so a `-` immediately adjacent to the following `Int` (its
+        // span end touching the int's span start — the adjacency test
+        // `qualified` uses at parser.rs:321) folds to `Pattern::Int(-n)`. A
+        // non-adjacent `-` is a plain parse error.
+        let neg_int = just(Tok::Op("-".to_string()))
+            .map_with(|_, e| span_range(e.span()))
+            .then(select! { Tok::Int(n) => n }.map_with(|n, e| (n, span_range(e.span()))))
+            .try_map(|(minus_span, (n, int_span)), span| {
+                if minus_span.end == int_span.start {
+                    Ok(Spanned(Pattern::Int(-n), minus_span.start..int_span.end))
+                } else {
+                    Err(Rich::<Tok, TokSpan>::custom(span, "expected a pattern"))
+                }
+            });
+
+        // Float literals in pattern position are rejected with the dedicated
+        // redirect diagnostic below — the helpful message IS the feature (ADR
+        // 0026 §3). Catches a `Tok::Float`, optionally `-`-prefixed (a negative
+        // float is still a float). `.validate` + `emitter.emit` — not `try_map`
+        // — because this atom sits inside a `repeated()` over the `case` arms:
+        // `repeated()` rewinds and swallows a hard parse failure, so the error
+        // must be emitted non-fatally to survive. The returned `Pattern::Wildcard`
+        // is an inert placeholder that never reaches inference. Placed first in
+        // the atom `choice` so a float commits to this rejection.
+        let float_reject = just(Tok::Op("-".to_string()))
+            .or_not()
+            .ignore_then(select! { Tok::Float(_) => () })
+            .validate(|(), e, emitter| {
+                emitter.emit(Rich::<Tok, TokSpan>::custom(e.span(), FLOAT_PATTERN_MESSAGE));
+                Spanned(Pattern::Wildcard, span_range(e.span()))
+            });
+
         let nullary_ctor = select! { Tok::Upper(u) => u }
             .map_with(|u, e| Spanned(Pattern::Ctor(u, vec![]), span_range(e.span())));
 
@@ -687,7 +730,18 @@ where
             .clone()
             .delimited_by(just(Tok::LParen), just(Tok::RParen));
 
-        let atom = choice((wildcard, var, str_lit, nullary_ctor, list_literal, paren));
+        let atom = choice((
+            float_reject,
+            wildcard,
+            var,
+            str_lit,
+            char_lit,
+            neg_int,
+            int_lit,
+            nullary_ctor,
+            list_literal,
+            paren,
+        ));
 
         let applied_ctor = select! { Tok::Upper(u) => u }
             .map_with(|u, e| (u, span_range(e.span()).start))
@@ -967,6 +1021,11 @@ fn type_con(name: &str, args: Vec<Type>) -> Type {
 fn span_range(span: TokSpan) -> Span {
     span.start..span.end
 }
+
+// The Elm-faithful redirect shown when a float literal appears in a pattern
+// (ADR 0026 §3). NOTE: tests assert on this text (`tests/literal_patterns.rs`),
+// so rewording it ripples.
+const FLOAT_PATTERN_MESSAGE: &str = "`Float` literals can't be matched in a pattern. Floating-point equality is unreliable, so Emet — like Elm — forbids it. Bind the value with a name and compare it with `<`, `>`, `<=`, or `>=` in an `if` instead.";
 
 /// Parse a complete laid-out token stream (as produced by
 /// `layout::layout_all`) into a `Module`. Returns every error chumsky

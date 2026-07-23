@@ -28,17 +28,22 @@ in scope in that arm's body.
 | --- | --- | --- |
 | variable | anything; binds it | `n` |
 | wildcard `_` | anything; binds nothing | `_` |
-| Int literal | an equal `Int` | `0` |
-| Float literal | an equal `Float` | `3.14` |
+| Int literal | an equal integer | `0`, `-1` |
+| Char literal | an equal `Char` | `'a'` |
 | String literal | an equal `String` | `"nginx"` |
 | constructor | a value of that constructor | `Just x`, `Web` |
 | empty list | `[]` | `[]` |
 | cons | a non-empty list | `(x :: xs)` |
 | list literal | a list of fixed length | `[a, b]` |
 
-`Char` and `String` literal *patterns* differ: string literal patterns match,
-but `Char` literal patterns are not yet supported (a `Char` scrutinee is
-matched with a variable or wildcard). See ADR 0025.
+An integer literal pattern is typed `number`, not hard `Int`, so it may match a
+`Float` scrutinee just as an integer literal expression may; a leading `-` is
+part of the pattern (`-1`). See ADR 0026.
+
+A `Float` literal pattern is a compile error: IEEE-754 equality is unreliable,
+so — like Elm — Emet refuses to match on it and steers you to the comparison
+operators (`<`, `>`, `<=`, `>=`) in an `if` instead. See
+[functions](/reference/language/functions/) for `if` and ADR 0026.
 
 ### Constructor patterns
 

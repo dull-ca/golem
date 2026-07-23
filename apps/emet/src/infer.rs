@@ -1151,6 +1151,16 @@ fn infer_pattern(
             Ok(())
         }
         Pattern::Str(_) => inf.unify(scrutinee, &con("String"), &pat.1),
+        // Mirrors `Str`'s `con("String")` (ADR 0026 §4).
+        Pattern::Char(_) => inf.unify(scrutinee, &con("Char"), &pat.1),
+        // A `number` variable, NOT `con("Int")` (ADR 0026 §4): the same mint an
+        // integer literal *expression* gets. Keeping the scrutinee polymorphic
+        // `number` is what lets an int literal pattern match a `Float`-typed
+        // value — hard-`Int` would wrongly reject it.
+        Pattern::Int(_) => {
+            let num = inf.fresh_constrained(Constraint::Number);
+            inf.unify(scrutinee, &num, &pat.1)
+        }
         // `[]` and `head :: tail` constrain the scrutinee to some `List elem`.
         // `Cons` additionally binds its head at `elem` and its tail at the same
         // list type — the recursive shape that lets a `case` walk a list.
@@ -1217,17 +1227,31 @@ fn uncurry(ty: &Type) -> (Vec<Type>, Type) {
 
 /// A pattern lowered for the usefulness check: variable binds are erased to
 /// `Wild` (they do not affect coverage).
+//
+// `Int`/`Char` ride alongside `Str` through the whole checker — here, in
+// `Head`, and in `lower_pattern`/`head_of`/`specialize`/`useful` — as arity-0
+// value-equality heads over an OPEN domain, with no new completeness logic (ADR
+// 0026 §6). `complete_signature` returns `None` for anything that isn't a `Con`
+// sum, so a literal head never forms a complete signature: a `case` over
+// literals is exhaustive only with a trailing `_`, and a duplicate literal (or
+// any arm after a catch-all) is redundant. NOTE: `Int` and `Char` are finite in
+// principle (2⁶⁴ integers, 2³² scalars), but we treat them as open like Elm —
+// enumerating every value is never a practical route to exhaustiveness.
 #[derive(Clone)]
 enum UPat {
     Wild,
     Ctor(String, Vec<UPat>),
     Str(String),
+    Int(i64),
+    Char(char),
 }
 
 fn lower_pattern(pat: &Pattern) -> UPat {
     match pat {
         Pattern::Wildcard | Pattern::Var(_) => UPat::Wild,
         Pattern::Str(s) => UPat::Str(s.clone()),
+        Pattern::Int(n) => UPat::Int(*n),
+        Pattern::Char(c) => UPat::Char(*c),
         Pattern::Ctor(name, subs) => {
             UPat::Ctor(name.clone(), subs.iter().map(|s| lower_pattern(&s.0)).collect())
         }
@@ -1248,6 +1272,8 @@ fn lower_pattern(pat: &Pattern) -> UPat {
 enum Head {
     Ctor(String, usize),
     Str(String),
+    Int(i64),
+    Char(char),
 }
 
 fn head_of(pat: &UPat) -> Option<Head> {
@@ -1255,6 +1281,8 @@ fn head_of(pat: &UPat) -> Option<Head> {
         UPat::Wild => None,
         UPat::Ctor(name, subs) => Some(Head::Ctor(name.clone(), subs.len())),
         UPat::Str(s) => Some(Head::Str(s.clone())),
+        UPat::Int(n) => Some(Head::Int(*n)),
+        UPat::Char(c) => Some(Head::Char(*c)),
     }
 }
 
@@ -1265,7 +1293,7 @@ fn head_of(pat: &UPat) -> Option<Head> {
 fn specialize(matrix: &[Vec<UPat>], head: &Head) -> Vec<Vec<UPat>> {
     let arity = match head {
         Head::Ctor(_, n) => *n,
-        Head::Str(_) => 0,
+        Head::Str(_) | Head::Int(_) | Head::Char(_) => 0,
     };
     let mut out = Vec::new();
     for row in matrix {
@@ -1288,6 +1316,20 @@ fn specialize(matrix: &[Vec<UPat>], head: &Head) -> Vec<Vec<UPat>> {
             UPat::Str(s) => {
                 if let Head::Str(hs) = head {
                     if s == hs {
+                        out.push(rest.to_vec());
+                    }
+                }
+            }
+            UPat::Int(n) => {
+                if let Head::Int(hn) = head {
+                    if n == hn {
+                        out.push(rest.to_vec());
+                    }
+                }
+            }
+            UPat::Char(c) => {
+                if let Head::Char(hc) = head {
+                    if c == hc {
                         out.push(rest.to_vec());
                     }
                 }
@@ -1350,6 +1392,14 @@ fn useful(inf: &mut Infer, matrix: &[Vec<UPat>], vector: &[UPat], col_types: &[T
         }
         UPat::Str(s) => {
             let head = Head::Str(s.clone());
+            useful(inf, &specialize(matrix, &head), rest, rest_types)
+        }
+        UPat::Int(n) => {
+            let head = Head::Int(*n);
+            useful(inf, &specialize(matrix, &head), rest, rest_types)
+        }
+        UPat::Char(c) => {
+            let head = Head::Char(*c);
             useful(inf, &specialize(matrix, &head), rest, rest_types)
         }
         UPat::Wild => {

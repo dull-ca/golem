@@ -231,6 +231,11 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
             true
         }
         Pattern::Str(s) => matches!(value, Value::Str(v) if v == s),
+        // Direct value equality, the same shape as `Str` — no new `Value`
+        // variant (ADR 0026 §7). A negative pattern matches here because the
+        // parser already folded it to `Pattern::Int(-n)`.
+        Pattern::Int(n) => matches!(value, Value::Int(v) if v == n),
+        Pattern::Char(c) => matches!(value, Value::Char(v) if v == c),
         Pattern::Nil => matches!(value, Value::List(items) if items.is_empty()),
         Pattern::Cons(head, tail) => match value {
             Value::List(items) => match items.split_first() {

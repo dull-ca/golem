@@ -113,7 +113,15 @@ monorepo. B's headline is model reconciliation.
   faithfulness to `elm/core` (ADR 0025 §4). The real fix is a future, separate
   **"tuple type" ADR** (type syntax, inference, pattern matching, IR
   implications); once tuples exist, `uncons` is added with its exact Elm
-  signature. Char/String-literal *patterns* in `case` are deferred with it.
+  signature.
+
+- **Int + Char literal patterns; Float patterns rejected — DONE (ADR 0026).**
+  `case` now matches `Int` and `Char` literals (typed `number`/`Char`, negatives
+  allowed via a parse-time fold), riding the same open-domain exhaustiveness path
+  as string patterns — a literal `case` needs a trailing `_`, duplicate literals
+  are redundant. `Float` literal patterns are a compile error, Elm-faithfully
+  redirecting to `<`/`>` comparison. Tests green
+  (`apps/emet/tests/literal_patterns.rs`).
 
 ### Diagnostics / tooling
 

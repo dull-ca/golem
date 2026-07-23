@@ -139,9 +139,12 @@ An Elm-shaped, minimal module system for reuse across files:
 - **`case … of` + `if`.** Compile-time **exhaustiveness and redundancy** checking;
   a non-exhaustive or redundant match is a compile error. `if` desugars to `case`
   on `Bool`. Arms must be laid out (inline single-line `case` is deferred).
-  Patterns (`ast.rs::Pattern`): `_` (wildcard), a lowercase binder, a string
-  literal, `Upper p …` (constructor), and the list patterns `[]` (`Nil`),
-  `(head :: tail)` (`Cons`), and `[a, b, …]` (nested `Cons` ending in `Nil`).
+  Patterns (`ast.rs::Pattern`): `_` (wildcard), a lowercase binder, string,
+  integer, and char literals (typed `number`/`Char`; negative ints like `-1`
+  allowed — ADR 0026), `Upper p …` (constructor), and the list patterns `[]`
+  (`Nil`), `(head :: tail)` (`Cons`), and `[a, b, …]` (nested `Cons` ending in
+  `Nil`). **`Float` literal patterns are a compile error** (Elm-faithful:
+  IEEE-754 equality is unreliable, so branch on floats with `<`/`>` in an `if`).
   `List` is treated as a two-constructor sum (`[]` / `::`) so the exhaustiveness
   checker requires both cases — see below.
 - **Numbers + operators.** `+ - * / // ^ < > <= >= == /= && || ++ ::` with Elm

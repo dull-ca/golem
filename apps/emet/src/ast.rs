@@ -144,8 +144,8 @@ pub enum Expr {
     /// Float literal. Always `Float`.
     Float(f64),
     /// Char literal `'c'` — exactly one Unicode scalar. Typed `Con("Char")`,
-    /// mirroring `Str`'s `Con("String")`. Char *patterns* (`'c'` in a `case`)
-    /// are deferred (ADR 0025).
+    /// mirroring `Str`'s `Con("String")` (ADR 0025). Char *patterns* (`'c'` in a
+    /// `case`) are the `Pattern::Char` arm (ADR 0026).
     Char(char),
     Var(String),
     /// `aptPackage { name = e }` — the apt-package primitive constructor.
@@ -250,6 +250,19 @@ pub enum Pattern {
     Var(String),
     /// A string literal — matches an equal `String`.
     Str(String),
+    // NOTE: there is deliberately no `Pattern::Float`. Float literals in pattern
+    // position are rejected at parse time (ADR 0026 §3), so no stage past the
+    // parser ever reasons about float equality.
+    /// An integer literal — matches an equal integer. Typed as a `number`
+    /// variable defaulting to `Int`, mirroring integer literal *expressions*
+    /// rather than hard-`Int` (ADR 0026 §4, ADR 0007), so `case x of 0 -> …`
+    /// still typechecks against a `Float` scrutinee. A leading `-` is folded at
+    /// parse time, so `-1` arrives here as `Int(-1)`.
+    Int(i64),
+    /// A char literal `'c'` — matches an equal `Char`; its scrutinee unifies
+    /// with `Con("Char")`, exactly as `Str` does with `String` (ADR 0026,
+    /// ADR 0025).
+    Char(char),
     /// `Upper p1 p2 …` — a constructor applied to sub-patterns.
     Ctor(String, Vec<Spanned<Pattern>>),
     /// `[]` — matches the empty list.

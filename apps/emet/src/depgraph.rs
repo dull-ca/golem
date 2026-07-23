@@ -172,7 +172,8 @@ fn free_vars_arm(
 
 fn collect_pattern_binders(pat: &Pattern, out: &mut Vec<String>) {
     match pat {
-        Pattern::Wildcard | Pattern::Str(_) | Pattern::Nil => {}
+        // Literal patterns (`Str`/`Int`/`Char`) and `Nil` bind no names.
+        Pattern::Wildcard | Pattern::Str(_) | Pattern::Int(_) | Pattern::Char(_) | Pattern::Nil => {}
         Pattern::Var(name) => out.push(name.clone()),
         Pattern::Ctor(_, subs) => {
             for s in subs {
