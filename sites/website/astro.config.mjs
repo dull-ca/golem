@@ -66,10 +66,15 @@ export default defineConfig({
             { label: "The four glyphs", link: "/reference/primitives/" },
             { label: "The Quadlet library", link: "/reference/workloads/" },
             { label: "Manifest format", link: "/reference/bundle-format/" },
-            { label: "Architecture", link: "/reference/architecture/" },
-            { label: "Reversible reconcile", link: "/reference/honest-convergence/" },
-            { label: "Trust model", link: "/reference/trust/" },
             { label: "Status", link: "/reference/status/" },
+          ],
+        },
+        {
+          label: "Explanation",
+          items: [
+            { label: "Architecture", link: "/explanation/architecture/" },
+            { label: "Reversible reconcile", link: "/explanation/reversible-reconcile/" },
+            { label: "Trust model", link: "/explanation/trust/" },
           ],
         },
       ],

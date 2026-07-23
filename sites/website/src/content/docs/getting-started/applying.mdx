@@ -47,7 +47,7 @@ golemctl apply fleet.manifest http://127.0.0.1:7474
 5. **Journal** the ordered outcomes as a `Reconcile` revision.
 
 Because the diff is content-addressed, re-applying an unchanged fleet is all
-no-ops. See [Reversible reconcile](/reference/honest-convergence/) for the
+no-ops. See [Reversible reconcile](/explanation/reversible-reconcile/) for the
 mechanism.
 
 ## Inspecting a node
@@ -87,7 +87,7 @@ scroll with no glyphs.
   Removal restores what was there before golem touched the resource, because
   the reversal receipt was captured at apply time. It never removes a
   package, line, or file golem did not add. See
-  [Reversible reconcile](/reference/honest-convergence/).
+  [Reversible reconcile](/explanation/reversible-reconcile/).
 </Aside>
 
 ## Where to next
@@ -95,4 +95,4 @@ scroll with no glyphs.
 - **A worked example:** [A first glyph](/guides/hello-agent/)
 - **The full CLI:** [CLI reference](/reference/cli/)
 - **The bytes the agent sees:** [Manifest format](/reference/bundle-format/)
-- **How reversal works:** [Reversible reconcile](/reference/honest-convergence/)
+- **How reversal works:** [Reversible reconcile](/explanation/reversible-reconcile/)

@@ -76,7 +76,7 @@ lower to the four glyphs. The agent never grows a fifth resource kind.
 Emet source ──emetc build──▶ binary manifest ──golemctl apply──▶ golemd ──▶ reversible reconcilers ──▶ the box
 ```
 
-See [Architecture](/reference/architecture/) for each stage.
+See [Architecture](/explanation/architecture/) for each stage.
 
 ## Start here
 
@@ -118,7 +118,7 @@ Golem is honest about its edges. The following are **roadmap**, not
 working today:
 
 - **Signing and trust.** There is no ed25519 signature on the manifest
-  and no trusted-key check on the agent. See [Trust model](/reference/trust/).
+  and no trusted-key check on the agent. See [Trust model](/explanation/trust/).
 - **Multi-node orchestration.** A manifest carries the whole fleet, but
   each `golemd` acts only on its own scroll. There is no coordinator,
   no drain, no health-gated rollback.

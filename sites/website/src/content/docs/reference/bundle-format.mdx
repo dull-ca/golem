@@ -48,7 +48,7 @@ That is what makes reconciliation cheap and precise. Same bytes ⇒ same id
 ⇒ no-op; a changed field ⇒ new id ⇒ an upgrade. The agent also hashes each
 glyph individually (`content_id_of_glyph`) so a one-line change to one file
 re-applies only that glyph, not the whole scroll — see
-[Reversible reconcile](/reference/honest-convergence/).
+[Reversible reconcile](/explanation/reversible-reconcile/).
 
 `ContentId` is a 32-byte digest. Its string form is lowercase hex (64
 characters); `golemctl state` prints it that way.
@@ -110,7 +110,7 @@ on POST /manifest:
 ```
 
 The diff, the enact, and the journalled reversal records are the subject of
-[Reversible reconcile](/reference/honest-convergence/).
+[Reversible reconcile](/explanation/reversible-reconcile/).
 
 <Aside type="note" title="The local journal is golemd's own choice">
   The wire format is binary postcard. `golemd`'s local journal — its record

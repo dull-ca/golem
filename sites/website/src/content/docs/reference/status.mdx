@@ -27,7 +27,7 @@ An honest split between what the code does and what is still a design.
   content id.
 - **Reversible reconcilers.** Each glyph's `apply` captures an `Inverse`
   receipt; `reverse` restores it exactly. Upgrade, removal, and rollback all
-  derive from this. See [Reversible reconcile](/reference/honest-convergence/).
+  derive from this. See [Reversible reconcile](/explanation/reversible-reconcile/).
 - **`golemctl`.** `apply` (compile-and-ship or ship a prebuilt manifest),
   `state`, `history`, `show`. HTTP: `POST /manifest`, `GET /state`,
   `/revisions`, `/revisions/:id`, `/status`.
@@ -43,7 +43,7 @@ An honest split between what the code does and what is still a design.
 
 - **Signing and trust.** No manifest signature, no trusted-key check. The
   apply path is unauthenticated; bind the listener to localhost or a tunnel.
-  See [Trust model](/reference/trust/).
+  See [Trust model](/explanation/trust/).
 - **Multi-node orchestration.** A manifest carries the whole fleet, but each
   `golemd` acts only on its own scroll. There is no coordinator, no ordered
   drain, no health-gated rollback across hosts.
