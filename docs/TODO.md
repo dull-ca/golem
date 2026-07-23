@@ -123,6 +123,23 @@ monorepo. B's headline is model reconciliation.
   redirecting to `<`/`>` comparison. Tests green
   (`apps/emet/tests/literal_patterns.rs`).
 
+- **`let … in` does not parse inside a `case` arm — KNOWN GAP.** A `case` arm
+  body cannot open its own `let` block; the layout/offside rules close the arm
+  before the `in`. Bindings a single arm wants must be hoisted above the `case`,
+  or the arm must call out to a helper function that carries the `let`. Surfaced
+  building `imageRef` (`lib/Quadlet.emet`), whose digest-vs-tag split is a
+  top-level `if` and whose two arms are the separate `imageRefDigest` /
+  `imageRefTagged` functions for exactly this reason. Future work: let a `case`
+  arm body be a laid-out `let … in` like any other expression.
+
+- **A negative literal as a function argument parses as subtraction — KNOWN
+  GAP.** `f x -1` reads as `f x - 1` (binary subtraction), not `f x (-1)`; a
+  negative literal in argument position needs parentheses (`f x (-1)`) or a
+  named sentinel. This is the expression-argument residue of the unary-minus
+  ambiguity — the *pattern* side was resolved in ADR 0026 (negative literal
+  patterns fold at parse time), but argument position still needs disambiguating.
+  Future work: resolve `-1` as a negative literal in argument position too.
+
 ### Diagnostics / tooling
 
 - **Multi-error parse recovery + rich CLI rendering — DONE (ADR 0022).** The

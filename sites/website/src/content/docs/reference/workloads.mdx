@@ -26,23 +26,49 @@ import Quadlet exposing
 
 ## `Image` — a typed image reference
 
-An image is a registry, a name, and a tag *xor* a digest — never both, never a
-single string you hope parses. `image` takes the three parts explicitly:
+An image is a registry, a name, and a tag *xor* a digest — never both. `image`
+and `imageAt` take the three parts explicitly; `imageRef` parses one Docker
+reference string:
 
 ```emet
 image "docker.io/library" "registry" "2"      -- registry/library, :2 tag
 imageAt "docker.io" "app" "sha256:abc…"        -- digest-pinned
+imageRef "ghcr.io/dull/golem:v1"               -- parsed from one string
 ```
 
 | Constructor | Signature | Builds |
 | --- | --- | --- |
 | `image` | `String -> String -> String -> Image` | a tagged image (`registry name tag`) |
 | `imageAt` | `String -> String -> String -> Image` | a digest-pinned image (`registry name digest`) |
+| `imageRef` | `String -> Image` | an `Image` parsed from a Docker reference string |
 
-`Ref` is the tag-or-digest sum (`Tag String` / `Digest String`); `imageRef`
-renders an `Image` to its `Image=` line — `registry/name:tag` or
-`registry/name@digest`. Because the tag and digest are different constructors,
-`registry:2@sha256:…` is unwritable.
+`Ref` is the tag-or-digest sum (`Tag String` / `Digest String`). Because the tag
+and digest are different constructors, `registry:2@sha256:…` is unwritable.
+Internally, `imageLine` renders an `Image` back to its `Image=` line —
+`registry/name:tag` or `registry/name@digest`.
+
+### `imageRef` — parsing a reference string
+
+`imageRef` splits a reference structurally, without network access, and always
+succeeds — an input that fits no rule falls back to the defaults rather than
+failing:
+
+- a digest is the text after the first `@`;
+- the leading `/`-segment is the registry only if it contains `.` or `:`, or
+  equals `localhost`; otherwise there is no explicit registry and the registry
+  defaults to `docker.io`;
+- a `:` after the last `/` is the tag; with none, the tag defaults to `latest`.
+
+```emet
+imageRef "registry"                 -- docker.io/registry:latest
+imageRef "library/registry:2"       -- docker.io/library/registry:2
+imageRef "ghcr.io/dull/golem:v1"    -- ghcr.io/dull/golem:v1
+imageRef "10.0.2.2:5000/website:latest"   -- 10.0.2.2:5000/website:latest
+imageRef "alpine@sha256:abc123"     -- docker.io/alpine@sha256:abc123
+```
+
+The reference is not validated against a registry and the digest grammar is not
+checked; parsing is purely structural.
 
 ## `Port` and `Proto` — published ports
 

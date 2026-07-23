@@ -9,6 +9,18 @@ fn compiled() -> emet::Compiled {
     compile_file(&fixtures_dir().join("WorkloadEntry.emet")).expect("WorkloadEntry.emet compiles")
 }
 
+fn compiled_image_refs() -> emet::Compiled {
+    compile_file(&fixtures_dir().join("ImageRefEntry.emet")).expect("ImageRefEntry.emet compiles")
+}
+
+fn image_line(c: &emet::Compiled, host: &str) -> String {
+    let unit = file_contents(scroll(c, host), &format!("/etc/containers/systemd/{host}.container"));
+    unit.lines()
+        .find(|l| l.starts_with("Image="))
+        .unwrap_or_else(|| panic!("no Image= line in {host}.container"))
+        .to_string()
+}
+
 fn scroll<'a>(c: &'a emet::Compiled, name: &str) -> &'a emet::ir::Scroll {
     c.scrolls
         .iter()
@@ -118,6 +130,36 @@ fn a_digest_pinned_image_renders_with_an_at_sign() {
         unit.contains("Image=docker.io/library/caddy@sha256:abc123"),
         "digest-pinned image uses @; got:\n{unit}"
     );
+}
+
+#[test]
+fn image_ref_defaults_registry_and_tag_for_a_bare_name() {
+    let c = compiled_image_refs();
+    assert_eq!(image_line(&c, "bare"), "Image=docker.io/registry:latest");
+}
+
+#[test]
+fn image_ref_keeps_a_name_path_and_explicit_tag_without_a_registry() {
+    let c = compiled_image_refs();
+    assert_eq!(image_line(&c, "library"), "Image=docker.io/library/registry:2");
+}
+
+#[test]
+fn image_ref_reads_a_dotted_registry_off_the_first_segment() {
+    let c = compiled_image_refs();
+    assert_eq!(image_line(&c, "ghcr"), "Image=ghcr.io/dull/golem:v1");
+}
+
+#[test]
+fn image_ref_treats_a_host_port_registry_colon_as_a_port_not_a_tag() {
+    let c = compiled_image_refs();
+    assert_eq!(image_line(&c, "hostport"), "Image=10.0.2.2:5000/website:latest");
+}
+
+#[test]
+fn image_ref_parses_a_digest_after_the_at_sign_with_no_tag() {
+    let c = compiled_image_refs();
+    assert_eq!(image_line(&c, "digest"), "Image=docker.io/alpine@sha256:abc123");
 }
 
 #[test]

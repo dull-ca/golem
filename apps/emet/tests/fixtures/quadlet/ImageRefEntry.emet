@@ -1,0 +1,31 @@
+module Main exposing (..)
+
+import Quadlet exposing
+  ( Image
+  , imageRef
+  , Restart(..)
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+
+fromRef : String -> String -> Workload
+fromRef host reference =
+  Workload
+    { name = host
+    , image = imageRef reference
+    , env = []
+    , ports = []
+    , volumes = []
+    , restart = Always
+    , expose = Unexposed
+    }
+
+main : List Scroll
+main =
+  [ scroll { name = "bare", glyphs = workloadGlyphs (fromRef "bare" "registry") }
+  , scroll { name = "library", glyphs = workloadGlyphs (fromRef "library" "library/registry:2") }
+  , scroll { name = "ghcr", glyphs = workloadGlyphs (fromRef "ghcr" "ghcr.io/dull/golem:v1") }
+  , scroll { name = "hostport", glyphs = workloadGlyphs (fromRef "hostport" "10.0.2.2:5000/website:latest") }
+  , scroll { name = "digest", glyphs = workloadGlyphs (fromRef "digest" "alpine@sha256:abc123") }
+  ]

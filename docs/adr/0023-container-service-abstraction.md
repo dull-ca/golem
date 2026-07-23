@@ -492,11 +492,24 @@ container, and stays a plain `file` — this library does not absorb it.
 
 ## Addendum — as shipped
 
-The shipped `image` constructor (`lib/Quadlet.emet`) is three-arg, `image
-registry name tag`, not the single-string `image "docker.io/library/registry:2"`
-sketched in §1: Emet has no `String.split` to break one string apart, so the
-single-string form (and full parse/validation) is deferred until it exists.
-`imageAt registry name digest` is its digest-pinned counterpart.
+Three image constructors ship in `lib/Quadlet.emet`. `image registry name tag`
+and `imageAt registry name digest` take the parts explicitly. The single-string
+form sketched in §1 — deferred in the first cut because Emet had no
+`String.split` — now ships too, as **`imageRef : String -> Image`**, unblocked
+by the `Char`/`String` surface of ADR 0025.
+
+`imageRef` parses a Docker reference structurally, with no network access, and is
+total — odd input degrades to defaults rather than failing. A digest is the text
+after the first `@`; the leading `/`-segment is a registry only if it contains
+`.` or `:` or equals `localhost`, else the default registry is **`docker.io`**;
+a `:` after the last `/` is the tag, else `latest`. This is the light,
+structural validation the §Open "how much to parse/validate" question landed on
+— no registry lookup, no digest-grammar check (Dr. Dub's "no network
+validation").
+
+Emet has no overloading, so freeing the name `imageRef` for the parser required
+renaming the existing `Image -> String` renderer: the `Image=` line renderer is
+now the internal **`imageLine`** (used in `containerUnitContents`).
 
 ## Open decisions for review (Dr. Dub)
 

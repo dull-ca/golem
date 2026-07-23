@@ -9,10 +9,11 @@
 -- directory; `FromHost` names a host path and emits a `directory` glyph source
 -- (ADR 0019) so the bind-mount source exists before the unit starts.
 --
--- `image` takes `registry`, `name`, and `tag` as three explicit arguments — no
--- single-string `"docker.io/library/registry:2"` parse, because Emet has no
--- `String.split` to break one apart (the ADR 0023 §1 smart-constructor idea,
--- pared to what the language can express).
+-- Three ways to name an image. `image registry name tag` and `imageAt registry
+-- name digest` take the parts explicitly. `imageRef` takes one Docker reference
+-- string (`"ghcr.io/dull/golem:v1"`) and splits it structurally — the ADR 0023
+-- §1 single-string constructor, unblocked now that `String.split` exists
+-- (ADR 0025).
 --
 -- Lowering: a `Workload` becomes a `ContainerUnit` plus the `VolumeUnit`s its
 -- `FromVolume` mounts reference (`workloadUnit`/`derivedVolumeUnits`), and those
@@ -67,13 +68,105 @@ imageAt : String -> String -> String -> Image
 imageAt registry name digest =
   Image { registry = registry, name = name, ref = Digest digest }
 
-imageRef : Image -> String
-imageRef img =
+-- Renders the `Image=` line value from an `Image` — `registry/name:tag` or
+-- `registry/name@digest`. Named `imageRef` until the single-string parser took
+-- that name (Emet has no overloading).
+imageLine : Image -> String
+imageLine img =
   case img of
     Image spec ->
       case spec.ref of
         Tag t -> "${spec.registry}/${spec.name}:${t}"
         Digest d -> "${spec.registry}/${spec.name}@${d}"
+
+defaultRegistry : String
+defaultRegistry = "docker.io"
+
+looksLikeRegistry : String -> Bool
+looksLikeRegistry segment =
+  String.contains "." segment
+    || String.contains ":" segment
+    || segment == "localhost"
+
+absent : Int
+absent = 0 - 1
+
+firstIndex : String -> String -> Int
+firstIndex needle haystack =
+  List.foldl (\i seen -> if seen < 0 then i else seen) absent (String.indexes needle haystack)
+
+lastIndex : String -> String -> Int
+lastIndex needle haystack =
+  List.foldl (\i _ -> i) absent (String.indexes needle haystack)
+
+splitRegistry : String -> { registry : String, path : String }
+splitRegistry reference =
+  let
+    slash = firstIndex "/" reference
+    head = String.left slash reference
+    rest = String.dropLeft (slash + 1) reference
+    hasRegistry = slash >= 0 && looksLikeRegistry head
+  in
+    if hasRegistry then
+      { registry = head, path = rest }
+    else
+      { registry = defaultRegistry, path = reference }
+
+splitTag : String -> { name : String, tag : String }
+splitTag path =
+  let
+    lastSlash = lastIndex "/" path
+    colon = lastIndex ":" path
+    hasTag = colon > lastSlash
+  in
+    if hasTag then
+      { name = String.left colon path, tag = String.dropLeft (colon + 1) path }
+    else
+      { name = path, tag = "latest" }
+
+-- The digest arm of `imageRef`: the text before the `@` split into registry and
+-- name, the text after taken as the digest verbatim. Split out as its own
+-- function because its `let … in` cannot nest inside a `case` arm, so the
+-- digest-vs-tag choice in `imageRef` is a top-level `if`, not a `case` with
+-- `let`s in its arms (docs/TODO.md, A. Emet language backlog).
+imageRefDigest : String -> String -> Image
+imageRefDigest beforeDigest digest =
+  let
+    parts = splitRegistry beforeDigest
+  in
+    Image { registry = parts.registry, name = parts.path, ref = Digest digest }
+
+-- The tag arm of `imageRef` (no `@` in the reference): split off any registry,
+-- then read a `:tag` after the last `/`, defaulting to `latest`. A sibling of
+-- `imageRefDigest` for the same `case`-arm `let` reason noted there.
+imageRefTagged : String -> Image
+imageRefTagged reference =
+  let
+    parts = splitRegistry reference
+    tagged = splitTag parts.path
+  in
+    Image { registry = parts.registry, name = tagged.name, ref = Tag tagged.tag }
+
+-- Parses one Docker reference string into an `Image`, structurally and without
+-- touching the network. The rules:
+--   * a digest is everything after the first `@`;
+--   * the leading `/`-segment is a registry only if it looks like one — it
+--     contains `.` or `:`, or equals `localhost` — otherwise there is no
+--     explicit registry and `registry` defaults to `docker.io`;
+--   * a `:` after the last `/` is the tag; with none, the tag defaults to
+--     `latest`.
+-- Total: it never validates against a registry and never fails. Odd input
+-- degrades to these defaults rather than crashing — `imageRef "registry"` is
+-- `docker.io/registry:latest`, not an error.
+imageRef : String -> Image
+imageRef reference =
+  let
+    at = firstIndex "@" reference
+  in
+    if at >= 0 then
+      imageRefDigest (String.left at reference) (String.dropLeft (at + 1) reference)
+    else
+      imageRefTagged reference
 
 type Proto = TCP | UDP
 
@@ -222,7 +315,7 @@ containerUnitContents u =
             , "Description=Golem workload: ${spec.name}"
             , ""
             , "[Container]"
-            , "Image=${imageRef spec.image}"
+            , "Image=${imageLine spec.image}"
             , "ContainerName=${spec.name}"
             ]
           , execLines spec.exec
