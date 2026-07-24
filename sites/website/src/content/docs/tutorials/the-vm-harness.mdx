@@ -76,7 +76,7 @@ fleet ssh scaly -- sudo journalctl -u golemd -b   # the daemon's own log
   Apply `apps/fleet/reload-proof.emet` instead — it writes a systemd unit file
   with a `file` glyph, then enables it with a `systemdService`. Enabling a
   just-written unit fails without a `daemon-reload` first; this fixture is how
-  that ADR-0015 fix was found on a real box, and it is the kind of bug a fake
+  that fix was found on a real box, and it is the kind of bug a fake
   host never surfaces.
 </Aside>
 

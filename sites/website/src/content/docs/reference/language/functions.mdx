@@ -35,7 +35,7 @@ port = 8080
 
 Top-level declarations may be recursive, and mutually recursive across the
 module — a declaration may reference any other, defined earlier or later.
-`let` bindings likewise. See ADR 0011.
+`let` bindings likewise.
 
 ```emet
 isEven : Int -> Bool
@@ -99,7 +99,7 @@ label : Int -> String
 label n = if n > 0 then "positive" else "non-positive"
 ```
 
-`if` is equivalent to a two-arm `case` on `True` / `False`. See ADR 0005.
+`if` is equivalent to a two-arm `case` on `True` / `False`.
 
 ## See also
 

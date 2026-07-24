@@ -243,12 +243,18 @@ standalone project.
   static-build specifics are worked out (`pkgsStatic`) and CI (`.woodpecker.yml`)
   builds them.
 
-- **Unify the docs sites.** Fold Emet's markdown docs into golem's
-  Astro/Starlight docs site; today Emet's docs are a separate subtree.
+- **Unify the docs sites — SUPERSEDED.** The two-tree split is the intentional,
+  current decision, not a gap to close: the public Astro/Starlight site
+  (`sites/website/`) carries the reader-facing docs, and the design record
+  (`docs/` — ADRs, design, PLAN, TODO) stays internal and unpublished. The
+  design docs are deliberately not folded into the site, and the site does not
+  reference them — a "see ADR NNNN" on a public page would be a dangling pointer
+  to something readers can't reach.
 
-- **Retire the standalone `golem-lang` repo.** Once golem is verified to build
-  and pass with Emet embedded, retire the standalone `golem-lang` source repo and
-  clean up the on-disk copy.
+- **Retire the standalone `golem-lang` repo — DONE (2026-07-23).** golem builds
+  and all tests pass with Emet embedded, so the standalone `golem-lang` source
+  repo was archived (`~/personal-repos/golem-lang-archive-2026-07-23.tar.gz`)
+  and its working copy removed.
 
 - **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
   is published.

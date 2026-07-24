@@ -6,7 +6,7 @@ description: The built-in functions every Emet module starts with — Basics, St
 Every Emet module opens with these bindings already in scope; nothing imports
 them. They are Rust primitives, not library source: Emet has no user recursion,
 so the combinators that iterate a list or a string cannot be written in the
-language and are supplied here (ADR 0006). Names carrying a `List.` / `Maybe.` /
+language and are supplied here. Names carrying a `List.` / `Maybe.` /
 `String.` / `Char.` prefix are a dotted-name convention, not a module system —
 `List.map` is one identifier resolved by lookup.
 
@@ -49,8 +49,7 @@ modBy 3 10       -- 1
 Integer division `//` and exponentiation `^` are operators backed by
 primitives without a callable name — see
 [Values and types](/reference/language/values-and-types/). Division, `modBy`,
-and `remainderBy` are total: a zero divisor yields `0` rather than trapping
-(ADR 0007).
+and `remainderBy` are total: a zero divisor yields `0` rather than trapping.
 
 ### Comparison
 
@@ -76,8 +75,8 @@ The relational operators `<` `>` `<=` `>=` `==` `/=` yield `Bool` over the same
 
 ### Constructors
 
-The built-in sum types are ordinary types defined by these constructors
-(ADR 0005); they are in scope to build and to pattern-match.
+The built-in sum types are ordinary types defined by these constructors;
+they are in scope to build and to pattern-match.
 
 | Constructor | Type | Meaning |
 | --- | --- | --- |
@@ -94,7 +93,7 @@ The built-in sum types are ordinary types defined by these constructors
 The Elm `elm/core` `String` surface: names, argument order, and total /
 clamping semantics all follow Elm. Every length, index, and slice bound is a
 **Unicode scalar** index (`String.length` counts scalars), never a byte or
-grapheme offset — a combining mark counts as its own scalar (ADR 0025). No
+grapheme offset — a combining mark counts as its own scalar. No
 function traps: out-of-range counts clamp and empty inputs return an empty
 result or `[]`.
 
@@ -184,7 +183,7 @@ String.right 3 "hello"       -- "llo"
 
 The Elm `elm/core` `Char` surface. A `Char` is one Unicode scalar, agreeing
 with the scalar indexing of `String` above; it is authoring-time only and never
-reaches the wire (ADR 0025). The `is*` predicates are Elm's ASCII-oriented
+reaches the wire. The `is*` predicates are Elm's ASCII-oriented
 definitions.
 
 | Signature | Behavior |

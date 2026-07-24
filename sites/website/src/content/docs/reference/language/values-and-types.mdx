@@ -46,7 +46,7 @@ smile = '\u{1F600}'
 ```
 
 `Char` is comparable and orderable by codepoint. It is authoring-time only and
-never appears in a glyph field. See ADR 0025.
+never appears in a glyph field.
 
 ### String escapes
 
@@ -54,8 +54,7 @@ Inside `"..."`: `\n`, `\t`, `\"`, `\\`, `\${`, and `\u{...}`.
 
 ## Operators
 
-Every operator desugars to a prelude builtin (`a + b` becomes `add a b`). See
-ADR 0007.
+Every operator desugars to a prelude builtin (`a + b` becomes `add a b`).
 
 | Operator | Meaning | Precedence | Associativity |
 | --- | --- | --- | --- |
@@ -79,7 +78,7 @@ Unary minus negates: `-x` desugars to `negate x`.
 
 Three built-in bounded type variables restrict which concrete types a
 polymorphic operator or function admits. They are not user-extensible; there
-are no user-defined typeclasses. See ADR 0007.
+are no user-defined typeclasses.
 
 | Constraint | Admits | Used by |
 | --- | --- | --- |
@@ -113,7 +112,7 @@ identity : a -> a
 identity x = x
 ```
 
-A signature more general than the inferred body is rejected (ADR 0021).
+A signature more general than the inferred body is rejected.
 
 ## Built-in types
 
@@ -153,7 +152,6 @@ type Tree a = Leaf | Node (Tree a) a (Tree a)
 
 The type constructor `Tree` has arity 1; each variant's result type is
 `Tree a`. Both nullary and parameterized user types cross module boundaries.
-See ADR 0016.
 
 ### Records
 
@@ -169,7 +167,7 @@ host h = scroll { name = h.name, glyphs = [] }
 constrains its argument to *some* record that has at least a `name` field of
 the right type, not one exact record shape. A function reading `h.name`
 accepts any record carrying a matching `name`. A record *literal* has a closed
-row — exactly the fields written, no more. See ADR 0010.
+row — exactly the fields written, no more.
 
 ### Tuples and unit
 
@@ -199,7 +197,7 @@ Tuples are `comparable` when their elements are, compared lexicographically —
 element by element, left to right — so `<`, `==`, `compare`, `min`, and `max`
 all work on them. Unit is vacuously comparable and compares equal to itself.
 Like `Char`, tuples are authoring-time only and never appear in a glyph field.
-See ADR 0027. The [`Tuple` module](/reference/language/prelude/#tuple) builds
+The [`Tuple` module](/reference/language/prelude/#tuple) builds
 and transforms pairs.
 
 ## See also

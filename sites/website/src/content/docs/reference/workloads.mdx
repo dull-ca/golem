@@ -11,8 +11,7 @@ mounts. `Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path 
 by the repo-root `emet.json`) models those units as typed Emet
 values so you fill in a record instead of hand-joining `Image=` and
 `PublishPort=` strings. It is Debian + systemd + Podman specific, and it lowers
-entirely to [the four glyphs](/reference/primitives/) — it adds no engine kind
-(ADR 0023).
+entirely to [the four glyphs](/reference/primitives/) — it adds no engine kind.
 
 This is the middle of three layers: the four glyphs underneath, this shipped
 library, and your own fleet's helpers on top of it (see the
@@ -130,7 +129,7 @@ are computed from these enums, so `Volume=…:Z:rw:garbage` cannot be written.
   Podman refuses to start a container whose bind-mount source is absent. A
   `fromHost` mount therefore emits a `directory { path = source, mode = "0755" }`
   [glyph](/reference/primitives/) so the source exists before the unit starts —
-  the first library consumer of the `directory` arm (ADR 0019). A `fromVolume`
+  the first library consumer of the `directory` arm. A `fromVolume`
   mount emits none; Podman owns the named volume's storage.
 </Aside>
 
