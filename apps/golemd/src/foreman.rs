@@ -31,7 +31,7 @@ use anyhow::{bail, Result};
 use scroll_format::{from_bytes, AddressedScroll, ContentId, Entry, Glyph, Scroll};
 use std::sync::Mutex;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
@@ -87,6 +87,16 @@ impl Foreman {
     pub fn apply_manifest(&self, bytes: &[u8]) -> Result<Revision> {
         let manifest = from_bytes(bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
         let selected = self.select(&manifest.scrolls);
+        // NOTE: one info line per apply for the manifest itself (host, this
+        // host's scroll content id in hex, glyph count); the per-op and
+        // per-revision lines below keep the whole apply to a handful of lines.
+        // Only glyph *keys* are ever logged — never file contents or secrets.
+        info!(
+            host = %self.host,
+            scroll = %selected.content_id,
+            glyphs = selected.scroll.glyphs.len(),
+            "manifest ingested"
+        );
         self.reconcile(selected)
     }
 
@@ -149,11 +159,19 @@ impl Foreman {
         for (ord, op) in ops.iter().enumerate() {
             let ord = ord as u64;
             match op {
-                GlyphOp::Noop { .. } => {}
+                // NOTE: meaningful ops (install/replace/remove) log at info so an
+                // apply's effect is visible in one glance; `Noop` is deliberately
+                // debug so an unchanged reconcile stays a couple of lines rather
+                // than one per glyph. The value logged is always the glyph key.
+                GlyphOp::Noop { .. } => {
+                    debug!(key = %op.key(), "noop");
+                }
                 GlyphOp::Install { cid, glyph } => {
+                    info!(key = %op.key(), "install");
                     self.enact_apply(reconcile_id, ord, op, glyph, *cid, None)?;
                 }
                 GlyphOp::Replace { old_cid, new_cid, glyph } => {
+                    info!(key = %op.key(), "replace");
                     if replaces_in_place(glyph) {
                         self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None)?;
                     } else {
@@ -163,6 +181,7 @@ impl Foreman {
                     }
                 }
                 GlyphOp::Remove { cid, glyph } => {
+                    info!(key = %op.key(), "remove");
                     let prior_outcome = self.prior_outcome(prior, &op.key(), *cid, glyph);
                     self.enact_reverse(reconcile_id, ord, op, &prior_outcome)?;
                 }
@@ -366,9 +385,13 @@ impl Foreman {
             scroll: desired.scroll.clone(),
             outcomes,
         })?;
-        self.planroom
+        let revision = self.planroom
             .revision(self.planroom.latest_revision_id()?.expect("a committed attempt projects a revision"))
-            .map(|rev| rev.expect("the latest revision id resolves"))
+            .map(|rev| rev.expect("the latest revision id resolves"))?;
+        // NOTE: the closing info line of an apply — the revision id this attempt
+        // projected and how many outcomes it holds.
+        info!(revision = revision.id, outcomes = revision.outcomes.len(), "revision recorded");
+        Ok(revision)
     }
 
     /// Rewrite the `applied_state` cache row from the current WAL fold, reusing
