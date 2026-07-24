@@ -118,6 +118,7 @@ result or `[]`.
 | `String.toFloat : String -> Maybe Float` | parse a `Float`, else `Nothing` |
 | `String.toList : String -> List Char` | the string's scalars, in order |
 | `String.fromList : List Char -> String` | assemble a string from scalars |
+| `String.uncons : String -> Maybe (Char, String)` | split off the first scalar: `Just (first, rest)`, or `Nothing` on `""` |
 
 ```emet
 String.join ", " [ "a", "b", "c" ]  -- "a, b, c"
@@ -246,4 +247,24 @@ strings) with `++`. Both are operators without a callable name — see
 ```emet
 Maybe.withDefault 0 (String.toInt "x")      -- 0
 Maybe.andThen (\n -> Just (n + 1)) (Just 4) -- Just 5
+```
+
+## Tuple
+
+Build and transform pairs. Every function operates on the two-element tuple —
+a three-element tuple is destructured by pattern, as in Elm. For the tuple type
+itself see [Values and types](/reference/language/values-and-types/#tuples-and-unit).
+
+| Signature | Behavior |
+| --- | --- |
+| `Tuple.pair : a -> b -> (a, b)` | build a pair from two values |
+| `Tuple.first : (a, b) -> a` | the first element |
+| `Tuple.second : (a, b) -> b` | the second element |
+| `Tuple.mapFirst : (a -> x) -> (a, b) -> (x, b)` | apply a function to the first element |
+| `Tuple.mapSecond : (b -> y) -> (a, b) -> (a, y)` | apply a function to the second element |
+| `Tuple.mapBoth : (a -> x) -> (b -> y) -> (a, b) -> (x, y)` | apply a function to each element |
+
+```emet
+Tuple.first (Tuple.pair 7 9)         -- 7
+Tuple.mapSecond (\n -> n + 1) (1, 2) -- (1, 3)
 ```

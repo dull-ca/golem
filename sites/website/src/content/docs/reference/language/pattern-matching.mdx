@@ -35,6 +35,8 @@ in scope in that arm's body.
 | empty list | `[]` | `[]` |
 | cons | a non-empty list | `(x :: xs)` |
 | list literal | a list of fixed length | `[a, b]` |
+| tuple | a tuple, element-wise | `(a, b)`, `(a, b, c)` |
+| unit | `()` | `()` |
 
 An integer literal pattern is typed `number`, not hard `Int`, so it may match a
 `Float` scrutinee just as an integer literal expression may; a leading `-` is
@@ -84,6 +86,27 @@ firstOr fallback xs =
 
 `List` is checked as a two-constructor sum (`[]` and `::`), so a `case` on a
 list must cover both.
+
+### Tuple patterns
+
+`(a, b)` and `(a, b, c)` match a tuple element-wise; `()` matches unit. Nested
+patterns compose, so `(Just a, (b, c))` destructures a pair of a `Maybe` and a
+tuple in one arm.
+
+A tuple has a single shape, so a tuple `case` needs **no** catch-all when its
+element patterns are exhaustive — it is non-exhaustive only when some element
+column is.
+
+```emet
+describe : (Bool, Bool) -> String
+describe pair =
+  case pair of
+    (True, b)      -> "first"
+    (False, True)  -> "second"
+    (False, False) -> "neither"
+```
+
+See ADR 0027.
 
 ## Exhaustiveness and redundancy
 

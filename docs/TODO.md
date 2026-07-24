@@ -106,14 +106,15 @@ monorepo. B's headline is model reconciliation.
   `String.length`. Skips locale variants (`toLocaleUpper`/`Lower`). Tests green
   (`apps/emet/tests/char_and_string.rs`, one Elm-parity assertion per function).
 
-- **Tuple type + `String.uncons` — DEFERRED (decided, Dr. Dub).** `elm/core`'s
-  `String.uncons : String -> Maybe (Char, String)` and every other
-  tuple-returning function are out of reach because Emet has **no tuple type**.
-  We do **not** deviate to a record (`Maybe { head, tail }`) — that would break
-  faithfulness to `elm/core` (ADR 0025 §4). The real fix is a future, separate
-  **"tuple type" ADR** (type syntax, inference, pattern matching, IR
-  implications); once tuples exist, `uncons` is added with its exact Elm
-  signature.
+- **Tuple type + `String.uncons` — DONE (ADR 0027).** Emet now has a product
+  type: tuples `(a, b)`/`(a, b, c)` (2–3 elements, 4+ redirected to a record at
+  parse time) and unit `()`, in expression, pattern, and type position. Tuples
+  are structurally `comparable` — comparable iff their elements are, compared
+  lexicographically — and authoring-time only (never on the wire, like `Char`).
+  The `Tuple` module (`pair`/`first`/`second`/`mapFirst`/`mapSecond`/`mapBoth`)
+  and `String.uncons : String -> Maybe (Char, String)` ship with their exact Elm
+  signatures, closing the ADR 0025 §4 deferral. Tests green
+  (`apps/emet/tests/tuples.rs`).
 
 - **Int + Char literal patterns; Float patterns rejected — DONE (ADR 0026).**
   `case` now matches `Int` and `Char` literals (typed `number`/`Char`, negatives
@@ -236,9 +237,11 @@ standalone project.
   golemd/scroll-format change and no `format_version` bump — an Emet library
   above the four glyphs.
 
-- **golem crates as flake outputs.** Add golem's own crates (`golemd` /
-  `golemctl`) as `flake.nix` outputs. Needs their static-build specifics worked
-  out.
+- **golem crates as flake outputs — DONE.** `flake.nix` exposes
+  `golemd`/`golemctl` (plus static-musl `golemd-static`/`golemctl-static`),
+  `emetc`, `emet-lsp`, `tree-sitter-emet`, and `website-container`; the
+  static-build specifics are worked out (`pkgsStatic`) and CI (`.woodpecker.yml`)
+  builds them.
 
 - **Unify the docs sites.** Fold Emet's markdown docs into golem's
   Astro/Starlight docs site; today Emet's docs are a separate subtree.

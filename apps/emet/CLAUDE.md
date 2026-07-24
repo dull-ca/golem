@@ -75,9 +75,11 @@ resolve.rs multi-module stage (ADR 0016): load the import graph from disk over
            cycles, order imports before importers, then check + eval each module
            against the harvested interfaces of what it imports
 prelude.rs (TyEnv, Env) for constructors (Just/Nothing/True/False/LT/EQ/GT) and
-           the total built-in combinators (List./Maybe./String./Char./numeric/
-           compare); the Elm-faithful Char/String surface is scalar-indexed to
-           agree with String.length's chars().count() (ADR 0025)
+           the total built-in combinators (List./Maybe./String./Char./Tuple./
+           numeric/compare); the Elm-faithful Char/String surface is
+           scalar-indexed to agree with String.length's chars().count()
+           (ADR 0025); the Tuple module + String.uncons ride the tuple type
+           (ADR 0027)
 lib.rs     compile() drives the single-file stages; compile_file() runs the
            multi-module resolve stage; analyze() does per-scroll IR checks
 main.rs    CLI (`emetc build`); default emits the binary manifest (stdout/`-o`),
@@ -119,7 +121,9 @@ An Elm-shaped, minimal module system for reuse across files:
   (instantiate-and-unify), and a second pass rejects a signature more general
   than its body — the skolem-escape check (ADR 0021).
 - **Types.** `String`, `Char`, `Int`, `Float`, `Bool`,
-  `Order`, `List a`, `Maybe a`, records, functions; the glyph types `AptPackage`,
+  `Order`, `List a`, `Maybe a`, records, tuples (`(A, B)` / `(A, B, C)`, 2–3
+  elements; unit `()` is the empty tuple; 4+ is a parse error → use a record),
+  functions; the glyph types `AptPackage`,
   `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; the
   filesystem `Entry` sum (`File`/`Directory`/`Symlink`); and `Scroll`.
   (`Filesystem` is the single first-class type for `file`/`directory`/`symlink`;
@@ -135,15 +139,21 @@ An Elm-shaped, minimal module system for reuse across files:
   Integer literals are `number` (default `Int`); float literals are `Float`.
   `appendable` (`String`/`List a`) backs `++`; it shares no admissible type with
   `number` or `comparable`, so `merge_constraints` rejects `appendable ∧ number`
-  and `appendable ∧ comparable`.
+  and `appendable ∧ comparable`. Tuples are **structurally** `comparable` — a
+  tuple satisfies `comparable` iff every element does, compared lexicographically;
+  unit is vacuously comparable (ADR 0027). This is the one non-flat
+  `constraint_admits` case: it recurses into the elements rather than matching a
+  `Con` head.
 - **`case … of` + `if`.** Compile-time **exhaustiveness and redundancy** checking;
   a non-exhaustive or redundant match is a compile error. `if` desugars to `case`
   on `Bool`. Arms must be laid out (inline single-line `case` is deferred).
   Patterns (`ast.rs::Pattern`): `_` (wildcard), a lowercase binder, string,
   integer, and char literals (typed `number`/`Char`; negative ints like `-1`
-  allowed — ADR 0026), `Upper p …` (constructor), and the list patterns `[]`
+  allowed — ADR 0026), `Upper p …` (constructor), the list patterns `[]`
   (`Nil`), `(head :: tail)` (`Cons`), and `[a, b, …]` (nested `Cons` ending in
-  `Nil`). **`Float` literal patterns are a compile error** (Elm-faithful:
+  `Nil`), and tuple patterns `(a, b)` / `(a, b, c)` and unit `()` (ADR 0027 — a
+  single-shape product, so a tuple `case` needs no catch-all when its element
+  patterns are exhaustive). **`Float` literal patterns are a compile error** (Elm-faithful:
   IEEE-754 equality is unreliable, so branch on floats with `<`/`>` in an `if`).
   `List` is treated as a two-constructor sum (`[]` / `::`) so the exhaustiveness
   checker requires both cases — see below.

@@ -41,6 +41,11 @@ pub enum Type {
     /// these fields); field access `.f` produces an `Open` record (at least
     /// `f`, and whatever else the row-tail variable stands for). See ADR 0010.
     Record(BTreeMap<String, Type>, Row),
+    /// A tuple type `(A, B)` / `(A, B, C)`, or unit `()` when empty. The
+    /// positional, fixed-arity product mirroring `Record` — a `Vec` (order is
+    /// the identity, not field names) with no `Row` tail, since a tuple's arity
+    /// is never open (ADR 0027).
+    Tuple(Vec<Type>),
 }
 
 /// The tail of a record type — what, if anything, sits beyond its known
@@ -105,6 +110,17 @@ impl std::fmt::Display for Type {
                     write!(f, " | r{r}")?;
                 }
                 write!(f, " }}")
+            }
+            // `(A, B)` / `(A, B, C)`, and `()` for the empty tuple (unit).
+            Type::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                write!(f, ")")
             }
         }
     }
@@ -195,6 +211,9 @@ pub enum Expr {
     /// `{ a = e1, b = e2 }` — a record literal. Infers to a `Closed` record
     /// (ADR 0010).
     Record(BTreeMap<String, Spanned<Expr>>),
+    /// A tuple literal `(a, b)` / `(a, b, c)`, or unit `()` when empty
+    /// (ADR 0027).
+    Tuple(Vec<Spanned<Expr>>),
     /// `e.field` — record field access. Infers to an `Open` record demanding
     /// just `field`, so it accepts any record carrying that field, not only a
     /// concrete one (ADR 0010).
@@ -271,6 +290,10 @@ pub enum Pattern {
     /// and its tail list. A `[a, b, c]` literal desugars to nested `Cons`
     /// ending in `Nil`.
     Cons(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
+    /// `(a, b)` / `(a, b, c)`, or unit `()` when empty — the single-shape
+    /// product. Unlike a sum, a tuple has exactly one constructor, so a tuple
+    /// `case` is exhaustive iff its element patterns are (ADR 0027).
+    Tuple(Vec<Spanned<Pattern>>),
 }
 
 /// A top-level or `let` binding, optionally preceded by a matching signature:

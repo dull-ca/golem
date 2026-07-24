@@ -43,6 +43,9 @@ pub enum Value {
     Scroll(Scroll),
     List(Vec<Value>),
     Record(BTreeMap<String, Value>),
+    /// A tuple `(a, b)` / `(a, b, c)`, or unit `()` as the empty tuple
+    /// (ADR 0027).
+    Tuple(Vec<Value>),
     Data { ctor: String, args: Vec<Value> },
     Closure { rec: Option<Rc<RecGroup>>, param: String, body: Rc<Spanned<Expr>>, env: Env },
     Builtin { name: String, arity: usize, args: Vec<Value>, run: BuiltinFn },
@@ -81,6 +84,7 @@ impl std::fmt::Debug for Value {
             Value::Scroll(s) => f.debug_tuple("Scroll").field(s).finish(),
             Value::List(vs) => f.debug_tuple("List").field(vs).finish(),
             Value::Record(m) => f.debug_tuple("Record").field(m).finish(),
+            Value::Tuple(vs) => f.debug_tuple("Tuple").field(vs).finish(),
             Value::Data { ctor, args } => {
                 f.debug_struct("Data").field("ctor", ctor).field("args", args).finish()
             }
@@ -197,6 +201,15 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             }
             Value::Record(m)
         }
+        // Evaluate each element left-to-right into a `Value::Tuple`; unit is the
+        // empty tuple (ADR 0027).
+        Expr::Tuple(items) => {
+            let mut vs = Vec::with_capacity(items.len());
+            for it in items {
+                vs.push(eval(env, it, depth)?);
+            }
+            Value::Tuple(vs)
+        }
         Expr::Field(base, field) => match eval(env, base, depth)? {
             Value::Record(mut m) => m.remove(field).unwrap_or_else(|| unreachable!()),
             _ => unreachable!("field on non-record"),
@@ -245,6 +258,17 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
                 }
                 None => false,
             },
+            _ => false,
+        },
+        // Zip element patterns against element values, like the `Ctor` arm.
+        // Inference guarantees the arity matches, so the length guard is a
+        // formality; unit matches unit via an empty zip that trivially succeeds
+        // (ADR 0027).
+        Pattern::Tuple(subpats) => match value {
+            Value::Tuple(vs) if vs.len() == subpats.len() => subpats
+                .iter()
+                .zip(vs.iter())
+                .all(|(p, v)| match_pattern(&p.0, v, bindings)),
             _ => false,
         },
         Pattern::Ctor(name, subpats) => match value {

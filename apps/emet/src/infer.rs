@@ -249,6 +249,18 @@ impl Infer {
         (all, tail)
     }
 
+    // GROUP: the Type walkers below each carry a `Tuple` arm parallel to their
+    // `Record` arm, recursing into the element vector — `apply`, `occurs`,
+    // `row_occurs`, `ftv`, `frv`, `instantiate_rigids`, `skolemize`,
+    // `mentions_skolem`, `instantiate`'s inner `go`, `type_with_param_vars`,
+    // `validate_type_refs_inner`, and `collect_rigids`. A tuple is structural, so
+    // every analysis must descend into its elements; omitting one arm would
+    // silently drop tuples from that pass (e.g. a skipped `ftv` arm would fail to
+    // generalize a tuple-typed decl). The exception is `prune` just below: a
+    // tuple has no row to splice, so it falls through the `_ => t.clone()`
+    // catch-all and is treated like `Con` — the deep, element-wise work is
+    // `apply`'s (ADR 0027 §3).
+
     /// Follow the substitution to a representative type (shallow).
     fn prune(&self, t: &Type) -> Type {
         match t {
@@ -277,6 +289,7 @@ impl Infer {
             Type::Record(fs, row) => {
                 Type::Record(fs.iter().map(|(k, v)| (k.clone(), self.apply(v))).collect(), row)
             }
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.apply(e)).collect()),
             other => other,
         }
     }
@@ -287,6 +300,7 @@ impl Infer {
             Type::Con(_, args) => args.iter().any(|a| self.occurs(v, a)),
             Type::Fun(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
             Type::Record(fs, _) => fs.values().any(|ty| self.occurs(v, ty)),
+            Type::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
             _ => false,
         }
     }
@@ -302,6 +316,7 @@ impl Infer {
             Type::Record(fs, row) => {
                 fs.values().any(|ty| self.row_occurs(r, ty)) || row == Row::Open(r)
             }
+            Type::Tuple(elems) => elems.iter().any(|e| self.row_occurs(r, e)),
             _ => false,
         }
     }
@@ -385,6 +400,16 @@ impl Infer {
             }
             (Type::Record(fa, ra), Type::Record(fb, rb)) => {
                 self.unify_records(fa, ra, fb, rb, &a, &b, span)
+            }
+            // `unify_records` with the row cases deleted (ADR 0027 §3): position
+            // replaces field name, arity must match exactly. Unequal arity falls
+            // through to the mismatch arm below, so `(a, b)` never unifies with
+            // `(a, b, c)` or with unit.
+            (Type::Tuple(as_), Type::Tuple(bs)) if as_.len() == bs.len() => {
+                for (x, y) in as_.iter().zip(bs.iter()) {
+                    self.unify(x, y, span)?;
+                }
+                Ok(())
             }
             _ => Err(TypeError::new(
                 format!("type mismatch: expected `{}`, found `{}`", self.apply(&a), self.apply(&b)),
@@ -515,6 +540,11 @@ impl Infer {
                     self.ftv(v, acc);
                 }
             }
+            Type::Tuple(elems) => {
+                for e in &elems {
+                    self.ftv(e, acc);
+                }
+            }
             _ => {}
         }
     }
@@ -539,6 +569,11 @@ impl Infer {
                 }
                 if let Row::Open(r) = row {
                     acc.insert(r);
+                }
+            }
+            Type::Tuple(elems) => {
+                for e in &elems {
+                    self.frv(e, acc);
                 }
             }
             _ => {}
@@ -623,6 +658,9 @@ impl Infer {
                     .map(|(k, v)| (k.clone(), self.instantiate_rigids(v, mapping)))
                     .collect(),
                 row.clone(),
+            ),
+            Type::Tuple(elems) => Type::Tuple(
+                elems.iter().map(|e| self.instantiate_rigids(e, mapping)).collect(),
             ),
             Type::Var(v, c) => Type::Var(*v, *c),
         }
@@ -723,6 +761,9 @@ impl Infer {
                 fs.iter().map(|(k, v)| (k.clone(), self.skolemize(v, mapping))).collect(),
                 row.clone(),
             ),
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| self.skolemize(e, mapping)).collect())
+            }
             Type::Var(v, c) => Type::Var(*v, *c),
         }
     }
@@ -746,6 +787,7 @@ impl Infer {
             Type::Con(_, args) => args.iter().any(|a| self.mentions_skolem(skolems, a)),
             Type::Fun(a, b) => self.mentions_skolem(skolems, &a) || self.mentions_skolem(skolems, &b),
             Type::Record(fs, _) => fs.values().any(|v| self.mentions_skolem(skolems, v)),
+            Type::Tuple(elems) => elems.iter().any(|e| self.mentions_skolem(skolems, e)),
             Type::Var(_, _) => false,
         }
     }
@@ -793,6 +835,7 @@ impl Infer {
                     };
                     Type::Record(fields, row)
                 }
+                Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| go(e, m, rm)).collect()),
                 other => other.clone(),
             }
         }
@@ -822,6 +865,18 @@ fn merge_constraints(a: Constraint, b: Constraint) -> Option<Constraint> {
 /// `comparable` also admits `String`, `appendable` admits `String`/`List a`. A
 /// non-`Con` type (var, function, record) is only admissible under `None`.
 fn constraint_admits(c: Constraint, t: &Type) -> bool {
+    // Structural comparability (ADR 0027 §3): a tuple admits `comparable` iff
+    // every element does, recursing through nested tuples. Unit (empty `all`) is
+    // vacuously comparable, matching Elm. A tuple is never `number` or
+    // `appendable` — those admit only the scalar/list heads below, never a
+    // product.
+    if let Type::Tuple(elems) = t {
+        return match c {
+            Constraint::None => true,
+            Constraint::Comparable => elems.iter().all(|e| comparable_element(e)),
+            Constraint::Number | Constraint::Appendable => false,
+        };
+    }
     let head = match t {
         Type::Con(name, _) => name.as_str(),
         _ => return c == Constraint::None,
@@ -833,6 +888,20 @@ fn constraint_admits(c: Constraint, t: &Type) -> bool {
         // `Char` is comparable, ordered by codepoint (ADR 0025).
         Constraint::Comparable => matches!(head, "Int" | "Float" | "String" | "Char"),
         Constraint::Appendable => matches!(head, "String" | "List"),
+    }
+}
+
+/// Whether one tuple element admits `comparable`. A concrete or nested-tuple
+/// element defers to `constraint_admits`. A *var* element is admitted only if it
+/// already carries a `Comparable` or `Number` bound — both sit inside comparable
+/// (`number ⊂ comparable`), so an integer-literal element (a `number` var) makes
+/// its tuple comparable, and the bound is carried forward soundly. A fully
+/// unbound var is NOT admitted: it could later resolve to a function or record,
+/// so admitting it here would be unsound (ADR 0027 §3).
+fn comparable_element(t: &Type) -> bool {
+    match t {
+        Type::Var(_, c) => matches!(c, Constraint::Comparable | Constraint::Number),
+        _ => constraint_admits(Constraint::Comparable, t),
     }
 }
 
@@ -1073,6 +1142,17 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             Ok(Type::Record(tys, Row::Closed))
         }
 
+        // A tuple literal infers to a `Type::Tuple` of its elements' types,
+        // element-wise — the positional analogue of the `Record` arm above. Unit
+        // `()` is the empty tuple (ADR 0027 §3).
+        Expr::Tuple(items) => {
+            let mut elems = Vec::with_capacity(items.len());
+            for item in items {
+                elems.push(infer_expr(inf, env, item)?);
+            }
+            Ok(Type::Tuple(elems))
+        }
+
         Expr::If { cond, then_, else_ } => {
             let ct = infer_expr(inf, env, cond)?;
             inf.unify(&ct, &con("Bool"), &cond.1)?;
@@ -1176,6 +1256,18 @@ fn infer_pattern(
             infer_pattern(inf, env, head, &elem)?;
             infer_pattern(inf, env, tail, &list_ty)
         }
+        // A tuple pattern forces the scrutinee to a tuple of matching arity —
+        // one fresh element type per sub-pattern — then types each sub-pattern
+        // against its positional element (ADR 0027 §3). Unit matches with an
+        // empty element vector.
+        Pattern::Tuple(subpats) => {
+            let elems: Vec<Type> = subpats.iter().map(|_| inf.fresh()).collect();
+            inf.unify(scrutinee, &Type::Tuple(elems.clone()), &pat.1)?;
+            for (subpat, elem) in subpats.iter().zip(elems.iter()) {
+                infer_pattern(inf, env, subpat, elem)?;
+            }
+            Ok(())
+        }
         Pattern::Ctor(name, subpats) => {
             let scheme = inf.constructor_scheme(name).ok_or_else(|| {
                 TypeError::new(format!("unknown constructor `{name}`"), pat.1.clone())
@@ -1265,7 +1357,24 @@ fn lower_pattern(pat: &Pattern) -> UPat {
             crate::prelude::CONS.to_string(),
             vec![lower_pattern(&head.0), lower_pattern(&tail.0)],
         ),
+        // A tuple lowers to a single synthetic constructor `TUPLE_n` over its
+        // sub-patterns — the same trick that turns `List` into the `[]`/`::`
+        // sum, but with exactly one constructor. Its coverage therefore depends
+        // solely on its elements' coverage, so a tuple `case` needs no catch-all
+        // when the element patterns are exhaustive. No new usefulness logic — the
+        // three `List`-style touch-points (`lower_pattern` here,
+        // `complete_signature`, `constructor_arg_types`) carry it (ADR 0027 §5).
+        Pattern::Tuple(subs) => UPat::Ctor(
+            tuple_ctor_name(subs.len()),
+            subs.iter().map(|s| lower_pattern(&s.0)).collect(),
+        ),
     }
+}
+
+/// The synthetic single-constructor name a tuple of `arity` elements lowers to,
+/// keyed by arity so a 2-tuple, a 3-tuple, and unit never collide.
+fn tuple_ctor_name(arity: usize) -> String {
+    format!("TUPLE_{arity}")
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1356,11 +1465,22 @@ fn default_matrix(matrix: &[Vec<UPat>]) -> Vec<Vec<UPat>> {
 fn complete_signature(inf: &Infer, ty: &Type) -> Option<Vec<(String, usize)>> {
     match inf.prune(ty) {
         Type::Con(name, _) => inf.sum_type_constructors(&name),
+        // A tuple's "complete" signature is its single synthetic constructor, so
+        // once that one constructor appears in a wildcard column the column is
+        // complete and coverage falls through to the elements (ADR 0027 §5).
+        Type::Tuple(elems) => Some(vec![(tuple_ctor_name(elems.len()), elems.len())]),
         _ => None,
     }
 }
 
 fn constructor_arg_types(inf: &mut Infer, ctor: &str, ty: &Type) -> Vec<Type> {
+    // The synthetic tuple constructor's argument types are just the tuple's
+    // element types, read straight off the scrutinee — no scheme to instantiate
+    // (there is no real constructor), so `useful` recurses into the element
+    // columns with the correct per-column types (ADR 0027 §5).
+    if let Type::Tuple(elems) = inf.prune(ty) {
+        return elems.iter().map(|e| inf.apply(e)).collect();
+    }
     let scheme = inf.constructor_scheme(ctor).expect("known constructor");
     let instantiated = inf.instantiate(&scheme);
     let (args, result) = uncurry(&instantiated);
@@ -1517,6 +1637,11 @@ fn collect_pattern_binders(pat: &Spanned<Pattern>, out: &mut HashMap<String, Def
             collect_pattern_binders(head, out);
             collect_pattern_binders(tail, out);
         }
+        Pattern::Tuple(subs) => {
+            for sub in subs {
+                collect_pattern_binders(sub, out);
+            }
+        }
         _ => {}
     }
 }
@@ -1653,6 +1778,9 @@ fn type_with_param_vars(ty: &Type, param_vars: &HashMap<String, u32>) -> Type {
             fs.iter().map(|(k, v)| (k.clone(), type_with_param_vars(v, param_vars))).collect(),
             row.clone(),
         ),
+        Type::Tuple(elems) => {
+            Type::Tuple(elems.iter().map(|e| type_with_param_vars(e, param_vars)).collect())
+        }
         Type::Var(v, c) => Type::Var(*v, *c),
     }
 }
@@ -1701,6 +1829,12 @@ fn validate_type_refs_inner(
         Type::Record(fs, _) => {
             for v in fs.values() {
                 validate_type_refs_inner(v, span, type_arities, bound)?;
+            }
+            Ok(())
+        }
+        Type::Tuple(elems) => {
+            for e in elems {
+                validate_type_refs_inner(e, span, type_arities, bound)?;
             }
             Ok(())
         }
@@ -1871,6 +2005,11 @@ fn collect_rigids(ty: &Type, acc: &mut HashSet<String>) {
         Type::Record(fs, _) => {
             for v in fs.values() {
                 collect_rigids(v, acc);
+            }
+        }
+        Type::Tuple(elems) => {
+            for e in elems {
+                collect_rigids(e, acc);
             }
         }
         Type::Var(_, _) => {}

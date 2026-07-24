@@ -33,6 +33,11 @@ const B: u32 = u32::MAX - 1;
 const N: u32 = u32::MAX - 2;
 const C: u32 = u32::MAX - 3;
 const P: u32 = u32::MAX - 4;
+// `X`/`Y` are the extra unconstrained result vars the `Tuple.map*` schemes need
+// beyond `A`/`B` — `mapFirst : (a -> x) -> (a, b) -> (x, b)`, and `mapBoth`
+// which needs both (ADR 0027 §6).
+const X: u32 = u32::MAX - 5;
+const Y: u32 = u32::MAX - 6;
 
 fn var(n: u32) -> Type {
     Type::Var(n, Constraint::None)
@@ -87,6 +92,12 @@ fn fun(from: Type, to: Type) -> Type {
     Type::Fun(Box::new(from), Box::new(to))
 }
 
+// The 2-tuple type `(a, b)`, the shape every `Tuple.*` scheme is written over —
+// Elm's `Tuple` module operates only on pairs (ADR 0027 §6).
+fn pair(a: Type, b: Type) -> Type {
+    Type::Tuple(vec![a, b])
+}
+
 fn glyph() -> Type {
     Type::Con("Glyph".to_string(), vec![])
 }
@@ -130,6 +141,72 @@ fn as_list(v: &Value) -> &[Value] {
     match v {
         Value::List(items) => items,
         _ => unreachable!("expected List"),
+    }
+}
+
+fn as_tuple(v: &Value) -> &[Value] {
+    match v {
+        Value::Tuple(items) => items,
+        _ => unreachable!("expected Tuple"),
+    }
+}
+
+// The `Tuple` module runtime (ADR 0027 §6): `pair`/`first`/`second`/`mapFirst`/
+// `mapSecond`/`mapBoth`, exactly `elm/core`'s `Tuple`. All pair-based — Elm's
+// `Tuple` has no 3-tuple accessors, so a triple is destructured by pattern, not
+// by these. Inference has already fixed each argument to a 2-tuple, so the
+// `as_tuple` indexing is total.
+
+fn tuple_pair(mut args: Vec<Value>) -> Value {
+    let b = args.pop().unwrap();
+    let a = args.pop().unwrap();
+    Value::Tuple(vec![a, b])
+}
+
+fn tuple_first(mut args: Vec<Value>) -> Value {
+    as_tuple(&args.pop().unwrap())[0].clone()
+}
+
+fn tuple_second(mut args: Vec<Value>) -> Value {
+    as_tuple(&args.pop().unwrap())[1].clone()
+}
+
+fn tuple_map_first(mut args: Vec<Value>) -> Value {
+    let t = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let elems = as_tuple(&t);
+    Value::Tuple(vec![apply_top(f, elems[0].clone()), elems[1].clone()])
+}
+
+fn tuple_map_second(mut args: Vec<Value>) -> Value {
+    let t = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let elems = as_tuple(&t);
+    Value::Tuple(vec![elems[0].clone(), apply_top(f, elems[1].clone())])
+}
+
+fn tuple_map_both(mut args: Vec<Value>) -> Value {
+    let t = args.pop().unwrap();
+    let g = args.pop().unwrap();
+    let f = args.pop().unwrap();
+    let elems = as_tuple(&t);
+    Value::Tuple(vec![apply_top(f, elems[0].clone()), apply_top(g, elems[1].clone())])
+}
+
+// `String.uncons : String -> Maybe (Char, String)` — the tuple-returning
+// function ADR 0025 §4 deferred for want of a pair, and the concrete driver for
+// the whole tuple type (ADR 0027 §6). `Nothing` on the empty string; otherwise
+// `Just (firstScalar, rest)`, split by Unicode scalar (`chars()`) to stay
+// consistent with the rest of the scalar-indexed `String` surface (ADR 0025 §5).
+fn string_uncons(mut args: Vec<Value>) -> Value {
+    let s = args.pop().unwrap();
+    let s = as_string(&s);
+    match s.chars().next() {
+        Some(first) => {
+            let rest: String = s.chars().skip(1).collect();
+            data("Just", vec![Value::Tuple(vec![Value::Char(first), Value::Str(rest)])])
+        }
+        None => data("Nothing", vec![]),
     }
 }
 
@@ -379,6 +456,19 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
         // Codepoint order — Elm's `Char` comparison (ADR 0025).
         (Value::Char(x), Value::Char(y)) => x.cmp(y),
+        // Lexicographic: compare element-wise, returning at the first
+        // non-`Equal`. Inference guarantees equal arity and comparable elements,
+        // so no length or cross-type case arises; unit (empty loop) is `Equal`,
+        // matching Elm (ADR 0027 §4).
+        (Value::Tuple(xs), Value::Tuple(ys)) => {
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                let ord = compare_values(x, y);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        }
         _ => unreachable!("comparable operands share a type"),
     }
 }
@@ -1175,6 +1265,54 @@ fn builtins() -> Vec<Builtin> {
             arity: 1,
             scheme: scheme(&[N], fun(list(number(N)), number(N))),
             run: list_sum,
+        },
+        Builtin {
+            name: "Tuple.pair",
+            arity: 2,
+            scheme: scheme(&[A, B], fun(a(), fun(b(), pair(a(), b())))),
+            run: tuple_pair,
+        },
+        Builtin {
+            name: "Tuple.first",
+            arity: 1,
+            scheme: scheme(&[A, B], fun(pair(a(), b()), a())),
+            run: tuple_first,
+        },
+        Builtin {
+            name: "Tuple.second",
+            arity: 1,
+            scheme: scheme(&[A, B], fun(pair(a(), b()), b())),
+            run: tuple_second,
+        },
+        Builtin {
+            name: "Tuple.mapFirst",
+            arity: 2,
+            scheme: scheme(&[A, B, X], fun(fun(a(), var(X)), fun(pair(a(), b()), pair(var(X), b())))),
+            run: tuple_map_first,
+        },
+        Builtin {
+            name: "Tuple.mapSecond",
+            arity: 2,
+            scheme: scheme(&[A, B, Y], fun(fun(b(), var(Y)), fun(pair(a(), b()), pair(a(), var(Y))))),
+            run: tuple_map_second,
+        },
+        Builtin {
+            name: "Tuple.mapBoth",
+            arity: 3,
+            scheme: scheme(
+                &[A, B, X, Y],
+                fun(
+                    fun(a(), var(X)),
+                    fun(fun(b(), var(Y)), fun(pair(a(), b()), pair(var(X), var(Y)))),
+                ),
+            ),
+            run: tuple_map_both,
+        },
+        Builtin {
+            name: "String.uncons",
+            arity: 1,
+            scheme: scheme(&[], fun(string(), maybe(pair(char(), string())))),
+            run: string_uncons,
         },
         Builtin {
             name: "String.append",

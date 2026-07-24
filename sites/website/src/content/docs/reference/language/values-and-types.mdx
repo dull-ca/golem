@@ -84,7 +84,7 @@ are no user-defined typeclasses. See ADR 0007.
 | Constraint | Admits | Used by |
 | --- | --- | --- |
 | `number` | `Int`, `Float` | `+ - * / // ^` and integer literals |
-| `comparable` | `Int`, `Float`, `String`, `Char` | `== /= < <= > >=` |
+| `comparable` | `Int`, `Float`, `String`, `Char`, and tuples of comparables | `== /= < <= > >=` |
 | `appendable` | `String`, `List a` | `++` |
 
 An integer literal is a `number`, defaulting to `Int` if nothing forces it to
@@ -170,6 +170,37 @@ constrains its argument to *some* record that has at least a `name` field of
 the right type, not one exact record shape. A function reading `h.name`
 accepts any record carrying a matching `name`. A record *literal* has a closed
 row — exactly the fields written, no more. See ADR 0010.
+
+### Tuples and unit
+
+A tuple groups a fixed number of values positionally. Emet allows tuples of
+**two or three elements**; a tuple of four or more is a compile error — use a
+record with named fields instead.
+
+```emet
+point : (Int, Int)
+point = (1, 2)
+
+labelled : (String, Int, Bool)
+labelled = ("web", 8080, True)
+```
+
+The type `(A, B)` / `(A, B, C)` mirrors the value. The parenthesized forms read
+by element count: `(e)` is grouping (Emet has no one-tuple), `(a, b)` and
+`(a, b, c)` are tuples, and `()` is **unit** — the zero-element tuple, its own
+type and value.
+
+```emet
+nothingUseful : ()
+nothingUseful = ()
+```
+
+Tuples are `comparable` when their elements are, compared lexicographically —
+element by element, left to right — so `<`, `==`, `compare`, `min`, and `max`
+all work on them. Unit is vacuously comparable and compares equal to itself.
+Like `Char`, tuples are authoring-time only and never appear in a glyph field.
+See ADR 0027. The [`Tuple` module](/reference/language/prelude/#tuple) builds
+and transforms pairs.
 
 ## See also
 

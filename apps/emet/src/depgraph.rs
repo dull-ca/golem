@@ -134,6 +134,13 @@ fn free_vars_expr(
                 free_vars_expr(v, bound, names, refs);
             }
         }
+        // Recurse into every tuple element, like `List` — a reference inside a
+        // tuple expression is a real dependency edge (ADR 0027).
+        Expr::Tuple(items) => {
+            for it in items {
+                free_vars_expr(it, bound, names, refs);
+            }
+        }
         Expr::Field(base, _) => free_vars_expr(base, bound, names, refs),
         Expr::If { cond, then_, else_ } => {
             free_vars_expr(cond, bound, names, refs);
@@ -183,6 +190,14 @@ fn collect_pattern_binders(pat: &Pattern, out: &mut Vec<String>) {
         Pattern::Cons(head, tail) => {
             collect_pattern_binders(&head.0, out);
             collect_pattern_binders(&tail.0, out);
+        }
+        // A tuple pattern binds through each element, like `Ctor` — so a binder
+        // inside `(x, y) -> …` is counted as bound, not as a free variable
+        // (ADR 0027).
+        Pattern::Tuple(subs) => {
+            for s in subs {
+                collect_pattern_binders(&s.0, out);
+            }
         }
     }
 }

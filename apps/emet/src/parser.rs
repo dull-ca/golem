@@ -153,9 +153,25 @@ where
                 Spanned(Type::Record(fields, Row::Closed), span_range(e.span()))
             });
 
-        let paren = ty
-            .clone()
-            .delimited_by(just(Tok::LParen), just(Tok::RParen));
+        // Tuple *types* by the same count dispatch as the expr form above:
+        // `()` unit, `(T)` grouping, `(A, B)`/`(A, B, C)` tuple, 4+ rejected.
+        // `just(LParen).ignore_then(…)` for the same diagnostic reason (ADR 0027 §2).
+        let paren = just(Tok::LParen)
+            .ignore_then(
+                ty.clone()
+                    .separated_by(just(Tok::Comma))
+                    .collect::<Vec<_>>()
+                    .then_ignore(just(Tok::RParen)),
+            )
+            .try_map_with(|mut items: Vec<Spanned<Type>>, e| match items.len() {
+                0 => Ok(Spanned(Type::Tuple(vec![]), span_range(e.span()))),
+                1 => Ok(items.pop().unwrap()),
+                2 | 3 => Ok(Spanned(
+                    Type::Tuple(items.into_iter().map(|t| t.0).collect()),
+                    span_range(e.span()),
+                )),
+                _ => Err(Rich::custom(e.span(), TUPLE_TOO_LARGE_MESSAGE)),
+            });
 
         let atom = choice((nullary, type_var, list, record, paren)).labelled("a type");
 
@@ -221,7 +237,24 @@ where
             Spanned(Type::Record(fields, Row::Closed), span_range(e.span()))
         });
 
-    let paren = type_parser().delimited_by(just(Tok::LParen), just(Tok::RParen));
+    // The tuple/unit/grouping paren form at the type-atom layer — same count
+    // dispatch and same `ignore_then` form as `type_parser`'s `paren` (ADR 0027 §2).
+    let paren = just(Tok::LParen)
+        .ignore_then(
+            type_parser()
+                .separated_by(just(Tok::Comma))
+                .collect::<Vec<_>>()
+                .then_ignore(just(Tok::RParen)),
+        )
+        .try_map_with(|mut items: Vec<Spanned<Type>>, e| match items.len() {
+            0 => Ok(Spanned(Type::Tuple(vec![]), span_range(e.span()))),
+            1 => Ok(items.pop().unwrap()),
+            2 | 3 => Ok(Spanned(
+                Type::Tuple(items.into_iter().map(|t| t.0).collect()),
+                span_range(e.span()),
+            )),
+            _ => Err(Rich::custom(e.span(), TUPLE_TOO_LARGE_MESSAGE)),
+        });
 
     choice((nullary, type_var, list, record, paren)).labelled("a type")
 }
@@ -387,9 +420,31 @@ where
                 Spanned(Expr::Record(fields), span_range(e.span()))
             });
 
-        let paren = expr
-            .clone()
-            .delimited_by(just(Tok::LParen), just(Tok::RParen));
+        // The one parenthesized form, read by element count (ADR 0027 §2):
+        // `()` (0) is unit, `(e)` (1) is grouping — the inner node itself, NOT a
+        // 1-tuple, since Elm has none — `(a, b)` / `(a, b, c)` (2–3) is a tuple,
+        // and 4+ is rejected at the whole-form span with the record redirect. A
+        // trailing comma is disallowed (no `allow_trailing`), matching Elm.
+        //
+        // Spelled `just(LParen).ignore_then(… then_ignore(RParen))` rather than
+        // the obvious `delimited_by(LParen, RParen)`: a naive `delimited_by`
+        // disturbed chumsky's furthest-error merge and regressed the
+        // reserved-constructor field diagnostics (a wrong `aptPackage` field
+        // surfaced as a bare paren error instead). The explicit open/close form
+        // preserves those messages.
+        let paren = just(Tok::LParen)
+            .ignore_then(
+                expr.clone()
+                    .separated_by(just(Tok::Comma))
+                    .collect::<Vec<_>>()
+                    .then_ignore(just(Tok::RParen)),
+            )
+            .try_map_with(|mut items: Vec<Spanned<Expr>>, e| match items.len() {
+                0 => Ok(Spanned(Expr::Tuple(vec![]), span_range(e.span()))),
+                1 => Ok(items.pop().unwrap()),
+                2 | 3 => Ok(Spanned(Expr::Tuple(items), span_range(e.span()))),
+                _ => Err(Rich::custom(e.span(), TUPLE_TOO_LARGE_MESSAGE)),
+            });
 
         let atom = choice((interpolated, str_lit, char_lit, float_lit, int_lit, constructor, var, qualified, ctor, paren, list, record));
 
@@ -726,9 +781,25 @@ where
                 Spanned(folded.0, whole)
             });
 
-        let paren = pattern
-            .clone()
-            .delimited_by(just(Tok::LParen), just(Tok::RParen));
+        // Tuple *patterns* by the same count dispatch (ADR 0027 §2). Living at
+        // the pattern-`atom` layer is what lets `(a, b)` compose with the `::`
+        // cons tail and applied constructors, exactly as a parenthesized pattern
+        // did before tuples. `()` unit, `(p)` grouping, `(a, b)`/`(a, b, c)`
+        // tuple, 4+ rejected with the record redirect.
+        let paren = just(Tok::LParen)
+            .ignore_then(
+                pattern
+                    .clone()
+                    .separated_by(just(Tok::Comma))
+                    .collect::<Vec<_>>()
+                    .then_ignore(just(Tok::RParen)),
+            )
+            .try_map_with(|mut items: Vec<Spanned<Pattern>>, e| match items.len() {
+                0 => Ok(Spanned(Pattern::Tuple(vec![]), span_range(e.span()))),
+                1 => Ok(items.pop().unwrap()),
+                2 | 3 => Ok(Spanned(Pattern::Tuple(items), span_range(e.span()))),
+                _ => Err(Rich::custom(e.span(), TUPLE_TOO_LARGE_MESSAGE)),
+            });
 
         let atom = choice((
             float_reject,
@@ -1026,6 +1097,12 @@ fn span_range(span: TokSpan) -> Span {
 // (ADR 0026 §3). NOTE: tests assert on this text (`tests/literal_patterns.rs`),
 // so rewording it ripples.
 const FLOAT_PATTERN_MESSAGE: &str = "`Float` literals can't be matched in a pattern. Floating-point equality is unreliable, so Emet — like Elm — forbids it. Bind the value with a name and compare it with `<`, `>`, `<=`, or `>=` in an `if` instead.";
+
+// The Elm-style redirect shown when a paren form has 4+ elements: steer the
+// author to a record instead of a larger tuple (ADR 0027 §2). NOTE: tests assert
+// on this text — `tests/tuples.rs` checks for "3" (the cap) and "record" — so
+// rewording those two anchors ripples.
+const TUPLE_TOO_LARGE_MESSAGE: &str = "A tuple can have at most 3 elements. For a larger grouping, use a record with named fields instead.";
 
 /// Parse a complete laid-out token stream (as produced by
 /// `layout::layout_all`) into a `Module`. Returns every error chumsky
