@@ -6,6 +6,8 @@
 when:
   - event: push
   - event: pull_request
+  # tag pushes (v0.1.0, ...) enter the pipeline so the release step can fire.
+  - event: tag
 
 variables:
   - &nix_image "nixos/nix:2.34.7"
@@ -35,6 +37,45 @@ steps:
       # passed by path with --impure rather than read from the flake source.
       - GOLEM_SITE_DIST="$CI_WORKSPACE/sites/website/dist" nix build --impure .#website-container --print-build-logs --out-link result-website
       - ls -l result-website
+
+  # release: on a pushed version tag only, build the release artifacts and attach
+  # them to the Forgejo/Codeberg release for that tag (ADR 0028). Inert until a
+  # tag is pushed AND the FORGEJO_RELEASE_TOKEN secret is set in the Codeberg
+  # repo's Woodpecker settings; absent the token the upload cannot authenticate.
+  release:
+    image: *nix_image
+    environment: *nix_env
+    when:
+      - event: tag
+    secrets:
+      - forgejo_release_token
+    commands:
+      # build exactly the release outputs: static-musl agent+CLI (portable onto
+      # Debian guests), native emetc compiler. NOT the dynamic golemd/golemctl
+      # (not portable) and NOT tree-sitter-emet / website-container (not shipped).
+      - nix build .#golemd-static .#golemctl-static .#emetc --print-build-logs --out-link result-release
+      - mkdir -p dist
+      - cp result-release*/bin/golemd  dist/golemd
+      - cp result-release*/bin/golemctl dist/golemctl
+      # the emetc flake output has pname `emet` and produces bin/emet; ship the
+      # asset under the tool's documented name, emetc.
+      - cp result-release*/bin/emet     dist/emetc
+      # create the release object for CI_COMMIT_TAG, then upload each binary as an
+      # asset, via the Gitea-compatible Forgejo release API (curl + jq, with a
+      # jq-less sed fallback so the step stays dependency-free in the nix image).
+      - |
+        api="https://codeberg.org/api/v1/repos/dull/golem"
+        rel=$(curl -sf -X POST "$api/releases" \
+          -H "Authorization: token $FORGEJO_RELEASE_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"tag_name\":\"$CI_COMMIT_TAG\",\"name\":\"$CI_COMMIT_TAG\"}" \
+          | { command -v jq >/dev/null && jq -r .id || sed -n 's/.*"id":\([0-9]*\).*/\1/p'; })
+        for f in golemd golemctl emetc; do
+          curl -sf -X POST \
+            "$api/releases/$rel/assets?name=$f" \
+            -H "Authorization: token $FORGEJO_RELEASE_TOKEN" \
+            -F "attachment=@dist/$f"
+        done
 
 # Caching
 # -------
