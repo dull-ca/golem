@@ -147,10 +147,85 @@ def deploy(
             console.print(f"  [green]{record.name}: golemd up[/green] {summary}")
 
 
+def _cid_hex(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        try:
+            return bytes(value).hex()
+        except (ValueError, TypeError):
+            return str(value)
+    return str(value)
+
+
+def _cid_short(cid: Optional[str], width: int = 12) -> str:
+    if not cid:
+        return "—"
+    return cid[:width] + "…" if len(cid) > width else cid
+
+
+def _glyph_desc(glyph: object) -> str:
+    if not isinstance(glyph, dict) or not glyph:
+        return "?"
+    (kind, body) = next(iter(glyph.items()))
+    body = body or {}
+    if kind == "AptPackage":
+        return f"apt {body.get('name')}"
+    if kind == "SystemdService":
+        return f"systemd {body.get('unit')}"
+    if kind == "LineInFile":
+        return f"line {body.get('path')}: {body.get('line')}"
+    if kind == "Filesystem":
+        path = body.get("path")
+        entry = body.get("entry")
+        ekind = next(iter(entry)) if isinstance(entry, dict) and entry else "File"
+        ebody = entry.get(ekind, {}) if isinstance(entry, dict) else {}
+        if ekind == "Symlink":
+            return f"symlink {path} → {ebody.get('target')}"
+        if ekind == "Directory":
+            return f"dir {path}"
+        return f"file {path}"
+    return str(kind)
+
+
+_OP_VERB = {"Install": "install", "Remove": "remove", "Replace": "replace", "Noop": "noop"}
+
+
+def _op_parts(op: object) -> tuple[str, str, Optional[str]]:
+    if not isinstance(op, dict) or not op:
+        return ("?", "?", None)
+    (kind, body) = next(iter(op.items()))
+    body = body or {}
+    verb = _OP_VERB.get(kind, str(kind).lower())
+    cid = _cid_hex(body.get("cid") if body.get("cid") is not None else body.get("new_cid"))
+    return (verb, _glyph_desc(body.get("glyph")), cid)
+
+
+def _render_revision(name: str, revision: dict) -> None:
+    scroll = _cid_short(_cid_hex(revision.get("scroll_content_id")))
+    console.print(
+        f"  [green]{name}: revision {revision.get('id')}[/green] "
+        f"([cyan]{revision.get('kind', '')}[/cyan])  scroll [dim]{scroll}[/dim]"
+    )
+    outcomes = revision.get("outcomes") or []
+    if not outcomes:
+        console.print("    [dim]no changes[/dim]")
+        return
+    table = Table("", "op", "glyph", "content-id", box=None, pad_edge=False, show_header=False)
+    for outcome in outcomes:
+        verb, glyph, cid = _op_parts(outcome.get("op"))
+        mark = "[green]✓[/green]" if outcome.get("changed") else "[dim]·[/dim]"
+        table.add_row(mark, verb, glyph, f"[dim]{_cid_short(cid)}[/dim]")
+    console.print(table)
+
+
 @app.command()
 def apply(
     source: Path = typer.Argument(..., help="A .emet source or a prebuilt manifest.bin."),
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
+    raw: bool = typer.Option(False, "--json", help="Print the raw revision JSON instead of a summary."),
 ) -> None:
     """Compile a scroll and POST it to each target's golemd. `source` is an
     `.emet` file (compiled to a manifest here) or a prebuilt `manifest.bin`; the
@@ -171,8 +246,11 @@ def apply(
             )
             continue
         revision = response.json()
-        console.print(f"  [green]{record.name}: revision {revision.get('id')}[/green]")
-        console.print_json(json.dumps(revision))
+        if raw:
+            console.print(f"  [green]{record.name}: revision {revision.get('id')}[/green]")
+            console.print_json(json.dumps(revision))
+        else:
+            _render_revision(record.name, revision)
 
 
 @app.command()
