@@ -2,6 +2,7 @@
 name    = "golemd"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 scroll-format = { workspace = true }

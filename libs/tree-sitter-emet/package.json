@@ -8,7 +8,7 @@
     "emet",
     "parser"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "node-addon-api": "^7.0.0",
     "node-gyp-build": "^4.6.0"
