@@ -4,9 +4,10 @@
 //! typed language and is fully evaluated before a value reaches a glyph field
 //! (ADR 0004). A consumer reconciles this inert data against a real machine.
 //!
-//! Two levels: a [`Glyph`] is one bottom-level OS resource; a [`Scroll`] groups
-//! the glyphs for one host (ADR 0009). The compiler (`emet`) re-exports both
-//! through `emet::ir`.
+//! A [`Glyph`] is one bottom-level OS resource; a [`Scroll`] is a recursive tree
+//! of them for one host — the root is the host, interior branches are
+//! subsystems, leaves are units of glyphs (ADR 0009, ADR 0031). The compiler
+//! (`emet`) re-exports both through `emet::ir`.
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +78,29 @@ pub struct Perms {
     pub group: Option<String>,
 }
 
+/// One host's worth of desired state, as a recursive, strict tree (ADR 0031).
+/// The root scroll is the host — selected by `name` against `--host` — and every
+/// scroll at any depth is a failure-isolation boundary carrying an optional
+/// retry/rollback [`Policy`]. A [leaf](Scroll::is_leaf) (one holding glyphs) is
+/// the unit of best-effort enact, retry, and rollback; a branch only groups its
+/// sub-scrolls and cascades policy to the leaves beneath it (ADR 0031 §2/§3).
+///
+/// A `Scroll` is what gets content-addressed: its deterministic postcard bytes
+/// are hashed to a [`ContentId`](crate::ContentId) (see
+/// [`content_id()`](crate::content_id())). That hash now covers `policy` and
+/// `contents`, so a policy edit or a regrouping is a different scroll — but no
+/// glyph's own content id depends on its enclosing scroll, so regrouping
+/// re-enacts nothing (ADR 0031 §4/§5).
+///
+/// The same glyph key may appear in two different scrolls without conflict (two
+/// hosts installing `nginx`); a conflict is only within one leaf. `name` is a
+/// label — no cross-scroll uniqueness is enforced (ADR 0009).
+///
+// NOTE: field order IS the postcard encoding. Reordering or adding a field is a
+// `format_version`-bumping change, not a free refactor — see ADR 0012/0013.
+// Making `Scroll` recursive is what took the manifest from v2 to v3 (ADR 0031 §5).
+// NOTE: no `Eq` — `Policy` carries `f64` knobs (ADR 0031 §3), which are only
+// `PartialEq`. Don't add `Eq` back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scroll {
     pub name: String,
@@ -84,12 +108,32 @@ pub struct Scroll {
     pub contents: Contents,
 }
 
+/// A scroll level is *either* a leaf's glyphs *or* a branch's named sub-scrolls,
+/// never a mix. Being a sum makes a mixed level unrepresentable — the ADR 0019
+/// "illegal states unrepresentable" discipline applied to grouping: there are no
+/// loose glyphs alongside sub-scrolls, so "does this glyph belong to the group,
+/// before it, or after it?" cannot arise (ADR 0031 §1). A loose glyph beside
+/// sub-scrolls must be wrapped in its own one-glyph leaf.
+///
+// NOTE: variant order IS the postcard encoding — `Glyphs` then `Groups`.
+// Reordering is a `format_version`-bumping change — see ADR 0031 §5.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Contents {
     Glyphs(Vec<Glyph>),
     Groups(Vec<Scroll>),
 }
 
+/// The retry knobs and `on_exhaust` decision governing a leaf unit's enact
+/// (ADR 0029 §3, ADR 0031 §3). Every field is optional and inherits when absent:
+/// the effective policy for a leaf is resolved nearest-wins over its
+/// [`policy_chain`](LeafUnit::policy_chain) plus the `golemd.toml` fallback — a
+/// consumer concern, not resolved here. `on_exhaust` defaults to `Rollback`
+/// (ADR 0029 §4). Lives inside the hashed scroll but never inside a glyph, so it
+/// never perturbs a glyph's content id (ADR 0031 §5).
+///
+// NOTE: field order IS the postcard encoding — see ADR 0031 §5 for the fixed
+// order. `backoff_multiplier` and `jitter_fraction` are `f64`; they are why no
+// type in this tree can derive `Eq`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Policy {
     pub base_delay_ms: Option<u64>,
@@ -101,12 +145,26 @@ pub struct Policy {
     pub on_exhaust: Option<OnExhaust>,
 }
 
+/// What a leaf unit does when it exhausts its retry budget with glyphs still
+/// failing: `Rollback` returns the unit to its last committed state (the ADR
+/// 0029 §4 default), `Keep` leaves partial progress in place for units that
+/// prefer forward progress over atomicity. Scoped to the exhausting unit's
+/// subtree alone — never a sibling (ADR 0031 §2).
+///
+// NOTE: variant order IS the postcard encoding — `Rollback` then `Keep`.
+// See ADR 0031 §5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OnExhaust {
     Rollback,
     Keep,
 }
 
+/// A leaf scroll flattened out for enact: its root-to-leaf name-`path`, its
+/// `glyphs`, and the `policy_chain` of every ancestor policy in the same
+/// root-to-leaf order. This is not a wire type — it is the shape
+/// [`Scroll::leaf_units`] hands a consumer, which resolves the effective policy
+/// nearest-wins over `policy_chain` and reports outcomes under `path`
+/// (ADR 0031 §2/§3/§4).
 pub struct LeafUnit<'a> {
     pub path: Vec<String>,
     pub glyphs: &'a [Glyph],
@@ -114,10 +172,15 @@ pub struct LeafUnit<'a> {
 }
 
 impl Scroll {
+    /// Whether this scroll directly holds glyphs (a unit of enact) rather than
+    /// grouping sub-scrolls.
     pub fn is_leaf(&self) -> bool {
         matches!(self.contents, Contents::Glyphs(_))
     }
 
+    /// This scroll's own glyphs, or `&[]` for a branch — a branch has no glyphs
+    /// of its own by design (ADR 0031 §1). To reach the glyphs under a branch,
+    /// use [`all_glyphs`](Scroll::all_glyphs) or [`leaf_units`](Scroll::leaf_units).
     pub fn glyphs(&self) -> &[Glyph] {
         match &self.contents {
             Contents::Glyphs(g) => g,
@@ -125,6 +188,9 @@ impl Scroll {
         }
     }
 
+    /// Every glyph in the subtree, flattened depth-first in source order —
+    /// the position-independent desired set the diff keys on, identical however
+    /// the glyphs are grouped (ADR 0031 §4).
     pub fn all_glyphs(&self) -> Vec<&Glyph> {
         let mut out = Vec::new();
         self.collect_glyphs(&mut out);
@@ -142,6 +208,10 @@ impl Scroll {
         }
     }
 
+    /// Every leaf unit in the subtree, in source order, each with its
+    /// root-to-leaf name-path and ancestor policy chain. The unit of
+    /// best-effort enact, retry, and rollback (ADR 0031 §2); the caller resolves
+    /// the effective policy nearest-wins over each unit's chain.
     pub fn leaf_units(&self) -> Vec<LeafUnit<'_>> {
         let mut out = Vec::new();
         self.collect_leaves(&mut Vec::new(), &mut Vec::new(), &mut out);
@@ -176,6 +246,8 @@ impl Scroll {
         path.pop();
     }
 
+    /// A one-line human summary of the scroll — its glyph count if a leaf, its
+    /// group count if a branch (the `--text` plan view, not the wire contract).
     pub fn describe(&self) -> String {
         match &self.contents {
             Contents::Glyphs(g) => format!("scroll `{}` ({} glyphs)", self.name, g.len()),

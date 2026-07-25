@@ -35,6 +35,9 @@ fn other_scroll() -> Scroll {
     }
 }
 
+// These golden bytes were deliberately regenerated for the v3 wire shape — the
+// recursive `Scroll { name, policy, contents }` (ADR 0031 §5) — not silent
+// drift. A change here without a matching FORMAT_VERSION bump is a bug.
 const GOLDEN_SCROLL_BYTES: &[u8] = &[
     3, 119, 101, 98, 0, 0, 4, 0, 5, 110, 103, 105, 110, 120, 1, 13, 110, 103, 105, 110, 120, 46,
     115, 101, 114, 118, 105, 99, 101, 2, 21, 47, 101, 116, 99, 47, 110, 103, 105, 110, 120, 47,
@@ -168,6 +171,9 @@ fn nested_scroll_round_trips_through_a_manifest() {
     assert_eq!(decoded.format_version, FORMAT_VERSION);
 }
 
+// A glyph's content id is over the glyph's own bytes alone, so it does not
+// depend on the scroll's name, depth, or grouping — the property that lets
+// regrouping re-enact nothing (ADR 0031 §4).
 #[test]
 fn a_leaf_glyph_content_id_is_independent_of_grouping() {
     let flat = Scroll {

@@ -13,10 +13,11 @@ use crate::scroll::{Glyph, Scroll};
 /// reads (ADR 0012 §1). Distinct from `emet_version`, which is provenance and
 /// is never hashed.
 ///
-// NOTE: `2` because the filesystem glyph (ADR 0019) replaced the flat
-// `File { path, contents, mode }` variant with `Filesystem { path, entry }`
-// over the `Entry` sum and typed `Perms` — a changed glyph layout, so a v1
-// manifest now cleanly fails `check_format_version` rather than misparsing.
+// NOTE: `3` because the recursive `Scroll { name, policy, contents }` tree
+// (ADR 0031) reshaped the scroll layout, and ADR 0030's enriched `aptPackage`
+// glyph reshaped a glyph's — both land in this one `2 → 3` bump, not two (ADR
+// 0031 §5). A v2 manifest now cleanly fails `check_format_version` rather than
+// misparsing. (v2 itself was the filesystem glyph of ADR 0019.)
 pub const FORMAT_VERSION: u32 = 3;
 
 /// A scroll paired with its content address. The `content_id` is over the
