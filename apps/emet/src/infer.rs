@@ -369,6 +369,11 @@ impl Infer {
             ));
         }
         if !constraint_admits(c, &t) {
+            // Plain-language constraint mismatch (ADR 0032 §1): name the admissible
+            // types outright instead of leaking `does not satisfy 'number'`. Each
+            // arm's list mirrors what `constraint_admits` accepts — Comparable
+            // includes `Char` because `constraint_admits` admits it (ADR 0025);
+            // keep the two in step or the message will name a type it then rejects.
             let rendered = render_type(&self.apply(&t));
             let msg = match c {
                 Constraint::Number => {
@@ -944,6 +949,8 @@ fn constraint_name(c: Constraint) -> &'static str {
     }
 }
 
+/// Levenshtein edit distance, two-row (O(min·max) space) — the metric behind
+/// the did-you-mean suggestions (ADR 0032 §2e).
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -960,6 +967,18 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// The nearest candidate to `target` within a length-scaled edit-distance
+/// threshold, or `None` when nothing is close enough. The threshold is 1 for a
+/// target of 4 chars or fewer, else 2 — a short name has little room to differ
+/// before it is a different word, so a looser bound would suggest noise. An
+/// exact match (distance 0) never suggests; ties keep the first-seen candidate.
+///
+/// The caller supplies the candidate pool, one per site (names in scope,
+/// uppercase-initial env keys for constructors, `type_arities` keys for type
+/// constructors, …). Reserved constructor words (`keep`, `file`, `scroll`, …)
+/// are parser-level `Tok::Ident`s never bound into `env`/`ty_env`
+/// (`prelude.rs`), so no pool that draws from those environments can surface a
+/// reserved word as a suggestion.
 fn did_you_mean(target: &str, candidates: impl Iterator<Item = String>) -> Option<String> {
     let mut best: Option<(usize, String)> = None;
     for cand in candidates {
@@ -1324,6 +1343,11 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             inf.unify(&nt, &con("String"), &name.1)?;
             if let Some(p) = policy {
                 let pt = infer_expr(inf, env, p)?;
+                // Frame expected-vs-found the way the author reads it: the
+                // context (`policy` field) is what's expected, the author's
+                // expression is what's found. The bare `unify` error names the
+                // two in unification order, which reads reversed here (ADR 0032
+                // §1, audit #41/#46), so replace it with a context-first message.
                 inf.unify(&pt, &con("Policy"), &p.1).map_err(|_| {
                     TypeError::new(
                         format!(
@@ -1445,6 +1469,8 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
 
         Expr::If { cond, then_, else_ } => {
             let ct = infer_expr(inf, env, cond)?;
+            // Context-first framing, spanned at the condition (ADR 0032 §1) — as
+            // for the `policy` field above.
             inf.unify(&ct, &con("Bool"), &cond.1).map_err(|_| {
                 TypeError::new(
                     format!(

@@ -1928,10 +1928,9 @@ pub const NIL: &str = "[]";
 /// pattern. Its two argument types are the element type and the list type.
 pub const CONS: &str = "::";
 
-/// The type scheme of a data constructor, for pattern inference. Alongside the
-/// user/prelude sum constructors, the two synthetic list constructors `[]` and
-/// `::` have schemes `∀a. List a` and `∀a. a -> List a -> List a`, so list
-/// patterns type-check and drive the exhaustiveness checker like any sum type.
+/// The names of every prelude data and glyph constructor, for did-you-mean over
+/// constructor patterns (ADR 0032 §2e). The synthetic list constructors `[]` /
+/// `::` are omitted: no author writes them by a misspellable name.
 pub fn constructor_names() -> Vec<String> {
     ctors()
         .into_iter()
@@ -1940,6 +1939,10 @@ pub fn constructor_names() -> Vec<String> {
         .collect()
 }
 
+/// The type scheme of a data constructor, for pattern inference. Alongside the
+/// user/prelude sum constructors, the two synthetic list constructors `[]` and
+/// `::` have schemes `∀a. List a` and `∀a. a -> List a -> List a`, so list
+/// patterns type-check and drive the exhaustiveness checker like any sum type.
 pub fn constructor_scheme(name: &str) -> Option<Scheme> {
     match name {
         NIL => return Some(scheme(&[A], list(var(A)))),

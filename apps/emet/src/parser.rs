@@ -630,6 +630,12 @@ where
             }),
         ));
 
+        // A `let … in`-bodied arm parses today, but real support is deferred
+        // (ADR 0032 §4; `docs/TODO.md` #26). Reject it with a specific "not yet
+        // supported here" error rather than letting it slip through to a
+        // misleading downstream `main : List Scroll` type error. Emitted
+        // non-fatally, like `arm_arrow` above, so the arm's `repeated()` cannot
+        // backtrack it away.
         let arm_body = expr.clone().validate(|body, _, emitter| {
             let body_is_unsupported_let = matches!(body.0, Expr::Let { .. });
             if body_is_unsupported_let {
@@ -668,6 +674,13 @@ where
                 )
             });
 
+        // The duplicate check must emit here, on the delimited decls, not inside
+        // the `let_expr` `try_map` below. A hard failure in that `try_map` makes
+        // chumsky backtrack the whole `let … in` branch and report a positional
+        // "found `let`" that outranks the custom error — the same swallowing the
+        // `=>` redirect and the arm-body check work around. `.validate` +
+        // `emitter.emit` is non-fatal, so the error survives backtracking and
+        // still reaches `errors[0]` (mirrors the `arm_arrow` precedent above).
         let let_decls = decls_parser(expr.clone())
             .delimited_by(block_open, block_close)
             .validate(|decls, e, emitter| {
@@ -1076,6 +1089,12 @@ where
         .then_ignore(end())
 }
 
+/// Reject a name bound twice in one declaration block — top level or `let`
+/// (ADR 0032 §2d; audit #61, formerly a silent drop of the second binding).
+/// Only `Bind` heads collide; a signature and its binding legitimately share a
+/// name, so `Sig` items are skipped. Split out of `fold_decls` so the two call
+/// paths can invoke it separately: the top level runs it fatally, but the `let`
+/// path must not (see the `let_decls` emission).
 fn fold_decls_check_duplicates(items: &[DeclItem]) -> Result<(), ParseError> {
     let mut seen: Vec<&str> = Vec::new();
     for item in items {
