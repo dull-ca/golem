@@ -330,6 +330,21 @@ fn empty_case_is_reported_as_no_arms() {
 }
 
 #[test]
+fn duplicate_top_level_binding_is_rejected() {
+    let e = err("x = 1\nx = 2\n\nmain = [ ]");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(e.msg.contains("`x`"), "should name x: {}", e.msg);
+    assert!(e.msg.contains("twice") || e.msg.contains("defined"), "msg: {}", e.msg);
+}
+
+#[test]
+fn duplicate_let_binding_is_rejected() {
+    let e = err("main =\n  let x = 1\n      x = 2\n  in [ ]");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(e.msg.contains("`x`"), "should name x: {}", e.msg);
+}
+
+#[test]
 fn unbound_name_suggests_nearest() {
     let e = err("greeting = \"hi\"\nmain = greetnig");
     assert_eq!(e.phase, Phase::Type);

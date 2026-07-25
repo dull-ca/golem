@@ -657,9 +657,18 @@ where
                 )
             });
 
+        let let_decls = decls_parser(expr.clone())
+            .delimited_by(block_open, block_close)
+            .validate(|decls, e, emitter| {
+                if let Err(pe) = fold_decls_check_duplicates(&decls) {
+                    emitter.emit(Rich::custom(e.span(), pe.msg));
+                }
+                decls
+            });
+
         let let_expr = just(Tok::Let)
             .map_with(|_, e| span_range(e.span()).start)
-            .then(decls_parser(expr.clone()).delimited_by(block_open, block_close))
+            .then(let_decls)
             .then_ignore(just(Tok::In))
             .then(expr.clone())
             .try_map(|((start, decls), body), span| {
@@ -1056,6 +1065,22 @@ where
         .then_ignore(end())
 }
 
+fn fold_decls_check_duplicates(items: &[DeclItem]) -> Result<(), ParseError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for item in items {
+        if let DeclItem::Bind { name, span, .. } = item {
+            if seen.contains(&name.as_str()) {
+                return Err(ParseError {
+                    msg: format!("`{name}` is defined twice — remove or rename one"),
+                    span: span.clone(),
+                });
+            }
+            seen.push(name);
+        }
+    }
+    Ok(())
+}
+
 fn fold_decls(items: Vec<DeclItem>) -> Result<Vec<Decl>, ParseError> {
     let mut pending_sig: Option<(String, Spanned<Type>, Span)> = None;
     let mut out: Vec<Decl> = Vec::new();
@@ -1372,7 +1397,8 @@ pub fn parse(
         }
     }
 
-    fold_decls(value_items)
+    fold_decls_check_duplicates(&value_items)
+        .and_then(|()| fold_decls(value_items))
         .map(|decls| Module {
             name,
             exposing,
