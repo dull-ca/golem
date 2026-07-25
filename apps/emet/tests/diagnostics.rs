@@ -250,3 +250,15 @@ fn expected_set_dedupes_repeated_brace() {
     let n = e.msg.matches("'}'").count();
     assert!(n <= 1, "duplicate '}}' in: {}", e.msg);
 }
+
+#[test]
+fn unclosed_bracket_message_mentions_unclosed() {
+    let e = err(r#"main = [ "a" "#);
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(
+        e.msg.to_lowercase().contains("close") || e.msg.to_lowercase().contains("unclosed"),
+        "expected an unclosed hint: {}",
+        e.msg
+    );
+    assert!(e.msg.contains("']'"), "should still name the delimiter: {}", e.msg);
+}

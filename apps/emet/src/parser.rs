@@ -1229,6 +1229,18 @@ fn humanize_expected(raw: &str) -> String {
     if items.is_empty() {
         return format!("{head}expected an expression");
     }
+    let only_closers = items
+        .iter()
+        .all(|i| matches!(i.as_str(), "','" | "')'" | "']'" | "'}'" | "`}`"));
+    let close_hint = if only_closers {
+        items
+            .iter()
+            .find(|i| matches!(i.as_str(), "')'" | "']'" | "'}'" | "`}`"))
+            .map(|d| format!(" — this looks like an unclosed {d}"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let joined = match items.len() {
         1 => items[0].clone(),
         2 => format!("{} or {}", items[0], items[1]),
@@ -1237,7 +1249,7 @@ fn humanize_expected(raw: &str) -> String {
             format!("{}, or {}", items.join(", "), last)
         }
     };
-    format!("{head}expected {joined}")
+    format!("{head}expected {joined}{close_hint}")
 }
 
 pub fn parse(
