@@ -170,6 +170,42 @@ monorepo. B's headline is model reconciliation.
   `decls_parser`) to keep the ADR 0001 `parse-error(t)` / close-on-`in`
   handshake intact.
 
+- **Missing `of` after `case` (#13) still reports a generic parse error —
+  DEFERRED (ADR 0032 §4).** `case x` with no `of` still surfaces as `found
+  'case' expected an expression, '(', '[', or '{'`, with no mention of the
+  missing `of`. A targeted detection was scoped for this in ADR 0032 §2(f) but
+  needs the general parse-error-recovery groundwork also deferred there;
+  tracked as a follow-up rather than pinned in
+  `apps/emet/tests/diagnostics_corpus.rs`.
+
+- **Missing `in` after `let` (#25) still reports a generic parse error —
+  DEFERRED (ADR 0032 §4).** `let x = 1` with no `in` still surfaces as `found
+  'let' expected an expression, '(', '[', or '{'`, with no mention of the
+  missing `in`. Same follow-up as #13, part of ADR 0032 §2(f)'s general-recovery
+  dependency.
+
+- **Empty record field value (#29) still reports a generic parse error —
+  DEFERRED (ADR 0032 §4).** `name = , glyphs = []` still surfaces as `found
+  ',' expected an expression, '(', '[', or '{'`, with no mention that the
+  field's value is missing. Same follow-up as #13/#25.
+
+- **`EvalError` is stack-passed, not boxed — KNOWN INTERIM.** Adding `span:
+  Span` to `EvalError` (ADR 0032 §3) widened every frame across the giant
+  `eval` match enough to require raising `EVAL_STACK_SIZE` to 1GB (from 512MB)
+  to keep `RECURSION_LIMIT` firing before the native stack overflows
+  (`eval.rs`). The root fix is boxing the error (`Result<Value, Box<EvalError>>`)
+  to keep frames pointer-sized, at the cost of widening `run_module` /
+  `eval_entry` / `eval_library` and their callers; the 1GB stack is an accepted
+  interim rather than the long-term shape.
+
+- **Cross-module conflicting-key spans degrade to the first glyph — KNOWN GAP.**
+  `analyze` (`lib.rs`) locates a glyph-key conflict via `glyph_spans`, which is
+  populated at eval time; when the second conflicting glyph comes from a
+  library's eval-time value (not a literal glyph expression in the leaf being
+  analyzed) its span is not captured, so the report degrades gracefully to the
+  first glyph's span rather than 0..0. Precise dual-span reporting across a
+  module boundary is a follow-up, not built here.
+
 ### Cleanup
 
 - **Remove the transitional `Str` / `Glyphs` aliases — DONE.** `String` and
