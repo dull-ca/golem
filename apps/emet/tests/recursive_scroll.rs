@@ -130,3 +130,34 @@ main = [ scroll { name = "x", policy = p, glyphs = [ aptPackage { name = "one" }
     let ss = scrolls(src);
     assert_eq!(ss[0].policy.clone().unwrap().max_attempts, Some(4));
 }
+
+#[test]
+fn same_glyph_key_in_two_sibling_leaves_does_not_conflict() {
+    let src = r#"
+main =
+  [ scroll { name = "host", groups =
+      [ scroll { name = "a", glyphs = [ file { path = "/etc/x", contents = "1", mode = "0644" } ] }
+      , scroll { name = "b", glyphs = [ file { path = "/etc/x", contents = "2", mode = "0644" } ] }
+      ] }
+  ]
+"#;
+    let ss = scrolls(src);
+    assert_eq!(ss.len(), 1);
+}
+
+#[test]
+fn conflicting_keys_within_one_leaf_is_analyze_error() {
+    let src = r#"
+main =
+  [ scroll { name = "host", groups =
+      [ scroll { name = "a", glyphs =
+          [ file { path = "/etc/x", contents = "1", mode = "0644" }
+          , file { path = "/etc/x", contents = "2", mode = "0644" }
+          ] }
+      ] }
+  ]
+"#;
+    let e = err(src);
+    assert_eq!(e.phase, Phase::Analyze);
+    assert!(e.msg.contains("file:/etc/x"), "got: {}", e.msg);
+}

@@ -5,7 +5,7 @@
 mod common;
 
 use common::err;
-use emet::{compile, ir::Glyph, ir::Scroll, Phase};
+use emet::{compile, ir::Contents, ir::Glyph, ir::Scroll, Phase};
 
 fn scrolls(src: &str) -> Vec<Scroll> {
     match compile(src) {
@@ -28,17 +28,19 @@ main =
         ss[0],
         Scroll {
             name: "web".into(),
-            glyphs: vec![
+            policy: None,
+            contents: Contents::Glyphs(vec![
                 Glyph::AptPackage { name: "nginx".into() },
                 Glyph::SystemdService { unit: "nginx.service".into() },
-            ],
+            ]),
         }
     );
     assert_eq!(
         ss[1],
         Scroll {
             name: "db".into(),
-            glyphs: vec![Glyph::AptPackage { name: "postgresql".into() }],
+            policy: None,
+            contents: Contents::Glyphs(vec![Glyph::AptPackage { name: "postgresql".into() }]),
         }
     );
 }
@@ -54,7 +56,7 @@ main =
 "#;
     let ss = scrolls(src);
     assert_eq!(ss.len(), 2);
-    assert_eq!(ss[0].glyphs, ss[1].glyphs);
+    assert_eq!(ss[0].glyphs(), ss[1].glyphs());
 }
 
 #[test]
@@ -100,7 +102,7 @@ fn main_as_list_glyph_is_now_a_type_error() {
 fn scroll_missing_field_is_a_parse_error() {
     let e = err(r#"main = [ scroll { name = "web" } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`scroll` requires a `glyphs` field"), "got: {}", e.msg);
+    assert!(e.msg.contains("`scroll` needs exactly one of `glyphs` or `groups`"), "got: {}", e.msg);
 }
 
 #[test]

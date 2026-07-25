@@ -29,11 +29,11 @@ fn scroll<'a>(c: &'a emet::Compiled, name: &str) -> &'a emet::ir::Scroll {
 }
 
 fn keys(s: &emet::ir::Scroll) -> Vec<String> {
-    s.glyphs.iter().map(|g| g.key()).collect()
+    s.glyphs().iter().map(|g| g.key()).collect()
 }
 
 fn file_contents<'a>(s: &'a emet::ir::Scroll, path: &str) -> &'a str {
-    s.glyphs
+    s.glyphs()
         .iter()
         .find_map(|g| match g {
             Glyph::Filesystem { path: p, entry: Entry::File { contents, .. } } if p == path => {
@@ -66,7 +66,7 @@ fn host_mount_source_becomes_a_directory_glyph() {
     let c = compiled();
     let s = scroll(&c, "registry");
     let entry = s
-        .glyphs
+        .glyphs()
         .iter()
         .find_map(|g| match g {
             Glyph::Filesystem { path, entry } if path == "/srv/registry/uploads" => Some(entry),

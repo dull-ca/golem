@@ -41,20 +41,20 @@ main = [ scroll { name = "solo", glyphs = [ aptPackage { name = "nginx" } ] } ]
 fn import_qualified_access_resolves() {
     let c = compile_fixture("QualifiedEntry.emet").expect("qualified import compiles");
     assert_eq!(scroll_names(&c), vec!["web".to_string()]);
-    assert_eq!(c.scrolls[0].glyphs.len(), 1);
-    assert_eq!(c.scrolls[0].glyphs[0].key(), "apt:nginx");
+    assert_eq!(c.scrolls[0].glyphs().len(), 1);
+    assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
 }
 
 #[test]
 fn import_alias_access_resolves() {
     let c = compile_fixture("AliasEntry.emet").expect("aliased import compiles");
-    assert_eq!(c.scrolls[0].glyphs[0].key(), "apt:nginx");
+    assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
 }
 
 #[test]
 fn import_exposing_brings_name_into_scope_unqualified() {
     let c = compile_fixture("ExposingEntry.emet").expect("import exposing compiles");
-    assert_eq!(c.scrolls[0].glyphs[0].key(), "apt:nginx");
+    assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
 }
 
 #[test]
@@ -79,15 +79,15 @@ fn exposing_a_non_exposed_name_is_rejected() {
 fn exposed_type_constructors_cross_module() {
     let c = compile_fixture("RolesEntry.emet").expect("Type(..) exposure compiles");
     assert_eq!(scroll_names(&c), vec!["web".to_string(), "db".to_string()]);
-    assert_eq!(c.scrolls[0].glyphs[0].key(), "apt:nginx");
-    assert_eq!(c.scrolls[1].glyphs[0].key(), "apt:postgresql");
+    assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
+    assert_eq!(c.scrolls[1].glyphs()[0].key(), "apt:postgresql");
 }
 
 #[test]
 fn imported_open_type_is_usable_in_annotation() {
     let c = compile_fixture("AnnotEntry.emet").expect("imported Type(..) annotation compiles");
     assert_eq!(scroll_names(&c), vec!["web".to_string()]);
-    assert_eq!(c.scrolls[0].glyphs[0].key(), "apt:nginx");
+    assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn parameterized_open_type_crosses_module() {
     let c = compile_fixture("BoxesEntry.emet").expect("imported parameterized Box(..) compiles");
     assert_eq!(scroll_names(&c), vec!["boxed".to_string()]);
     assert_eq!(
-        c.scrolls[0].glyphs.iter().map(|g| g.key()).collect::<Vec<_>>(),
+        c.scrolls[0].glyphs().iter().map(|g| g.key()).collect::<Vec<_>>(),
         vec!["systemd:boxed.service".to_string(), "systemd:matched.service".to_string()],
     );
 }
@@ -171,6 +171,6 @@ fn library_module_may_not_have_main() {
 fn multi_module_program_compiles_to_expected_scrolls() {
     let c = compile_fixture("FleetEntry.emet").expect("multi-module program compiles");
     assert_eq!(scroll_names(&c), vec!["web".to_string(), "db".to_string()]);
-    assert_eq!(c.scrolls[0].glyphs[0].key(), "apt:nginx");
-    assert_eq!(c.scrolls[1].glyphs[0].key(), "apt:postgresql");
+    assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
+    assert_eq!(c.scrolls[1].glyphs()[0].key(), "apt:postgresql");
 }

@@ -34,7 +34,7 @@ impl Drop for Project {
 fn scroll_keys(c: &emet::Compiled) -> Vec<String> {
     c.scrolls
         .iter()
-        .flat_map(|s| s.glyphs.iter().map(|g| g.key()))
+        .flat_map(|s| s.glyphs().iter().map(|g| g.key()))
         .collect()
 }
 

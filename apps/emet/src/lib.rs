@@ -231,15 +231,17 @@ pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
 pub fn analyze(scrolls: &[Scroll]) -> Result<(), String> {
     use std::collections::HashMap;
     for scroll in scrolls {
-        let mut seen: HashMap<String, &Glyph> = HashMap::new();
-        for r in scroll.all_glyphs() {
-            let k = r.key();
-            if let Some(prev) = seen.get(&k) {
-                if *prev != r {
-                    return Err(format!("conflicting declarations for {k}"));
+        for unit in scroll.leaf_units() {
+            let mut seen: HashMap<String, &Glyph> = HashMap::new();
+            for r in unit.glyphs {
+                let k = r.key();
+                if let Some(prev) = seen.get(&k) {
+                    if *prev != r {
+                        return Err(format!("conflicting declarations for {k}"));
+                    }
+                } else {
+                    seen.insert(k, r);
                 }
-            } else {
-                seen.insert(k, r);
             }
         }
     }

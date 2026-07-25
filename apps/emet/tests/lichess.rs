@@ -17,7 +17,7 @@ fn scroll<'a>(c: &'a emet::Compiled, name: &str) -> &'a emet::ir::Scroll {
 }
 
 fn keys(s: &emet::ir::Scroll) -> Vec<String> {
-    s.glyphs.iter().map(|g| g.key()).collect()
+    s.glyphs().iter().map(|g| g.key()).collect()
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn service_firewall_allows_internal_sources_to_the_service_port() {
     let c = fleet();
     let s = scroll(&c, "kaiju");
     let nft = s
-        .glyphs
+        .glyphs()
         .iter()
         .find_map(|g| match g {
             emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
@@ -105,7 +105,7 @@ fn ingress_site_block_proxies_to_the_named_service_over_ssl() {
     let c = fleet();
     let s = scroll(&c, "manta");
     let site = s
-        .glyphs
+        .glyphs()
         .iter()
         .find_map(|g| match g {
             emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
