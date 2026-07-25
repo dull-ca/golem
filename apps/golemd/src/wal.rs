@@ -133,7 +133,9 @@ fn steps_through(steps: &[WalStep], boundary: u64) -> Vec<WalStep> {
 
 /// The `seq`s of `Done` steps that a later `Reversed` marker undid. Each
 /// `Reversed` row is paired to the nearest earlier still-unpaired `Done` for the
-/// same `(step_ord, action, reconcile_id)` — the step it reverses. Pairing
+/// same `(step_ord, action, reconcile_id)` — the step it reverses; `step_ord` is
+/// attempt-unique (see `foreman::enact_unit`), so the pairing never crosses units.
+/// Pairing
 /// one-to-one (a `Reversed` claims a specific `Done`, and `!cancelled.contains`
 /// prevents two markers claiming the same one) keeps an apply→reverse→apply
 /// cycle honest: only the first `Done` is cancelled, and the re-applied `Done`

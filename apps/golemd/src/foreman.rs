@@ -390,6 +390,10 @@ impl Foreman {
         retry: &RetryConfig,
         started: Instant,
     ) -> Result<UnitResult> {
+        // NOTE: `step_ord` is unique across ALL units of an attempt — the shared
+        // `next_ord` counter advances by `ops.len()` per unit, never resetting. The
+        // WAL grouping predicates (`has_terminal`/`next_reversible`/`reversed_after`,
+        // `wal::cancelled_dones`) key on `(step_ord, action)` and depend on it.
         let base_ord = *next_ord;
         *next_ord += ops.len() as u64;
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
@@ -1311,8 +1315,9 @@ fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
 }
 
 /// Whether an `Intended` step has any later terminal row (`Done`/`Failed`/
-/// `Reversed`) for the same step, matched by `step_ord`+`action` since a step's
-/// rows share those. An `Intended` with no terminal successor is what
+/// `Reversed`) for the same step, matched by `step_ord`+`action`: a step's rows
+/// share those, and `step_ord` is attempt-unique (see `enact_unit`) so the match
+/// never crosses units. An `Intended` with no terminal successor is what
 /// [`Foreman::redrive_intended`] must re-drive.
 fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
     steps.iter().any(|s| {
