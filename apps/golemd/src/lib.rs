@@ -10,6 +10,7 @@
 //! revision journal is not stored but projected from the settled WAL at read time
 //! (`wal::projected_revisions`, ADR 0020 §6).
 
+pub mod config;
 pub mod fake_reconciler;
 pub mod foreman;
 pub mod host;

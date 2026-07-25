@@ -20,3 +20,4 @@ blake3       = { workspace = true }
 postcard     = { workspace = true }
 tempfile     = { workspace = true }
 nix          = { workspace = true }
+toml         = { workspace = true }
