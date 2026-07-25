@@ -29,8 +29,9 @@ manifest of those scrolls (ADR 0012/0013); the readable plan is `--text`, JSON i
 top-level decls with optional signatures, Hindley-Milner inference with generics,
 records, `let`, lambdas, `case`/`if`, numbers with infix operators, string
 interpolation, and the offside (layout) rule. A program evaluates to a **fleet of
-scrolls** — `main : List Scroll`, one `Scroll` per host, each a list of glyphs.
-There is no JSON/YAML intermediary and no templating layer.
+scrolls** — `main : List Scroll`, one `Scroll` per host, each a recursive tree of
+glyphs or named sub-scrolls (ADR 0031). There is no JSON/YAML intermediary and no
+templating layer.
 
 ## Dev environment
 
@@ -81,7 +82,8 @@ prelude.rs (TyEnv, Env) for constructors (Just/Nothing/True/False/LT/EQ/GT) and
            (ADR 0025); the Tuple module + String.uncons ride the tuple type
            (ADR 0027)
 lib.rs     compile() drives the single-file stages; compile_file() runs the
-           multi-module resolve stage; analyze() does per-scroll IR checks
+           multi-module resolve stage; analyze() does per-leaf-unit IR checks
+           (a glyph-key conflict is scoped to one leaf; siblings may share a key)
 main.rs    CLI (`emetc build`); default emits the binary manifest (stdout/`-o`),
            `--text` the readable plan, `--json` the debug view, or all
            diagnostics (ariadne) — one report per error (ADR 0022)
@@ -125,7 +127,10 @@ An Elm-shaped, minimal module system for reuse across files:
   elements; unit `()` is the empty tuple; 4+ is a parse error → use a record),
   functions; the glyph types `AptPackage`,
   `SystemdService`, `Filesystem`, `LineInFile` and their sum `Glyph`; the
-  filesystem `Entry` sum (`File`/`Directory`/`Symlink`); and `Scroll`.
+  filesystem `Entry` sum (`File`/`Directory`/`Symlink`); and the recursive-scroll
+  types `Scroll`, `Contents` (a scroll's `glyphs`-xor-`groups`), `Policy`, and
+  `OnExhaust` (ADR 0031), all first-class so a library can compute a group tree
+  or a policy and pass it in.
   (`Filesystem` is the single first-class type for `file`/`directory`/`symlink`;
   the entry kind is the `Entry` sum, carried on a `Filesystem` glyph's `entry`
   field; ADR 0019.)
@@ -231,6 +236,13 @@ symlink        { path, target }            -> Glyph::Filesystem      key file:<p
 lineInFile     { path, line }              -> Glyph::LineInFile      key fileline:<path>:<line>
 ```
 
+`scroll`, `rollback`, `keep`, and `retry` join the reserved lowercase set
+(`is_reserved_constructor`). `rollback` / `keep` build a `Policy` braceless (the
+build/match split of ADR 0017); `retry { maxAttempts, baseDelayMs,
+backoffMultiplier, maxDelayMs, jitterFraction, maxElapsedMs, onExhaust }` sets
+the retry knobs — camelCase surface fields that lower to the snake_case wire
+`Policy` (ADR 0031 §3).
+
 Glyphs and the filesystem `Entry` are **matchable** (ADR 0017): a `case` may
 destructure a built glyph or entry. The spelling splits by direction — the
 reserved lowercase words *build* (`aptPackage`, `systemdService`, `file`,
@@ -245,12 +257,16 @@ value is always known to hold the sum, not an un-pinned variant.
 each building a different `Entry` arm (`build_constructor` enforces the per-arm
 field set — `symlink` takes no `mode`, `directory` no `contents`); together with
 `aptPackage`/`systemdService`/`lineInFile` they are still **four glyph kinds**.
-Each injects into `Glyph`. `scroll { name, glyphs }` groups one host's glyphs
-into a `Scroll`, and `main : List Scroll` is the fleet. `analyze` (`lib.rs`) is
-**per scroll**: conflicting declarations for one glyph key within a scroll are an
-error; two scrolls may share a key. In the golem legend the creature is animated
-by inscribed glyphs — each primitive is one glyph, a scroll is one host's marks,
-the fleet is the complete desired state.
+Each injects into `Glyph`. A `Scroll` is a recursive, strict tree (ADR 0031):
+`scroll { name, glyphs = [ … ] }` is a **leaf** unit of glyphs, and `scroll
+{ name, groups = [ … ] }` a **branch** of named sub-scrolls — exactly one of
+`glyphs` or `groups`, never both, plus an optional `policy`. `main : List
+Scroll` is the fleet, one root scroll per host. `analyze` (`lib.rs`) is **per
+leaf unit**: conflicting declarations for one glyph key *within a single leaf*
+are an error; sibling leaves (and separate scrolls) may share a key. In the
+golem legend the creature is animated by inscribed glyphs — each primitive is
+one glyph, a scroll is one host's marks, the fleet is the complete desired
+state.
 
 ## Pointers
 

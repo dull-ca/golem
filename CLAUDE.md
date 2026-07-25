@@ -3,8 +3,11 @@
 ## The model
 
 You author a fleet in **Emet** (`emet/`), a typed functional language. A
-program evaluates to `main : List Scroll` — one **Scroll** per host, each a
-list of **glyphs** over exactly four kinds:
+program evaluates to `main : List Scroll` — one **Scroll** per host. A Scroll is
+a recursive, strict tree (ADR 0031): each level holds *either* **glyphs** (a
+leaf unit) *or* named sub-scrolls (a branch), never both. Leaf units are the
+failure-isolation boundary — one unit's failure never rolls back a sibling — and
+each may carry an optional `policy`. The glyphs come over exactly four kinds:
 
 - **`aptPackage { name }`** — a Debian package.
 - **`systemdService { unit }`** — an enabled+started unit.

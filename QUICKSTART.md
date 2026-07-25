@@ -1,13 +1,16 @@
 # Quickstart
 
 > **The model.** You author a fleet in **Emet** — a program that evaluates to
-> one **scroll** per host, each a list of glyphs over four kinds (`aptPackage`,
-> `systemdService`, `file`, `lineInFile`). `emetc` compiles it to a binary,
-> content-addressed **manifest**. A per-host `golemd` ingests the manifest,
-> selects its own scroll, diffs it by content id, and enacts the difference
-> through reversible reconcilers, journalling what it did so every change can be
-> undone. By default `golemd` runs the **fake** reconciler, which records intent
-> without touching the host — safe to run anywhere.
+> one **scroll** per host. A scroll is a recursive tree: each level holds either
+> glyphs (a leaf) or named sub-scrolls (a branch), never both. Glyphs come over
+> four kinds (`aptPackage`, `systemdService`, `file`, `lineInFile`); branches
+> group leaves into named units. `emetc` compiles it to a binary,
+> content-addressed **manifest** (`format_version` 3). A per-host `golemd`
+> ingests the manifest, selects its own scroll, diffs it by content id, and
+> enacts the difference through reversible reconcilers, journalling what it did
+> so every change can be undone. By default `golemd` runs the **fake**
+> reconciler, which records intent without touching the host — safe to run
+> anywhere.
 
 ## Build
 
@@ -51,6 +54,35 @@ web =
 main : List Scroll
 main = [ web ]
 ```
+
+That `scroll { name, glyphs }` is a **leaf** — one unit of glyphs. To run many
+distinct units on one host, nest them with `groups`; each level is `glyphs` xor
+`groups`, never both:
+
+```elm
+worker : Scroll
+worker =
+  scroll
+    { name = "worker-01"
+    , groups =
+        [ scroll { name = "engine", glyphs = [ aptPackage { name = "stockfish" } ] }
+        , scroll { name = "base",   glyphs = [ aptPackage { name = "curl" } ] }
+        ]
+    }
+```
+
+A leaf is the **failure-isolation unit**: one unit failing doesn't roll back its
+siblings. A scroll may carry an optional `policy` — `rollback` (the default),
+`keep`, or `retry { maxAttempts = 3, onExhaust = keep, … }` — that governs how a
+unit's enact retries and what it does when the budget is exhausted:
+
+```elm
+scroll { name = "engine", policy = keep, glyphs = [ … ] }
+```
+
+The policy is carried on the wire today; the per-unit enact that reads it lands
+with ADR 0029's implementation (see `docs/adr/0031`). Grouping and policy change
+no glyph's content id, so regrouping or renaming a unit re-enacts nothing.
 
 A worked, multi-host, multi-module example is in `examples/lichess/` — a shared
 `Lichess` abstraction library and `Fleet` fact table, imported by the `fleet.emet`
