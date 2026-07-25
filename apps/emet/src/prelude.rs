@@ -106,10 +106,6 @@ fn entry() -> Type {
     Type::Con("Entry".to_string(), vec![])
 }
 
-fn policy() -> Type {
-    Type::Con("Policy".to_string(), vec![])
-}
-
 fn record(fields: &[(&str, Type)]) -> Type {
     Type::Record(
         fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<BTreeMap<_, _>>(),
