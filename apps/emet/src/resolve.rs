@@ -180,14 +180,11 @@ fn check_and_eval(
                 &imported_ctors,
             )
             .map_err(|e| type_error(loaded_mod, e))?;
-            let scrolls = eval::eval_entry(&loaded_mod.module, base_val)
+            let (scrolls, glyph_spans) = eval::eval_entry(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
-            crate::analyze(&scrolls).map_err(|msg| Error {
-                phase: Phase::Analyze,
-                msg,
-                span: 0..0,
-                note: None,
-                file: Some(loaded_mod.path.clone()),
+            crate::analyze(&scrolls, &glyph_spans).map_err(|mut e| {
+                e.file = Some(loaded_mod.path.clone());
+                e
             })?;
             entry_result = Some((main_ty, scrolls));
         } else {

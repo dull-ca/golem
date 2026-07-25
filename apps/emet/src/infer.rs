@@ -2459,7 +2459,7 @@ pub fn check_entry(
     let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
     validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
     let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
-    finish_main(&mut inf, &final_env)
+    finish_main(&mut inf, &final_env, main_decl_span(m))
 }
 
 /// Public entry: type-check a single-module program, returning the type env (so
@@ -2471,7 +2471,7 @@ pub fn check_module(m: &Module) -> Result<(TyEnv, Type), TypeError> {
     let env = register_type_decls(&mut inf, &env, &m.type_decls, &no_imports)?;
     validate_signature_refs(&m.type_decls, &m.decls, &no_imports)?;
     let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
-    finish_main(&mut inf, &final_env)
+    finish_main(&mut inf, &final_env, main_decl_span(m))
 }
 
 /// The LSP entry point: run inference with a recorder and return the finished
@@ -2541,9 +2541,13 @@ fn run_recorded(
     }
 }
 
-fn finish_main(inf: &mut Infer, final_env: &TyEnv) -> Result<(TyEnv, Type), TypeError> {
+fn finish_main(
+    inf: &mut Infer,
+    final_env: &TyEnv,
+    main_span: Span,
+) -> Result<(TyEnv, Type), TypeError> {
     let main = final_env.get("main").ok_or_else(|| {
-        TypeError::new("module has no `main` declaration", 0..0)
+        TypeError::new("module has no `main` declaration", main_span.clone())
             .note("add `main = [ ... ]` producing the scroll list")
     })?;
     let main_ty = inf.instantiate(main);
@@ -2567,7 +2571,15 @@ fn finish_main(inf: &mut Infer, final_env: &TyEnv) -> Result<(TyEnv, Type), Type
                 "`main` must be `List Scroll` (a list of scrolls), but is `{}`",
                 render_type(&main_ty)
             ),
-            0..0,
+            main_span,
         )),
     }
+}
+
+fn main_decl_span(m: &Module) -> Span {
+    m.decls
+        .iter()
+        .find(|d| d.name == "main")
+        .map(|d| d.span.clone())
+        .unwrap_or(0..0)
 }

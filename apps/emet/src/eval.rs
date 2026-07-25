@@ -6,7 +6,8 @@
 //! `case` scrutinee matches some arm; a glyph field is a `String`; …).
 //! `run_module` assumes its `Module` came through `check_module`.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::ast::*;
@@ -14,6 +15,34 @@ use crate::ir::{Contents, Entry, Glyph, OnExhaust, Perms, Policy, Scroll};
 use crate::prelude;
 
 pub type BuiltinFn = fn(Vec<Value>) -> Value;
+
+pub type GlyphSpans = HashMap<String, Span>;
+
+thread_local! {
+    static GLYPH_SPANS: RefCell<Option<GlyphSpans>> = const { RefCell::new(None) };
+}
+
+fn record_glyph_span(glyph: &Glyph, span: &Span) {
+    GLYPH_SPANS.with(|cell| {
+        if let Some(spans) = cell.borrow_mut().as_mut() {
+            spans.insert(glyph.key(), span.clone());
+        }
+    });
+}
+
+fn glyph_value(glyph: Glyph, span: &Span) -> Value {
+    record_glyph_span(&glyph, span);
+    Value::Glyph(glyph)
+}
+
+fn with_glyph_spans<T>(work: impl FnOnce() -> T) -> (T, GlyphSpans) {
+    let prior = GLYPH_SPANS.with(|cell| cell.replace(Some(GlyphSpans::new())));
+    let result = work();
+    let spans = GLYPH_SPANS
+        .with(|cell| cell.replace(prior))
+        .unwrap_or_default();
+    (result, spans)
+}
 
 pub const RECURSION_LIMIT: u64 = 20_000;
 
@@ -165,12 +194,18 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             .get(name)
             .cloned()
             .unwrap_or_else(|| unreachable!("unbound {name}")),
-        Expr::AptPackage(name) => Value::Glyph(Glyph::AptPackage {
-            name: as_str(eval(env, name, depth)?),
-        }),
-        Expr::SystemdService(unit) => Value::Glyph(Glyph::SystemdService {
-            unit: as_str(eval(env, unit, depth)?),
-        }),
+        Expr::AptPackage(name) => glyph_value(
+            Glyph::AptPackage {
+                name: as_str(eval(env, name, depth)?),
+            },
+            &e.1,
+        ),
+        Expr::SystemdService(unit) => glyph_value(
+            Glyph::SystemdService {
+                unit: as_str(eval(env, unit, depth)?),
+            },
+            &e.1,
+        ),
         Expr::Filesystem { path, entry } => {
             let path = as_str(eval(env, path, depth)?);
             let entry = match entry {
@@ -185,12 +220,15 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
                     target: as_str(eval(env, target, depth)?),
                 },
             };
-            Value::Glyph(Glyph::Filesystem { path, entry })
+            glyph_value(Glyph::Filesystem { path, entry }, &e.1)
         }
-        Expr::LineInFile { path, line } => Value::Glyph(Glyph::LineInFile {
-            path: as_str(eval(env, path, depth)?),
-            line: as_str(eval(env, line, depth)?),
-        }),
+        Expr::LineInFile { path, line } => glyph_value(
+            Glyph::LineInFile {
+                path: as_str(eval(env, path, depth)?),
+                line: as_str(eval(env, line, depth)?),
+            },
+            &e.1,
+        ),
         // A leaf lowers its glyph list, a branch recurses into its sub-scrolls;
         // the `ContentsExpr` arm already fixed which (ADR 0031 §7).
         Expr::Scroll {
@@ -659,14 +697,18 @@ fn perms_from_mode(mode: String) -> Result<Perms, EvalError> {
     })
 }
 
-/// Evaluate the module's `main` to a scroll list.
-pub fn run_module(m: &Module) -> Result<Vec<Scroll>, EvalError> {
+/// Evaluate the module's `main` to a scroll list, alongside the glyph-span side
+/// channel `analyze` consumes to locate a conflicting-key error (ADR 0032 §3).
+pub fn run_module(m: &Module) -> Result<(Vec<Scroll>, GlyphSpans), EvalError> {
     let m = m.clone();
     std::thread::Builder::new()
         .stack_size(EVAL_STACK_SIZE)
         .spawn(move || {
-            let env = eval_module_env(&m, prelude::env())?;
-            Ok(main_scrolls(&env))
+            let (result, spans) = with_glyph_spans(|| {
+                let env = eval_module_env(&m, prelude::env())?;
+                Ok(main_scrolls(&env))
+            });
+            result.map(|scrolls| (scrolls, spans))
         })
         .expect("spawn eval thread")
         .join()
@@ -698,10 +740,14 @@ pub fn eval_library(m: &Module, base: Env) -> Result<Env, EvalError> {
 }
 
 /// Evaluate an entry module against a base env carrying its imports' values,
-/// returning `main` as a scroll list. Assumes it already runs on an eval thread.
-pub fn eval_entry(m: &Module, base: Env) -> Result<Vec<Scroll>, EvalError> {
-    let env = eval_module_env(m, base)?;
-    Ok(main_scrolls(&env))
+/// returning `main` as a scroll list plus the glyph-span side channel. Assumes it
+/// already runs on an eval thread.
+pub fn eval_entry(m: &Module, base: Env) -> Result<(Vec<Scroll>, GlyphSpans), EvalError> {
+    let (result, spans) = with_glyph_spans(|| {
+        let env = eval_module_env(m, base)?;
+        Ok(main_scrolls(&env))
+    });
+    result.map(|scrolls| (scrolls, spans))
 }
 
 pub fn prelude_env() -> Env {

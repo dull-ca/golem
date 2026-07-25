@@ -157,3 +157,28 @@ fn empty_scroll_name_is_rejected() {
     };
     assert!(e.msg.contains("name"), "msg: {}", e.msg);
 }
+
+#[test]
+fn conflicting_keys_span_points_at_a_glyph_not_module_start() {
+    let src = r#"main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ file { path = "/etc/motd", contents = "hello", mode = "0644" }
+          , file { path = "/etc/motd", contents = "goodbye", mode = "0644" }
+          ]
+      }
+  ]
+"#;
+    let e = match emet::compile(src) {
+        Ok(_) => panic!("expected a conflict"),
+        Err(e) => e,
+    };
+    assert!(e.msg.contains("/etc/motd"), "msg: {}", e.msg);
+    assert_ne!(
+        e.span,
+        0..0,
+        "span must not be the module-start sentinel: {e:?}"
+    );
+}

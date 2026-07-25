@@ -139,7 +139,7 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
         }]
     })?;
 
-    let scrolls = eval::run_module(&module).map_err(|e| {
+    let (scrolls, glyph_spans) = eval::run_module(&module).map_err(|e| {
         vec![Error {
             phase: Phase::Analyze,
             msg: e.msg,
@@ -149,15 +149,7 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
         }]
     })?;
 
-    analyze(&scrolls).map_err(|msg| {
-        vec![Error {
-            phase: Phase::Analyze,
-            msg,
-            span: 0..0,
-            note: None,
-            file: None,
-        }]
-    })?;
+    analyze(&scrolls, &glyph_spans).map_err(|e| vec![e])?;
 
     Ok(Compiled { main_ty, scrolls })
 }
@@ -244,7 +236,7 @@ pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
 /// declarations of the same glyph key inside one leaf with differing bodies are
 /// an error, while sibling leaves may carry the same key without conflict. It is
 /// the hook where cycle checks and conflicting-write checks live as the IR grows.
-pub fn analyze(scrolls: &[Scroll]) -> Result<(), String> {
+pub fn analyze(scrolls: &[Scroll], glyph_spans: &eval::GlyphSpans) -> Result<(), Error> {
     use std::collections::HashMap;
     for scroll in scrolls {
         for unit in scroll.leaf_units() {
@@ -253,7 +245,16 @@ pub fn analyze(scrolls: &[Scroll]) -> Result<(), String> {
                 let k = r.key();
                 if let Some(prev) = seen.get(&k) {
                     if *prev != r {
-                        return Err(format!("conflicting declarations for {k}"));
+                        let span = glyph_spans.get(&k).cloned().unwrap_or(0..0);
+                        return Err(Error {
+                            phase: Phase::Analyze,
+                            msg: format!(
+                                "two glyphs in this scroll both manage `{k}` with different contents — a leaf scroll can define each key only once"
+                            ),
+                            span,
+                            note: None,
+                            file: None,
+                        });
                     }
                 } else {
                     seen.insert(k, r);

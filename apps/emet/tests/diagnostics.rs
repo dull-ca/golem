@@ -418,3 +418,15 @@ fn policy_field_wants_a_policy() {
     assert!(e.msg.contains("Policy"), "should mention Policy: {}", e.msg);
     assert!(!e.msg.contains("expected `String`"), "reversed framing leaked: {}", e.msg);
 }
+
+#[test]
+fn main_type_error_locates_the_main_binding() {
+    let e = err("main = 5");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("List Scroll"), "msg: {}", e.msg);
+    assert_ne!(
+        e.span,
+        0..0,
+        "should locate the main binding, not 0..0: {e:?}"
+    );
+}
