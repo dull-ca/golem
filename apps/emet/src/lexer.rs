@@ -418,7 +418,12 @@ fn scan_string_segment(
                 't' => '\t',
                 '"' => '"',
                 '\\' => '\\',
-                other => other,
+                other => {
+                    return Err(LexError {
+                        msg: format!("unknown string escape `\\{other}`"),
+                        span: byte_at[i]..byte_at[(i + 2).min(chars.len())],
+                    })
+                }
             };
             literal.push(repl);
             i += 2;
