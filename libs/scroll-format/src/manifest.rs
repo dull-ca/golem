@@ -17,7 +17,7 @@ use crate::scroll::{Glyph, Scroll};
 // `File { path, contents, mode }` variant with `Filesystem { path, entry }`
 // over the `Entry` sum and typed `Perms` — a changed glyph layout, so a v1
 // manifest now cleanly fails `check_format_version` rather than misparsing.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// A scroll paired with its content address. The `content_id` is over the
 /// `scroll` ALONE — never over this wrapper — so a scroll's identity does not
@@ -146,4 +146,14 @@ pub fn check_format_version(found: u32) -> Result<(), FromBytesError> {
 /// and it is never the artifact `golemd` consumes (ADR 0012 §2).
 pub fn to_json(manifest: &Manifest) -> String {
     serde_json::to_string_pretty(manifest).expect("manifest json view is infallible")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_version_is_three() {
+        assert_eq!(FORMAT_VERSION, 3);
+    }
 }
