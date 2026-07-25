@@ -190,6 +190,22 @@ def _glyph_desc(glyph: object) -> str:
     return str(kind)
 
 
+def _count_glyphs(scroll: object) -> int:
+    if not isinstance(scroll, dict):
+        return 0
+    contents = scroll.get("contents")
+    if not isinstance(contents, dict):
+        return 0
+    if "Glyphs" in contents:
+        glyphs = contents.get("Glyphs")
+        return len(glyphs) if isinstance(glyphs, list) else 0
+    if "Groups" in contents:
+        groups = contents.get("Groups")
+        if isinstance(groups, list):
+            return sum(_count_glyphs(child) for child in groups)
+    return 0
+
+
 _OP_VERB = {"Install": "install", "Remove": "remove", "Replace": "replace", "Noop": "noop"}
 
 
@@ -323,10 +339,7 @@ def status() -> None:
             if isinstance(content_id, str) and len(content_id) > 16:
                 content_id = content_id[:16] + "…"
             scroll = view.get("scroll")
-            if isinstance(scroll, dict):
-                glyphs = scroll.get("glyphs")
-                if isinstance(glyphs, list):
-                    glyph_count = str(len(glyphs))
+            glyph_count = str(_count_glyphs(scroll)) if scroll is not None else "—"
         last_revision = "—"
         if summary is not None and summary.get("latest_revision") is not None:
             last_revision = f"#{summary['latest_revision']}"
