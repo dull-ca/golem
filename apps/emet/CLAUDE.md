@@ -268,6 +268,10 @@ golem legend the creature is animated by inscribed glyphs — each primitive is
 one glyph, a scroll is one host's marks, the fleet is the complete desired
 state.
 
+## Apply order
+
+See ADR 0029 §6 and ADR 0031.
+
 ## Pointers
 
 - `docs/design/0001-elm-lite-type-system-and-value-language.md` — the design.
