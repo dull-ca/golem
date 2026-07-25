@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed 2026-07-25.
+Accepted 2026-07-25 (implemented). Proposed 2026-07-25.
 
 Extends ADR 0009 (the per-host `Scroll` container) by making `Scroll` recursive,
 and refines ADR 0029 (best-effort reconcile) by naming the **leaf-unit scroll**
@@ -171,9 +171,23 @@ glyph, so it never perturbs a glyph's content id (§5).
   desired set, so the diff emits `Remove` for each (`reconcile.rs:44`) — the
   existing teardown path. Those removes no longer have a leaf unit of their own
   (the unit is gone), so they run as a unit under **the surviving parent
-  scroll's policy** — the nearest still-present ancestor in the name-path. The
-  removes for one vanished unit are still isolated from sibling units; they are
-  simply scoped to, and governed by, the parent that used to contain them.
+  scroll's policy** — the **nearest still-present ancestor** in the recorded
+  name-path (`surviving_prefix`, `foreman.rs`). That resolved ancestor path is
+  what governs policy resolution and reporting attribution. The removes group's
+  own `unit_path`, however, is the resolved path **plus a synthetic `<removes>`
+  terminal segment** (`REMOVES_SEGMENT`, `foreman.rs`), so it is one segment
+  longer than — and therefore disjoint from — the resolved node's path. Without
+  the suffix a removes group resolving to a *present* unit's exact path (a flat
+  host `[host]`, or a glyph dropped from a still-present unit B `[host, b]`) would
+  share that present unit's `unit_path`, and a unit-scoped rollback of the removes
+  group would reverse the *present* unit's applied steps — a real sibling-isolation
+  hole. Appending any distinct segment closes it; `<removes>` is chosen so a group
+  reports legibly as `… / b / <removes>`. This is a **naming convention**, not an
+  enforced literal — Emet does not reserve names, so an authored scroll named
+  `<removes>` could in principle collide. **Follow-up:** reject angle-bracket
+  scroll names at the Emet surface to make the convention unforgeable. The removes
+  for one vanished unit stay isolated from sibling units, scoped to and governed
+  by the parent that used to contain them.
 
 ### 5. Wire change — `format_version` 2 → 3, shared with ADR 0030
 

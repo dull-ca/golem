@@ -84,9 +84,10 @@ unit's enact retries and what it does when the budget is exhausted:
 scroll { name = "engine", policy = keep, glyphs = [ … ] }
 ```
 
-The policy is carried on the wire today; the per-unit enact that reads it lands
-with ADR 0029's implementation (see `docs/adr/0031`). Grouping and policy change
-no glyph's content id, so regrouping or renaming a unit re-enacts nothing.
+The policy is carried on the wire and enforced per unit: golemd reads each unit's
+resolved policy and applies best-effort enact, retries, and `on_exhaust` to that
+unit alone (ADR 0029, ADR 0031). Grouping and policy change no glyph's content id,
+so regrouping or renaming a unit re-enacts nothing.
 
 A worked, multi-host, multi-module example is in `examples/lichess/` — a shared
 `Lichess` abstraction library and `Fleet` fact table, imported by the `fleet.emet`

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed 2026-07-24. Revised 2026-07-25 to scope best-effort, retry, and
+Accepted 2026-07-25 (implemented). Proposed 2026-07-24. Revised 2026-07-25 to scope best-effort, retry, and
 `on_exhaust` to the **leaf-unit scroll** of
 [ADR 0031](0031-recursive-scroll-grouping-and-failure-isolation.md) rather than
 the whole host scroll, and to make the report tree-shaped. 0031 makes `Scroll`
@@ -122,15 +122,21 @@ sibling unit (ADR 0031 §2).
   are recorded `Failed` and never retried. `Retryable` failures are candidates for
   the next round.
 
-- **Between rounds**, the loop re-reads this attempt's WAL
-  (`planroom.wal_steps_for(reconcile_id)`), filtered to this unit (by
-  `unit_path`, ADR 0031 §6), and computes the **remaining set**: the ops whose
-  latest terminal row is `Failed` *and* whose failure class was `Retryable`. That
-  WAL fold — not an in-memory list — is the source of truth for "what still owes
-  work," so the retry loop is crash-recoverable by the same fold ADR 0020 §3
-  already uses. Each retried op appends a fresh `Intended`→ `Done`/`Failed`
+- **Between rounds**, the loop computes the **remaining set** — the ops whose
+  latest result was `Failed` *and* whose failure class was `Retryable` — from the
+  round's **in-memory** classifications (`remaining_ops` over the per-op
+  `StepClass` vec, `foreman.rs`), not from a WAL re-read. The failure *class*
+  (retryable vs fatal) is a live-round concern only: the WAL never stores it —
+  every op is still bracketed `Intended`→`Done`/`Failed` exactly as before, and
+  the `Failed` row records *that* the op failed, not its retryability. This keeps
+  ADR 0020 intact: the WAL bracketing invariant is unchanged, and crash recovery
+  still folds the WAL by the same ADR 0020 §3 path — which needs only the
+  bracket, never the class, because a re-driven `Failed` op is re-classified when
+  it runs again. Each retried op appends a fresh `Intended`→`Done`/`Failed`
   bracket (a new WAL step transition; append-only, no UPDATE), so a step's round
-  history is legible in the log.
+  history is legible in the log. (The plan flagged this interpretation — the class
+  lives with the live round loop, not on the wire; the WAL carries the durable
+  bracket, the in-memory `StepClass` carries the transient retry decision.)
 
 - **The loop waits per this unit's resolved retry pace (§3) between rounds** and
   stops when either the remaining set is empty (this unit fully succeeded) or the
@@ -150,7 +156,9 @@ removes (§5). A `Noop` still writes no WAL step. An in-place `Replace` (ADR 002
 §4) stays a single `apply`; a reverse-then-apply `Replace`/`Remove` keeps its two
 brackets, and either bracket failing puts *that op* in its unit's remaining set.
 A vanished unit's removes run as their own unit under the surviving parent
-scroll's resolved policy (ADR 0031 §4).
+scroll's resolved policy, with a synthetic `<removes>` terminal path segment
+keeping that group's `unit_path` disjoint from any present unit's — otherwise a
+removes-group rollback could reverse a present unit's applied steps (ADR 0031 §4).
 
 ### 2. Immediate failure logging
 
@@ -366,10 +374,13 @@ Every mechanism this ADR adds is layered *on* the WAL, not around it:
   — writes `Intended` before the reconciler and `Done`/`Failed` after. Best-effort
   changes *control flow after a `Failed` row* (continue vs. abort), never the
   bracketing.
-- **Recovery intact and reused.** The retry loop's "remaining set" is the same WAL
-  fold recovery uses (ADR 0020 §3); a crash mid-retry recovers by exactly the
-  existing `recover_locked`/`redrive_intended`/`rollback_attempt` path. A `Failed`
-  step is safe to re-drive (reconcilers observe host state first).
+- **Recovery intact and reused.** The live round loop's "remaining set" is an
+  in-memory classification (§1), but recovery does not depend on it: a crash
+  mid-retry recovers by exactly the existing
+  `recover_locked`/`redrive_intended`/`rollback_attempt` path, folding the WAL by
+  its brackets alone (ADR 0020 §3), which never stored the retry class. A `Failed`
+  step is safe to re-drive (reconcilers observe host state first), and re-driving
+  re-classifies it — so the class living only in memory costs recovery nothing.
 - **Reversibility as an option, not a loss.** `on_exhaust = rollback` *is* ADR
   0020's atomic undo, unchanged — now scoped to a unit's `unit_path`. `keep` is a
   deliberate, opt-in relaxation of the atomic-*unit* boundary, documented as such
