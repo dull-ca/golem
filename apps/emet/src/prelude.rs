@@ -1932,6 +1932,14 @@ pub const CONS: &str = "::";
 /// user/prelude sum constructors, the two synthetic list constructors `[]` and
 /// `::` have schemes `∀a. List a` and `∀a. a -> List a -> List a`, so list
 /// patterns type-check and drive the exhaustiveness checker like any sum type.
+pub fn constructor_names() -> Vec<String> {
+    ctors()
+        .into_iter()
+        .chain(glyph_ctors())
+        .map(|c| c.name.to_string())
+        .collect()
+}
+
 pub fn constructor_scheme(name: &str) -> Option<Scheme> {
     match name {
         NIL => return Some(scheme(&[A], list(var(A)))),

@@ -330,6 +330,28 @@ fn empty_case_is_reported_as_no_arms() {
 }
 
 #[test]
+fn unbound_name_suggests_nearest() {
+    let e = err("greeting = \"hi\"\nmain = greetnig");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("greeting"), "should suggest greeting: {}", e.msg);
+    assert!(e.msg.contains("did you mean"), "msg: {}", e.msg);
+}
+
+#[test]
+fn unknown_constructor_suggests_nearest() {
+    let e = err("main = Nothin");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("Nothing"), "should suggest Nothing: {}", e.msg);
+}
+
+#[test]
+fn unknown_type_constructor_suggests_nearest() {
+    let e = err("f : Strng\nf = \"x\"\nmain = [ ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("String"), "should suggest String: {}", e.msg);
+}
+
+#[test]
 fn number_constraint_is_plain_language() {
     let e = err("main = [ ]\nx = 1 + \"two\"");
     assert_eq!(e.phase, Phase::Type);

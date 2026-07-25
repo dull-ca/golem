@@ -944,6 +944,37 @@ fn constraint_name(c: Constraint) -> &'static str {
     }
 }
 
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+fn did_you_mean(target: &str, candidates: impl Iterator<Item = String>) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for cand in candidates {
+        let d = edit_distance(target, &cand);
+        let threshold = if target.len() <= 4 { 1 } else { 2 };
+        if d == 0 || d > threshold {
+            continue;
+        }
+        if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+            best = Some((d, cand));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
 /// Render a type for a user-facing diagnostic. Internal unification-variable
 /// ids (`t9`, `t31`) are an implementation detail no reader should see (ADR
 /// 0032 §1), so each free `Var` prints as a friendly letter — `a`, `b`, `c`, …
@@ -1213,10 +1244,18 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 inf.rec_use(span, name);
                 Ok(inf.instantiate(s))
             }
-            None => Err(
-                TypeError::new(format!("unknown name `{name}`"), span.clone())
-                    .note("not bound by any declaration, `let`, or lambda parameter"),
-            ),
+            None => {
+                let mut msg = format!("unknown name `{name}`");
+                if let Some(hint) = did_you_mean(name, env.entries().map(|(k, _)| k.clone())) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                let note = if name.contains('.') {
+                    "this is a module-qualified name; check the module and member spelling"
+                } else {
+                    "not bound by any declaration, `let`, or lambda parameter"
+                };
+                Err(TypeError::new(msg, span.clone()).note(note))
+            }
         },
 
         Expr::Ctor(name) => match env.get(name) {
@@ -1224,10 +1263,17 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 inf.rec_use(span, name);
                 Ok(inf.instantiate(s))
             }
-            None => Err(TypeError::new(
-                format!("unknown constructor `{name}`"),
-                span.clone(),
-            )),
+            None => {
+                let mut msg = format!("unknown constructor `{name}`");
+                let candidates = env
+                    .entries()
+                    .map(|(k, _)| k.clone())
+                    .filter(|k| k.chars().next().is_some_and(char::is_uppercase));
+                if let Some(hint) = did_you_mean(name, candidates) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                Err(TypeError::new(msg, span.clone()))
+            }
         },
 
         Expr::AptPackage(name) => {
@@ -1532,7 +1578,16 @@ fn infer_pattern(
         }
         Pattern::Ctor(name, subpats) => {
             let scheme = inf.constructor_scheme(name).ok_or_else(|| {
-                TypeError::new(format!("unknown constructor `{name}`"), pat.1.clone())
+                let mut msg = format!("unknown constructor `{name}`");
+                let candidates = inf
+                    .user_ctor_schemes
+                    .keys()
+                    .cloned()
+                    .chain(crate::prelude::constructor_names());
+                if let Some(hint) = did_you_mean(name, candidates) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                TypeError::new(msg, pat.1.clone())
             })?;
             let instantiated = inf.instantiate(&scheme);
             let (arg_types, result_type) = uncurry(&instantiated);
@@ -2117,10 +2172,19 @@ fn validate_type_refs_inner(
                 ),
                 span.clone(),
             )),
-            None => Err(TypeError::new(
-                format!("unknown type constructor `{name}`"),
-                span.clone(),
-            )),
+            None => {
+                let mut msg = format!("unknown type constructor `{name}`");
+                if let Some(hint) = did_you_mean(name, type_arities.keys().cloned()) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                if name == "Str" {
+                    msg.push_str(" (`Str` was removed; the type is now `String`)");
+                }
+                if name == "Glyphs" {
+                    msg.push_str(" (`Glyphs` was removed; the type is now `List Glyph`)");
+                }
+                Err(TypeError::new(msg, span.clone()))
+            }
         },
         Type::Fun(a, b) => {
             validate_type_refs_inner(a, span, type_arities, bound)?;
