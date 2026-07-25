@@ -723,7 +723,7 @@ fn analyze_error(loaded: &Loaded, e: eval::EvalError) -> Error {
     Error {
         phase: Phase::Analyze,
         msg: e.msg,
-        span: 0..0,
+        span: e.span,
         note: None,
         file: Some(loaded.path.clone()),
     }

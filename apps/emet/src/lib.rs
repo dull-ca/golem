@@ -143,7 +143,7 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
         vec![Error {
             phase: Phase::Analyze,
             msg: e.msg,
-            span: 0..0,
+            span: e.span,
             note: None,
             file: None,
         }]

@@ -134,3 +134,26 @@ fn scroll_glyphs_field_must_be_a_glyph_list() {
     let e = err(src);
     assert_eq!(e.phase, Phase::Type);
 }
+
+#[test]
+fn angle_bracket_scroll_name_is_rejected() {
+    let e = match emet::compile(r#"main = [ scroll { name = "<removes>", glyphs = [] } ]"#) {
+        Ok(_) => panic!("angle-bracket name should be rejected"),
+        Err(e) => e,
+    };
+    assert!(
+        e.msg.contains("angle bracket") || e.msg.contains('<'),
+        "msg: {}",
+        e.msg
+    );
+    assert!(e.msg.contains("name"), "msg: {}", e.msg);
+}
+
+#[test]
+fn empty_scroll_name_is_rejected() {
+    let e = match emet::compile(r#"main = [ scroll { name = "", glyphs = [] } ]"#) {
+        Ok(_) => panic!("empty name should be rejected"),
+        Err(e) => e,
+    };
+    assert!(e.msg.contains("name"), "msg: {}", e.msg);
+}

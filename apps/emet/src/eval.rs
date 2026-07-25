@@ -17,10 +17,11 @@ pub type BuiltinFn = fn(Vec<Value>) -> Value;
 
 pub const RECURSION_LIMIT: u64 = 20_000;
 
-const EVAL_STACK_SIZE: usize = 512 * 1024 * 1024;
+const EVAL_STACK_SIZE: usize = 1024 * 1024 * 1024;
 
 pub struct EvalError {
     pub msg: String,
+    pub span: Span,
 }
 
 /// A runtime value. Beyond the obvious literals and containers:
@@ -193,11 +194,12 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         // A leaf lowers its glyph list, a branch recurses into its sub-scrolls;
         // the `ContentsExpr` arm already fixed which (ADR 0031 §7).
         Expr::Scroll {
-            name,
+            name: name_expr,
             policy,
             contents,
         } => {
-            let name = as_str(eval(env, name, depth)?);
+            let name = as_str(eval(env, name_expr, depth)?);
+            reject_invalid_scroll_name(&name, &name_expr.1)?;
             let policy = match policy {
                 Some(p) => Some(as_policy(eval(env, p, depth)?)),
                 None => None,
@@ -314,6 +316,20 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             unreachable!("non-exhaustive case")
         }
     })
+}
+
+#[cold]
+#[inline(never)]
+fn reject_invalid_scroll_name(name: &str, span: &Span) -> Result<(), EvalError> {
+    if name.is_empty() || name.contains('<') || name.contains('>') {
+        return Err(EvalError {
+            msg: format!(
+                "scroll name `{name}` is not a valid host identifier (no angle brackets, not empty)"
+            ),
+            span: span.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value)>) -> bool {
@@ -490,6 +506,7 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
                 return Err(EvalError {
                     msg: "evaluation exceeded recursion limit (possible infinite recursion)"
                         .to_string(),
+                    span: 0..0,
                 });
             }
             let self_bound = match &rec {
@@ -627,10 +644,12 @@ fn perms_from_mode(mode: String) -> Result<Perms, EvalError> {
     let digits = mode.strip_prefix("0o").unwrap_or(&mode);
     let bits = u16::from_str_radix(digits, 8).map_err(|e| EvalError {
         msg: format!("invalid mode `{mode}`: {e}"),
+        span: 0..0,
     })?;
     if bits > 0o7777 {
         return Err(EvalError {
             msg: format!("invalid mode `{mode}`: out of range"),
+            span: 0..0,
         });
     }
     Ok(Perms {

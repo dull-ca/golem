@@ -152,14 +152,6 @@ monorepo. B's headline is model reconciliation.
   needs disambiguating. Future work: resolve `-1` as a negative literal in
   argument position too.
 
-- **Reject `<`/`>` in scroll names at compile time — KNOWN GAP.** golemd's
-  vanished-removes groups append a synthetic `<removes>` segment to their
-  `unit_path` (ADR 0031 §4); an authored scroll named `<removes>` could collide
-  with it. Emet does not reserve scroll names, so the marker is a convention, not
-  an enforced literal. Future work: reject angle brackets in a scroll `name` at
-  compile time so the `<removes>` reporting segment is unforgeable (ADR 0031 §4
-  follow-up).
-
 ### Diagnostics / tooling
 
 - **Multi-error parse recovery + rich CLI rendering — DONE (ADR 0022).** The
