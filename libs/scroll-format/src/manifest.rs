@@ -25,7 +25,7 @@ pub const FORMAT_VERSION: u32 = 2;
 ///
 // NOTE: field order IS the postcard encoding. Reordering or adding a field is
 // a `format_version`-bumping change, not a free refactor — see ADR 0012/0013.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AddressedScroll {
     pub content_id: ContentId,
     pub scroll: Scroll,
@@ -42,7 +42,7 @@ pub struct AddressedScroll {
 ///
 // NOTE: field order IS the postcard encoding. Reordering or adding a field is
 // a `format_version`-bumping change, not a free refactor — see ADR 0012/0013.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub format_version: u32,
     pub emet_version: String,

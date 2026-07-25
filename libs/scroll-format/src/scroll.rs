@@ -77,27 +77,112 @@ pub struct Perms {
     pub group: Option<String>,
 }
 
-/// One host's worth of desired state: a named container of glyphs. The same
-/// glyph key may appear in two different scrolls without conflict (two hosts
-/// installing `nginx`); a conflict is only within one scroll. `name` is a
-/// label for now — no cross-scroll uniqueness is enforced (ADR 0009).
-///
-/// A `Scroll` is what gets content-addressed: its deterministic postcard bytes
-/// are hashed to a [`ContentId`](crate::ContentId) (see [`content_id()`](crate::content_id())).
-///
-// NOTE: field order IS the postcard encoding. Reordering or adding a field is
-// a `format_version`-bumping change, not a free refactor — see ADR 0012/0013.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scroll {
     pub name: String,
-    pub glyphs: Vec<Glyph>,
+    pub policy: Option<Policy>,
+    pub contents: Contents,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Contents {
+    Glyphs(Vec<Glyph>),
+    Groups(Vec<Scroll>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Policy {
+    pub base_delay_ms: Option<u64>,
+    pub backoff_multiplier: Option<f64>,
+    pub max_delay_ms: Option<u64>,
+    pub jitter_fraction: Option<f64>,
+    pub max_attempts: Option<u32>,
+    pub max_elapsed_ms: Option<u64>,
+    pub on_exhaust: Option<OnExhaust>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OnExhaust {
+    Rollback,
+    Keep,
+}
+
+pub struct LeafUnit<'a> {
+    pub path: Vec<String>,
+    pub glyphs: &'a [Glyph],
+    pub policy_chain: Vec<&'a Policy>,
 }
 
 impl Scroll {
-    /// A one-line human summary of the scroll (the `--text` plan view, not the
-    /// wire contract).
+    pub fn is_leaf(&self) -> bool {
+        matches!(self.contents, Contents::Glyphs(_))
+    }
+
+    pub fn glyphs(&self) -> &[Glyph] {
+        match &self.contents {
+            Contents::Glyphs(g) => g,
+            Contents::Groups(_) => &[],
+        }
+    }
+
+    pub fn all_glyphs(&self) -> Vec<&Glyph> {
+        let mut out = Vec::new();
+        self.collect_glyphs(&mut out);
+        out
+    }
+
+    fn collect_glyphs<'a>(&'a self, out: &mut Vec<&'a Glyph>) {
+        match &self.contents {
+            Contents::Glyphs(g) => out.extend(g.iter()),
+            Contents::Groups(children) => {
+                for child in children {
+                    child.collect_glyphs(out);
+                }
+            }
+        }
+    }
+
+    pub fn leaf_units(&self) -> Vec<LeafUnit<'_>> {
+        let mut out = Vec::new();
+        self.collect_leaves(&mut Vec::new(), &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn collect_leaves<'a>(
+        &'a self,
+        path: &mut Vec<String>,
+        policy_chain: &mut Vec<&'a Policy>,
+        out: &mut Vec<LeafUnit<'a>>,
+    ) {
+        path.push(self.name.clone());
+        if let Some(p) = &self.policy {
+            policy_chain.push(p);
+        }
+        match &self.contents {
+            Contents::Glyphs(g) => out.push(LeafUnit {
+                path: path.clone(),
+                glyphs: g,
+                policy_chain: policy_chain.clone(),
+            }),
+            Contents::Groups(children) => {
+                for child in children {
+                    child.collect_leaves(path, policy_chain, out);
+                }
+            }
+        }
+        if self.policy.is_some() {
+            policy_chain.pop();
+        }
+        path.pop();
+    }
+
     pub fn describe(&self) -> String {
-        format!("scroll `{}` ({} glyphs)", self.name, self.glyphs.len())
+        match &self.contents {
+            Contents::Glyphs(g) => format!("scroll `{}` ({} glyphs)", self.name, g.len()),
+            Contents::Groups(children) => {
+                format!("scroll `{}` ({} groups)", self.name, children.len())
+            }
+        }
     }
 }
 
@@ -139,5 +224,90 @@ impl Glyph {
                 format!("ensure line `{line}` present in file `{path}`")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apt(name: &str) -> Glyph {
+        Glyph::AptPackage { name: name.to_string() }
+    }
+
+    fn leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
+        Scroll { name: name.to_string(), policy: None, contents: Contents::Glyphs(glyphs) }
+    }
+
+    fn branch(name: &str, groups: Vec<Scroll>) -> Scroll {
+        Scroll { name: name.to_string(), policy: None, contents: Contents::Groups(groups) }
+    }
+
+    #[test]
+    fn leaf_reports_its_glyphs_and_is_a_leaf() {
+        let s = leaf("db", vec![apt("postgresql")]);
+        assert!(s.is_leaf());
+        assert_eq!(s.glyphs(), &[apt("postgresql")]);
+    }
+
+    #[test]
+    fn branch_has_no_glyphs_and_is_not_a_leaf() {
+        let s = branch("host", vec![leaf("db", vec![apt("postgresql")])]);
+        assert!(!s.is_leaf());
+        assert_eq!(s.glyphs(), &[] as &[Glyph]);
+    }
+
+    #[test]
+    fn leaf_units_walk_source_order_with_name_paths() {
+        let host = branch(
+            "worker-01",
+            vec![
+                branch(
+                    "fishnet",
+                    vec![leaf("client-1", vec![apt("stockfish")]), leaf("client-2", vec![apt("stockfish")])],
+                ),
+                leaf("base", vec![apt("htop")]),
+            ],
+        );
+        let units = host.leaf_units();
+        let paths: Vec<Vec<String>> = units.iter().map(|u| u.path.clone()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                vec!["worker-01".to_string(), "fishnet".to_string(), "client-1".to_string()],
+                vec!["worker-01".to_string(), "fishnet".to_string(), "client-2".to_string()],
+                vec!["worker-01".to_string(), "base".to_string()],
+            ]
+        );
+        assert_eq!(units[2].glyphs, &[apt("htop")]);
+    }
+
+    #[test]
+    fn policy_chain_is_root_to_leaf() {
+        let child = Scroll {
+            name: "client-2".to_string(),
+            policy: Some(Policy { on_exhaust: Some(OnExhaust::Keep), ..Policy::default() }),
+            contents: Contents::Glyphs(vec![apt("stockfish")]),
+        };
+        let host = Scroll {
+            name: "worker".to_string(),
+            policy: Some(Policy { max_attempts: Some(9), ..Policy::default() }),
+            contents: Contents::Groups(vec![child]),
+        };
+        let units = host.leaf_units();
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].policy_chain.len(), 2);
+        assert_eq!(units[0].policy_chain[0].max_attempts, Some(9));
+        assert_eq!(units[0].policy_chain[1].on_exhaust, Some(OnExhaust::Keep));
+    }
+
+    #[test]
+    fn all_glyphs_flattens_in_source_order() {
+        let host = branch(
+            "h",
+            vec![leaf("a", vec![apt("one"), apt("two")]), leaf("b", vec![apt("three")])],
+        );
+        let flat: Vec<&Glyph> = host.all_glyphs();
+        assert_eq!(flat, vec![&apt("one"), &apt("two"), &apt("three")]);
     }
 }
