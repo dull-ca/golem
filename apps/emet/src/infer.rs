@@ -952,6 +952,13 @@ fn constraint_name(c: Constraint) -> &'static str {
     }
 }
 
+/// Render a type for a user-facing diagnostic. Internal unification-variable
+/// ids (`t9`, `t31`) are an implementation detail no reader should see (ADR
+/// 0032 §1), so each free `Var` prints as a friendly letter — `a`, `b`, `c`, …
+/// in first-seen order. The `names` map keys those letters by var id for the
+/// duration of one call, so every occurrence of the same variable renders the
+/// same letter within a single message (`a -> a`, never `a -> b`); the numbering
+/// restarts at `a` on the next call.
 pub(crate) fn render_type(t: &Type) -> String {
     let mut names: HashMap<u32, String> = HashMap::new();
     let mut next: u32 = 0;
@@ -960,6 +967,7 @@ pub(crate) fn render_type(t: &Type) -> String {
     out
 }
 
+/// The `n`th friendly variable name: `a`..`z`, then `a1`, `b1`, … once past 26.
 fn var_letter(n: u32) -> String {
     let letter = (b'a' + (n % 26) as u8) as char;
     let cycle = n / 26;
@@ -970,6 +978,13 @@ fn var_letter(n: u32) -> String {
     }
 }
 
+/// Append `t`'s friendly form to `out`, minting variable letters through
+/// `names`/`next` (see `render_type`). Parentheses are added only where they
+/// change meaning: a constructor argument that is itself an applied constructor
+/// or a function, and a function's left side when it is another function (`->`
+/// is right-associative). `paren_fun` is the caller's request to wrap this type
+/// if it turns out to be a function — carried for nested positions where an
+/// unparenthesized arrow would rebind.
 fn render_into(
     t: &Type,
     names: &mut HashMap<u32, String>,

@@ -222,8 +222,9 @@ fn check_and_eval(
 /// tried. Returns this module's name.
 ///
 /// Parses through `parse_source_multi`, so a malformed module yields every parse
-/// error it contains (each prefixed with the file path) as the `Vec<Error>`
-/// (ADR 0022), rather than only the first.
+/// error it contains as the `Vec<Error>` (ADR 0022), rather than only the first.
+/// The errors carry no file-path prefix — the report header already names the
+/// file, and prefixing it into the message wrecked the ariadne layout (ADR 0032 §1).
 fn load_graph(
     path: &Path,
     search_path: &SearchPath,

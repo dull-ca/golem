@@ -1204,10 +1204,17 @@ const FLOAT_PATTERN_MESSAGE: &str = "`Float` literals can't be matched in a patt
 // rewording those two anchors ripples.
 const TUPLE_TOO_LARGE_MESSAGE: &str = "A tuple can have at most 3 elements. For a larger grouping, use a record with named fields instead.";
 
-/// Parse a complete laid-out token stream (as produced by
-/// `layout::layout_all`) into a `Module`. Returns every error chumsky
-/// collected, or one synthetic "unexpected end of input" error if parsing
-/// failed without producing any.
+/// Rewrite chumsky's raw `expected …` error into plain language (ADR 0032 §1).
+/// Chumsky's default `Display` leaks compiler internals a reader should never
+/// see: duplicate entries, the virtual layout token `';'` (the offside rule's
+/// statement separator, `layout.rs`), and the placeholder `something else`. This
+/// keeps the message's `head` (the "found X" clause) verbatim, then rebuilds the
+/// expected list — dropping the virtual `';'`, deduping, replacing `something
+/// else` with `an expression`, and joining with Oxford-comma "or".
+///
+/// When every remaining expectation is a closing delimiter, the author most
+/// likely left an opener unclosed rather than genuinely wanting a `)`/`]`/`}`
+/// there, so the message ends with an "unclosed" hint naming that closer.
 fn humanize_expected(raw: &str) -> String {
     let Some(idx) = raw.find("expected ") else {
         return raw.replace("something else", "an expression");
@@ -1252,6 +1259,10 @@ fn humanize_expected(raw: &str) -> String {
     format!("{head}expected {joined}{close_hint}")
 }
 
+/// Parse a complete laid-out token stream (as produced by
+/// `layout::layout_all`) into a `Module`. Returns every error chumsky
+/// collected — each run through `humanize_expected` — or one synthetic
+/// "unexpected end of input" error if parsing failed without producing any.
 pub fn parse(
     tokens: &[Token],
     name: Option<String>,
