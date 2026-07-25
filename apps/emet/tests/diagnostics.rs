@@ -329,6 +329,34 @@ fn empty_case_is_reported_as_no_arms() {
     assert!(e.msg.contains("no arms") || e.msg.contains("at least one"), "msg: {}", e.msg);
 }
 
+// AUDIT #27 is deferred (docs/TODO.md): `f x -1` still parses as `(f x) - 1`,
+// binary subtraction, not `f x (-1)`. This pins that current behavior — a
+// two-argument function applied to only its first argument, then subtracted
+// from, fails the `number` constraint, proving `-1` was consumed as subtraction
+// rather than as a second argument (which would type-check).
+#[test]
+fn negative_literal_argument_still_parses_as_subtraction() {
+    let e = err("take2 a b = a\nmain = [ take2 3 -1 ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(!e.msg.contains("not yet supported"), "no rejection expected yet: {}", e.msg);
+    assert!(
+        e.msg.to_lowercase().contains("number"),
+        "subtraction on a partial application fails the number constraint: {}",
+        e.msg
+    );
+}
+
+#[test]
+fn let_in_a_case_arm_is_reported_as_unsupported() {
+    let e = err("f x =\n  case x of\n    1 ->\n      let y = 2 in y\n    _ -> 0\n\nmain = f 1");
+    assert_ne!(e.span, 0..0, "should locate the arm, not the module: {e:?}");
+    assert!(
+        e.msg.to_lowercase().contains("let") || e.msg.to_lowercase().contains("not yet"),
+        "should name the unsupported form: {}",
+        e.msg
+    );
+}
+
 #[test]
 fn duplicate_top_level_binding_is_rejected() {
     let e = err("x = 1\nx = 2\n\nmain = [ ]");

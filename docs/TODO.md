@@ -124,22 +124,33 @@ monorepo. B's headline is model reconciliation.
   redirecting to `<`/`>` comparison. Tests green
   (`apps/emet/tests/literal_patterns.rs`).
 
-- **`let … in` does not parse inside a `case` arm — KNOWN GAP.** A `case` arm
-  body cannot open its own `let` block; the layout/offside rules close the arm
-  before the `in`. Bindings a single arm wants must be hoisted above the `case`,
-  or the arm must call out to a helper function that carries the `let`. Surfaced
-  building `imageRef` (`lib/Quadlet.emet`), whose digest-vs-tag split is a
-  top-level `if` and whose two arms are the separate `imageRefDigest` /
-  `imageRefTagged` functions for exactly this reason. Future work: let a `case`
-  arm body be a laid-out `let … in` like any other expression.
+- **`let … in` inside a `case` arm is rejected, not supported — KNOWN GAP
+  (AUDIT #26).** A `case` arm body cannot open its own `let` block; the arm's
+  layout closes it before a laid-out `in`. The arm parser now names the form
+  with a specific parse error (`let … in inside a case arm is not yet supported
+  here — lift the binding out of the arm`) instead of letting it mis-parse into
+  a misleading downstream type error (ADR 0032). Bindings a single arm wants
+  must be hoisted above the `case`, or the arm must call out to a helper
+  function that carries the `let`. Surfaced building `imageRef`
+  (`lib/Quadlet.emet`), whose digest-vs-tag split is a top-level `if` and whose
+  two arms are the separate `imageRefDigest` / `imageRefTagged` functions for
+  exactly this reason. Future work: let a `case` arm body be a laid-out
+  `let … in` like any other expression.
 
 - **A negative literal as a function argument parses as subtraction — KNOWN
-  GAP.** `f x -1` reads as `f x - 1` (binary subtraction), not `f x (-1)`; a
-  negative literal in argument position needs parentheses (`f x (-1)`) or a
-  named sentinel. This is the expression-argument residue of the unary-minus
-  ambiguity — the *pattern* side was resolved in ADR 0026 (negative literal
-  patterns fold at parse time), but argument position still needs disambiguating.
-  Future work: resolve `-1` as a negative literal in argument position too.
+  GAP (AUDIT #27).** `f x -1` reads as `f x - 1` (binary subtraction), not
+  `f x (-1)`; a negative literal in argument position needs parentheses
+  (`f x (-1)`) or a named sentinel. It still surfaces only as a downstream type
+  error, not a targeted parse-time rejection: distinguishing the negative-literal
+  argument from binary `-` needs token-adjacency the lexer does not preserve, and
+  a rejection that did not disturb subtraction was judged infeasible under ADR
+  0032, so it is left deferred (the current subtraction parse is pinned by
+  `negative_literal_argument_still_parses_as_subtraction` in
+  `apps/emet/tests/diagnostics.rs`). This is the expression-argument residue of
+  the unary-minus ambiguity — the *pattern* side was resolved in ADR 0026
+  (negative literal patterns fold at parse time), but argument position still
+  needs disambiguating. Future work: resolve `-1` as a negative literal in
+  argument position too.
 
 - **Reject `<`/`>` in scroll names at compile time — KNOWN GAP.** golemd's
   vanished-removes groups append a synthetic `<removes>` segment to their

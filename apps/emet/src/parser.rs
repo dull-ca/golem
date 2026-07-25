@@ -630,9 +630,20 @@ where
             }),
         ));
 
+        let arm_body = expr.clone().validate(|body, _, emitter| {
+            let body_is_unsupported_let = matches!(body.0, Expr::Let { .. });
+            if body_is_unsupported_let {
+                emitter.emit(Rich::<Tok, TokSpan>::custom(
+                    body.1.clone().into(),
+                    "`let … in` inside a `case` arm is not yet supported here — lift the binding out of the arm",
+                ));
+            }
+            body
+        });
+
         let arm = pattern_parser()
             .then_ignore(arm_arrow)
-            .then(expr.clone())
+            .then(arm_body)
             .map(|(pat, body)| Arm { pat, body });
 
         let arms = just(Tok::VSemi).repeated().ignore_then(
