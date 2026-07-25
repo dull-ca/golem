@@ -206,6 +206,12 @@ monorepo. B's headline is model reconciliation.
   first glyph's span rather than 0..0. Precise dual-span reporting across a
   module boundary is a follow-up, not built here.
 
+- **Did-you-mean has no forward references — KNOWN BOUNDARY.** The unbound-name
+  suggestion in `infer.rs` draws candidates from `env.entries()` at the site of
+  the reference, so a name defined later in the same file gets no suggestion.
+  Deliberate for now; the fix is to seed candidates from all top-level
+  declaration names rather than only already-inferred bindings.
+
 ### Cleanup
 
 - **Remove the transitional `Str` / `Glyphs` aliases — DONE.** `String` and

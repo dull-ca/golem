@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed 2026-07-25.
+Accepted 2026-07-25 (implemented; deferrals recorded in docs/TODO.md — general
+parse recovery, hints #13/#25/#29, negative-literal argument, boxed
+`EvalError`, cross-module conflict spans, did-you-mean forward references).
 
 Builds on ADR 0022 (one report per error; parse-phase recovery at the layout `;`
 boundary) and reaffirms its one-clean-error rule as a diagnostic principle rather

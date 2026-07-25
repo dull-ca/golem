@@ -135,11 +135,10 @@ fn steps_through(steps: &[WalStep], boundary: u64) -> Vec<WalStep> {
 /// `Reversed` row is paired to the nearest earlier still-unpaired `Done` for the
 /// same `(step_ord, action, reconcile_id)` — the step it reverses; `step_ord` is
 /// attempt-unique (see `foreman::enact_unit`), so the pairing never crosses units.
-/// Pairing
-/// one-to-one (a `Reversed` claims a specific `Done`, and `!cancelled.contains`
-/// prevents two markers claiming the same one) keeps an apply→reverse→apply
-/// cycle honest: only the first `Done` is cancelled, and the re-applied `Done`
-/// stays live.
+/// Pairing one-to-one (a `Reversed` claims a specific `Done`, and
+/// `!cancelled.contains` prevents two markers claiming the same one) keeps an
+/// apply→reverse→apply cycle honest: only the first `Done` is cancelled, and
+/// the re-applied `Done` stays live.
 pub(crate) fn cancelled_dones(steps: &[WalStep]) -> std::collections::BTreeSet<u64> {
     let mut cancelled = std::collections::BTreeSet::new();
     for marker in steps.iter().filter(|s| s.state == WalStepState::Reversed) {
