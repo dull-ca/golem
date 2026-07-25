@@ -487,11 +487,11 @@ impl Infer {
             .collect();
 
         let mismatch = || {
+            let rendered = render_types_shared(&[&self.apply(a), &self.apply(b)]);
             TypeError::new(
                 format!(
                     "record types differ: `{}` vs `{}`",
-                    self.apply(a),
-                    self.apply(b)
+                    rendered[0], rendered[1]
                 ),
                 span.clone(),
             )

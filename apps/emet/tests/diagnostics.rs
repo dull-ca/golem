@@ -222,6 +222,23 @@ fn arity_too_many_does_not_leak_internal_typevars() {
 }
 
 #[test]
+fn record_mismatch_renders_both_sides_through_one_shared_letter_map() {
+    let e = err("f : { x : a } -> Int\nf r = 1\n\ng h = f { x = h, y = h }\n\nmain = [ g ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("record types differ"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("`{ x : a }`") && e.msg.contains("`{ x : a, y : a }`"),
+        "internal type var must render through the friendly letter map, got: {}",
+        e.msg
+    );
+    assert!(
+        !e.msg.contains("t5") && !e.msg.contains("t6"),
+        "leaked internal typevar: {}",
+        e.msg
+    );
+}
+
+#[test]
 fn mismatch_renders_both_sides_through_one_shared_letter_map() {
     let e = err("f : (a, b) -> Int\nf t = 1\n\ng : (a -> b) -> Int\ng h = f h\n\nmain = [ g ]");
     assert_eq!(e.phase, Phase::Type);
