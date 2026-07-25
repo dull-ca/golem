@@ -24,6 +24,11 @@ pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
     let mut ops = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
+    // NOTE: the diff is per-glyph, not per-group — group structure is not an
+    // input (ADR 0031 §4). Flattening every leaf's glyphs in source order yields
+    // the same ops however they are grouped, so regrouping or renaming a group
+    // re-enacts nothing: no glyph's key or content id depends on its enclosing
+    // scroll's name or depth.
     for glyph in desired.all_glyphs() {
         let key = glyph.key();
         seen.insert(key.clone());

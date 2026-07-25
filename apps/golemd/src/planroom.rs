@@ -185,6 +185,10 @@ impl SqlitePlanRoom {
                 op           TEXT NOT NULL,
                 inverse      TEXT,
                 changed      INTEGER,
+                -- serde_json array, like `op`/`inverse` (ADR 0031 §6). DEFAULT
+                -- '[]' lets a db written before this column read back without a
+                -- panic; the read (`row_to_wal_step`) parses defensively for the
+                -- same reason.
                 unit_path    TEXT NOT NULL DEFAULT '[]',
                 at           TEXT NOT NULL
             );
@@ -428,6 +432,9 @@ fn row_to_wal_step(r: &rusqlite::Row) -> rusqlite::Result<WalStep> {
     };
     let changed: Option<i64> = r.get(8)?;
     let unit_path: String = r.get(9)?;
+    // A stale or unparseable value reads back as the empty path rather than
+    // failing the whole row — `unit_path` is a reporting label, not recovery
+    // state (ADR 0031 §6), so it must never make a WAL step unrecoverable.
     let unit_path: Vec<String> = serde_json::from_str(&unit_path).unwrap_or_default();
     let at: String = r.get(10)?;
     let at = chrono::DateTime::parse_from_rfc3339(&at)

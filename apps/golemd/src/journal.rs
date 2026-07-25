@@ -134,6 +134,9 @@ pub struct Revision {
 /// (`wal::applied_outcomes`), and this row is rebuilt from it. The `scroll`/
 /// `scroll_content_id` fields, which the WAL does not carry, are the reason the
 /// cache is kept at all.
+// NOTE: no `Eq` — this embeds `Scroll`, whose `Policy` carries `f64` knobs and so
+// is only `PartialEq` (scroll-format `scroll.rs`, ADR 0031 §3). Don't add `Eq`
+// back.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppliedState {
     pub scroll_content_id: ContentId,
@@ -237,6 +240,11 @@ pub struct WalStep {
     pub op: GlyphOp,
     pub inverse: Option<Inverse>,
     pub changed: Option<bool>,
+    /// Root-to-leaf name-path of the leaf unit this op belongs to (ADR 0031 §6),
+    /// a vanished unit's ops carrying its surviving parent's path (§4). Additive
+    /// and for reporting only — the recovery fold carries it but does not consult
+    /// it, so the bracketing invariant and `step_ord`+`action` grouping are
+    /// unchanged.
     pub unit_path: Vec<String>,
     pub at: DateTime<Utc>,
 }

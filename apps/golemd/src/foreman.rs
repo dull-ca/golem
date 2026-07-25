@@ -156,6 +156,11 @@ impl Foreman {
     /// outcome first. The first failing step propagates its error, and the caller
     /// rolls the attempt back.
     fn enact(&self, reconcile_id: u64, ops: &[GlyphOp], prior: &[Outcome]) -> Result<()> {
+        // NOTE: Plan 1 placeholder — every step records the host-root path as its
+        // `unit_path` because enact still walks one flat op list, not per-leaf
+        // units (ADR 0031 §6). The per-unit enact (ADR 0029 revision / Plan 2)
+        // replaces this with each op's true leaf name-path. `unit_path` is carried
+        // for reporting, not consulted by recovery, so the placeholder is inert.
         let unit_path = [self.host.clone()];
         for (ord, op) in ops.iter().enumerate() {
             let ord = ord as u64;
@@ -347,6 +352,7 @@ impl Foreman {
             return Ok(());
         }
         let ord = steps.iter().map(|s| s.step_ord).max().map(|m| m + 1).unwrap_or(0);
+        // NOTE: same host-root placeholder as `enact` — see the note there.
         let unit_path = [self.host.clone()];
         for (n, unit) in units.into_iter().enumerate() {
             let glyph = Glyph::SystemdService { unit: unit.clone() };
@@ -627,6 +633,9 @@ impl Foreman {
     }
 }
 
+// A leaf scroll (ADR 0031 §1) holding no glyphs — the desired state that diffs
+// every currently-applied glyph to a `Remove`, used when this host has no scroll
+// in the manifest.
 fn empty_scroll(host: &str) -> Scroll {
     Scroll { name: host.to_string(), policy: None, contents: scroll_format::Contents::Glyphs(vec![]) }
 }
