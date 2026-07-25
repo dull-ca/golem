@@ -24,7 +24,7 @@ pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
     let mut ops = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
-    for glyph in &desired.glyphs {
+    for glyph in desired.all_glyphs() {
         let key = glyph.key();
         seen.insert(key.clone());
         let new_cid = glyph_content_id(glyph);
@@ -73,7 +73,24 @@ mod tests {
     }
 
     fn scroll(glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: "h1".into(), glyphs }
+        Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }
+    }
+
+    fn nested(children: Vec<(&str, Vec<Glyph>)>) -> Scroll {
+        Scroll {
+            name: "host".into(),
+            policy: None,
+            contents: scroll_format::Contents::Groups(
+                children
+                    .into_iter()
+                    .map(|(name, glyphs)| Scroll {
+                        name: name.into(),
+                        policy: None,
+                        contents: scroll_format::Contents::Glyphs(glyphs),
+                    })
+                    .collect(),
+            ),
+        }
     }
 
     fn applied(glyph: Glyph) -> Outcome {
@@ -115,6 +132,19 @@ mod tests {
     fn glyph_only_in_prior_is_remove() {
         let ops = plan(&[applied(apt("nginx"))], &scroll(vec![]));
         assert_eq!(ops, vec![GlyphOp::Remove { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+    }
+
+    #[test]
+    fn plan_flattens_nested_leaves_in_source_order() {
+        let desired = nested(vec![("a", vec![apt("one")]), ("b", vec![apt("two")])]);
+        let ops = plan(&[], &desired);
+        assert_eq!(
+            ops,
+            vec![
+                GlyphOp::Install { cid: glyph_content_id(&apt("one")), glyph: apt("one") },
+                GlyphOp::Install { cid: glyph_content_id(&apt("two")), glyph: apt("two") },
+            ]
+        );
     }
 
     #[test]

@@ -134,7 +134,7 @@ pub struct Revision {
 /// (`wal::applied_outcomes`), and this row is rebuilt from it. The `scroll`/
 /// `scroll_content_id` fields, which the WAL does not carry, are the reason the
 /// cache is kept at all.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppliedState {
     pub scroll_content_id: ContentId,
     pub scroll: Scroll,

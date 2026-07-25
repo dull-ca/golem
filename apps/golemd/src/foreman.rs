@@ -94,7 +94,7 @@ impl Foreman {
         info!(
             host = %self.host,
             scroll = %selected.content_id,
-            glyphs = selected.scroll.glyphs.len(),
+            glyphs = selected.scroll.all_glyphs().len(),
             "manifest ingested"
         );
         self.reconcile(selected)
@@ -612,7 +612,7 @@ impl Foreman {
 }
 
 fn empty_scroll(host: &str) -> Scroll {
-    Scroll { name: host.to_string(), glyphs: vec![] }
+    Scroll { name: host.to_string(), policy: None, contents: scroll_format::Contents::Glyphs(vec![]) }
 }
 
 /// Whether a `Replace` on this glyph can update in place — one `Apply` whose
@@ -803,7 +803,7 @@ mod tests {
     }
 
     fn scroll(host: &str, glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: host.into(), glyphs }
+        Scroll { name: host.into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }
     }
 
     #[test]

@@ -561,7 +561,11 @@ mod tests {
     use scroll_format::{Glyph, Scroll};
 
     fn sample() -> AppliedState {
-        let scroll = Scroll { name: "h1".into(), glyphs: vec![Glyph::AptPackage { name: "nginx".into() }] };
+        let scroll = Scroll {
+            name: "h1".into(),
+            policy: None,
+            contents: scroll_format::Contents::Glyphs(vec![Glyph::AptPackage { name: "nginx".into() }]),
+        };
         AppliedState {
             scroll_content_id: scroll_format::content_id(&scroll),
             scroll,
