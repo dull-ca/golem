@@ -691,6 +691,37 @@ fn reversed_after(steps: &[WalStep], done: &WalStep) -> bool {
     })
 }
 
+pub(crate) fn resolve_retry(base: &RetryConfig, policy_chain: &[&scroll_format::Policy]) -> RetryConfig {
+    let mut cfg = *base;
+    for policy in policy_chain {
+        if let Some(v) = policy.base_delay_ms {
+            cfg.base_delay_ms = v;
+        }
+        if let Some(v) = policy.backoff_multiplier {
+            cfg.backoff_multiplier = v;
+        }
+        if let Some(v) = policy.max_delay_ms {
+            cfg.max_delay_ms = v;
+        }
+        if let Some(v) = policy.jitter_fraction {
+            cfg.jitter_fraction = v;
+        }
+        if let Some(v) = policy.max_attempts {
+            cfg.max_attempts = v;
+        }
+        if let Some(v) = policy.max_elapsed_ms {
+            cfg.max_elapsed_ms = v;
+        }
+        if let Some(v) = policy.on_exhaust {
+            cfg.on_exhaust = match v {
+                scroll_format::OnExhaust::Rollback => crate::config::OnExhaustConfig::Rollback,
+                scroll_format::OnExhaust::Keep => crate::config::OnExhaustConfig::Keep,
+            };
+        }
+    }
+    cfg
+}
+
 fn changed_file_path(op: &GlyphOp) -> Option<String> {
     match op.glyph() {
         Glyph::Filesystem { path, entry: Entry::File { .. } } => Some(path.clone()),
@@ -1004,6 +1035,25 @@ mod tests {
         assert!(host.present_keys().is_empty(), "removal must revert the host");
         assert!(host.calls.lock().unwrap().contains(&"reverse apt:nginx".to_string()));
         assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+    }
+
+    #[test]
+    fn resolve_retry_uses_config_when_no_policy() {
+        let base = crate::config::RetryConfig { max_attempts: 5, ..Default::default() };
+        let eff = super::resolve_retry(&base, &[]);
+        assert_eq!(eff.max_attempts, 5);
+        assert_eq!(eff.on_exhaust, crate::config::OnExhaustConfig::Rollback);
+    }
+
+    #[test]
+    fn resolve_retry_leaf_overrides_ancestor_overrides_config() {
+        use scroll_format::{OnExhaust, Policy};
+        let base = crate::config::RetryConfig { max_attempts: 5, ..Default::default() };
+        let ancestor = Policy { max_attempts: Some(8), on_exhaust: Some(OnExhaust::Rollback), ..Policy::default() };
+        let leaf = Policy { on_exhaust: Some(OnExhaust::Keep), ..Policy::default() };
+        let eff = super::resolve_retry(&base, &[&ancestor, &leaf]);
+        assert_eq!(eff.max_attempts, 8);
+        assert_eq!(eff.on_exhaust, crate::config::OnExhaustConfig::Keep);
     }
 
     #[test]
