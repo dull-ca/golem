@@ -1241,7 +1241,13 @@ fn build_constructor(
             let contents = match (glyphs, groups) {
                 (Some(g), None) => ContentsExpr::Glyphs(Box::new(g)),
                 (None, Some(g)) => ContentsExpr::Groups(Box::new(g)),
-                _ => {
+                (Some(_), Some(_)) => {
+                    return Err(Rich::custom(
+                        span,
+                        "`scroll` has both `glyphs` and `groups`, but needs exactly one of `glyphs` or `groups`".to_string(),
+                    ))
+                }
+                (None, None) => {
                     return Err(Rich::custom(
                         span,
                         "`scroll` needs exactly one of `glyphs` or `groups`".to_string(),

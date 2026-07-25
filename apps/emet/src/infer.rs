@@ -1390,7 +1390,9 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                     "onExhaust" => con("Policy"),
                     other => {
                         return Err(TypeError::new(
-                            format!("unknown `retry` field `{other}`"),
+                            format!(
+                                "unknown `retry` field `{other}` — valid fields are maxAttempts, baseDelayMs, backoffMultiplier, maxDelayMs, jitterFraction, maxElapsedMs, onExhaust"
+                            ),
                             value.1.clone(),
                         ))
                     }

@@ -142,6 +142,21 @@ fn an_unknown_retry_field_is_a_type_error() {
 }
 
 #[test]
+fn unknown_retry_field_lists_valid_fields() {
+    let src = r#"main = [ scroll { name = "w", glyphs = [], policy = retry { maxAttempts = 3, bogus = 1 } } ]"#;
+    let e = match emet::compile(src) {
+        Ok(_) => panic!("expected an error"),
+        Err(e) => e,
+    };
+    assert!(e.msg.contains("bogus"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("maxAttempts"),
+        "should list valid fields: {}",
+        e.msg
+    );
+}
+
+#[test]
 fn groups_must_be_a_scroll_list_not_a_glyph_list() {
     let src = r#"main = [ scroll { name = "x", groups = [ aptPackage { name = "one" } ] } ]"#;
     let e = err(src);
