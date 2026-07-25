@@ -222,6 +222,18 @@ fn arity_too_many_does_not_leak_internal_typevars() {
 }
 
 #[test]
+fn mismatch_renders_both_sides_through_one_shared_letter_map() {
+    let e = err("f : (a, b) -> Int\nf t = 1\n\ng : (a -> b) -> Int\ng h = f h\n\nmain = [ g ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("type mismatch"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("expected `(a, b)`") && e.msg.contains("found `c -> d`"),
+        "distinct internal vars must render to distinct letters across the two sides, got: {}",
+        e.msg
+    );
+}
+
+#[test]
 fn occurs_error_renders_friendly_typevars() {
     let e = err("main = (\\x -> x x)");
     assert_eq!(e.phase, Phase::Type);

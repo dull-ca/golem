@@ -35,12 +35,16 @@ pub struct Analysis {
 }
 
 /// A compilation error, tagged by phase, with a source span for diagnostics.
+/// `file` names the module the span indexes into; `None` means the entry file
+/// (the compile driver's default source), so a diagnostic always renders
+/// against the source its span belongs to, not the entry file's.
 #[derive(Debug)]
 pub struct Error {
     pub phase: Phase,
     pub msg: String,
     pub span: std::ops::Range<usize>,
     pub note: Option<String>,
+    pub file: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,6 +84,7 @@ pub fn parse_source_multi(src: &str) -> Result<Module, Vec<Error>> {
             msg: e.msg,
             span: e.span,
             note: None,
+            file: None,
         }]
     })?;
 
@@ -89,6 +94,7 @@ pub fn parse_source_multi(src: &str) -> Result<Module, Vec<Error>> {
             msg: e.msg,
             span: e.span,
             note: None,
+            file: None,
         }]
     })?;
 
@@ -101,6 +107,7 @@ pub fn parse_source_multi(src: &str) -> Result<Module, Vec<Error>> {
                 msg: pe.msg,
                 span: pe.span,
                 note: None,
+                file: None,
             })
             .collect()
     })
@@ -128,6 +135,7 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
             msg: e.msg,
             span: e.span,
             note: e.note,
+            file: None,
         }]
     })?;
 
@@ -137,6 +145,7 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
             msg: e.msg,
             span: 0..0,
             note: None,
+            file: None,
         }]
     })?;
 
@@ -146,6 +155,7 @@ pub fn compile_all(src: &str) -> Result<Compiled, Vec<Error>> {
             msg,
             span: 0..0,
             note: None,
+            file: None,
         }]
     })?;
 
@@ -174,6 +184,7 @@ pub fn compile_file_all(entry: &Path) -> Result<Compiled, Vec<Error>> {
                 msg: "no entry module produced".to_string(),
                 span: 0..0,
                 note: None,
+                file: None,
             });
         }
         errors
@@ -212,6 +223,7 @@ pub fn analyze_source(src: &str) -> Analysis {
                 msg: e.msg,
                 span: e.span,
                 note: e.note,
+                file: None,
             }]
         })
         .unwrap_or_default();

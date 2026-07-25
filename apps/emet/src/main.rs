@@ -180,9 +180,24 @@ fn print_text(compiled: &Compiled) {
     }
 }
 
-fn report_errors(name: &str, src: &str, errors: &[Error]) {
+fn report_errors(entry_name: &str, entry_src: &str, errors: &[Error]) {
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for e in errors {
-        report_error(name, src, e);
+        if let Some(path) = &e.file {
+            let name = path.display().to_string();
+            sources
+                .entry(name)
+                .or_insert_with(|| std::fs::read_to_string(path).unwrap_or_default());
+        }
+    }
+    for e in errors {
+        match &e.file {
+            Some(path) => {
+                let name = path.display().to_string();
+                report_error(&name, &sources[&name], e);
+            }
+            None => report_error(entry_name, entry_src, e),
+        }
     }
 }
 

@@ -187,6 +187,7 @@ fn check_and_eval(
                 msg,
                 span: 0..0,
                 note: None,
+                file: Some(loaded_mod.path.clone()),
             })?;
             entry_result = Some((main_ty, scrolls));
         } else {
@@ -212,6 +213,7 @@ fn check_and_eval(
         msg: "no entry module produced".to_string(),
         span: 0..0,
         note: None,
+        file: None,
     })
 }
 
@@ -236,9 +238,15 @@ fn load_graph(
             msg: format!("cannot read {}: {e}", path.display()),
             span: 0..0,
             note: None,
+            file: Some(path.to_path_buf()),
         }]
     })?;
-    let module = crate::parse_source_multi(&source)?;
+    let module = crate::parse_source_multi(&source).map_err(|mut errors| {
+        for error in &mut errors {
+            error.file = Some(path.to_path_buf());
+        }
+        errors
+    })?;
     let name = module
         .name
         .clone()
@@ -264,6 +272,7 @@ fn load_graph(
                 msg: missing_module_message(&import.module, search_path),
                 span: import.span.clone(),
                 note: None,
+                file: Some(path.to_path_buf()),
             }]
         })?;
         load_graph(&import_path, search_path, loaded)?;
@@ -330,6 +339,7 @@ fn visit(
             msg: format!("import cycle detected: {cycle}"),
             span: 0..0,
             note: None,
+            file: None,
         });
     }
     stack.push(name.to_string());
@@ -683,37 +693,38 @@ fn reject_library_main(loaded: &Loaded) -> Result<(), Error> {
             ),
             span: 0..0,
             note: None,
+            file: Some(loaded.path.clone()),
         });
     }
     Ok(())
 }
 
 fn not_exposed(site: &Loaded, import: &Import, name: &str) -> Error {
-    let _ = site;
     Error {
         phase: Phase::Type,
         msg: format!("module `{}` does not expose `{name}`", import.module),
         span: import.span.clone(),
         note: None,
+        file: Some(site.path.clone()),
     }
 }
 
 fn type_error(loaded: &Loaded, e: infer::TypeError) -> Error {
-    let _ = &loaded.source;
     Error {
         phase: Phase::Type,
         msg: e.msg,
         span: e.span,
         note: e.note,
+        file: Some(loaded.path.clone()),
     }
 }
 
 fn analyze_error(loaded: &Loaded, e: eval::EvalError) -> Error {
-    let _ = &loaded.source;
     Error {
         phase: Phase::Analyze,
         msg: e.msg,
         span: 0..0,
         note: None,
+        file: Some(loaded.path.clone()),
     }
 }

@@ -165,3 +165,31 @@ fn parse_error_msg_has_no_filename_prefix() {
         e.msg
     );
 }
+
+#[test]
+fn parse_error_identifies_the_imported_module() {
+    let p = Project::new("importedparse");
+    p.write("emet.json", r#"{ "source-directories": ["lib"] }"#);
+    p.write("lib/Pkgs.emet", "module Pkgs exposing (..)\n\nbroken = [ \"a\" \n");
+    let entry = p.write(
+        "app/Main.emet",
+        "import Pkgs\n\nmain = [ scroll { name = \"h\", glyphs = [] } ]\n",
+    );
+
+    let errors = compile_file_all(&entry).expect_err("imported module has an unclosed bracket");
+    let e = &errors[0];
+    assert_eq!(e.phase, Phase::Parse, "an unclosed bracket is a parse error");
+    let file = e
+        .file
+        .as_ref()
+        .expect("a parse error in an imported module names its file");
+    assert!(
+        file.ends_with("Pkgs.emet"),
+        "error should point at the imported module, got {}",
+        file.display()
+    );
+    assert_ne!(
+        file, &entry,
+        "error must not be attributed to the entry file"
+    );
+}

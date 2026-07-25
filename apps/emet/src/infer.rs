@@ -392,14 +392,7 @@ impl Infer {
             (Type::Con(n1, a1), Type::Con(n2, a2)) if glyph_widens_into(n2, a2, n1, a1) => Ok(()),
             (Type::Con(n1, a1), Type::Con(n2, a2)) => {
                 if n1 != n2 || a1.len() != a2.len() {
-                    return Err(TypeError::new(
-                        format!(
-                            "type mismatch: expected `{}`, found `{}`",
-                            render_type(&self.apply(&a)),
-                            render_type(&self.apply(&b))
-                        ),
-                        span.clone(),
-                    ));
+                    return Err(mismatch(&self.apply(&a), &self.apply(&b), span));
                 }
                 for (x, y) in a1.iter().zip(a2.iter()) {
                     self.unify(x, y, span)?;
@@ -423,14 +416,7 @@ impl Infer {
                 }
                 Ok(())
             }
-            _ => Err(TypeError::new(
-                format!(
-                    "type mismatch: expected `{}`, found `{}`",
-                    render_type(&self.apply(&a)),
-                    render_type(&self.apply(&b))
-                ),
-                span.clone(),
-            )),
+            _ => Err(mismatch(&self.apply(&a), &self.apply(&b), span)),
         }
     }
 
@@ -955,16 +941,48 @@ fn constraint_name(c: Constraint) -> &'static str {
 /// Render a type for a user-facing diagnostic. Internal unification-variable
 /// ids (`t9`, `t31`) are an implementation detail no reader should see (ADR
 /// 0032 §1), so each free `Var` prints as a friendly letter — `a`, `b`, `c`, …
-/// in first-seen order. The `names` map keys those letters by var id for the
-/// duration of one call, so every occurrence of the same variable renders the
-/// same letter within a single message (`a -> a`, never `a -> b`); the numbering
-/// restarts at `a` on the next call.
+/// in first-seen order. A single name map spans a whole message: every occurrence
+/// of the same variable renders the same letter, and distinct variables never
+/// reuse a letter, across all the types composed into one message. For a lone
+/// type that map is this call; a message with several operands renders them
+/// together through `render_types_shared`. The numbering restarts on the next
+/// message.
 pub(crate) fn render_type(t: &Type) -> String {
     let mut names: HashMap<u32, String> = HashMap::new();
     let mut next: u32 = 0;
     let mut out = String::new();
     render_into(t, &mut names, &mut next, &mut out, false);
     out
+}
+
+/// Render several types through one shared name map, so the letters agree across
+/// a message's operands: the same internal variable is one letter in every
+/// operand, and two distinct variables never collide on a letter. Rendering each
+/// side with its own `render_type` would restart at `a` per side, implying a
+/// shared variable between unrelated types (`expected (a, b), found a -> b`);
+/// this keeps them independent.
+pub(crate) fn render_types_shared(types: &[&Type]) -> Vec<String> {
+    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut next: u32 = 0;
+    types
+        .iter()
+        .map(|t| {
+            let mut out = String::new();
+            render_into(t, &mut names, &mut next, &mut out, false);
+            out
+        })
+        .collect()
+}
+
+fn mismatch(expected: &Type, found: &Type, span: &Span) -> TypeError {
+    let rendered = render_types_shared(&[expected, found]);
+    TypeError::new(
+        format!(
+            "type mismatch: expected `{}`, found `{}`",
+            rendered[0], rendered[1]
+        ),
+        span.clone(),
+    )
 }
 
 /// The `n`th friendly variable name: `a`..`z`, then `a1`, `b1`, … once past 26.
