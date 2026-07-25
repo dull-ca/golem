@@ -18,8 +18,8 @@ pub fn glyph_content_id(glyph: &Glyph) -> ContentId {
 /// id. Per key: absent from prior → `Install`; present with the same id →
 /// `Noop`; present with a different id → `Replace` (an upgrade); present in prior
 /// but gone from desired → `Remove`. Installs and replaces come first in desired
-/// order, removes last, so the foreman applies additions before undoing what
-/// left.
+/// order; removes last, in reverse (ADR 0029 §6), so the foreman applies
+/// additions before undoing what left.
 pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
     let mut ops = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -46,6 +46,9 @@ pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
         }
     }
 
+    // NOTE: removes unwind in reverse of apply order (reverse prior order), so a
+    // dependent glyph tears down before the one it depended on (ADR 0029 §6).
+    // Install/replace order above is unchanged.
     for prev in prior.iter().rev() {
         if !seen.contains(&prev.op.key()) {
             ops.push(GlyphOp::Remove {

@@ -270,7 +270,13 @@ state.
 
 ## Apply order
 
-See ADR 0029 §6 and ADR 0031.
+golemd enacts in **source order**: a host's leaf units in the order they appear
+in your Emet source (ADR 0031 §2), and within a unit its glyphs in source order —
+installs and replaces first, removes last (in reverse source order, so teardown
+unwinds the opposite way to setup). Ordering is **author-controlled**: if unit B
+must come after unit A, or glyph B after glyph A, write B after A. There is **no
+dependency DAG** and no automatic reordering, across units or within one — your
+source order is the whole contract (ADR 0029 §6, ADR 0031).
 
 ## Pointers
 

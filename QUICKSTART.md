@@ -34,6 +34,10 @@ cargo build --release -p golemd -p golemctl -p emet
 node. Add `--reconciler host` to enact for real (apt/systemd/file); the default
 is `--reconciler fake`.
 
+`--config golemd.toml` points at a config file whose `[retry]` block sets
+fleet-wide retry defaults (backoff, jitter, attempt and wall-time limits); a
+per-scroll `policy` overrides them. Absent, built-in defaults apply.
+
 ## Author a fleet in Emet
 
 A program evaluates to `main : List Scroll`. The smallest useful one:
@@ -98,7 +102,9 @@ prebuilt `.manifest`, and POSTs the manifest bytes to the node:
 ```
 
 The node selects the scroll named for its `--host`, reconciles toward it, and
-returns the revision it recorded.
+returns a per-unit report of what settled and what failed. A partial or
+rolled-back reconcile is still HTTP 200 with its failures in-band; a
+transport/daemon error is non-2xx with an actionable message.
 
 ```bash
 ./target/release/golemctl state   http://127.0.0.1:7474   # current applied scroll + content id

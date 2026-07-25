@@ -299,6 +299,9 @@ def apply(
     for record in records:
         console.print(f"[bold]Applying to {record.name}[/bold]…")
         response = golemd_client.apply_manifest(record, manifest)
+        # NOTE: a partial or rolled-back reconcile is HTTP 200 with its failures
+        # in-band in the report (ADR 0029 §5); non-2xx is a transport/daemon
+        # error carrying a typed {kind, message} body.
         if response.status_code != 200:
             try:
                 body = response.json()
