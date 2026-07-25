@@ -219,6 +219,49 @@ def _op_parts(op: object) -> tuple[str, str, Optional[str]]:
     return (verb, _glyph_desc(body.get("glyph")), cid)
 
 
+_GLYPH_KEY_KIND = {"apt": "apt", "systemd": "systemd", "file": "file", "fileline": "line"}
+
+
+def _glyph_key_desc(glyph_key: Optional[str]) -> str:
+    if not glyph_key:
+        return "?"
+    prefix, _, rest = glyph_key.partition(":")
+    kind = _GLYPH_KEY_KIND.get(prefix)
+    if kind is None:
+        return glyph_key
+    return f"{kind} {rest}"
+
+
+_UNIT_COLOR = {"settled": "green", "partial": "yellow", "rolled_back": "red"}
+
+
+def _render_report(name: str, report: dict) -> None:
+    revision = report.get("revision") or {}
+    _render_revision(name, revision)
+    top = report.get("outcome", "")
+    color = _UNIT_COLOR.get(top, "white")
+    console.print(f"  [{color}]apply {top}[/{color}]")
+    for unit in report.get("units") or []:
+        path = " / ".join(unit.get("unit_path") or [])
+        outcome = unit.get("outcome", "")
+        ucolor = _UNIT_COLOR.get(outcome, "white")
+        console.print(f"    [{ucolor}]{path}: {outcome}[/{ucolor}]")
+        for failure in unit.get("failures") or []:
+            desc = _glyph_key_desc(failure.get("glyph_key"))
+            cls = failure.get("class", "")
+            attempts = failure.get("attempts", 0)
+            message = failure.get("message", "")
+            console.print(
+                f"      [red]✗ {desc}  {cls} after {attempts} tries — {message}[/red]"
+            )
+
+
+def _render_apply_error(name: str, status: int, body: dict) -> None:
+    kind = body.get("kind", "error")
+    message = body.get("message", "")
+    console.print(f"  [red]{name}: {kind} (HTTP {status})[/red]\n  {message}")
+
+
 def _render_revision(name: str, revision: dict) -> None:
     scroll = _cid_short(_cid_hex(revision.get("scroll_content_id")))
     console.print(
@@ -257,16 +300,18 @@ def apply(
         console.print(f"[bold]Applying to {record.name}[/bold]…")
         response = golemd_client.apply_manifest(record, manifest)
         if response.status_code != 200:
-            console.print(
-                f"  [red]{record.name}: HTTP {response.status_code}[/red]\n{response.text}"
-            )
+            try:
+                body = response.json()
+            except ValueError:
+                body = {"kind": "error", "message": response.text}
+            _render_apply_error(record.name, response.status_code, body)
             continue
-        revision = response.json()
+        report = response.json()
         if raw:
-            console.print(f"  [green]{record.name}: revision {revision.get('id')}[/green]")
-            console.print_json(json.dumps(revision))
+            console.print(f"  [green]{record.name}: revision {report.get('revision', {}).get('id')}[/green]")
+            console.print_json(json.dumps(report))
         else:
-            _render_revision(record.name, revision)
+            _render_report(record.name, report)
 
 
 @app.command()
