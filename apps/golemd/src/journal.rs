@@ -237,5 +237,6 @@ pub struct WalStep {
     pub op: GlyphOp,
     pub inverse: Option<Inverse>,
     pub changed: Option<bool>,
+    pub unit_path: Vec<String>,
     pub at: DateTime<Utc>,
 }

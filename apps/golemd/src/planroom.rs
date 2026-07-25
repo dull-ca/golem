@@ -73,6 +73,7 @@ pub trait PlanRoom: Send + Sync {
         op: &GlyphOp,
         inverse: Option<&Inverse>,
         changed: Option<bool>,
+        unit_path: &[String],
     ) -> Result<WalStep>;
     fn wal_steps(&self) -> Result<Vec<WalStep>>;
     fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>>;
@@ -116,8 +117,19 @@ impl<P: PlanRoom + ?Sized> PlanRoom for std::sync::Arc<P> {
         op: &GlyphOp,
         inverse: Option<&Inverse>,
         changed: Option<bool>,
+        unit_path: &[String],
     ) -> Result<WalStep> {
-        (**self).append_wal_step(reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed)
+        (**self).append_wal_step(
+            reconcile_id,
+            step_ord,
+            glyph_key,
+            action,
+            state,
+            op,
+            inverse,
+            changed,
+            unit_path,
+        )
     }
     fn wal_steps(&self) -> Result<Vec<WalStep>> {
         (**self).wal_steps()
@@ -173,6 +185,7 @@ impl SqlitePlanRoom {
                 op           TEXT NOT NULL,
                 inverse      TEXT,
                 changed      INTEGER,
+                unit_path    TEXT NOT NULL DEFAULT '[]',
                 at           TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS wal_step_by_attempt
@@ -280,16 +293,18 @@ impl PlanRoom for SqlitePlanRoom {
         op: &GlyphOp,
         inverse: Option<&Inverse>,
         changed: Option<bool>,
+        unit_path: &[String],
     ) -> Result<WalStep> {
         let now = Utc::now();
         let inverse_token = match inverse {
             Some(i) => Some(serde_json::to_string(i)?),
             None => None,
         };
+        let unit_path_token = serde_json::to_string(unit_path)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO wal_step(reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed, at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO wal_step(reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed, unit_path, at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 reconcile_id as i64,
                 step_ord as i64,
@@ -299,6 +314,7 @@ impl PlanRoom for SqlitePlanRoom {
                 serde_json::to_string(op)?,
                 inverse_token,
                 changed.map(|c| c as i64),
+                unit_path_token,
                 now.to_rfc3339(),
             ],
         )?;
@@ -312,6 +328,7 @@ impl PlanRoom for SqlitePlanRoom {
             op: op.clone(),
             inverse: inverse.cloned(),
             changed,
+            unit_path: unit_path.to_vec(),
             at: now,
         })
     }
@@ -319,7 +336,7 @@ impl PlanRoom for SqlitePlanRoom {
     fn wal_steps(&self) -> Result<Vec<WalStep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT seq, reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed, at
+            "SELECT seq, reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed, unit_path, at
              FROM wal_step ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([], row_to_wal_step)?;
@@ -329,7 +346,7 @@ impl PlanRoom for SqlitePlanRoom {
     fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT seq, reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed, at
+            "SELECT seq, reconcile_id, step_ord, glyph_key, action, state, op, inverse, changed, unit_path, at
              FROM wal_step WHERE reconcile_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map(params![reconcile_id as i64], row_to_wal_step)?;
@@ -410,9 +427,11 @@ fn row_to_wal_step(r: &rusqlite::Row) -> rusqlite::Result<WalStep> {
         None => None,
     };
     let changed: Option<i64> = r.get(8)?;
-    let at: String = r.get(9)?;
+    let unit_path: String = r.get(9)?;
+    let unit_path: Vec<String> = serde_json::from_str(&unit_path).unwrap_or_default();
+    let at: String = r.get(10)?;
     let at = chrono::DateTime::parse_from_rfc3339(&at)
-        .map_err(|e| conv(9, Box::new(e)))?
+        .map_err(|e| conv(10, Box::new(e)))?
         .with_timezone(&Utc);
     Ok(WalStep {
         seq: r.get::<_, i64>(0)? as u64,
@@ -424,6 +443,7 @@ fn row_to_wal_step(r: &rusqlite::Row) -> rusqlite::Result<WalStep> {
         op,
         inverse,
         changed: changed.map(|c| c != 0),
+        unit_path,
         at,
     })
 }
@@ -520,6 +540,7 @@ impl PlanRoom for MemoryPlanRoom {
         op: &GlyphOp,
         inverse: Option<&Inverse>,
         changed: Option<bool>,
+        unit_path: &[String],
     ) -> Result<WalStep> {
         let mut inner = self.inner.lock().unwrap();
         let step = WalStep {
@@ -532,6 +553,7 @@ impl PlanRoom for MemoryPlanRoom {
             op: op.clone(),
             inverse: inverse.cloned(),
             changed,
+            unit_path: unit_path.to_vec(),
             at: Utc::now(),
         };
         inner.wal.push(step.clone());
@@ -618,7 +640,17 @@ mod tests {
 
         let op = apt_op("nginx");
         let intended = room
-            .append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Intended, &op, None, None)
+            .append_wal_step(
+                1,
+                0,
+                "apt:nginx",
+                WalAction::Apply,
+                WalStepState::Intended,
+                &op,
+                None,
+                None,
+                &[],
+            )
             .unwrap();
         assert_eq!(intended.seq, 1);
         assert_eq!(intended.state, WalStepState::Intended);
@@ -633,6 +665,7 @@ mod tests {
                 &op,
                 Some(&Inverse::RemoveAptPackage { name: "nginx".into() }),
                 Some(true),
+                &[],
             )
             .unwrap();
         assert_eq!(done.seq, 2);
@@ -657,6 +690,27 @@ mod tests {
     fn sqlite_and_memory_wal_behave_the_same() {
         wal_roundtrip(&MemoryPlanRoom::new());
         wal_roundtrip(&SqlitePlanRoom::open(Path::new(":memory:")).unwrap());
+    }
+
+    #[test]
+    fn wal_step_round_trips_unit_path() {
+        let room = SqlitePlanRoom::open(Path::new(":memory:")).unwrap();
+        room.open_attempt(None).unwrap();
+        let op = apt_op("nginx");
+        room.append_wal_step(
+            1,
+            0,
+            "apt:nginx",
+            WalAction::Apply,
+            WalStepState::Intended,
+            &op,
+            None,
+            None,
+            &["worker".to_string(), "base".to_string()],
+        )
+        .unwrap();
+        let steps = room.wal_steps_for(1).unwrap();
+        assert_eq!(steps[0].unit_path, vec!["worker".to_string(), "base".to_string()]);
     }
 
     #[test]

@@ -189,6 +189,7 @@ mod tests {
                 _ => unreachable!(),
             } }),
             changed: Some(true),
+            unit_path: vec![],
             at: chrono::Utc::now(),
         }
     }

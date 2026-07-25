@@ -156,6 +156,7 @@ impl Foreman {
     /// outcome first. The first failing step propagates its error, and the caller
     /// rolls the attempt back.
     fn enact(&self, reconcile_id: u64, ops: &[GlyphOp], prior: &[Outcome]) -> Result<()> {
+        let unit_path = [self.host.clone()];
         for (ord, op) in ops.iter().enumerate() {
             let ord = ord as u64;
             match op {
@@ -168,22 +169,22 @@ impl Foreman {
                 }
                 GlyphOp::Install { cid, glyph } => {
                     info!(key = %op.key(), "install");
-                    self.enact_apply(reconcile_id, ord, op, glyph, *cid, None)?;
+                    self.enact_apply(reconcile_id, ord, op, glyph, *cid, None, &unit_path)?;
                 }
                 GlyphOp::Replace { old_cid, new_cid, glyph } => {
                     info!(key = %op.key(), "replace");
                     if replaces_in_place(glyph) {
-                        self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None)?;
+                        self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None, &unit_path)?;
                     } else {
                         let prior_outcome = self.prior_outcome(prior, &op.key(), *old_cid, glyph);
-                        self.enact_reverse(reconcile_id, ord, op, &prior_outcome)?;
-                        self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None)?;
+                        self.enact_reverse(reconcile_id, ord, op, &prior_outcome, &unit_path)?;
+                        self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None, &unit_path)?;
                     }
                 }
                 GlyphOp::Remove { cid, glyph } => {
                     info!(key = %op.key(), "remove");
                     let prior_outcome = self.prior_outcome(prior, &op.key(), *cid, glyph);
-                    self.enact_reverse(reconcile_id, ord, op, &prior_outcome)?;
+                    self.enact_reverse(reconcile_id, ord, op, &prior_outcome, &unit_path)?;
                 }
             }
         }
@@ -194,6 +195,7 @@ impl Foreman {
     /// retry spine, then append `Done` with the captured inverse and `changed`,
     /// or `Failed`. The `Intended` write is committed before the reconciler runs,
     /// so a crash across the call leaves a recoverable trace (ADR 0020 §2).
+    #[allow(clippy::too_many_arguments)]
     fn enact_apply(
         &self,
         reconcile_id: u64,
@@ -202,6 +204,7 @@ impl Foreman {
         glyph: &Glyph,
         cid: ContentId,
         intended_inverse: Option<&Inverse>,
+        unit_path: &[String],
     ) -> Result<()> {
         self.planroom.append_wal_step(
             reconcile_id,
@@ -212,6 +215,7 @@ impl Foreman {
             op,
             intended_inverse,
             None,
+            unit_path,
         )?;
         match self.attempt(op, || self.reconciler.apply(glyph, cid)) {
             Ok(outcome) => {
@@ -224,6 +228,7 @@ impl Foreman {
                     op,
                     Some(&outcome.inverse),
                     Some(outcome.changed),
+                    unit_path,
                 )?;
                 Ok(())
             }
@@ -237,6 +242,7 @@ impl Foreman {
                     op,
                     None,
                     None,
+                    unit_path,
                 )?;
                 Err(e)
             }
@@ -253,6 +259,7 @@ impl Foreman {
         ord: u64,
         op: &GlyphOp,
         prior_outcome: &Outcome,
+        unit_path: &[String],
     ) -> Result<()> {
         self.planroom.append_wal_step(
             reconcile_id,
@@ -263,6 +270,7 @@ impl Foreman {
             op,
             Some(&prior_outcome.inverse),
             None,
+            unit_path,
         )?;
         match self.attempt_reverse(op, prior_outcome) {
             Ok(()) => {
@@ -275,6 +283,7 @@ impl Foreman {
                     op,
                     Some(&prior_outcome.inverse),
                     Some(true),
+                    unit_path,
                 )?;
                 Ok(())
             }
@@ -288,6 +297,7 @@ impl Foreman {
                     op,
                     None,
                     None,
+                    unit_path,
                 )?;
                 Err(e)
             }
@@ -337,6 +347,7 @@ impl Foreman {
             return Ok(());
         }
         let ord = steps.iter().map(|s| s.step_ord).max().map(|m| m + 1).unwrap_or(0);
+        let unit_path = [self.host.clone()];
         for (n, unit) in units.into_iter().enumerate() {
             let glyph = Glyph::SystemdService { unit: unit.clone() };
             let cid = scroll_format::content_id_of_glyph(&glyph);
@@ -351,6 +362,7 @@ impl Foreman {
                 &op,
                 Some(&Inverse::Nothing),
                 None,
+                &unit_path,
             )?;
             let restarted = self.reconciler.restart_unit(&unit);
             let state = match &restarted {
@@ -366,6 +378,7 @@ impl Foreman {
                 &op,
                 Some(&Inverse::Nothing),
                 Some(false),
+                &unit_path,
             )?;
         }
         Ok(())
@@ -448,6 +461,7 @@ impl Foreman {
                 &target.op,
                 target.inverse.as_ref(),
                 target.changed,
+                &target.unit_path,
             )?;
         }
         Ok(())
@@ -562,6 +576,7 @@ impl Foreman {
                         &step.op,
                         Some(&inverse),
                         Some(changed),
+                        &step.unit_path,
                     )?;
                 }
                 Err(_) => {
@@ -574,6 +589,7 @@ impl Foreman {
                         &step.op,
                         None,
                         None,
+                        &step.unit_path,
                     )?;
                 }
             }
