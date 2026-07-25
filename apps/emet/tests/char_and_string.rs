@@ -246,7 +246,10 @@ fn string_replace() {
 
 #[test]
 fn string_split() {
-    assert_eq!(strings_of("String.split \",\" \"cat,dog,cow\""), "cat|dog|cow");
+    assert_eq!(
+        strings_of("String.split \",\" \"cat,dog,cow\""),
+        "cat|dog|cow"
+    );
 }
 
 #[test]
@@ -278,7 +281,10 @@ fn string_slice_positive() {
 
 #[test]
 fn string_slice_negative() {
-    assert_eq!(string_of("String.slice (-6) (-1) \"snakes on a plane!\""), "plane");
+    assert_eq!(
+        string_of("String.slice (-6) (-1) \"snakes on a plane!\""),
+        "plane"
+    );
 }
 
 #[test]
@@ -293,7 +299,10 @@ fn string_right() {
 
 #[test]
 fn string_drop_left() {
-    assert_eq!(string_of("String.dropLeft 2 \"The Lone Gunmen\""), "e Lone Gunmen");
+    assert_eq!(
+        string_of("String.dropLeft 2 \"The Lone Gunmen\""),
+        "e Lone Gunmen"
+    );
 }
 
 #[test]

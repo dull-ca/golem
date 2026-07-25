@@ -18,10 +18,23 @@ use serde::{Deserialize, Serialize};
 /// content id matched.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GlyphOp {
-    Install { cid: ContentId, glyph: Glyph },
-    Remove { cid: ContentId, glyph: Glyph },
-    Replace { old_cid: ContentId, new_cid: ContentId, glyph: Glyph },
-    Noop { cid: ContentId, glyph: Glyph },
+    Install {
+        cid: ContentId,
+        glyph: Glyph,
+    },
+    Remove {
+        cid: ContentId,
+        glyph: Glyph,
+    },
+    Replace {
+        old_cid: ContentId,
+        new_cid: ContentId,
+        glyph: Glyph,
+    },
+    Noop {
+        cid: ContentId,
+        glyph: Glyph,
+    },
 }
 
 impl GlyphOp {
@@ -79,14 +92,38 @@ impl GlyphOp {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Inverse {
     Nothing,
-    RemoveAptPackage { name: String },
-    DisableSystemdService { unit: String, prior_enabled: bool, prior_active: bool, started_only: bool },
-    RestoreFile { path: String, contents: String, perms: Perms },
-    DeleteFile { path: String },
-    RemoveDirectory { path: String, created: Vec<String> },
-    RestoreDirMeta { path: String, prior_perms: Perms },
-    RemoveSymlink { path: String },
-    RemoveLineInFile { path: String, line: String },
+    RemoveAptPackage {
+        name: String,
+    },
+    DisableSystemdService {
+        unit: String,
+        prior_enabled: bool,
+        prior_active: bool,
+        started_only: bool,
+    },
+    RestoreFile {
+        path: String,
+        contents: String,
+        perms: Perms,
+    },
+    DeleteFile {
+        path: String,
+    },
+    RemoveDirectory {
+        path: String,
+        created: Vec<String>,
+    },
+    RestoreDirMeta {
+        path: String,
+        prior_perms: Perms,
+    },
+    RemoveSymlink {
+        path: String,
+    },
+    RemoveLineInFile {
+        path: String,
+        line: String,
+    },
 }
 
 /// What a reconciler's `apply` returns and golem records per glyph: the

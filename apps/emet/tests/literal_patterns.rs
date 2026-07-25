@@ -156,7 +156,10 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = label 1.0 } 
     let (phase, msg) = err(src);
     assert_eq!(phase, Phase::Parse);
     let lowered = msg.to_lowercase();
-    assert!(lowered.contains("float"), "message should mention floats: {msg}");
+    assert!(
+        lowered.contains("float"),
+        "message should mention floats: {msg}"
+    );
     assert!(
         lowered.contains("equality") || lowered.contains("compare") || lowered.contains("<"),
         "message should steer to comparison operators: {msg}"
@@ -174,7 +177,10 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = label 1.0 } 
 "#;
     let (phase, msg) = err(src);
     assert_eq!(phase, Phase::Parse);
-    assert!(msg.to_lowercase().contains("float"), "message should mention floats: {msg}");
+    assert!(
+        msg.to_lowercase().contains("float"),
+        "message should mention floats: {msg}"
+    );
 }
 
 #[test]

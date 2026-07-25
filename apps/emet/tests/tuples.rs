@@ -135,9 +135,15 @@ tuple = (1, 2, 3, 4)
 "#;
     let (phase, msg) = err(src);
     assert_eq!(phase, Phase::Parse);
-    assert!(msg.contains('3'), "message should mention the 3-element cap: {msg}");
+    assert!(
+        msg.contains('3'),
+        "message should mention the 3-element cap: {msg}"
+    );
     let lowered = msg.to_lowercase();
-    assert!(lowered.contains("record"), "message should steer to a record: {msg}");
+    assert!(
+        lowered.contains("record"),
+        "message should steer to a record: {msg}"
+    );
 }
 
 #[test]
@@ -172,14 +178,26 @@ fn tuple_pair_first_second() {
 
 #[test]
 fn tuple_map_first() {
-    assert_eq!(int_of("Tuple.first (Tuple.mapFirst (\\x -> x + 1) (10, 20))"), "11");
-    assert_eq!(int_of("Tuple.second (Tuple.mapFirst (\\x -> x + 1) (10, 20))"), "20");
+    assert_eq!(
+        int_of("Tuple.first (Tuple.mapFirst (\\x -> x + 1) (10, 20))"),
+        "11"
+    );
+    assert_eq!(
+        int_of("Tuple.second (Tuple.mapFirst (\\x -> x + 1) (10, 20))"),
+        "20"
+    );
 }
 
 #[test]
 fn tuple_map_second() {
-    assert_eq!(int_of("Tuple.second (Tuple.mapSecond (\\x -> x + 1) (10, 20))"), "21");
-    assert_eq!(int_of("Tuple.first (Tuple.mapSecond (\\x -> x + 1) (10, 20))"), "10");
+    assert_eq!(
+        int_of("Tuple.second (Tuple.mapSecond (\\x -> x + 1) (10, 20))"),
+        "21"
+    );
+    assert_eq!(
+        int_of("Tuple.first (Tuple.mapSecond (\\x -> x + 1) (10, 20))"),
+        "10"
+    );
 }
 
 #[test]

@@ -15,11 +15,17 @@ fn scrolls(src: &str) -> Vec<Scroll> {
 
 #[test]
 fn flat_scroll_still_lowers_to_a_leaf() {
-    let src = r#"main = [ scroll { name = "db", glyphs = [ aptPackage { name = "postgresql" } ] } ]"#;
+    let src =
+        r#"main = [ scroll { name = "db", glyphs = [ aptPackage { name = "postgresql" } ] } ]"#;
     let ss = scrolls(src);
     assert_eq!(ss.len(), 1);
     assert!(ss[0].is_leaf());
-    assert_eq!(ss[0].glyphs(), &[Glyph::AptPackage { name: "postgresql".into() }]);
+    assert_eq!(
+        ss[0].glyphs(),
+        &[Glyph::AptPackage {
+            name: "postgresql".into()
+        }]
+    );
     assert_eq!(ss[0].policy, None);
 }
 
@@ -52,7 +58,11 @@ fn scroll_with_both_glyphs_and_groups_is_a_parse_error() {
     let src = r#"main = [ scroll { name = "x", glyphs = [ ], groups = [ ] } ]"#;
     let e = err(src);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("exactly one of `glyphs` or `groups`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("exactly one of `glyphs` or `groups`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -60,7 +70,11 @@ fn scroll_with_neither_glyphs_nor_groups_is_a_parse_error() {
     let src = r#"main = [ scroll { name = "x" } ]"#;
     let e = err(src);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("exactly one of `glyphs` or `groups`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("exactly one of `glyphs` or `groups`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -76,7 +90,10 @@ fn keep_policy_lowers_to_on_exhaust_keep() {
 fn rollback_policy_lowers_to_on_exhaust_rollback() {
     let src = r#"main = [ scroll { name = "x", policy = rollback, glyphs = [ aptPackage { name = "one" } ] } ]"#;
     let ss = scrolls(src);
-    assert_eq!(ss[0].policy.clone().unwrap().on_exhaust, Some(OnExhaust::Rollback));
+    assert_eq!(
+        ss[0].policy.clone().unwrap().on_exhaust,
+        Some(OnExhaust::Rollback)
+    );
 }
 
 #[test]

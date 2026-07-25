@@ -43,7 +43,8 @@ impl Host {
         self.panic_on_reverse_nth.store(n, Ordering::SeqCst);
     }
     fn clear_panic_on_reverse(&self) {
-        self.panic_on_reverse_nth.store(usize::MAX, Ordering::SeqCst);
+        self.panic_on_reverse_nth
+            .store(usize::MAX, Ordering::SeqCst);
     }
 }
 
@@ -60,7 +61,10 @@ impl Reconciler for Host {
         let changed = self.present.lock().unwrap().get(&key) != Some(&cid);
         self.present.lock().unwrap().insert(key.clone(), cid);
         Ok(Outcome {
-            op: GlyphOp::Install { cid, glyph: glyph.clone() },
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
             cid,
             inverse: inverse_of(glyph),
             changed,
@@ -87,31 +91,51 @@ fn file(path: &str, contents: &str) -> Glyph {
         path: path.into(),
         entry: scroll_format::Entry::File {
             contents: contents.into(),
-            perms: scroll_format::Perms { mode: 0o644, owner: None, group: None },
+            perms: scroll_format::Perms {
+                mode: 0o644,
+                owner: None,
+                group: None,
+            },
         },
     }
 }
 
 fn scroll_bytes(glyphs: Vec<Glyph>) -> Vec<u8> {
     scroll_format::to_bytes(&Manifest::from_scrolls(
-        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        vec![Scroll {
+            name: "h1".into(),
+            policy: None,
+            contents: scroll_format::Contents::Glyphs(glyphs),
+        }],
         "test",
     ))
 }
 
 fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
     scroll_format::to_bytes(&Manifest::from_scrolls(
-        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        vec![Scroll {
+            name: "h1".into(),
+            policy: None,
+            contents: scroll_format::Contents::Glyphs(glyphs),
+        }],
         "test",
     ))
 }
 
 fn foreman(room: Arc<MemoryPlanRoom>, rec: Arc<Host>) -> Foreman {
-    Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() })
+    Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry_config(RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    })
 }
 
 fn leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
-    Scroll { name: name.into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }
+    Scroll {
+        name: name.into(),
+        policy: None,
+        contents: scroll_format::Contents::Glyphs(glyphs),
+    }
 }
 
 fn two_unit_manifest(a: Vec<Glyph>, b: Vec<Glyph>) -> Vec<u8> {
@@ -130,17 +154,24 @@ fn normal_reconcile_writes_intent_then_outcome_per_op() {
     let room = Arc::new(MemoryPlanRoom::new());
     let rec = Host::new();
     let f = foreman(room.clone(), rec.clone());
-    f.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")])).unwrap();
+    f.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")]))
+        .unwrap();
 
     let attempt = room.latest_attempt().unwrap().unwrap();
     assert_eq!(attempt.phase, AttemptPhase::Committed);
 
     let steps = room.wal_steps_for(attempt.reconcile_id).unwrap();
-    let nginx: Vec<_> = steps.iter().filter(|s| s.glyph_key == "apt:nginx").collect();
+    let nginx: Vec<_> = steps
+        .iter()
+        .filter(|s| s.glyph_key == "apt:nginx")
+        .collect();
     assert_eq!(nginx.len(), 2, "one intended, one done");
     assert_eq!(nginx[0].state, WalStepState::Intended);
     assert_eq!(nginx[1].state, WalStepState::Done);
-    assert!(nginx[0].seq < nginx[1].seq, "intent is durable before outcome");
+    assert!(
+        nginx[0].seq < nginx[1].seq,
+        "intent is durable before outcome"
+    );
 }
 
 #[test]
@@ -157,7 +188,11 @@ fn crash_between_intended_and_terminal_recovers_idempotently() {
     drop(f1);
 
     let attempt = room.latest_attempt().unwrap().unwrap();
-    assert_eq!(attempt.phase, AttemptPhase::Enacting, "attempt left unsettled by the crash");
+    assert_eq!(
+        attempt.phase,
+        AttemptPhase::Enacting,
+        "attempt left unsettled by the crash"
+    );
     let steps = room.wal_steps_for(attempt.reconcile_id).unwrap();
     let pg: Vec<_> = steps.iter().filter(|s| s.glyph_key == "apt:pg").collect();
     assert_eq!(pg.len(), 1, "pg has an intended row and no terminal");
@@ -167,8 +202,15 @@ fn crash_between_intended_and_terminal_recovers_idempotently() {
     let _f2 = foreman(room.clone(), rec.clone());
 
     let settled = room.latest_attempt().unwrap().unwrap();
-    assert_eq!(settled.phase, AttemptPhase::RolledBack, "recovery settles the crashed attempt");
-    assert!(rec.present_keys().is_empty(), "recovery rolls the node back to its last committed set");
+    assert_eq!(
+        settled.phase,
+        AttemptPhase::RolledBack,
+        "recovery settles the crashed attempt"
+    );
+    assert!(
+        rec.present_keys().is_empty(),
+        "recovery rolls the node back to its last committed set"
+    );
 }
 
 #[test]
@@ -182,7 +224,10 @@ fn a_new_manifest_is_refused_while_an_attempt_is_unsettled() {
         "apt:stuck",
         WalAction::Apply,
         WalStepState::Intended,
-        &GlyphOp::Install { cid: scroll_format::content_id_of_glyph(&apt("stuck")), glyph: apt("stuck") },
+        &GlyphOp::Install {
+            cid: scroll_format::content_id_of_glyph(&apt("stuck")),
+            glyph: apt("stuck"),
+        },
         None,
         None,
         &[],
@@ -190,17 +235,29 @@ fn a_new_manifest_is_refused_while_an_attempt_is_unsettled() {
     .unwrap();
 
     let rec = Arc::new(NeverReconciler);
-    let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(rec)).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+    let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(rec)).with_retry_config(
+        RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        },
+    );
     let _ = f;
     let settled = room.latest_attempt().unwrap().unwrap();
-    assert!(settled.phase.is_settled(), "recovery gates ingest by settling first");
+    assert!(
+        settled.phase.is_settled(),
+        "recovery gates ingest by settling first"
+    );
 }
 
 struct NeverReconciler;
 impl Reconciler for NeverReconciler {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
         Ok(Outcome {
-            op: GlyphOp::Install { cid, glyph: glyph.clone() },
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
             cid,
             inverse: inverse_of(glyph),
             changed: true,
@@ -215,24 +272,36 @@ impl Reconciler for NeverReconciler {
 fn ingest_is_refused_while_the_planroom_shows_an_unsettled_attempt() {
     let room = Arc::new(MemoryPlanRoom::new());
     room.open_attempt(None).unwrap();
-    room.set_attempt_phase(1, AttemptPhase::RollingBack).unwrap();
+    room.set_attempt_phase(1, AttemptPhase::RollingBack)
+        .unwrap();
 
     struct StuckRollback;
     impl Reconciler for StuckRollback {
         fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
-            Ok(Outcome { op: GlyphOp::Install { cid, glyph: glyph.clone() }, cid, inverse: inverse_of(glyph), changed: true })
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: inverse_of(glyph),
+                changed: true,
+            })
         }
         fn reverse(&self, _o: &Outcome) -> EnactResult<()> {
             Err(EnactError::Fatal("rollback stuck".into()))
         }
     }
-    room.set_attempt_phase(1, AttemptPhase::RollingBack).unwrap();
+    room.set_attempt_phase(1, AttemptPhase::RollingBack)
+        .unwrap();
     let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(StuckRollback))
-        .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
 
-    let err = f
-        .apply_manifest(&manifest(vec![apt("nginx")]))
-        .and(Ok(()));
+    let err = f.apply_manifest(&manifest(vec![apt("nginx")])).and(Ok(()));
     let _ = err;
     assert!(room.latest_attempt().unwrap().unwrap().phase.is_settled());
 }
@@ -243,18 +312,31 @@ fn crash_mid_reversal_resumes_rather_than_restarting() {
     let rec = Host::new();
 
     let f1 = foreman(room.clone(), rec.clone());
-    f1.apply_manifest(&scroll_bytes(vec![file("/a", "1"), file("/b", "1"), file("/c", "1")])).unwrap();
+    f1.apply_manifest(&scroll_bytes(vec![
+        file("/a", "1"),
+        file("/b", "1"),
+        file("/c", "1"),
+    ]))
+    .unwrap();
     assert_eq!(rec.present_keys().len(), 3);
     drop(f1);
 
-    let with_failure = scroll_bytes(vec![file("/a", "2"), file("/b", "2"), file("/c", "2"), apt("z")]);
+    let with_failure = scroll_bytes(vec![
+        file("/a", "2"),
+        file("/b", "2"),
+        file("/c", "2"),
+        apt("z"),
+    ]);
 
     rec.reverse_calls.store(0, Ordering::SeqCst);
     rec.set_fail_apply("apt:z");
     rec.panic_on_reverse_call(1);
     let f2 = foreman(room.clone(), rec.clone());
     let crashed = std::panic::catch_unwind(AssertUnwindSafe(|| f2.apply_manifest(&with_failure)));
-    assert!(crashed.is_err(), "crashed during the rollback of the failed attempt");
+    assert!(
+        crashed.is_err(),
+        "crashed during the rollback of the failed attempt"
+    );
     drop(f2);
 
     let attempt = room.latest_attempt().unwrap().unwrap();
@@ -269,7 +351,10 @@ fn crash_mid_reversal_resumes_rather_than_restarting() {
         .iter()
         .filter(|s| s.state == WalStepState::Reversed)
         .count();
-    assert!(reversed_before >= 1, "at least one reversal committed before the crash");
+    assert!(
+        reversed_before >= 1,
+        "at least one reversal committed before the crash"
+    );
 
     rec.clear_panic_on_apply();
     *rec.fail_apply.lock().unwrap() = None;
@@ -277,14 +362,24 @@ fn crash_mid_reversal_resumes_rather_than_restarting() {
     let _f3 = foreman(room.clone(), rec.clone());
 
     let settled = room.latest_attempt().unwrap().unwrap();
-    assert_eq!(settled.phase, AttemptPhase::RolledBack, "the interrupted rollback is resumed to completion");
-    assert!(rec.present_keys().is_empty(), "resumed reversal removed every glyph the failed attempt applied");
+    assert_eq!(
+        settled.phase,
+        AttemptPhase::RolledBack,
+        "the interrupted rollback is resumed to completion"
+    );
+    assert!(
+        rec.present_keys().is_empty(),
+        "resumed reversal removed every glyph the failed attempt applied"
+    );
 
     let mut counts = std::collections::BTreeMap::new();
     for k in rec.reverses.lock().unwrap().iter() {
         *counts.entry(k.clone()).or_insert(0) += 1;
     }
-    assert!(counts.values().all(|&c| c == 1), "a reversal step is never restarted from scratch: {counts:?}");
+    assert!(
+        counts.values().all(|&c| c == 1),
+        "a reversal step is never restarted from scratch: {counts:?}"
+    );
 }
 
 #[test]
@@ -292,8 +387,11 @@ fn two_units_never_share_a_step_ord_and_action_within_one_reconcile() {
     let room = Arc::new(MemoryPlanRoom::new());
     let rec = Host::new();
     let f = foreman(room.clone(), rec.clone());
-    f.apply_manifest(&two_unit_manifest(vec![apt("one"), apt("two")], vec![apt("three")]))
-        .unwrap();
+    f.apply_manifest(&two_unit_manifest(
+        vec![apt("one"), apt("two")],
+        vec![apt("three")],
+    ))
+    .unwrap();
 
     let attempt = room.latest_attempt().unwrap().unwrap();
     let steps = room.wal_steps_for(attempt.reconcile_id).unwrap();
@@ -312,7 +410,11 @@ fn two_units_never_share_a_step_ord_and_action_within_one_reconcile() {
         );
         seen.push(key);
     }
-    assert_eq!(seen.len(), 3, "three ops across the two units each got a distinct step_ord");
+    assert_eq!(
+        seen.len(),
+        3,
+        "three ops across the two units each got a distinct step_ord"
+    );
 }
 
 #[test]
@@ -323,15 +425,27 @@ fn a_crash_mid_attempt_reverses_every_units_applied_step() {
 
     let f1 = foreman(room.clone(), rec.clone());
     let crashed = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        f1.apply_manifest(&two_unit_manifest(vec![apt("one"), apt("two")], vec![apt("three")]))
+        f1.apply_manifest(&two_unit_manifest(
+            vec![apt("one"), apt("two")],
+            vec![apt("three")],
+        ))
     }));
-    assert!(crashed.is_err(), "the reconcile crashed while enacting unit b");
+    assert!(
+        crashed.is_err(),
+        "the reconcile crashed while enacting unit b"
+    );
     drop(f1);
 
     let attempt = room.latest_attempt().unwrap().unwrap();
-    assert_eq!(attempt.phase, AttemptPhase::Enacting, "crash left the attempt unsettled");
+    assert_eq!(
+        attempt.phase,
+        AttemptPhase::Enacting,
+        "crash left the attempt unsettled"
+    );
     assert!(
-        rec.present_keys().iter().any(|k| k == "apt:one" || k == "apt:two"),
+        rec.present_keys()
+            .iter()
+            .any(|k| k == "apt:one" || k == "apt:two"),
         "unit a's glyphs applied before the crash in unit b"
     );
 
@@ -339,7 +453,11 @@ fn a_crash_mid_attempt_reverses_every_units_applied_step() {
     let _f2 = foreman(room.clone(), rec.clone());
 
     let settled = room.latest_attempt().unwrap().unwrap();
-    assert_eq!(settled.phase, AttemptPhase::RolledBack, "recovery settles the crashed attempt");
+    assert_eq!(
+        settled.phase,
+        AttemptPhase::RolledBack,
+        "recovery settles the crashed attempt"
+    );
     assert!(
         rec.present_keys().is_empty(),
         "the whole attempt reversed across both units, not just the crashing one"
@@ -363,7 +481,11 @@ fn recovery_is_durable_across_a_real_sqlite_restart() {
         Box::new(SqlitePlanRoom::open(&db).unwrap()),
         Box::new(rec.clone()),
     )
-    .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+    .with_retry_config(RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    });
     let crashed = std::panic::catch_unwind(AssertUnwindSafe(|| {
         f1.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")]))
     }));
@@ -373,7 +495,11 @@ fn recovery_is_durable_across_a_real_sqlite_restart() {
     {
         let reopened = SqlitePlanRoom::open(&db).unwrap();
         let attempt = reopened.latest_attempt().unwrap().unwrap();
-        assert_eq!(attempt.phase, AttemptPhase::Enacting, "the crash left an unsettled attempt on disk");
+        assert_eq!(
+            attempt.phase,
+            AttemptPhase::Enacting,
+            "the crash left an unsettled attempt on disk"
+        );
     }
 
     rec.clear_panic_on_apply();
@@ -382,10 +508,20 @@ fn recovery_is_durable_across_a_real_sqlite_restart() {
         Box::new(SqlitePlanRoom::open(&db).unwrap()),
         Box::new(rec.clone()),
     )
-    .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+    .with_retry_config(RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    });
     drop(f2);
 
     let reopened = SqlitePlanRoom::open(&db).unwrap();
-    assert_eq!(reopened.latest_attempt().unwrap().unwrap().phase, AttemptPhase::RolledBack);
-    assert!(rec.present_keys().is_empty(), "recovery rolled the durable state back");
+    assert_eq!(
+        reopened.latest_attempt().unwrap().unwrap().phase,
+        AttemptPhase::RolledBack
+    );
+    assert!(
+        rec.present_keys().is_empty(),
+        "recovery rolled the durable state back"
+    );
 }

@@ -30,10 +30,13 @@ fn append_operator_concatenates_glyph_lists() {
 main = [ scroll { name = "test", glyphs = [ aptPackage { name = "a" } ] ++ [ aptPackage { name = "b" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![
-        Glyph::AptPackage { name: "a".into() },
-        Glyph::AptPackage { name: "b".into() },
-    ]);
+    assert_eq!(
+        rs,
+        vec![
+            Glyph::AptPackage { name: "a".into() },
+            Glyph::AptPackage { name: "b".into() },
+        ]
+    );
 }
 
 #[test]
@@ -43,10 +46,13 @@ names = [ "x" ] ++ [ "y" ]
 main = [ scroll { name = "test", glyphs = List.map (\n -> aptPackage { name = n }) names } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![
-        Glyph::AptPackage { name: "x".into() },
-        Glyph::AptPackage { name: "y".into() },
-    ]);
+    assert_eq!(
+        rs,
+        vec![
+            Glyph::AptPackage { name: "x".into() },
+            Glyph::AptPackage { name: "y".into() },
+        ]
+    );
 }
 
 #[test]
@@ -57,10 +63,13 @@ twice x = x ++ x
 main = [ scroll { name = "test", glyphs = List.map (\n -> aptPackage { name = twice n }) (twice [ "a" ]) } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![
-        Glyph::AptPackage { name: "aa".into() },
-        Glyph::AptPackage { name: "aa".into() },
-    ]);
+    assert_eq!(
+        rs,
+        vec![
+            Glyph::AptPackage { name: "aa".into() },
+            Glyph::AptPackage { name: "aa".into() },
+        ]
+    );
 }
 
 #[test]

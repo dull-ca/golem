@@ -108,13 +108,20 @@ fn entry() -> Type {
 
 fn record(fields: &[(&str, Type)]) -> Type {
     Type::Record(
-        fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<BTreeMap<_, _>>(),
+        fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect::<BTreeMap<_, _>>(),
         Row::Closed,
     )
 }
 
 fn perms() -> Type {
-    record(&[("mode", int()), ("owner", maybe(string())), ("group", maybe(string()))])
+    record(&[
+        ("mode", int()),
+        ("owner", maybe(string())),
+        ("group", maybe(string())),
+    ])
 }
 
 fn scheme(vars: &[u32], ty: Type) -> Scheme {
@@ -190,7 +197,10 @@ fn tuple_map_both(mut args: Vec<Value>) -> Value {
     let g = args.pop().unwrap();
     let f = args.pop().unwrap();
     let elems = as_tuple(&t);
-    Value::Tuple(vec![apply_top(f, elems[0].clone()), apply_top(g, elems[1].clone())])
+    Value::Tuple(vec![
+        apply_top(f, elems[0].clone()),
+        apply_top(g, elems[1].clone()),
+    ])
 }
 
 // `String.uncons : String -> Maybe (Char, String)` — the tuple-returning
@@ -204,7 +214,10 @@ fn string_uncons(mut args: Vec<Value>) -> Value {
     match s.chars().next() {
         Some(first) => {
             let rest: String = s.chars().skip(1).collect();
-            data("Just", vec![Value::Tuple(vec![Value::Char(first), Value::Str(rest)])])
+            data(
+                "Just",
+                vec![Value::Tuple(vec![Value::Char(first), Value::Str(rest)])],
+            )
         }
         None => data("Nothing", vec![]),
     }
@@ -213,7 +226,12 @@ fn string_uncons(mut args: Vec<Value>) -> Value {
 fn list_map(mut args: Vec<Value>) -> Value {
     let xs = args.pop().unwrap();
     let f = args.pop().unwrap();
-    Value::List(as_list(&xs).iter().map(|x| apply_top(f.clone(), x.clone())).collect())
+    Value::List(
+        as_list(&xs)
+            .iter()
+            .map(|x| apply_top(f.clone(), x.clone()))
+            .collect(),
+    )
 }
 
 fn list_concat(mut args: Vec<Value>) -> Value {
@@ -275,7 +293,10 @@ fn list_foldl(mut args: Vec<Value>) -> Value {
 }
 
 fn data(ctor: &str, args: Vec<Value>) -> Value {
-    Value::Data { ctor: ctor.to_string(), args }
+    Value::Data {
+        ctor: ctor.to_string(),
+        args,
+    }
 }
 
 fn as_data(v: &Value) -> (&str, &[Value]) {
@@ -329,7 +350,14 @@ fn list_filter(mut args: Vec<Value>) -> Value {
 
 fn list_is_empty(mut args: Vec<Value>) -> Value {
     let xs = args.pop().unwrap();
-    data(if as_list(&xs).is_empty() { "True" } else { "False" }, vec![])
+    data(
+        if as_list(&xs).is_empty() {
+            "True"
+        } else {
+            "False"
+        },
+        vec![],
+    )
 }
 
 fn as_int(v: &Value) -> i64 {
@@ -365,7 +393,11 @@ fn boolean(b: bool) -> Value {
     data(if b { "True" } else { "False" }, vec![])
 }
 
-fn numeric_binop(args: &[Value], on_int: fn(i64, i64) -> i64, on_float: fn(f64, f64) -> f64) -> Value {
+fn numeric_binop(
+    args: &[Value],
+    on_int: fn(i64, i64) -> i64,
+    on_float: fn(f64, f64) -> f64,
+) -> Value {
     match (&args[0], &args[1]) {
         (Value::Int(a), Value::Int(b)) => Value::Int(on_int(*a, *b)),
         (Value::Float(a), Value::Float(b)) => Value::Float(on_float(*a, *b)),
@@ -393,24 +425,40 @@ fn builtin_pow(args: Vec<Value>) -> Value {
 // trapping, matching Elm, so evaluation can never crash (ADR 0007).
 fn builtin_fdiv(args: Vec<Value>) -> Value {
     let b = as_float(&args[1]);
-    Value::Float(if b == 0.0 { 0.0 } else { as_float(&args[0]) / b })
+    Value::Float(if b == 0.0 {
+        0.0
+    } else {
+        as_float(&args[0]) / b
+    })
 }
 
 fn builtin_idiv(args: Vec<Value>) -> Value {
     let b = as_int(&args[1]);
-    Value::Int(if b == 0 { 0 } else { as_int(&args[0]).wrapping_div(b) })
+    Value::Int(if b == 0 {
+        0
+    } else {
+        as_int(&args[0]).wrapping_div(b)
+    })
 }
 
 fn builtin_mod_by(args: Vec<Value>) -> Value {
     let modulus = as_int(&args[0]);
     let x = as_int(&args[1]);
-    Value::Int(if modulus == 0 { 0 } else { x.rem_euclid(modulus) })
+    Value::Int(if modulus == 0 {
+        0
+    } else {
+        x.rem_euclid(modulus)
+    })
 }
 
 fn builtin_remainder_by(args: Vec<Value>) -> Value {
     let divisor = as_int(&args[0]);
     let x = as_int(&args[1]);
-    Value::Int(if divisor == 0 { 0 } else { x.wrapping_rem(divisor) })
+    Value::Int(if divisor == 0 {
+        0
+    } else {
+        x.wrapping_rem(divisor)
+    })
 }
 
 fn builtin_negate(mut args: Vec<Value>) -> Value {
@@ -500,13 +548,21 @@ fn builtin_neq(args: Vec<Value>) -> Value {
 fn builtin_min(mut args: Vec<Value>) -> Value {
     let b = args.pop().unwrap();
     let a = args.pop().unwrap();
-    if compare_values(&a, &b).is_le() { a } else { b }
+    if compare_values(&a, &b).is_le() {
+        a
+    } else {
+        b
+    }
 }
 
 fn builtin_max(mut args: Vec<Value>) -> Value {
     let b = args.pop().unwrap();
     let a = args.pop().unwrap();
-    if compare_values(&a, &b).is_ge() { a } else { b }
+    if compare_values(&a, &b).is_ge() {
+        a
+    } else {
+        b
+    }
 }
 
 fn builtin_clamp(mut args: Vec<Value>) -> Value {
@@ -622,9 +678,7 @@ fn list_sum(mut args: Vec<Value>) -> Value {
     let xs = args.pop().unwrap();
     let items = as_list(&xs);
     match items.first() {
-        Some(Value::Float(_)) => {
-            Value::Float(items.iter().map(as_float).sum())
-        }
+        Some(Value::Float(_)) => Value::Float(items.iter().map(as_float).sum()),
         _ => Value::Int(items.iter().map(as_int).sum()),
     }
 }
@@ -643,7 +697,10 @@ fn char_to_code(mut args: Vec<Value>) -> Value {
 // replacement character `U+FFFD` rather than trapping or returning `Maybe`.
 fn char_from_code(mut args: Vec<Value>) -> Value {
     let code = as_int(&args.pop().unwrap());
-    let scalar = u32::try_from(code).ok().and_then(char::from_u32).unwrap_or('\u{FFFD}');
+    let scalar = u32::try_from(code)
+        .ok()
+        .and_then(char::from_u32)
+        .unwrap_or('\u{FFFD}');
     Value::Char(scalar)
 }
 
@@ -752,7 +809,10 @@ fn string_words(mut args: Vec<Value>) -> Value {
     let parts: Vec<Value> = if trimmed.is_empty() {
         vec![Value::Str(String::new())]
     } else {
-        trimmed.split_whitespace().map(|w| Value::Str(w.to_string())).collect()
+        trimmed
+            .split_whitespace()
+            .map(|w| Value::Str(w.to_string()))
+            .collect()
     };
     Value::List(parts)
 }
@@ -894,7 +954,12 @@ fn string_indexes(mut args: Vec<Value>) -> Value {
 }
 
 fn string_to_list(mut args: Vec<Value>) -> Value {
-    Value::List(as_string(&args.pop().unwrap()).chars().map(Value::Char).collect())
+    Value::List(
+        as_string(&args.pop().unwrap())
+            .chars()
+            .map(Value::Char)
+            .collect(),
+    )
 }
 
 fn string_from_list(mut args: Vec<Value>) -> Value {
@@ -1127,19 +1192,31 @@ fn glyph_ctors() -> Vec<Ctor> {
         Ctor {
             name: "Filesystem",
             arity: 1,
-            scheme: scheme(&[], fun(record(&[("path", string()), ("entry", entry())]), glyph())),
+            scheme: scheme(
+                &[],
+                fun(record(&[("path", string()), ("entry", entry())]), glyph()),
+            ),
             run: None,
         },
         Ctor {
             name: "LineInFile",
             arity: 1,
-            scheme: scheme(&[], fun(record(&[("path", string()), ("line", string())]), glyph())),
+            scheme: scheme(
+                &[],
+                fun(record(&[("path", string()), ("line", string())]), glyph()),
+            ),
             run: None,
         },
         Ctor {
             name: "File",
             arity: 1,
-            scheme: scheme(&[], fun(record(&[("contents", string()), ("perms", perms())]), entry())),
+            scheme: scheme(
+                &[],
+                fun(
+                    record(&[("contents", string()), ("perms", perms())]),
+                    entry(),
+                ),
+            ),
             run: None,
         },
         Ctor {
@@ -1182,13 +1259,19 @@ fn builtins() -> Vec<Builtin> {
         Builtin {
             name: "List.foldr",
             arity: 3,
-            scheme: scheme(&[A, B], fun(fun(a(), fun(b(), b())), fun(b(), fun(list(a()), b())))),
+            scheme: scheme(
+                &[A, B],
+                fun(fun(a(), fun(b(), b())), fun(b(), fun(list(a()), b()))),
+            ),
             run: list_foldr,
         },
         Builtin {
             name: "List.foldl",
             arity: 3,
-            scheme: scheme(&[A, B], fun(fun(a(), fun(b(), b())), fun(b(), fun(list(a()), b())))),
+            scheme: scheme(
+                &[A, B],
+                fun(fun(a(), fun(b(), b())), fun(b(), fun(list(a()), b()))),
+            ),
             run: list_foldl,
         },
         Builtin {
@@ -1245,7 +1328,10 @@ fn builtins() -> Vec<Builtin> {
         Builtin {
             name: "Maybe.andThen",
             arity: 2,
-            scheme: scheme(&[A, B], fun(fun(a(), maybe(b())), fun(maybe(a()), maybe(b())))),
+            scheme: scheme(
+                &[A, B],
+                fun(fun(a(), maybe(b())), fun(maybe(a()), maybe(b()))),
+            ),
             run: maybe_and_then,
         },
         Builtin {
@@ -1287,13 +1373,19 @@ fn builtins() -> Vec<Builtin> {
         Builtin {
             name: "Tuple.mapFirst",
             arity: 2,
-            scheme: scheme(&[A, B, X], fun(fun(a(), var(X)), fun(pair(a(), b()), pair(var(X), b())))),
+            scheme: scheme(
+                &[A, B, X],
+                fun(fun(a(), var(X)), fun(pair(a(), b()), pair(var(X), b()))),
+            ),
             run: tuple_map_first,
         },
         Builtin {
             name: "Tuple.mapSecond",
             arity: 2,
-            scheme: scheme(&[A, B, Y], fun(fun(b(), var(Y)), fun(pair(a(), b()), pair(a(), var(Y))))),
+            scheme: scheme(
+                &[A, B, Y],
+                fun(fun(b(), var(Y)), fun(pair(a(), b()), pair(a(), var(Y)))),
+            ),
             run: tuple_map_second,
         },
         Builtin {
@@ -1629,13 +1721,19 @@ fn builtins() -> Vec<Builtin> {
         Builtin {
             name: "String.foldl",
             arity: 3,
-            scheme: scheme(&[B], fun(fun(char(), fun(b(), b())), fun(b(), fun(string(), b())))),
+            scheme: scheme(
+                &[B],
+                fun(fun(char(), fun(b(), b())), fun(b(), fun(string(), b()))),
+            ),
             run: string_foldl,
         },
         Builtin {
             name: "String.foldr",
             arity: 3,
-            scheme: scheme(&[B], fun(fun(char(), fun(b(), b())), fun(b(), fun(string(), b())))),
+            scheme: scheme(
+                &[B],
+                fun(fun(char(), fun(b(), b())), fun(b(), fun(string(), b()))),
+            ),
             run: string_foldr,
         },
         Builtin {
@@ -1695,7 +1793,10 @@ fn builtins() -> Vec<Builtin> {
         Builtin {
             name: "clamp",
             arity: 3,
-            scheme: scheme(&[N], fun(number(N), fun(number(N), fun(number(N), number(N))))),
+            scheme: scheme(
+                &[N],
+                fun(number(N), fun(number(N), fun(number(N), number(N)))),
+            ),
             run: builtin_clamp,
         },
         Builtin {
@@ -1900,7 +2001,10 @@ pub fn env() -> Env {
                 args: Vec::new(),
                 run,
             },
-            None => Value::Data { ctor: c.name.to_string(), args: Vec::new() },
+            None => Value::Data {
+                ctor: c.name.to_string(),
+                args: Vec::new(),
+            },
         };
         env = env.insert(c.name.to_string(), value);
     }

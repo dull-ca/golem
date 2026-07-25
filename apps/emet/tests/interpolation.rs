@@ -14,7 +14,12 @@ name = "nginx"
 main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${name}.service" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "nginx.service".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }]
+    );
 }
 
 #[test]
@@ -24,7 +29,12 @@ port = 8080
 main = [ scroll { name = "test", glyphs = [ systemdService { unit = "port ${String.fromInt port}" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "port 8080".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "port 8080".into()
+        }]
+    );
 }
 
 #[test]
@@ -35,7 +45,12 @@ b = "y"
 main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${a}-${b} ${a}" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "x-y x".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "x-y x".into()
+        }]
+    );
 }
 
 #[test]
@@ -46,7 +61,12 @@ b = "two"
 main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${a}${b}" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "onetwo".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "onetwo".into()
+        }]
+    );
 }
 
 #[test]
@@ -72,7 +92,12 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${Just x}" 
 fn escaped_dollar_brace_is_a_literal() {
     // `\${` must not open an interpolation; it is the two literal chars `${`.
     let rs = glyphs(r#"[ systemdService { unit = "raw \${x}" } ]"#);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "raw ${x}".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "raw ${x}".into()
+        }]
+    );
 }
 
 #[test]
@@ -83,7 +108,12 @@ fn embedded_expression_containing_braces() {
 main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${ { host = "web" }.host }.service" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "web.service".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "web.service".into()
+        }]
+    );
 }
 
 #[test]
@@ -121,7 +151,12 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${ String.a
 #[test]
 fn plain_non_interpolated_string_still_works() {
     let rs = glyphs(r#"[ systemdService { unit = "plain.service" } ]"#);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "plain.service".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "plain.service".into()
+        }]
+    );
 }
 
 #[test]
@@ -133,5 +168,10 @@ b = "right"
 main = [ scroll { name = "test", glyphs = [ systemdService { unit = "${a}" ++ "-" ++ "${b}" } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "left-right".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "left-right".into()
+        }]
+    );
 }

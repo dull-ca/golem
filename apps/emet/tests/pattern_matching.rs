@@ -82,7 +82,10 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = picked } ] }
 "#;
     let (phase, msg) = err(src);
     assert_eq!(phase, Phase::Type);
-    assert!(msg.contains("Nothing"), "message should name the missing constructor: {msg}");
+    assert!(
+        msg.contains("Nothing"),
+        "message should name the missing constructor: {msg}"
+    );
 }
 
 #[test]
@@ -149,7 +152,10 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = picked } ] }
 "#;
     let (phase, msg) = err(src);
     assert_eq!(phase, Phase::Type);
-    assert!(msg.contains("AptPackage"), "message should name the unknown constructor: {msg}");
+    assert!(
+        msg.contains("AptPackage"),
+        "message should name the unknown constructor: {msg}"
+    );
 }
 
 #[test]

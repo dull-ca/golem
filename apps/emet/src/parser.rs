@@ -109,22 +109,23 @@ where
     select! { Tok::Ident(name) => name }
 }
 
-fn field_name<'src, I>() -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+fn field_name<'src, I>(
+) -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     select! { Tok::Ident(name) => name }
 }
 
-fn type_parser<'src, I>() -> impl Parser<'src, I, Spanned<Type>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+fn type_parser<'src, I>(
+) -> impl Parser<'src, I, Spanned<Type>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     recursive(|ty| {
         let con_head = select! { Tok::Upper(u) => u };
 
-        let nullary = con_head
-            .map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
+        let nullary = con_head.map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
 
         let type_var = select! { Tok::Ident(name) => name }
             .map_with(|name, e| Spanned(Type::Rigid(name), span_range(e.span())));
@@ -133,12 +134,13 @@ where
             .clone()
             .delimited_by(just(Tok::LBracket), just(Tok::RBracket))
             .map_with(|inner: Spanned<Type>, e| {
-                Spanned(Type::Con("List".to_string(), vec![inner.0]), span_range(e.span()))
+                Spanned(
+                    Type::Con("List".to_string(), vec![inner.0]),
+                    span_range(e.span()),
+                )
             });
 
-        let record_field = field_name()
-            .then_ignore(just(Tok::Colon))
-            .then(ty.clone());
+        let record_field = field_name().then_ignore(just(Tok::Colon)).then(ty.clone());
 
         let record = record_field
             .separated_by(just(Tok::Comma))
@@ -204,7 +206,8 @@ where
 /// may itself be an applied constructor like `(Tree a)`). Unlike `type_parser`,
 /// a bare applied head is NOT an atom — `Node Tree a` is three separate fields,
 /// so an application must be parenthesized.
-fn type_atom_parser<'src, I>() -> impl Parser<'src, I, Spanned<Type>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+fn type_atom_parser<'src, I>(
+) -> impl Parser<'src, I, Spanned<Type>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
@@ -217,7 +220,10 @@ where
     let list = type_parser()
         .delimited_by(just(Tok::LBracket), just(Tok::RBracket))
         .map_with(|inner: Spanned<Type>, e| {
-            Spanned(Type::Con("List".to_string(), vec![inner.0]), span_range(e.span()))
+            Spanned(
+                Type::Con("List".to_string(), vec![inner.0]),
+                span_range(e.span()),
+            )
         });
 
     let record_field = field_name()
@@ -279,7 +285,11 @@ where
         .then(type_atom_parser().repeated().collect::<Vec<_>>())
         .map(|((name, name_span), fields)| {
             let end = fields.last().map(|f| f.1.end).unwrap_or(name_span.end);
-            Variant { name, fields, span: name_span.start..end }
+            Variant {
+                name,
+                fields,
+                span: name_span.start..end,
+            }
         });
 
     just(Tok::Type)
@@ -295,11 +305,17 @@ where
         )
         .map(|(((start, name), params), variants)| {
             let end = variants.last().map(|v| v.span.end).unwrap_or(start);
-            TypeDecl { name, params, variants, span: start..end }
+            TypeDecl {
+                name,
+                params,
+                variants,
+                span: start..end,
+            }
         })
 }
 
-fn expr_parser<'src, I>() -> impl Parser<'src, I, Spanned<Expr>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+fn expr_parser<'src, I>(
+) -> impl Parser<'src, I, Spanned<Expr>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
@@ -354,12 +370,14 @@ where
             .filter(|(((_, module_span), dot_span), (_, member_span))| {
                 module_span.end == dot_span.start && dot_span.end == member_span.start
             })
-            .map(|(((module, module_span), _dot_span), (member, member_span))| {
-                Spanned(
-                    Expr::Var(format!("{module}.{member}")),
-                    module_span.start..member_span.end,
-                )
-            });
+            .map(
+                |(((module, module_span), _dot_span), (member, member_span))| {
+                    Spanned(
+                        Expr::Var(format!("{module}.{member}")),
+                        module_span.start..member_span.end,
+                    )
+                },
+            );
 
         let ctor = select! { Tok::Upper(u) => u }
             .map_with(|u, e| Spanned(Expr::Ctor(u), span_range(e.span())));
@@ -402,14 +420,16 @@ where
                     .collect::<Vec<_>>()
                     .then_ignore(just(Tok::RBrace).labelled("`}`")),
             )
-            .try_map(|(ctor, pairs): (String, Vec<(String, Spanned<Expr>)>), span| {
-                let mut fields: BTreeMap<String, Spanned<Expr>> = BTreeMap::new();
-                for (k, v) in pairs {
-                    fields.insert(k, v);
-                }
-                build_constructor(&ctor, &mut fields, span)
-                    .map(|expr| Spanned(expr, span_range(span)))
-            });
+            .try_map(
+                |(ctor, pairs): (String, Vec<(String, Spanned<Expr>)>), span| {
+                    let mut fields: BTreeMap<String, Spanned<Expr>> = BTreeMap::new();
+                    for (k, v) in pairs {
+                        fields.insert(k, v);
+                    }
+                    build_constructor(&ctor, &mut fields, span)
+                        .map(|expr| Spanned(expr, span_range(span)))
+                },
+            );
 
         let list = expr
             .clone()
@@ -462,7 +482,21 @@ where
                 _ => Err(Rich::custom(e.span(), TUPLE_TOO_LARGE_MESSAGE)),
             });
 
-        let atom = choice((interpolated, str_lit, char_lit, float_lit, int_lit, policy_word, constructor, var, qualified, ctor, paren, list, record));
+        let atom = choice((
+            interpolated,
+            str_lit,
+            char_lit,
+            float_lit,
+            int_lit,
+            policy_word,
+            constructor,
+            var,
+            qualified,
+            ctor,
+            paren,
+            list,
+            record,
+        ));
 
         let postfix = atom.foldl(
             just(Tok::Dot).ignore_then(field_name()).repeated(),
@@ -552,13 +586,11 @@ where
             .then(expr.clone())
             .map(|(pat, body)| Arm { pat, body });
 
-        let arms = just(Tok::VSemi)
-            .repeated()
-            .ignore_then(
-                arm.then_ignore(just(Tok::VSemi).repeated())
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            );
+        let arms = just(Tok::VSemi).repeated().ignore_then(
+            arm.then_ignore(just(Tok::VSemi).repeated())
+                .repeated()
+                .collect::<Vec<_>>(),
+        );
 
         let case_expr = just(Tok::Case)
             .map_with(|_, e| span_range(e.span()).start)
@@ -578,10 +610,7 @@ where
 
         let let_expr = just(Tok::Let)
             .map_with(|_, e| span_range(e.span()).start)
-            .then(
-                decls_parser(expr.clone())
-                    .delimited_by(block_open, block_close),
-            )
+            .then(decls_parser(expr.clone()).delimited_by(block_open, block_close))
             .then_ignore(just(Tok::In))
             .then(expr.clone())
             .try_map(|((start, decls), body), span| {
@@ -708,16 +737,14 @@ fn climb(
         let span = lhs.1.start..rhs.1.end;
         let builtin = operator_builtin(&op);
         let f = Spanned(Expr::Var(builtin.to_string()), lhs.1.start..lhs.1.start);
-        let applied_lhs = Spanned(
-            Expr::App(Box::new(f), Box::new(lhs)),
-            span.clone(),
-        );
+        let applied_lhs = Spanned(Expr::App(Box::new(f), Box::new(lhs)), span.clone());
         lhs = Spanned(Expr::App(Box::new(applied_lhs), Box::new(rhs)), span);
     }
     Ok(lhs)
 }
 
-fn pattern_parser<'src, I>() -> impl Parser<'src, I, Spanned<Pattern>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+fn pattern_parser<'src, I>(
+) -> impl Parser<'src, I, Spanned<Pattern>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
@@ -770,7 +797,10 @@ where
             .or_not()
             .ignore_then(select! { Tok::Float(_) => () })
             .validate(|(), e, emitter| {
-                emitter.emit(Rich::<Tok, TokSpan>::custom(e.span(), FLOAT_PATTERN_MESSAGE));
+                emitter.emit(Rich::<Tok, TokSpan>::custom(
+                    e.span(),
+                    FLOAT_PATTERN_MESSAGE,
+                ));
                 Spanned(Pattern::Wildcard, span_range(e.span()))
             });
 
@@ -845,7 +875,11 @@ where
         // so cons chains nest right-associatively, matching the expression form.
         ctor_or_atom
             .clone()
-            .then(just(Tok::Op("::".to_string())).ignore_then(pattern).or_not())
+            .then(
+                just(Tok::Op("::".to_string()))
+                    .ignore_then(pattern)
+                    .or_not(),
+            )
             .map(|(head, tail)| match tail {
                 Some(tail) => {
                     let span = head.1.start..tail.1.end;
@@ -897,13 +931,11 @@ where
             }
         });
 
-    just(Tok::VSemi)
-        .repeated()
-        .ignore_then(
-            item.then_ignore(just(Tok::VSemi).repeated())
-                .repeated()
-                .collect::<Vec<_>>(),
-        )
+    just(Tok::VSemi).repeated().ignore_then(
+        item.then_ignore(just(Tok::VSemi).repeated())
+            .repeated()
+            .collect::<Vec<_>>(),
+    )
 }
 
 enum TopItem {
@@ -936,16 +968,27 @@ where
         .map(|((name, start), tail)| match tail {
             SigOrBind::Sig(ty) => {
                 let end = ty.1.end;
-                TopItem::Value(DeclItem::Sig { name, ty, span: start..end })
+                TopItem::Value(DeclItem::Sig {
+                    name,
+                    ty,
+                    span: start..end,
+                })
             }
             SigOrBind::Bind { params, body } => {
                 let end = body.1.end;
-                TopItem::Value(DeclItem::Bind { name, params, body, span: start..end })
+                TopItem::Value(DeclItem::Bind {
+                    name,
+                    params,
+                    body,
+                    span: start..end,
+                })
             }
         });
 
     let item = choice((type_decl_parser().map(TopItem::Type), value_item)).recover_with(
-        skip_until(any().ignored(), just(Tok::VSemi).ignored(), || TopItem::Recovered),
+        skip_until(any().ignored(), just(Tok::VSemi).ignored(), || {
+            TopItem::Recovered
+        }),
     );
 
     just(Tok::VSemi)
@@ -1057,9 +1100,7 @@ fn build_constructor(
 ) -> Result<Expr, Rich<'static, Tok, TokSpan>> {
     let expr = match ctor {
         "aptPackage" => Expr::AptPackage(Box::new(take_field(ctor, fields, "name", span)?)),
-        "systemdService" => {
-            Expr::SystemdService(Box::new(take_field(ctor, fields, "unit", span)?))
-        }
+        "systemdService" => Expr::SystemdService(Box::new(take_field(ctor, fields, "unit", span)?)),
         "file" => Expr::Filesystem {
             path: Box::new(take_field(ctor, fields, "path", span)?),
             entry: EntryExpr::File {
@@ -1103,7 +1144,11 @@ fn build_constructor(
                     ))
                 }
             };
-            Expr::Scroll { name, policy, contents }
+            Expr::Scroll {
+                name,
+                policy,
+                contents,
+            }
         }
         "retry" => Expr::PolicyRetry(std::mem::take(fields)),
         // `rollback` / `keep` parse as atoms (see `policy_word`); reaching here
@@ -1117,7 +1162,10 @@ fn build_constructor(
         _ => unreachable!("unknown constructor `{ctor}`"),
     };
     if let Some(extra) = fields.keys().next() {
-        return Err(Rich::custom(span, format!("unknown {ctor} field `{extra}`")));
+        return Err(Rich::custom(
+            span,
+            format!("unknown {ctor} field `{extra}`"),
+        ));
     }
     Ok(expr)
 }
@@ -1128,9 +1176,9 @@ fn take_field(
     field: &str,
     span: TokSpan,
 ) -> Result<Spanned<Expr>, Rich<'static, Tok, TokSpan>> {
-    fields.remove(field).ok_or_else(|| {
-        Rich::custom(span, format!("`{ctor}` requires a `{field}` field"))
-    })
+    fields
+        .remove(field)
+        .ok_or_else(|| Rich::custom(span, format!("`{ctor}` requires a `{field}` field")))
 }
 
 /// Build an applied type constructor from a written `Upper` head. No name is
@@ -1166,10 +1214,7 @@ pub fn parse(
     exposing: Exposing,
     imports: Vec<Import>,
 ) -> Result<Module, Vec<ParseError>> {
-    let eoi = tokens
-        .last()
-        .map(|t| t.span.end)
-        .unwrap_or(0);
+    let eoi = tokens.last().map(|t| t.span.end).unwrap_or(0);
     let spanned: Vec<(Tok, TokSpan)> = tokens
         .iter()
         .filter(|t| t.tok != Tok::Eof)
@@ -1210,6 +1255,12 @@ pub fn parse(
     }
 
     fold_decls(value_items)
-        .map(|decls| Module { name, exposing, imports, type_decls, decls })
+        .map(|decls| Module {
+            name,
+            exposing,
+            imports,
+            type_decls,
+            decls,
+        })
         .map_err(|pe| vec![pe])
 }

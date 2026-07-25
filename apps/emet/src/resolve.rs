@@ -17,10 +17,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme, Span};
-use crate::query::QueryIndex;
 use crate::eval::{self, Env};
 use crate::infer::{self, ImportedConstructors, TyEnv};
 use crate::manifest::{self, SearchPath};
+use crate::query::QueryIndex;
 use crate::{Error, Phase};
 
 struct Loaded {
@@ -79,8 +79,7 @@ pub fn compile_entry(
     let entry_name = load_graph(entry, &search_path, &mut loaded)?;
     let order = topo_order(&entry_name, &loaded).map_err(|e| vec![e])?;
 
-    eval::on_eval_thread(move || check_and_eval(entry_name, order, loaded))
-        .map_err(|e| vec![e])
+    eval::on_eval_thread(move || check_and_eval(entry_name, order, loaded)).map_err(|e| vec![e])
 }
 
 pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
@@ -89,11 +88,21 @@ pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
     let entry_name = match load_graph(entry, &search_path, &mut loaded) {
         Ok(name) => name,
-        Err(errors) => return ProjectAnalysis { diagnostics: errors, indexes: HashMap::new() },
+        Err(errors) => {
+            return ProjectAnalysis {
+                diagnostics: errors,
+                indexes: HashMap::new(),
+            }
+        }
     };
     let order = match topo_order(&entry_name, &loaded) {
         Ok(order) => order,
-        Err(e) => return ProjectAnalysis { diagnostics: vec![e], indexes: HashMap::new() },
+        Err(e) => {
+            return ProjectAnalysis {
+                diagnostics: vec![e],
+                indexes: HashMap::new(),
+            }
+        }
     };
 
     let mut interfaces: HashMap<String, Interface> = HashMap::new();
@@ -128,17 +137,22 @@ pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
         indexes.insert(loaded_mod.path.clone(), index);
 
         if name != &entry_name {
-            if let Ok(final_ty) =
-                infer::check_library(&loaded_mod.module, base_ty, &imported_types, &imported_ctors)
-            {
-                let iface =
-                    interface_of(&loaded_mod.module, final_ty, eval::prelude_env());
+            if let Ok(final_ty) = infer::check_library(
+                &loaded_mod.module,
+                base_ty,
+                &imported_types,
+                &imported_ctors,
+            ) {
+                let iface = interface_of(&loaded_mod.module, final_ty, eval::prelude_env());
                 interfaces.insert(name.clone(), iface);
             }
         }
     }
 
-    ProjectAnalysis { diagnostics, indexes }
+    ProjectAnalysis {
+        diagnostics,
+        indexes,
+    }
 }
 
 fn check_and_eval(
@@ -159,9 +173,13 @@ fn check_and_eval(
         let imported_ctors = import_constructors(&loaded_mod.module, &interfaces);
 
         if is_entry {
-            let (_, main_ty) =
-                infer::check_entry(&loaded_mod.module, base_ty, &imported_types, &imported_ctors)
-                    .map_err(|e| type_error(loaded_mod, e))?;
+            let (_, main_ty) = infer::check_entry(
+                &loaded_mod.module,
+                base_ty,
+                &imported_types,
+                &imported_ctors,
+            )
+            .map_err(|e| type_error(loaded_mod, e))?;
             let scrolls = eval::eval_entry(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
             crate::analyze(&scrolls).map_err(|msg| Error {
@@ -173,12 +191,19 @@ fn check_and_eval(
             entry_result = Some((main_ty, scrolls));
         } else {
             reject_library_main(loaded_mod)?;
-            let final_ty =
-                infer::check_library(&loaded_mod.module, base_ty, &imported_types, &imported_ctors)
-                    .map_err(|e| type_error(loaded_mod, e))?;
+            let final_ty = infer::check_library(
+                &loaded_mod.module,
+                base_ty,
+                &imported_types,
+                &imported_ctors,
+            )
+            .map_err(|e| type_error(loaded_mod, e))?;
             let final_val = eval::eval_library(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
-            interfaces.insert(name.clone(), interface_of(&loaded_mod.module, final_ty, final_val));
+            interfaces.insert(
+                name.clone(),
+                interface_of(&loaded_mod.module, final_ty, final_val),
+            );
         }
     }
 
@@ -218,10 +243,20 @@ fn load_graph(
         }
         errors
     })?;
-    let name = module.name.clone().unwrap_or_else(|| module_name_from_path(path));
+    let name = module
+        .name
+        .clone()
+        .unwrap_or_else(|| module_name_from_path(path));
 
     let imports = module.imports.clone();
-    loaded.insert(name.clone(), Loaded { module, path: path.to_path_buf(), source });
+    loaded.insert(
+        name.clone(),
+        Loaded {
+            module,
+            path: path.to_path_buf(),
+            source,
+        },
+    );
 
     for import in &imports {
         if loaded.contains_key(&import.module) {
@@ -319,7 +354,10 @@ fn import_ty_env(
     let mut env = crate::prelude::ty_env();
     for import in &module.imports {
         let iface = &interfaces[&import.module];
-        let qualifier = import.alias.clone().unwrap_or_else(|| import.module.clone());
+        let qualifier = import
+            .alias
+            .clone()
+            .unwrap_or_else(|| import.module.clone());
         for value in &iface.exposed_values {
             if let Some(scheme) = iface.ty_env.scheme(value) {
                 env = env.bind(format!("{qualifier}.{value}"), scheme);
@@ -409,7 +447,10 @@ fn import_constructors(
             sum_ctors.insert(name.clone(), members.clone());
         }
     }
-    ImportedConstructors { ctor_schemes, sum_ctors }
+    ImportedConstructors {
+        ctor_schemes,
+        sum_ctors,
+    }
 }
 
 /// Resolve each name this module imports to the `DefSite` in its owning module
@@ -428,12 +469,18 @@ fn import_def_sites(
     for import in &module.imports {
         let iface = &interfaces[&import.module];
         let owner = import.module.clone();
-        let qualifier = import.alias.clone().unwrap_or_else(|| import.module.clone());
+        let qualifier = import
+            .alias
+            .clone()
+            .unwrap_or_else(|| import.module.clone());
         for value in &iface.exposed_values {
             if let Some(span) = iface.exposed_def_spans.get(value) {
                 defs.insert(
                     format!("{qualifier}.{value}"),
-                    crate::query::DefSite { span: span.clone(), module: Some(owner.clone()) },
+                    crate::query::DefSite {
+                        span: span.clone(),
+                        module: Some(owner.clone()),
+                    },
                 );
             }
         }
@@ -441,7 +488,10 @@ fn import_def_sites(
             if let Some(span) = iface.exposed_def_spans.get(ctor) {
                 defs.insert(
                     ctor.clone(),
-                    crate::query::DefSite { span: span.clone(), module: Some(owner.clone()) },
+                    crate::query::DefSite {
+                        span: span.clone(),
+                        module: Some(owner.clone()),
+                    },
                 );
             }
         }
@@ -454,7 +504,10 @@ fn import_def_sites(
                 if let Some(span) = iface.exposed_def_spans.get(name) {
                     defs.insert(
                         name.clone(),
-                        crate::query::DefSite { span: span.clone(), module: Some(owner.clone()) },
+                        crate::query::DefSite {
+                            span: span.clone(),
+                            module: Some(owner.clone()),
+                        },
                     );
                 }
             }
@@ -467,7 +520,10 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
     let mut env = eval::prelude_env();
     for import in &module.imports {
         let iface = &interfaces[&import.module];
-        let qualifier = import.alias.clone().unwrap_or_else(|| import.module.clone());
+        let qualifier = import
+            .alias
+            .clone()
+            .unwrap_or_else(|| import.module.clone());
         for value in &iface.exposed_values {
             if let Some(v) = iface.value_env.lookup(value) {
                 env = env.insert(format!("{qualifier}.{value}"), v);
@@ -515,17 +571,31 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
     let ctor_names: BTreeMap<String, Vec<String>> = module
         .type_decls
         .iter()
-        .map(|td| (td.name.clone(), td.variants.iter().map(|v| v.name.clone()).collect()))
+        .map(|td| {
+            (
+                td.name.clone(),
+                td.variants.iter().map(|v| v.name.clone()).collect(),
+            )
+        })
         .collect();
     let sum_ctors: BTreeMap<String, Vec<(String, usize)>> = module
         .type_decls
         .iter()
         .map(|td| {
-            (td.name.clone(), td.variants.iter().map(|v| (v.name.clone(), v.fields.len())).collect())
+            (
+                td.name.clone(),
+                td.variants
+                    .iter()
+                    .map(|v| (v.name.clone(), v.fields.len()))
+                    .collect(),
+            )
         })
         .collect();
-    let type_arities: BTreeMap<String, usize> =
-        module.type_decls.iter().map(|td| (td.name.clone(), td.params.len())).collect();
+    let type_arities: BTreeMap<String, usize> = module
+        .type_decls
+        .iter()
+        .map(|td| (td.name.clone(), td.params.len()))
+        .collect();
 
     let mut open_type_names: Vec<String> = Vec::new();
     match &module.exposing {
@@ -609,7 +679,11 @@ fn reject_library_main(loaded: &Loaded) -> Result<(), Error> {
             phase: Phase::Type,
             msg: format!(
                 "library module `{}` declares `main`; only the entry module may (ADR 0009)",
-                loaded.module.name.clone().unwrap_or_else(|| module_name_from_path(&loaded.path))
+                loaded
+                    .module
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| module_name_from_path(&loaded.path))
             ),
             span: 0..0,
             note: None,
@@ -630,10 +704,20 @@ fn not_exposed(site: &Loaded, import: &Import, name: &str) -> Error {
 
 fn type_error(loaded: &Loaded, e: infer::TypeError) -> Error {
     let _ = &loaded.source;
-    Error { phase: Phase::Type, msg: e.msg, span: e.span, note: e.note }
+    Error {
+        phase: Phase::Type,
+        msg: e.msg,
+        span: e.span,
+        note: e.note,
+    }
 }
 
 fn analyze_error(loaded: &Loaded, e: eval::EvalError) -> Error {
     let _ = &loaded.source;
-    Error { phase: Phase::Analyze, msg: e.msg, span: 0..0, note: None }
+    Error {
+        phase: Phase::Analyze,
+        msg: e.msg,
+        span: 0..0,
+        note: None,
+    }
 }

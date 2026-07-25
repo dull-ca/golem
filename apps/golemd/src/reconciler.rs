@@ -53,18 +53,23 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
 pub fn inverse_of(glyph: &Glyph) -> Inverse {
     match glyph {
         Glyph::AptPackage { name } => Inverse::RemoveAptPackage { name: name.clone() },
-        Glyph::SystemdService { unit } => {
-            Inverse::DisableSystemdService { unit: unit.clone(), prior_enabled: false, prior_active: false, started_only: false }
-        }
+        Glyph::SystemdService { unit } => Inverse::DisableSystemdService {
+            unit: unit.clone(),
+            prior_enabled: false,
+            prior_active: false,
+            started_only: false,
+        },
         Glyph::Filesystem { path, entry } => match entry {
             Entry::File { .. } => Inverse::DeleteFile { path: path.clone() },
-            Entry::Directory { .. } => {
-                Inverse::RemoveDirectory { path: path.clone(), created: vec![path.clone()] }
-            }
+            Entry::Directory { .. } => Inverse::RemoveDirectory {
+                path: path.clone(),
+                created: vec![path.clone()],
+            },
             Entry::Symlink { .. } => Inverse::RemoveSymlink { path: path.clone() },
         },
-        Glyph::LineInFile { path, line } => {
-            Inverse::RemoveLineInFile { path: path.clone(), line: line.clone() }
-        }
+        Glyph::LineInFile { path, line } => Inverse::RemoveLineInFile {
+            path: path.clone(),
+            line: line.clone(),
+        },
     }
 }

@@ -304,15 +304,25 @@ mod tests {
     use super::*;
 
     fn apt(name: &str) -> Glyph {
-        Glyph::AptPackage { name: name.to_string() }
+        Glyph::AptPackage {
+            name: name.to_string(),
+        }
     }
 
     fn leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: name.to_string(), policy: None, contents: Contents::Glyphs(glyphs) }
+        Scroll {
+            name: name.to_string(),
+            policy: None,
+            contents: Contents::Glyphs(glyphs),
+        }
     }
 
     fn branch(name: &str, groups: Vec<Scroll>) -> Scroll {
-        Scroll { name: name.to_string(), policy: None, contents: Contents::Groups(groups) }
+        Scroll {
+            name: name.to_string(),
+            policy: None,
+            contents: Contents::Groups(groups),
+        }
     }
 
     #[test]
@@ -336,7 +346,10 @@ mod tests {
             vec![
                 branch(
                     "fishnet",
-                    vec![leaf("client-1", vec![apt("stockfish")]), leaf("client-2", vec![apt("stockfish")])],
+                    vec![
+                        leaf("client-1", vec![apt("stockfish")]),
+                        leaf("client-2", vec![apt("stockfish")]),
+                    ],
                 ),
                 leaf("base", vec![apt("htop")]),
             ],
@@ -346,8 +359,16 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                vec!["worker-01".to_string(), "fishnet".to_string(), "client-1".to_string()],
-                vec!["worker-01".to_string(), "fishnet".to_string(), "client-2".to_string()],
+                vec![
+                    "worker-01".to_string(),
+                    "fishnet".to_string(),
+                    "client-1".to_string()
+                ],
+                vec![
+                    "worker-01".to_string(),
+                    "fishnet".to_string(),
+                    "client-2".to_string()
+                ],
                 vec!["worker-01".to_string(), "base".to_string()],
             ]
         );
@@ -358,12 +379,18 @@ mod tests {
     fn policy_chain_is_root_to_leaf() {
         let child = Scroll {
             name: "client-2".to_string(),
-            policy: Some(Policy { on_exhaust: Some(OnExhaust::Keep), ..Policy::default() }),
+            policy: Some(Policy {
+                on_exhaust: Some(OnExhaust::Keep),
+                ..Policy::default()
+            }),
             contents: Contents::Glyphs(vec![apt("stockfish")]),
         };
         let host = Scroll {
             name: "worker".to_string(),
-            policy: Some(Policy { max_attempts: Some(9), ..Policy::default() }),
+            policy: Some(Policy {
+                max_attempts: Some(9),
+                ..Policy::default()
+            }),
             contents: Contents::Groups(vec![child]),
         };
         let units = host.leaf_units();
@@ -377,7 +404,10 @@ mod tests {
     fn all_glyphs_flattens_in_source_order() {
         let host = branch(
             "h",
-            vec![leaf("a", vec![apt("one"), apt("two")]), leaf("b", vec![apt("three")])],
+            vec![
+                leaf("a", vec![apt("one"), apt("two")]),
+                leaf("b", vec![apt("three")]),
+            ],
         );
         let flat: Vec<&Glyph> = host.all_glyphs();
         assert_eq!(flat, vec![&apt("one"), &apt("two"), &apt("three")]);

@@ -34,8 +34,18 @@ main = [ scroll { name = "test", glyphs = List.concatMap pair [ "nginx" ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
     assert_eq!(rs.len(), 2);
-    assert_eq!(rs[0], Glyph::AptPackage { name: "nginx".into() });
-    assert_eq!(rs[1], Glyph::SystemdService { unit: "nginx".into() });
+    assert_eq!(
+        rs[0],
+        Glyph::AptPackage {
+            name: "nginx".into()
+        }
+    );
+    assert_eq!(
+        rs[1],
+        Glyph::SystemdService {
+            unit: "nginx".into()
+        }
+    );
 }
 
 #[test]
@@ -47,8 +57,18 @@ main = [ scroll { name = "test", glyphs = List.concat [ a, b ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
     assert_eq!(rs.len(), 2);
-    assert_eq!(rs[0], Glyph::AptPackage { name: "nginx".into() });
-    assert_eq!(rs[1], Glyph::SystemdService { unit: "nginx.service".into() });
+    assert_eq!(
+        rs[0],
+        Glyph::AptPackage {
+            name: "nginx".into()
+        }
+    );
+    assert_eq!(
+        rs[1],
+        Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }
+    );
 }
 
 #[test]

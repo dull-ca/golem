@@ -37,7 +37,10 @@ impl Reconciler for FakeReconciler {
         let changed = present.get(&key) != Some(&cid);
         present.insert(key, cid);
         Ok(Outcome {
-            op: GlyphOp::Install { cid, glyph: glyph.clone() },
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
             cid,
             inverse: inverse_of(glyph),
             changed,

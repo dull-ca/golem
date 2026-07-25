@@ -100,7 +100,11 @@ impl ReconcileReport {
         } else {
             TopOutcome::RolledBack
         };
-        ReconcileReport { revision, outcome, units }
+        ReconcileReport {
+            revision,
+            outcome,
+            units,
+        }
     }
 }
 

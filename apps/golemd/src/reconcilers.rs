@@ -48,7 +48,9 @@ pub struct HostReconciler<R: CommandRunner> {
 
 impl HostReconciler<SystemCommandRunner> {
     pub fn system() -> Self {
-        Self { runner: SystemCommandRunner }
+        Self {
+            runner: SystemCommandRunner,
+        }
     }
 }
 
@@ -73,17 +75,32 @@ impl<R: CommandRunner> HostReconciler<R> {
         }
         let updated = self.runner.run("apt-get", &["update"])?;
         if !updated.succeeded() {
-            return Err(EnactError::Retryable(format!("apt-get update: {}", updated.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "apt-get update: {}",
+                updated.stderr
+            )));
         }
         let installed = self.runner.run("apt-get", &["install", "-y", name])?;
         if !installed.succeeded() {
-            return Err(EnactError::Retryable(format!("apt-get install {name}: {}", installed.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "apt-get install {name}: {}",
+                installed.stderr
+            )));
         }
-        Ok(outcome(glyph, cid, Inverse::RemoveAptPackage { name: name.to_string() }, true))
+        Ok(outcome(
+            glyph,
+            cid,
+            Inverse::RemoveAptPackage {
+                name: name.to_string(),
+            },
+            true,
+        ))
     }
 
     fn apt_installed(&self, name: &str) -> EnactResult<bool> {
-        let query = self.runner.run("dpkg-query", &["-W", "-f=${Status}", name])?;
+        let query = self
+            .runner
+            .run("dpkg-query", &["-W", "-f=${Status}", name])?;
         Ok(query.succeeded() && query.stdout.contains("install ok installed"))
     }
 
@@ -114,7 +131,10 @@ impl<R: CommandRunner> HostReconciler<R> {
         }
         let reloaded = self.runner.run("systemctl", &["daemon-reload"])?;
         if !reloaded.succeeded() {
-            return Err(EnactError::Retryable(format!("systemctl daemon-reload: {}", reloaded.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "systemctl daemon-reload: {}",
+                reloaded.stderr
+            )));
         }
         let enabled = self.runner.run("systemctl", &["enable", "--now", unit])?;
         let started_only = if enabled.succeeded() {
@@ -122,11 +142,17 @@ impl<R: CommandRunner> HostReconciler<R> {
         } else if is_generated_unit(&enabled.stderr) {
             let started = self.runner.run("systemctl", &["start", unit])?;
             if !started.succeeded() {
-                return Err(EnactError::Retryable(format!("systemctl start {unit}: {}", started.stderr)));
+                return Err(EnactError::Retryable(format!(
+                    "systemctl start {unit}: {}",
+                    started.stderr
+                )));
             }
             true
         } else {
-            return Err(EnactError::Retryable(format!("systemctl enable --now {unit}: {}", enabled.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "systemctl enable --now {unit}: {}",
+                enabled.stderr
+            )));
         };
         Ok(outcome(
             glyph,
@@ -142,17 +168,26 @@ impl<R: CommandRunner> HostReconciler<R> {
     }
 
     fn systemd_enabled(&self, unit: &str) -> EnactResult<bool> {
-        Ok(self.runner.run("systemctl", &["is-enabled", unit])?.succeeded())
+        Ok(self
+            .runner
+            .run("systemctl", &["is-enabled", unit])?
+            .succeeded())
     }
 
     fn systemd_active(&self, unit: &str) -> EnactResult<bool> {
-        Ok(self.runner.run("systemctl", &["is-active", unit])?.succeeded())
+        Ok(self
+            .runner
+            .run("systemctl", &["is-active", unit])?
+            .succeeded())
     }
 
     fn reverse_apt(&self, name: &str) -> EnactResult<()> {
         let removed = self.runner.run("apt-get", &["remove", "-y", name])?;
         if !removed.succeeded() {
-            return Err(EnactError::Retryable(format!("apt-get remove {name}: {}", removed.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "apt-get remove {name}: {}",
+                removed.stderr
+            )));
         }
         Ok(())
     }
@@ -163,25 +198,40 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// the generator's to own. Otherwise restore the recorded prior state:
     /// disable if golem enabled it, stop if golem started an inactive unit, else
     /// leave it.
-    fn reverse_systemd(&self, unit: &str, prior_enabled: bool, prior_active: bool, started_only: bool) -> EnactResult<()> {
+    fn reverse_systemd(
+        &self,
+        unit: &str,
+        prior_enabled: bool,
+        prior_active: bool,
+        started_only: bool,
+    ) -> EnactResult<()> {
         if started_only {
             let stopped = self.runner.run("systemctl", &["stop", unit])?;
             if !stopped.succeeded() {
-                return Err(EnactError::Retryable(format!("systemctl stop {unit}: {}", stopped.stderr)));
+                return Err(EnactError::Retryable(format!(
+                    "systemctl stop {unit}: {}",
+                    stopped.stderr
+                )));
             }
             return Ok(());
         }
         if !prior_enabled {
             let disabled = self.runner.run("systemctl", &["disable", "--now", unit])?;
             if !disabled.succeeded() {
-                return Err(EnactError::Retryable(format!("systemctl disable --now {unit}: {}", disabled.stderr)));
+                return Err(EnactError::Retryable(format!(
+                    "systemctl disable --now {unit}: {}",
+                    disabled.stderr
+                )));
             }
             return Ok(());
         }
         if !prior_active {
             let stopped = self.runner.run("systemctl", &["stop", unit])?;
             if !stopped.succeeded() {
-                return Err(EnactError::Retryable(format!("systemctl stop {unit}: {}", stopped.stderr)));
+                return Err(EnactError::Retryable(format!(
+                    "systemctl stop {unit}: {}",
+                    stopped.stderr
+                )));
             }
         }
         Ok(())
@@ -192,11 +242,17 @@ impl<R: CommandRunner> HostReconciler<R> {
     fn try_restart(&self, unit: &str) -> EnactResult<()> {
         let reloaded = self.runner.run("systemctl", &["daemon-reload"])?;
         if !reloaded.succeeded() {
-            return Err(EnactError::Retryable(format!("systemctl daemon-reload: {}", reloaded.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "systemctl daemon-reload: {}",
+                reloaded.stderr
+            )));
         }
         let restarted = self.runner.run("systemctl", &["try-restart", unit])?;
         if !restarted.succeeded() {
-            return Err(EnactError::Retryable(format!("systemctl try-restart {unit}: {}", restarted.stderr)));
+            return Err(EnactError::Retryable(format!(
+                "systemctl try-restart {unit}: {}",
+                restarted.stderr
+            )));
         }
         Ok(())
     }
@@ -220,10 +276,17 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         match &outcome.inverse {
             Inverse::Nothing => Ok(()),
             Inverse::RemoveAptPackage { name } => self.reverse_apt(name),
-            Inverse::DisableSystemdService { unit, prior_enabled, prior_active, started_only } => {
-                self.reverse_systemd(unit, *prior_enabled, *prior_active, *started_only)
-            }
-            Inverse::RestoreFile { path, contents, perms } => restore_file(path, contents, perms),
+            Inverse::DisableSystemdService {
+                unit,
+                prior_enabled,
+                prior_active,
+                started_only,
+            } => self.reverse_systemd(unit, *prior_enabled, *prior_active, *started_only),
+            Inverse::RestoreFile {
+                path,
+                contents,
+                perms,
+            } => restore_file(path, contents, perms),
             Inverse::DeleteFile { path } => delete_file(path),
             Inverse::RemoveDirectory { path, created } => remove_directory(path, created),
             Inverse::RestoreDirMeta { path, prior_perms } => apply_perms(path, prior_perms),
@@ -246,10 +309,24 @@ fn is_generated_unit(stderr: &str) -> bool {
 }
 
 fn outcome(glyph: &Glyph, cid: ContentId, inverse: Inverse, changed: bool) -> Outcome {
-    Outcome { op: GlyphOp::Install { cid, glyph: glyph.clone() }, cid, inverse, changed }
+    Outcome {
+        op: GlyphOp::Install {
+            cid,
+            glyph: glyph.clone(),
+        },
+        cid,
+        inverse,
+        changed,
+    }
 }
 
-fn apply_file(path: &str, contents: &str, perms: &Perms, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+fn apply_file(
+    path: &str,
+    contents: &str,
+    perms: &Perms,
+    cid: ContentId,
+    glyph: &Glyph,
+) -> EnactResult<Outcome> {
     let prior = read_file(path)?;
     if let Some((prior_contents, prior_perms)) = &prior {
         if prior_contents == contents && perms_match(prior_perms, perms)? {
@@ -258,10 +335,14 @@ fn apply_file(path: &str, contents: &str, perms: &Perms, cid: ContentId, glyph: 
     }
     write_file_atomic(path, contents, perms)?;
     let inverse = match prior {
-        Some((prior_contents, prior_perms)) => {
-            Inverse::RestoreFile { path: path.to_string(), contents: prior_contents, perms: prior_perms }
-        }
-        None => Inverse::DeleteFile { path: path.to_string() },
+        Some((prior_contents, prior_perms)) => Inverse::RestoreFile {
+            path: path.to_string(),
+            contents: prior_contents,
+            perms: prior_perms,
+        },
+        None => Inverse::DeleteFile {
+            path: path.to_string(),
+        },
     };
     Ok(outcome(glyph, cid, inverse, true))
 }
@@ -280,7 +361,12 @@ fn apply_file(path: &str, contents: &str, perms: &Perms, cid: ContentId, glyph: 
 /// - **A non-directory already at `path`** — refuse with `Fatal` rather than
 ///   clobber a pre-existing file/symlink golem did not create (the ADR 0015
 ///   "never touch state it did not record creating" rule).
-fn apply_directory(path: &str, perms: &Perms, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+fn apply_directory(
+    path: &str,
+    perms: &Perms,
+    cid: ContentId,
+    glyph: &Glyph,
+) -> EnactResult<Outcome> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => {
             let prior_perms = observe_perms(path)?;
@@ -288,7 +374,15 @@ fn apply_directory(path: &str, perms: &Perms, cid: ContentId, glyph: &Glyph) -> 
                 return Ok(outcome(glyph, cid, Inverse::Nothing, false));
             }
             apply_perms(path, perms)?;
-            Ok(outcome(glyph, cid, Inverse::RestoreDirMeta { path: path.to_string(), prior_perms }, true))
+            Ok(outcome(
+                glyph,
+                cid,
+                Inverse::RestoreDirMeta {
+                    path: path.to_string(),
+                    prior_perms,
+                },
+                true,
+            ))
         }
         Ok(_) => Err(EnactError::Fatal(format!(
             "refuse to replace pre-existing non-directory at {path} with a directory"
@@ -296,7 +390,15 @@ fn apply_directory(path: &str, perms: &Perms, cid: ContentId, glyph: &Glyph) -> 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let created = create_missing_components(path)?;
             apply_perms(path, perms)?;
-            Ok(outcome(glyph, cid, Inverse::RemoveDirectory { path: path.to_string(), created }, true))
+            Ok(outcome(
+                glyph,
+                cid,
+                Inverse::RemoveDirectory {
+                    path: path.to_string(),
+                    created,
+                },
+                true,
+            ))
         }
         Err(e) => Err(EnactError::Retryable(format!("stat {path}: {e}"))),
     }
@@ -336,7 +438,14 @@ fn apply_symlink(path: &str, target: &str, cid: ContentId, glyph: &Glyph) -> Ena
                 .map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", parent.display())))?;
             std::os::unix::fs::symlink(target, path)
                 .map_err(|e| EnactError::Retryable(format!("symlink {path} -> {target}: {e}")))?;
-            Ok(outcome(glyph, cid, Inverse::RemoveSymlink { path: path.to_string() }, true))
+            Ok(outcome(
+                glyph,
+                cid,
+                Inverse::RemoveSymlink {
+                    path: path.to_string(),
+                },
+                true,
+            ))
         }
         Err(e) => Err(EnactError::Retryable(format!("stat {path}: {e}"))),
     }
@@ -363,7 +472,8 @@ fn read_file(path: &str) -> EnactResult<Option<(String, Perms)>> {
 /// resolves, so reverse re-resolves them on the host the same way apply does.
 fn observe_perms(path: &str) -> EnactResult<Perms> {
     use std::os::unix::fs::MetadataExt;
-    let meta = fs::metadata(path).map_err(|e| EnactError::Retryable(format!("stat {path}: {e}")))?;
+    let meta =
+        fs::metadata(path).map_err(|e| EnactError::Retryable(format!("stat {path}: {e}")))?;
     Ok(Perms {
         mode: (meta.permissions().mode() & 0o7777) as u16,
         owner: User::from_uid(Uid::from_raw(meta.uid()))
@@ -386,12 +496,26 @@ fn perms_match(prior: &Perms, desired: &Perms) -> EnactResult<bool> {
         return Ok(false);
     }
     if let Some(name) = &desired.owner {
-        if resolve_uid(name)? != prior.owner.as_deref().map(resolve_uid).transpose()?.flatten() {
+        if resolve_uid(name)?
+            != prior
+                .owner
+                .as_deref()
+                .map(resolve_uid)
+                .transpose()?
+                .flatten()
+        {
             return Ok(false);
         }
     }
     if let Some(name) = &desired.group {
-        if resolve_gid(name)? != prior.group.as_deref().map(resolve_gid).transpose()?.flatten() {
+        if resolve_gid(name)?
+            != prior
+                .group
+                .as_deref()
+                .map(resolve_gid)
+                .transpose()?
+                .flatten()
+        {
             return Ok(false);
         }
     }
@@ -407,15 +531,19 @@ fn perms_match(prior: &Perms, desired: &Perms) -> EnactResult<bool> {
 /// directory's prior perms.
 fn apply_perms(path: &str, perms: &Perms) -> EnactResult<()> {
     let uid = match &perms.owner {
-        Some(name) => Some(Uid::from_raw(
-            resolve_uid(name)?.ok_or_else(|| EnactError::Fatal(format!("unknown owner `{name}`")))?,
-        )),
+        Some(name) => {
+            Some(Uid::from_raw(resolve_uid(name)?.ok_or_else(|| {
+                EnactError::Fatal(format!("unknown owner `{name}`"))
+            })?))
+        }
         None => None,
     };
     let gid = match &perms.group {
-        Some(name) => Some(Gid::from_raw(
-            resolve_gid(name)?.ok_or_else(|| EnactError::Fatal(format!("unknown group `{name}`")))?,
-        )),
+        Some(name) => {
+            Some(Gid::from_raw(resolve_gid(name)?.ok_or_else(|| {
+                EnactError::Fatal(format!("unknown group `{name}`"))
+            })?))
+        }
         None => None,
     };
     if uid.is_some() || gid.is_some() {
@@ -470,12 +598,14 @@ fn create_missing_components(path: &str) -> EnactResult<Vec<String>> {
 fn write_file_atomic(path: &str, contents: &str, perms: &Perms) -> EnactResult<()> {
     let target = Path::new(path);
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(dir).map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", dir.display())))?;
+    fs::create_dir_all(dir)
+        .map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", dir.display())))?;
     let mut temp = tempfile::NamedTempFile::new_in(dir)
         .map_err(|e| EnactError::Retryable(format!("temp in {}: {e}", dir.display())))?;
     temp.write_all(contents.as_bytes())
         .map_err(|e| EnactError::Retryable(format!("write temp for {path}: {e}")))?;
-    temp.flush().map_err(|e| EnactError::Retryable(format!("flush temp for {path}: {e}")))?;
+    temp.flush()
+        .map_err(|e| EnactError::Retryable(format!("flush temp for {path}: {e}")))?;
     let temp_path = temp
         .path()
         .to_str()
@@ -527,12 +657,25 @@ fn remove_symlink(path: &str) -> EnactResult<()> {
     }
 }
 
-fn apply_line_in_file(path: &str, line: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+fn apply_line_in_file(
+    path: &str,
+    line: &str,
+    cid: ContentId,
+    glyph: &Glyph,
+) -> EnactResult<Outcome> {
     if file_has_line(path, line)? {
         return Ok(outcome(glyph, cid, Inverse::Nothing, false));
     }
     append_line(path, line)?;
-    Ok(outcome(glyph, cid, Inverse::RemoveLineInFile { path: path.to_string(), line: line.to_string() }, true))
+    Ok(outcome(
+        glyph,
+        cid,
+        Inverse::RemoveLineInFile {
+            path: path.to_string(),
+            line: line.to_string(),
+        },
+        true,
+    ))
 }
 
 fn file_has_line(path: &str, line: &str) -> EnactResult<bool> {
@@ -546,7 +689,8 @@ fn file_has_line(path: &str, line: &str) -> EnactResult<bool> {
 fn append_line(path: &str, line: &str) -> EnactResult<()> {
     let target = Path::new(path);
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(dir).map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", dir.display())))?;
+    fs::create_dir_all(dir)
+        .map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", dir.display())))?;
     let mut existing = fs::read_to_string(path).unwrap_or_default();
     if !existing.is_empty() && !existing.ends_with('\n') {
         existing.push('\n');
@@ -601,26 +745,44 @@ mod tests {
     }
 
     fn perms(mode: u16) -> Perms {
-        Perms { mode, owner: None, group: None }
+        Perms {
+            mode,
+            owner: None,
+            group: None,
+        }
     }
 
     fn file_glyph(path: &str, contents: &str, mode: u16) -> Glyph {
         Glyph::Filesystem {
             path: path.into(),
-            entry: Entry::File { contents: contents.into(), perms: perms(mode) },
+            entry: Entry::File {
+                contents: contents.into(),
+                perms: perms(mode),
+            },
         }
     }
 
     fn directory_glyph(path: &str, mode: u16) -> Glyph {
-        Glyph::Filesystem { path: path.into(), entry: Entry::Directory { perms: perms(mode) } }
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::Directory { perms: perms(mode) },
+        }
     }
 
     fn symlink_glyph(path: &str, target: &str) -> Glyph {
-        Glyph::Filesystem { path: path.into(), entry: Entry::Symlink { target: target.into() } }
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::Symlink {
+                target: target.into(),
+            },
+        }
     }
 
     fn line_glyph(path: &str, line: &str) -> Glyph {
-        Glyph::LineInFile { path: path.into(), line: line.into() }
+        Glyph::LineInFile {
+            path: path.into(),
+            line: line.into(),
+        }
     }
 
     #[test]
@@ -665,9 +827,18 @@ mod tests {
         let log = runner_of(&rec).log();
         let update = log.iter().position(|c| c == "apt-get update");
         let install = log.iter().position(|c| c == "apt-get install -y nginx");
-        assert!(update.is_some(), "expected an apt-get update, log was {log:?}");
-        assert!(install.is_some(), "expected an apt-get install, log was {log:?}");
-        assert!(update < install, "apt-get update must precede install, log was {log:?}");
+        assert!(
+            update.is_some(),
+            "expected an apt-get update, log was {log:?}"
+        );
+        assert!(
+            install.is_some(),
+            "expected an apt-get install, log was {log:?}"
+        );
+        assert!(
+            update < install,
+            "apt-get update must precede install, log was {log:?}"
+        );
     }
 
     #[test]
@@ -690,9 +861,18 @@ mod tests {
         let log = runner_of(&rec).log();
         let reload = log.iter().position(|c| c == "systemctl daemon-reload");
         let enable = log.iter().position(|c| c == "systemctl enable --now app");
-        assert!(reload.is_some(), "expected a daemon-reload, log was {log:?}");
-        assert!(enable.is_some(), "expected an enable --now, log was {log:?}");
-        assert!(reload < enable, "daemon-reload must precede enable, log was {log:?}");
+        assert!(
+            reload.is_some(),
+            "expected a daemon-reload, log was {log:?}"
+        );
+        assert!(
+            enable.is_some(),
+            "expected an enable --now, log was {log:?}"
+        );
+        assert!(
+            reload < enable,
+            "daemon-reload must precede enable, log was {log:?}"
+        );
     }
 
     #[test]
@@ -884,7 +1064,10 @@ mod tests {
 
         let outcome = rec.apply(&glyph, cid).unwrap();
         assert!(outcome.changed);
-        assert_eq!(fs::read_to_string(path).unwrap(), "127.0.0.1 localhost\n10.0.0.1 app\n");
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "127.0.0.1 localhost\n10.0.0.1 app\n"
+        );
 
         rec.reverse(&outcome).unwrap();
         assert_eq!(fs::read_to_string(path).unwrap(), "127.0.0.1 localhost\n");
@@ -1050,7 +1233,10 @@ mod tests {
 
         let outcome = rec.apply(&glyph, cid).unwrap();
         assert!(outcome.changed);
-        assert_eq!(fs::read_link(path).unwrap(), Path::new("/etc/available/site"));
+        assert_eq!(
+            fs::read_link(path).unwrap(),
+            Path::new("/etc/available/site")
+        );
 
         rec.reverse(&outcome).unwrap();
         assert!(fs::symlink_metadata(path).is_err());

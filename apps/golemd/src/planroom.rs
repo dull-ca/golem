@@ -196,7 +196,9 @@ impl SqlitePlanRoom {
                 ON wal_step(reconcile_id, step_ord, seq);
             "#,
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 }
 
@@ -204,10 +206,14 @@ impl PlanRoom for SqlitePlanRoom {
     fn applied_state(&self) -> Result<Option<AppliedState>> {
         let conn = self.conn.lock().unwrap();
         let body: Option<String> = conn
-            .query_row("SELECT body FROM applied_state WHERE id = 0", [], |r| r.get(0))
+            .query_row("SELECT body FROM applied_state WHERE id = 0", [], |r| {
+                r.get(0)
+            })
             .optional()?;
         match body {
-            Some(body) => Ok(Some(serde_json::from_str(&body).context("decode applied state")?)),
+            Some(body) => Ok(Some(
+                serde_json::from_str(&body).context("decode applied state")?,
+            )),
             None => Ok(None),
         }
     }
@@ -223,11 +229,18 @@ impl PlanRoom for SqlitePlanRoom {
     }
 
     fn revisions(&self) -> Result<Vec<Revision>> {
-        Ok(crate::wal::projected_revisions(&self.attempts()?, &self.wal_steps()?))
+        Ok(crate::wal::projected_revisions(
+            &self.attempts()?,
+            &self.wal_steps()?,
+        ))
     }
 
     fn revision(&self, id: u64) -> Result<Option<Revision>> {
-        Ok(crate::wal::projected_revision(&self.attempts()?, &self.wal_steps()?, id))
+        Ok(crate::wal::projected_revision(
+            &self.attempts()?,
+            &self.wal_steps()?,
+            id,
+        ))
     }
 
     fn latest_revision_id(&self) -> Result<Option<u64>> {
@@ -241,7 +254,11 @@ impl PlanRoom for SqlitePlanRoom {
         conn.execute(
             "INSERT INTO reconcile_attempt(started_at, scroll_content_id, phase, settled_at)
              VALUES(?1, ?2, ?3, NULL)",
-            params![now.to_rfc3339(), cid_token, phase_token(AttemptPhase::Planning)],
+            params![
+                now.to_rfc3339(),
+                cid_token,
+                phase_token(AttemptPhase::Planning)
+            ],
         )?;
         Ok(ReconcileAttempt {
             reconcile_id: conn.last_insert_rowid() as u64,
@@ -284,7 +301,8 @@ impl PlanRoom for SqlitePlanRoom {
              FROM reconcile_attempt ORDER BY reconcile_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_attempt)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     fn append_wal_step(
@@ -344,7 +362,8 @@ impl PlanRoom for SqlitePlanRoom {
              FROM wal_step ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([], row_to_wal_step)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
@@ -354,7 +373,8 @@ impl PlanRoom for SqlitePlanRoom {
              FROM wal_step WHERE reconcile_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map(params![reconcile_id as i64], row_to_wal_step)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 }
 
@@ -470,7 +490,9 @@ pub struct MemoryPlanRoom {
 
 impl MemoryPlanRoom {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(Inner::default()) }
+        Self {
+            inner: Mutex::new(Inner::default()),
+        }
     }
 }
 
@@ -497,7 +519,11 @@ impl PlanRoom for MemoryPlanRoom {
 
     fn revision(&self, id: u64) -> Result<Option<Revision>> {
         let inner = self.inner.lock().unwrap();
-        Ok(crate::wal::projected_revision(&inner.attempts, &inner.wal, id))
+        Ok(crate::wal::projected_revision(
+            &inner.attempts,
+            &inner.wal,
+            id,
+        ))
     }
 
     fn latest_revision_id(&self) -> Result<Option<u64>> {
@@ -520,7 +546,11 @@ impl PlanRoom for MemoryPlanRoom {
 
     fn set_attempt_phase(&self, reconcile_id: u64, phase: AttemptPhase) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(a) = inner.attempts.iter_mut().find(|a| a.reconcile_id == reconcile_id) {
+        if let Some(a) = inner
+            .attempts
+            .iter_mut()
+            .find(|a| a.reconcile_id == reconcile_id)
+        {
             a.phase = phase;
             if phase.is_settled() && a.settled_at.is_none() {
                 a.settled_at = Some(Utc::now());
@@ -593,7 +623,9 @@ mod tests {
         let scroll = Scroll {
             name: "h1".into(),
             policy: None,
-            contents: scroll_format::Contents::Glyphs(vec![Glyph::AptPackage { name: "nginx".into() }]),
+            contents: scroll_format::Contents::Glyphs(vec![Glyph::AptPackage {
+                name: "nginx".into(),
+            }]),
         };
         AppliedState {
             scroll_content_id: scroll_format::content_id(&scroll),
@@ -604,7 +636,11 @@ mod tests {
 
     fn roundtrip(room: &dyn PlanRoom) {
         use crate::journal::RevisionKind;
-        assert_eq!(room.latest_revision_id().unwrap(), Some(1), "starts with Init");
+        assert_eq!(
+            room.latest_revision_id().unwrap(),
+            Some(1),
+            "starts with Init"
+        );
         assert!(room.applied_state().unwrap().is_none());
 
         room.put_applied_state(&sample()).unwrap();
@@ -629,7 +665,10 @@ mod tests {
 
     fn apt_op(name: &str) -> GlyphOp {
         let glyph = Glyph::AptPackage { name: name.into() };
-        GlyphOp::Install { cid: scroll_format::content_id_of_glyph(&glyph), glyph }
+        GlyphOp::Install {
+            cid: scroll_format::content_id_of_glyph(&glyph),
+            glyph,
+        }
     }
 
     fn wal_roundtrip(room: &dyn PlanRoom) {
@@ -643,7 +682,10 @@ mod tests {
         assert_eq!(room.latest_attempt().unwrap().unwrap().reconcile_id, 1);
 
         room.set_attempt_phase(1, AttemptPhase::Enacting).unwrap();
-        assert_eq!(room.latest_attempt().unwrap().unwrap().phase, AttemptPhase::Enacting);
+        assert_eq!(
+            room.latest_attempt().unwrap().unwrap().phase,
+            AttemptPhase::Enacting
+        );
 
         let op = apt_op("nginx");
         let intended = room
@@ -670,7 +712,9 @@ mod tests {
                 WalAction::Apply,
                 WalStepState::Done,
                 &op,
-                Some(&Inverse::RemoveAptPackage { name: "nginx".into() }),
+                Some(&Inverse::RemoveAptPackage {
+                    name: "nginx".into(),
+                }),
                 Some(true),
                 &[],
             )
@@ -681,7 +725,12 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].state, WalStepState::Intended);
         assert_eq!(steps[1].state, WalStepState::Done);
-        assert_eq!(steps[1].inverse, Some(Inverse::RemoveAptPackage { name: "nginx".into() }));
+        assert_eq!(
+            steps[1].inverse,
+            Some(Inverse::RemoveAptPackage {
+                name: "nginx".into()
+            })
+        );
         assert_eq!(steps[1].changed, Some(true));
 
         assert_eq!(room.wal_steps().unwrap().len(), 2);
@@ -717,7 +766,10 @@ mod tests {
         )
         .unwrap();
         let steps = room.wal_steps_for(1).unwrap();
-        assert_eq!(steps[0].unit_path, vec!["worker".to_string(), "base".to_string()]);
+        assert_eq!(
+            steps[0].unit_path,
+            vec!["worker".to_string(), "base".to_string()]
+        );
     }
 
     #[test]

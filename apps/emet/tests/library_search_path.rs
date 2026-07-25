@@ -9,8 +9,7 @@ struct Project {
 
 impl Project {
     fn new(tag: &str) -> Project {
-        let root = std::env::temp_dir()
-            .join(format!("emet_libpath_{tag}_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("emet_libpath_{tag}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         Project { root }
@@ -22,7 +21,6 @@ impl Project {
         fs::write(&path, contents).unwrap();
         path
     }
-
 }
 
 impl Drop for Project {

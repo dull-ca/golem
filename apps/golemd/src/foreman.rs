@@ -29,7 +29,7 @@
 
 use anyhow::Result;
 use scroll_format::{
-    from_bytes, AddressedScroll, Contents, ContentId, Entry, Glyph, LeafUnit, Policy, Scroll,
+    from_bytes, AddressedScroll, ContentId, Contents, Entry, Glyph, LeafUnit, Policy, Scroll,
 };
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -44,7 +44,7 @@ use crate::planroom::PlanRoom;
 use crate::reconcile::plan;
 use crate::reconciler::{EnactError, Reconciler};
 use crate::report::{
-    FailClassReport, FailPhase, GlyphFailure, ReconcileReport, UnitReport, UnitOutcome,
+    FailClassReport, FailPhase, GlyphFailure, ReconcileReport, UnitOutcome, UnitReport,
 };
 use crate::wal::applied_outcomes;
 
@@ -183,8 +183,9 @@ impl Foreman {
     }
 
     pub fn apply_manifest(&self, bytes: &[u8]) -> Result<ReconcileReport, ForemanError> {
-        let manifest = from_bytes(bytes)
-            .map_err(|e| ForemanError::ManifestUndecodable { detail: e.to_string() })?;
+        let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
+            detail: e.to_string(),
+        })?;
         let selected = self.select(&manifest.scrolls);
         // NOTE: one info line per apply for the manifest itself (host, this
         // host's scroll content id in hex, glyph count); the per-op and
@@ -201,7 +202,10 @@ impl Foreman {
 
     fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
         match scrolls.iter().find(|a| a.scroll.name == self.host) {
-            Some(a) => SelectedScroll { content_id: a.content_id, scroll: a.scroll.clone() },
+            Some(a) => SelectedScroll {
+                content_id: a.content_id,
+                scroll: a.scroll.clone(),
+            },
             None => SelectedScroll {
                 content_id: scroll_format::content_id(&empty_scroll(&self.host)),
                 scroll: empty_scroll(&self.host),
@@ -220,15 +224,21 @@ impl Foreman {
     fn reconcile(&self, desired: SelectedScroll) -> Result<ReconcileReport, ForemanError> {
         let _w = self.write.lock().unwrap();
         self.recover_locked()
-            .map_err(|e| ForemanError::WalUnreadable { detail: e.to_string() })?;
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
         let steps = self
             .planroom
             .wal_steps()
-            .map_err(|e| ForemanError::WalUnreadable { detail: e.to_string() })?;
-        if let Some(attempt) = self
-            .planroom
-            .latest_attempt()
-            .map_err(|e| ForemanError::WalUnreadable { detail: e.to_string() })?
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        if let Some(attempt) =
+            self.planroom
+                .latest_attempt()
+                .map_err(|e| ForemanError::WalUnreadable {
+                    detail: e.to_string(),
+                })?
         {
             if !attempt.phase.is_settled() {
                 return Err(ForemanError::Internal(anyhow::anyhow!(
@@ -258,7 +268,15 @@ impl Foreman {
                 .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
                 .collect();
             let result = self
-                .enact_unit(attempt.reconcile_id, &mut next_ord, &ops, &prior, &unit.path, &effective, started)
+                .enact_unit(
+                    attempt.reconcile_id,
+                    &mut next_ord,
+                    &ops,
+                    &prior,
+                    &unit.path,
+                    &effective,
+                    started,
+                )
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
         }
@@ -269,7 +287,15 @@ impl Foreman {
         {
             let effective = resolve_retry(&self.retry, &group.policy_chain);
             let result = self
-                .enact_unit(attempt.reconcile_id, &mut next_ord, &group.ops, &prior, &group.unit_path, &effective, started)
+                .enact_unit(
+                    attempt.reconcile_id,
+                    &mut next_ord,
+                    &group.ops,
+                    &prior,
+                    &group.unit_path,
+                    &effective,
+                    started,
+                )
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
         }
@@ -310,15 +336,19 @@ impl Foreman {
         let mut groups: Vec<RemoveGroup> = Vec::new();
         for op in removes {
             let recorded_path = recorded.get(&op.key()).cloned().unwrap_or_default();
-            let resolved = surviving_prefix(&recorded_path, &nodes)
-                .unwrap_or_else(|| vec![self.host.clone()]);
+            let resolved =
+                surviving_prefix(&recorded_path, &nodes).unwrap_or_else(|| vec![self.host.clone()]);
             let mut unit_path = resolved.clone();
             unit_path.push(REMOVES_SEGMENT.to_string());
             match groups.iter_mut().find(|g| g.unit_path == unit_path) {
                 Some(g) => g.ops.push(op),
                 None => {
                     let policy_chain = policy_chain_for_path(desired, &resolved);
-                    groups.push(RemoveGroup { unit_path, ops: vec![op], policy_chain });
+                    groups.push(RemoveGroup {
+                        unit_path,
+                        ops: vec![op],
+                        policy_chain,
+                    });
                 }
             }
         }
@@ -364,7 +394,14 @@ impl Foreman {
         *next_ord += ops.len() as u64;
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
         for (offset, op) in ops.iter().enumerate() {
-            classes.push(self.enact_one(reconcile_id, base_ord + offset as u64, op, prior, unit_path, 1)?);
+            classes.push(self.enact_one(
+                reconcile_id,
+                base_ord + offset as u64,
+                op,
+                prior,
+                unit_path,
+                1,
+            )?);
         }
         let mut round = 1u32;
         loop {
@@ -447,18 +484,46 @@ impl Foreman {
                 info!(key = %op.key(), "install");
                 self.enact_apply(reconcile_id, ord, op, glyph, *cid, None, unit_path, round)
             }
-            GlyphOp::Replace { old_cid, new_cid, glyph } => {
+            GlyphOp::Replace {
+                old_cid,
+                new_cid,
+                glyph,
+            } => {
                 info!(key = %op.key(), "replace");
                 if replaces_in_place(glyph) {
-                    self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None, unit_path, round)
+                    self.enact_apply(
+                        reconcile_id,
+                        ord,
+                        op,
+                        glyph,
+                        *new_cid,
+                        None,
+                        unit_path,
+                        round,
+                    )
                 } else {
                     let prior_outcome = self.prior_outcome(prior, &op.key(), *old_cid, glyph);
-                    let reversed =
-                        self.enact_reverse(reconcile_id, ord, op, &prior_outcome, unit_path, round)?;
+                    let reversed = self.enact_reverse(
+                        reconcile_id,
+                        ord,
+                        op,
+                        &prior_outcome,
+                        unit_path,
+                        round,
+                    )?;
                     if let StepClass::Failed(..) = reversed {
                         return Ok(reversed);
                     }
-                    self.enact_apply(reconcile_id, ord, op, glyph, *new_cid, None, unit_path, round)
+                    self.enact_apply(
+                        reconcile_id,
+                        ord,
+                        op,
+                        glyph,
+                        *new_cid,
+                        None,
+                        unit_path,
+                        round,
+                    )
                 }
             }
             GlyphOp::Remove { cid, glyph } => {
@@ -596,13 +661,26 @@ impl Foreman {
     /// the recorded applied outcome for this key; if none is found (the applied
     /// set does not know this glyph) it falls back to a synthesized inverse from
     /// the glyph itself, so a reverse always has something to restore.
-    fn prior_outcome(&self, prior: &[Outcome], key: &str, cid: ContentId, glyph: &Glyph) -> Outcome {
-        prior.iter().find(|o| o.op.key() == key).cloned().unwrap_or(Outcome {
-            op: GlyphOp::Install { cid, glyph: glyph.clone() },
-            cid,
-            inverse: crate::reconciler::inverse_of(glyph),
-            changed: true,
-        })
+    fn prior_outcome(
+        &self,
+        prior: &[Outcome],
+        key: &str,
+        cid: ContentId,
+        glyph: &Glyph,
+    ) -> Outcome {
+        prior
+            .iter()
+            .find(|o| o.op.key() == key)
+            .cloned()
+            .unwrap_or(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
     }
 
     /// After a successful enact, restart units whose backing files this attempt
@@ -642,13 +720,21 @@ impl Foreman {
         if units.is_empty() {
             return Ok(());
         }
-        let ord = steps.iter().map(|s| s.step_ord).max().map(|m| m + 1).unwrap_or(0);
+        let ord = steps
+            .iter()
+            .map(|s| s.step_ord)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
         // NOTE: same host-root placeholder as `enact` — see the note there.
         let unit_path = [self.host.clone()];
         for (n, unit) in units.into_iter().enumerate() {
             let glyph = Glyph::SystemdService { unit: unit.clone() };
             let cid = scroll_format::content_id_of_glyph(&glyph);
-            let op = GlyphOp::Noop { cid, glyph: glyph.clone() };
+            let op = GlyphOp::Noop {
+                cid,
+                glyph: glyph.clone(),
+            };
             let step_ord = ord + n as u64;
             self.planroom.append_wal_step(
                 reconcile_id,
@@ -688,19 +774,29 @@ impl Foreman {
     /// (`wal::projected_revisions`), so its outcomes are the same fold as the
     /// cache. History and the applied set agree because both come from the one log.
     fn settle(&self, reconcile_id: u64, desired: &SelectedScroll) -> Result<Revision> {
-        self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::Committed)?;
+        self.planroom
+            .set_attempt_phase(reconcile_id, AttemptPhase::Committed)?;
         let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
         self.planroom.put_applied_state(&AppliedState {
             scroll_content_id: desired.content_id,
             scroll: desired.scroll.clone(),
             outcomes,
         })?;
-        let revision = self.planroom
-            .revision(self.planroom.latest_revision_id()?.expect("a committed attempt projects a revision"))
+        let revision = self
+            .planroom
+            .revision(
+                self.planroom
+                    .latest_revision_id()?
+                    .expect("a committed attempt projects a revision"),
+            )
             .map(|rev| rev.expect("the latest revision id resolves"))?;
         // NOTE: the closing info line of an apply — the revision id this attempt
         // projected and how many outcomes it holds.
-        info!(revision = revision.id, outcomes = revision.outcomes.len(), "revision recorded");
+        info!(
+            revision = revision.id,
+            outcomes = revision.outcomes.len(),
+            "revision recorded"
+        );
         Ok(revision)
     }
 
@@ -714,7 +810,9 @@ impl Foreman {
         if prior.is_none() && outcomes.is_empty() {
             return Ok(());
         }
-        let scroll = prior.map(|a| a.scroll).unwrap_or_else(|| empty_scroll(&self.host));
+        let scroll = prior
+            .map(|a| a.scroll)
+            .unwrap_or_else(|| empty_scroll(&self.host));
         self.planroom.put_applied_state(&AppliedState {
             scroll_content_id: scroll_format::content_id(&scroll),
             scroll,
@@ -731,10 +829,13 @@ impl Foreman {
     /// re-drive on the next recovery converges. Reversing an `Apply` runs
     /// `reverse`; reversing a `Reverse` re-`apply`s, restoring the old version.
     fn rollback_attempt(&self, reconcile_id: u64) -> Result<()> {
-        self.planroom.set_attempt_phase(reconcile_id, AttemptPhase::RollingBack)?;
+        self.planroom
+            .set_attempt_phase(reconcile_id, AttemptPhase::RollingBack)?;
         loop {
             let steps = self.planroom.wal_steps_for(reconcile_id)?;
-            let Some(target) = next_reversible(&steps) else { break };
+            let Some(target) = next_reversible(&steps) else {
+                break;
+            };
             let cid = applied_cid_of(&target.op, target.action);
             let outcome = Outcome {
                 op: target.op.clone(),
@@ -773,9 +874,13 @@ impl Foreman {
     fn rollback_unit(&self, reconcile_id: u64, unit_path: &[String]) -> Result<()> {
         loop {
             let steps = self.planroom.wal_steps_for(reconcile_id)?;
-            let scoped: Vec<WalStep> =
-                steps.into_iter().filter(|s| s.unit_path == unit_path).collect();
-            let Some(target) = next_reversible(&scoped).cloned() else { break };
+            let scoped: Vec<WalStep> = steps
+                .into_iter()
+                .filter(|s| s.unit_path == unit_path)
+                .collect();
+            let Some(target) = next_reversible(&scoped).cloned() else {
+                break;
+            };
             let cid = applied_cid_of(&target.op, target.action);
             let outcome = Outcome {
                 op: target.op.clone(),
@@ -822,13 +927,16 @@ impl Foreman {
     /// already in progress resumes rather than restarts, because
     /// `rollback_attempt` skips already-`Reversed` steps.
     fn recover_locked(&self) -> Result<()> {
-        let Some(attempt) = self.planroom.latest_attempt()? else { return Ok(()) };
+        let Some(attempt) = self.planroom.latest_attempt()? else {
+            return Ok(());
+        };
         if attempt.phase.is_settled() {
             return self.cache_applied_state();
         }
         self.redrive_intended(&attempt)?;
         self.rollback_attempt(attempt.reconcile_id)?;
-        self.planroom.set_attempt_phase(attempt.reconcile_id, AttemptPhase::RolledBack)?;
+        self.planroom
+            .set_attempt_phase(attempt.reconcile_id, AttemptPhase::RolledBack)?;
         self.cache_applied_state()
     }
 
@@ -1040,8 +1148,12 @@ fn policy_chain_for_path<'a>(desired: &'a Scroll, path: &[String]) -> Vec<&'a Po
         chain.push(p);
     }
     for name in &path[1..] {
-        let Contents::Groups(children) = &node.contents else { break };
-        let Some(next) = children.iter().find(|c| &c.name == name) else { break };
+        let Contents::Groups(children) = &node.contents else {
+            break;
+        };
+        let Some(next) = children.iter().find(|c| &c.name == name) else {
+            break;
+        };
         node = next;
         if let Some(p) = &node.policy {
             chain.push(p);
@@ -1061,7 +1173,9 @@ fn unit_failures(
 ) -> Vec<UnitFailure> {
     let mut failures = Vec::new();
     for (ord, class) in classes.iter().enumerate() {
-        let StepClass::Failed(retry_class, message) = class else { continue };
+        let StepClass::Failed(retry_class, message) = class else {
+            continue;
+        };
         let (class, attempts) = match retry_class {
             RetryClass::Fatal => (FailClass::Fatal, 1),
             RetryClass::Retryable => (FailClass::RetriesExhausted, rounds),
@@ -1148,14 +1262,22 @@ fn unit_report_from(result: UnitResult) -> UnitReport {
             rolled_back: f.rolled_back,
         })
         .collect();
-    UnitReport { unit_path: result.unit_path, outcome: result.outcome, failures }
+    UnitReport {
+        unit_path: result.unit_path,
+        outcome: result.outcome,
+        failures,
+    }
 }
 
 // A leaf scroll (ADR 0031 §1) holding no glyphs — the desired state that diffs
 // every currently-applied glyph to a `Remove`, used when this host has no scroll
 // in the manifest.
 fn empty_scroll(host: &str) -> Scroll {
-    Scroll { name: host.to_string(), policy: None, contents: scroll_format::Contents::Glyphs(vec![]) }
+    Scroll {
+        name: host.to_string(),
+        policy: None,
+        contents: scroll_format::Contents::Glyphs(vec![]),
+    }
 }
 
 /// Whether a `Replace` on this glyph can update in place — one `Apply` whose
@@ -1165,13 +1287,23 @@ fn empty_scroll(host: &str) -> Scroll {
 /// `systemdService` have distinct reverse/re-apply effects (a package
 /// remove/install, a unit stop/start) and must stay reverse-then-apply.
 fn replaces_in_place(glyph: &Glyph) -> bool {
-    matches!(glyph, Glyph::Filesystem { entry: Entry::File { .. }, .. })
+    matches!(
+        glyph,
+        Glyph::Filesystem {
+            entry: Entry::File { .. },
+            ..
+        }
+    )
 }
 
 fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
     match op {
-        GlyphOp::Install { cid, .. } | GlyphOp::Noop { cid, .. } | GlyphOp::Remove { cid, .. } => *cid,
-        GlyphOp::Replace { new_cid, old_cid, .. } => match action {
+        GlyphOp::Install { cid, .. } | GlyphOp::Noop { cid, .. } | GlyphOp::Remove { cid, .. } => {
+            *cid
+        }
+        GlyphOp::Replace {
+            new_cid, old_cid, ..
+        } => match action {
             WalAction::Apply => *new_cid,
             WalAction::Reverse => *old_cid,
         },
@@ -1187,7 +1319,10 @@ fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
         s.seq > intended.seq
             && s.step_ord == intended.step_ord
             && s.action == intended.action
-            && matches!(s.state, WalStepState::Done | WalStepState::Failed | WalStepState::Reversed)
+            && matches!(
+                s.state,
+                WalStepState::Done | WalStepState::Failed | WalStepState::Reversed
+            )
     })
 }
 
@@ -1217,7 +1352,10 @@ fn reversed_after(steps: &[WalStep], done: &WalStep) -> bool {
 /// unset at every scope stays at the config default (which itself falls back to
 /// the built-in). `policy_chain` is root-most first, so left-to-right folding
 /// lets the nearest (leaf) scope win. See ADR 0029 §3 and ADR 0031 §3.
-pub(crate) fn resolve_retry(base: &RetryConfig, policy_chain: &[&scroll_format::Policy]) -> RetryConfig {
+pub(crate) fn resolve_retry(
+    base: &RetryConfig,
+    policy_chain: &[&scroll_format::Policy],
+) -> RetryConfig {
     let mut cfg = *base;
     for policy in policy_chain {
         if let Some(v) = policy.base_delay_ms {
@@ -1250,7 +1388,10 @@ pub(crate) fn resolve_retry(base: &RetryConfig, policy_chain: &[&scroll_format::
 
 fn changed_file_path(op: &GlyphOp) -> Option<String> {
     match op.glyph() {
-        Glyph::Filesystem { path, entry: Entry::File { .. } } => Some(path.clone()),
+        Glyph::Filesystem {
+            path,
+            entry: Entry::File { .. },
+        } => Some(path.clone()),
         _ => None,
     }
 }
@@ -1304,17 +1445,26 @@ mod tests {
     }
     impl Reconciler for Recorder {
         fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
-            self.calls.lock().unwrap().push(format!("apply {}", glyph.key()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("apply {}", glyph.key()));
             self.present.lock().unwrap().insert(glyph.key(), cid);
             Ok(Outcome {
-                op: GlyphOp::Install { cid, glyph: glyph.clone() },
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
                 cid,
                 inverse: crate::reconciler::inverse_of(glyph),
                 changed: true,
             })
         }
         fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
-            self.calls.lock().unwrap().push(format!("reverse {}", outcome.op.key()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("reverse {}", outcome.op.key()));
             self.present.lock().unwrap().remove(&outcome.op.key());
             Ok(())
         }
@@ -1326,7 +1476,10 @@ mod tests {
     }
     impl FlakyThenOk {
         fn new(fails: u32) -> Self {
-            Self { fails_left: Mutex::new(fails), calls: Mutex::new(0) }
+            Self {
+                fails_left: Mutex::new(fails),
+                calls: Mutex::new(0),
+            }
         }
     }
     impl Reconciler for FlakyThenOk {
@@ -1338,7 +1491,10 @@ mod tests {
                 Err(EnactError::Retryable("flaky".into()))
             } else {
                 Ok(Outcome {
-                    op: GlyphOp::Install { cid, glyph: glyph.clone() },
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
                     cid,
                     inverse: crate::reconciler::inverse_of(glyph),
                     changed: true,
@@ -1356,7 +1512,10 @@ mod tests {
     }
     impl Failing {
         fn new(make: fn(String) -> EnactError) -> Self {
-            Self { make, calls: Mutex::new(0) }
+            Self {
+                make,
+                calls: Mutex::new(0),
+            }
         }
         fn calls(&self) -> u32 {
             *self.calls.lock().unwrap()
@@ -1405,7 +1564,10 @@ mod tests {
             self
         }
         fn retryable_times(self, key: &str, times: u32) -> Self {
-            self.retryable_left.lock().unwrap().insert(key.into(), times);
+            self.retryable_left
+                .lock()
+                .unwrap()
+                .insert(key.into(), times);
             self
         }
         fn retryable_always(self, key: &str) -> Self {
@@ -1428,21 +1590,34 @@ mod tests {
             if self.fatal.lock().unwrap().iter().any(|k| k == &key) {
                 return Err(EnactError::Fatal(format!("scripted fatal for {key}")));
             }
-            if self.retryable_always.lock().unwrap().iter().any(|k| k == &key) {
-                return Err(EnactError::Retryable(format!("scripted retryable for {key}")));
+            if self
+                .retryable_always
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|k| k == &key)
+            {
+                return Err(EnactError::Retryable(format!(
+                    "scripted retryable for {key}"
+                )));
             }
             {
                 let mut left = self.retryable_left.lock().unwrap();
                 if let Some(n) = left.get_mut(&key) {
                     if *n > 0 {
                         *n -= 1;
-                        return Err(EnactError::Retryable(format!("scripted retryable for {key}")));
+                        return Err(EnactError::Retryable(format!(
+                            "scripted retryable for {key}"
+                        )));
                     }
                 }
             }
             self.present.lock().unwrap().insert(key.clone(), cid);
             Ok(Outcome {
-                op: GlyphOp::Install { cid, glyph: glyph.clone() },
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
                 cid,
                 inverse: crate::reconciler::inverse_of(glyph),
                 changed: true,
@@ -1451,7 +1626,9 @@ mod tests {
         fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
             let key = outcome.op.key();
             if self.fatal_reverse.lock().unwrap().iter().any(|k| k == &key) {
-                return Err(EnactError::Fatal(format!("scripted fatal reverse for {key}")));
+                return Err(EnactError::Fatal(format!(
+                    "scripted fatal reverse for {key}"
+                )));
             }
             self.present.lock().unwrap().remove(&key);
             Ok(())
@@ -1463,7 +1640,11 @@ mod tests {
     }
 
     fn retry_config(max_attempts: u32) -> RetryConfig {
-        RetryConfig { max_attempts, base_delay_ms: 0, ..Default::default() }
+        RetryConfig {
+            max_attempts,
+            base_delay_ms: 0,
+            ..Default::default()
+        }
     }
 
     fn foreman(host: &str, reconciler: Box<dyn Reconciler>) -> Foreman {
@@ -1476,8 +1657,16 @@ mod tests {
     /// present set after an apply.
     fn foreman_with(reconciler: ScriptedReconciler) -> ScriptedForeman {
         let rec = Arc::new(reconciler);
-        let f = Foreman::new("host".into(), Box::new(MemoryPlanRoom::new()), Box::new(rec.clone()))
-            .with_retry_config(RetryConfig { max_attempts: 3, base_delay_ms: 0, ..Default::default() });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 3,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
         ScriptedForeman { foreman: f, rec }
     }
 
@@ -1510,7 +1699,11 @@ mod tests {
             path: path.into(),
             entry: Entry::File {
                 contents: contents.into(),
-                perms: scroll_format::Perms { mode: 0o644, owner: None, group: None },
+                perms: scroll_format::Perms {
+                    mode: 0o644,
+                    owner: None,
+                    group: None,
+                },
             },
         }
     }
@@ -1520,19 +1713,35 @@ mod tests {
     }
 
     fn scroll(host: &str, glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: host.into(), policy: None, contents: Contents::Glyphs(glyphs) }
+        Scroll {
+            name: host.into(),
+            policy: None,
+            contents: Contents::Glyphs(glyphs),
+        }
     }
 
     fn leaf_scroll(name: &str, glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: name.into(), policy: None, contents: Contents::Glyphs(glyphs) }
+        Scroll {
+            name: name.into(),
+            policy: None,
+            contents: Contents::Glyphs(glyphs),
+        }
     }
 
     fn leaf_scroll_with_policy(name: &str, policy: Policy, glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: name.into(), policy: Some(policy), contents: Contents::Glyphs(glyphs) }
+        Scroll {
+            name: name.into(),
+            policy: Some(policy),
+            contents: Contents::Glyphs(glyphs),
+        }
     }
 
     fn branch_scroll(name: &str, groups: Vec<Scroll>) -> Scroll {
-        Scroll { name: name.into(), policy: None, contents: Contents::Groups(groups) }
+        Scroll {
+            name: name.into(),
+            policy: None,
+            contents: Contents::Groups(groups),
+        }
     }
 
     // --- Task 4: best-effort within a unit; sibling isolation ---
@@ -1540,8 +1749,11 @@ mod tests {
     #[test]
     fn a_fatal_glyph_does_not_veto_the_rest_of_its_unit() {
         let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
-        let foreman = foreman_with(reconciler)
-            .with_retry_config(RetryConfig { on_exhaust: OnExhaustConfig::Keep, base_delay_ms: 0, ..Default::default() });
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            on_exhaust: OnExhaustConfig::Keep,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
         let scroll = leaf_scroll("unit", vec![apt("bad"), apt("good")]);
         let report = foreman.apply_scroll(scroll).unwrap();
         assert_eq!(report.units.len(), 1);
@@ -1575,7 +1787,9 @@ mod tests {
 
     #[test]
     fn a_retryable_glyph_succeeds_within_the_attempt_limit() {
-        let reconciler = ScriptedReconciler::new().retryable_times("apt:flaky", 2).ok_default();
+        let reconciler = ScriptedReconciler::new()
+            .retryable_times("apt:flaky", 2)
+            .ok_default();
         let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
             max_attempts: 5,
             base_delay_ms: 1,
@@ -1583,7 +1797,9 @@ mod tests {
             jitter_fraction: 0.0,
             ..Default::default()
         });
-        let report = foreman.apply_scroll(leaf_scroll("u", vec![apt("flaky")])).unwrap();
+        let report = foreman
+            .apply_scroll(leaf_scroll("u", vec![apt("flaky")]))
+            .unwrap();
         assert!(report.units[0].failures.is_empty());
         assert!(applied_keys(&foreman).contains(&"apt:flaky".to_string()));
     }
@@ -1604,7 +1820,9 @@ mod tests {
 
     #[test]
     fn a_never_succeeding_retryable_gives_up_as_retries_exhausted() {
-        let reconciler = ScriptedReconciler::new().retryable_always("apt:doomed").ok_default();
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("apt:doomed")
+            .ok_default();
         let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
             max_attempts: 3,
             base_delay_ms: 1,
@@ -1614,9 +1832,14 @@ mod tests {
             on_exhaust: OnExhaustConfig::Keep,
             ..Default::default()
         });
-        let report = foreman.apply_scroll(leaf_scroll("u", vec![apt("doomed")])).unwrap();
+        let report = foreman
+            .apply_scroll(leaf_scroll("u", vec![apt("doomed")]))
+            .unwrap();
         assert_eq!(report.units[0].failures.len(), 1);
-        assert_eq!(report.units[0].failures[0].class, FailClassReport::RetriesExhausted);
+        assert_eq!(
+            report.units[0].failures[0].class,
+            FailClassReport::RetriesExhausted
+        );
         assert_eq!(report.units[0].failures[0].attempts, 3);
     }
 
@@ -1650,10 +1873,15 @@ mod tests {
         let foreman = foreman_with(reconciler);
         let leaf = leaf_scroll_with_policy(
             "u",
-            Policy { on_exhaust: Some(OnExhaust::Keep), ..Default::default() },
+            Policy {
+                on_exhaust: Some(OnExhaust::Keep),
+                ..Default::default()
+            },
             vec![apt("kept"), apt("bad")],
         );
-        let report = foreman.apply_scroll(branch_scroll("host", vec![leaf])).unwrap();
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
         assert_eq!(report.units[0].outcome, UnitOutcome::Partial);
         assert!(applied_keys(&foreman).contains(&"apt:kept".to_string()));
         assert!(report.units[0].failures.iter().all(|f| !f.rolled_back));
@@ -1667,12 +1895,18 @@ mod tests {
         let foreman = foreman_with(reconciler);
         let scroll = branch_scroll(
             "host",
-            vec![leaf_scroll("a", vec![apt("one")]), leaf_scroll("b", vec![apt("two")])],
+            vec![
+                leaf_scroll("a", vec![apt("one")]),
+                leaf_scroll("b", vec![apt("two")]),
+            ],
         );
         let report = foreman.apply_scroll(scroll).unwrap();
         assert_eq!(report.outcome, TopOutcome::Settled);
-        let names: Vec<String> =
-            report.units.iter().map(|u| u.unit_path.last().unwrap().clone()).collect();
+        let names: Vec<String> = report
+            .units
+            .iter()
+            .map(|u| u.unit_path.last().unwrap().clone())
+            .collect();
         assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
     }
 
@@ -1736,13 +1970,22 @@ mod tests {
 
     #[test]
     fn a_flat_host_removes_rollback_does_not_reverse_a_present_glyph() {
-        let reconciler = ScriptedReconciler::new().fatal_reverse_on("apt:goes").ok_default();
-        let foreman = foreman_with(reconciler)
-            .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
-        foreman.apply_scroll(leaf_scroll("host", vec![apt("goes")])).unwrap();
+        let reconciler = ScriptedReconciler::new()
+            .fatal_reverse_on("apt:goes")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        foreman
+            .apply_scroll(leaf_scroll("host", vec![apt("goes")]))
+            .unwrap();
         assert!(applied_keys(&foreman).contains(&"apt:goes".to_string()));
 
-        let report = foreman.apply_scroll(leaf_scroll("host", vec![apt("stays")])).unwrap();
+        let report = foreman
+            .apply_scroll(leaf_scroll("host", vec![apt("stays")]))
+            .unwrap();
         let removes = report
             .units
             .iter()
@@ -1757,20 +2000,31 @@ mod tests {
 
     #[test]
     fn a_dropped_glyph_removes_rollback_does_not_reverse_the_surviving_unit() {
-        let reconciler = ScriptedReconciler::new().fatal_reverse_on("apt:dropped").ok_default();
-        let foreman = foreman_with(reconciler)
-            .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+        let reconciler = ScriptedReconciler::new()
+            .fatal_reverse_on("apt:dropped")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
         let kept = "file:/etc/app/kept.conf".to_string();
         let before = branch_scroll(
             "host",
-            vec![leaf_scroll("b", vec![unit_file("/etc/app/kept.conf", "v1"), apt("dropped")])],
+            vec![leaf_scroll(
+                "b",
+                vec![unit_file("/etc/app/kept.conf", "v1"), apt("dropped")],
+            )],
         );
         foreman.apply_scroll(before).unwrap();
         assert!(applied_keys(&foreman).contains(&kept));
 
         let after = branch_scroll(
             "host",
-            vec![leaf_scroll("b", vec![unit_file("/etc/app/kept.conf", "v2")])],
+            vec![leaf_scroll(
+                "b",
+                vec![unit_file("/etc/app/kept.conf", "v2")],
+            )],
         );
         foreman.apply_scroll(after).unwrap();
         assert!(
@@ -1802,8 +2056,16 @@ mod tests {
             ],
         );
         let report = foreman.apply_scroll(scroll).unwrap();
-        let first = report.units.iter().find(|u| u.unit_path.last().unwrap() == "first").unwrap();
-        let second = report.units.iter().find(|u| u.unit_path.last().unwrap() == "second").unwrap();
+        let first = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "first")
+            .unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
         assert_eq!(first.failures[0].class, FailClassReport::RetriesExhausted);
         assert_eq!(second.failures[0].class, FailClassReport::RetriesExhausted);
         assert_eq!(
@@ -1823,7 +2085,9 @@ mod tests {
                 apt("bad"),
             ],
         );
-        let report = foreman.apply_scroll(branch_scroll("host", vec![leaf])).unwrap();
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
         assert_eq!(report.units[0].outcome, UnitOutcome::RolledBack);
         assert!(
             foreman.rec.restarts().is_empty(),
@@ -1835,9 +2099,15 @@ mod tests {
 
     #[test]
     fn with_retry_config_is_stored() {
-        let foreman =
-            Foreman::new("h".into(), Box::new(MemoryPlanRoom::new()), Box::new(Recorder::default()))
-                .with_retry_config(RetryConfig { max_attempts: 9, ..Default::default() });
+        let foreman = Foreman::new(
+            "h".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(Recorder::default()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 9,
+            ..Default::default()
+        });
         assert_eq!(foreman.retry.max_attempts, 9);
     }
 
@@ -1881,9 +2151,11 @@ mod tests {
     fn removed_glyph_is_reversed() {
         let rec = Arc::new(Recorder::default());
         let f = foreman("h1", Box::new(rec.clone()));
-        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx"), apt("pg")])])).unwrap();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx"), apt("pg")])]))
+            .unwrap();
         rec.calls.lock().unwrap().clear();
-        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx")])])).unwrap();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx")])]))
+            .unwrap();
         assert!(rec.calls().contains(&"reverse apt:pg".to_string()));
     }
 
@@ -1891,9 +2163,11 @@ mod tests {
     fn empty_scroll_removes_everything() {
         let rec = Arc::new(Recorder::default());
         let f = foreman("h1", Box::new(rec.clone()));
-        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx")])])).unwrap();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx")])]))
+            .unwrap();
         rec.calls.lock().unwrap().clear();
-        f.apply_manifest(&manifest(vec![scroll("h1", vec![])])).unwrap();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![])]))
+            .unwrap();
         assert_eq!(rec.calls(), vec!["reverse apt:nginx"]);
         assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
     }
@@ -1902,16 +2176,23 @@ mod tests {
     fn retryable_failures_are_retried_until_success() {
         let flaky = Arc::new(FlakyThenOk::new(2));
         let f = foreman("h1", Box::new(flaky.clone()));
-        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])])).unwrap();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
+            .unwrap();
         assert_eq!(*flaky.calls.lock().unwrap(), 3);
     }
 
     #[test]
     fn no_retry_config_attempts_once() {
         let failing = Arc::new(Failing::new(EnactError::Retryable));
-        let f = Foreman::new("h1".into(), Box::new(MemoryPlanRoom::new()), Box::new(failing.clone()))
-            .with_retry_config(retry_config(1));
-        let report = f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])])).unwrap();
+        let f = Foreman::new(
+            "h1".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(failing.clone()),
+        )
+        .with_retry_config(retry_config(1));
+        let report = f
+            .apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
+            .unwrap();
         assert_eq!(report.outcome, TopOutcome::RolledBack);
         assert_eq!(failing.calls(), 1);
     }
@@ -1924,7 +2205,10 @@ mod tests {
             .apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
             .unwrap();
         assert_eq!(report.outcome, TopOutcome::RolledBack);
-        assert_eq!(report.units[0].failures[0].class, FailClassReport::RetriesExhausted);
+        assert_eq!(
+            report.units[0].failures[0].class,
+            FailClassReport::RetriesExhausted
+        );
         assert_eq!(failing.calls(), 3);
         assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
         assert_eq!(f.revisions().unwrap().len(), 2);
@@ -1950,7 +2234,10 @@ mod tests {
     }
     impl HostModel {
         fn new() -> Self {
-            Self { present: Mutex::new(BTreeMap::new()), calls: Mutex::new(vec![]) }
+            Self {
+                present: Mutex::new(BTreeMap::new()),
+                calls: Mutex::new(vec![]),
+            }
         }
         fn present_keys(&self) -> Vec<String> {
             self.present.lock().unwrap().keys().cloned().collect()
@@ -1964,9 +2251,16 @@ mod tests {
             present.insert(key.clone(), cid);
             self.calls.lock().unwrap().push(format!("apply {key}"));
             Ok(Outcome {
-                op: GlyphOp::Install { cid, glyph: glyph.clone() },
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
                 cid,
-                inverse: if already { Inverse::Nothing } else { crate::reconciler::inverse_of(glyph) },
+                inverse: if already {
+                    Inverse::Nothing
+                } else {
+                    crate::reconciler::inverse_of(glyph)
+                },
                 changed: !already,
             })
         }
@@ -1977,7 +2271,10 @@ mod tests {
                     self.present.lock().unwrap().remove(&outcome.op.key());
                 }
             }
-            self.calls.lock().unwrap().push(format!("reverse {}", outcome.op.key()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("reverse {}", outcome.op.key()));
             Ok(())
         }
     }
@@ -1992,23 +2289,40 @@ mod tests {
         f.apply_manifest(&s).unwrap();
 
         let stored = f.applied_state().unwrap().unwrap();
-        let nginx = stored.outcomes.iter().find(|o| o.op.key() == "apt:nginx").unwrap();
+        let nginx = stored
+            .outcomes
+            .iter()
+            .find(|o| o.op.key() == "apt:nginx")
+            .unwrap();
         assert_eq!(
             nginx.inverse,
-            Inverse::RemoveAptPackage { name: "nginx".into() },
+            Inverse::RemoveAptPackage {
+                name: "nginx".into()
+            },
             "re-apply must not overwrite the real inverse with Nothing"
         );
 
-        f.apply_manifest(&manifest(vec![scroll("h1", vec![])])).unwrap();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![])]))
+            .unwrap();
 
-        assert!(host.present_keys().is_empty(), "removal must revert the host");
-        assert!(host.calls.lock().unwrap().contains(&"reverse apt:nginx".to_string()));
+        assert!(
+            host.present_keys().is_empty(),
+            "removal must revert the host"
+        );
+        assert!(host
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"reverse apt:nginx".to_string()));
         assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
     }
 
     #[test]
     fn resolve_retry_uses_config_when_no_policy() {
-        let base = RetryConfig { max_attempts: 5, ..Default::default() };
+        let base = RetryConfig {
+            max_attempts: 5,
+            ..Default::default()
+        };
         let eff = super::resolve_retry(&base, &[]);
         assert_eq!(eff.max_attempts, 5);
         assert_eq!(eff.on_exhaust, OnExhaustConfig::Rollback);
@@ -2016,9 +2330,19 @@ mod tests {
 
     #[test]
     fn resolve_retry_leaf_overrides_ancestor_overrides_config() {
-        let base = RetryConfig { max_attempts: 5, ..Default::default() };
-        let ancestor = Policy { max_attempts: Some(8), on_exhaust: Some(OnExhaust::Rollback), ..Policy::default() };
-        let leaf = Policy { on_exhaust: Some(OnExhaust::Keep), ..Policy::default() };
+        let base = RetryConfig {
+            max_attempts: 5,
+            ..Default::default()
+        };
+        let ancestor = Policy {
+            max_attempts: Some(8),
+            on_exhaust: Some(OnExhaust::Rollback),
+            ..Policy::default()
+        };
+        let leaf = Policy {
+            on_exhaust: Some(OnExhaust::Keep),
+            ..Policy::default()
+        };
         let eff = super::resolve_retry(&base, &[&ancestor, &leaf]);
         assert_eq!(eff.max_attempts, 8);
         assert_eq!(eff.on_exhaust, OnExhaustConfig::Keep);
@@ -2038,7 +2362,10 @@ mod tests {
                     return Err(EnactError::Fatal("boom".into()));
                 }
                 Ok(Outcome {
-                    op: GlyphOp::Install { cid, glyph: glyph.clone() },
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
                     cid,
                     inverse: crate::reconciler::inverse_of(glyph),
                     changed: true,
@@ -2049,7 +2376,10 @@ mod tests {
                 Ok(())
             }
         }
-        let rec = Arc::new(FailSecond { calls: Mutex::new(0), reversed: Mutex::new(vec![]) });
+        let rec = Arc::new(FailSecond {
+            calls: Mutex::new(0),
+            reversed: Mutex::new(vec![]),
+        });
         let f = foreman("h1", Box::new(rec.clone()));
         let report = f
             .apply_manifest(&manifest(vec![scroll("h1", vec![apt("a"), apt("b")])]))

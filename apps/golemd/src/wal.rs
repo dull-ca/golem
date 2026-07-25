@@ -64,7 +64,9 @@ pub fn projected_revisions(attempts: &[ReconcileAttempt], steps: &[WalStep]) -> 
         scroll_content_id: None,
         outcomes: vec![],
     }];
-    let committed = attempts.iter().filter(|a| a.phase == AttemptPhase::Committed);
+    let committed = attempts
+        .iter()
+        .filter(|a| a.phase == AttemptPhase::Committed);
     for (position, attempt) in committed.enumerate() {
         let boundary = attempt_boundary_seq(steps, attempt.reconcile_id);
         let folded = applied_outcomes(&steps_through(steps, boundary));
@@ -82,8 +84,14 @@ pub fn projected_revisions(attempts: &[ReconcileAttempt], steps: &[WalStep]) -> 
 /// One projected revision by id, or `None` if no such revision exists. Projects
 /// the whole history and picks the match — the caller needs only one, but the
 /// fold is cheap and keeps a single source for the projection.
-pub fn projected_revision(attempts: &[ReconcileAttempt], steps: &[WalStep], id: u64) -> Option<Revision> {
-    projected_revisions(attempts, steps).into_iter().find(|r| r.id == id)
+pub fn projected_revision(
+    attempts: &[ReconcileAttempt],
+    steps: &[WalStep],
+    id: u64,
+) -> Option<Revision> {
+    projected_revisions(attempts, steps)
+        .into_iter()
+        .find(|r| r.id == id)
 }
 
 /// The id of the newest projected revision: `1` (`Init`) plus the number of
@@ -91,12 +99,19 @@ pub fn projected_revision(attempts: &[ReconcileAttempt], steps: &[WalStep], id: 
 /// needed to count revisions, only to fold their outcomes — so `settle` can read
 /// the latest id back cheaply after committing.
 pub fn latest_revision_id(attempts: &[ReconcileAttempt]) -> Option<u64> {
-    let committed = attempts.iter().filter(|a| a.phase == AttemptPhase::Committed).count() as u64;
+    let committed = attempts
+        .iter()
+        .filter(|a| a.phase == AttemptPhase::Committed)
+        .count() as u64;
     Some(1 + committed)
 }
 
 fn opening_time(attempts: &[ReconcileAttempt]) -> DateTime<Utc> {
-    attempts.iter().map(|a| a.started_at).min().unwrap_or_else(Utc::now)
+    attempts
+        .iter()
+        .map(|a| a.started_at)
+        .min()
+        .unwrap_or_else(Utc::now)
 }
 
 fn attempt_boundary_seq(steps: &[WalStep], reconcile_id: u64) -> u64 {
@@ -109,7 +124,11 @@ fn attempt_boundary_seq(steps: &[WalStep], reconcile_id: u64) -> u64 {
 }
 
 fn steps_through(steps: &[WalStep], boundary: u64) -> Vec<WalStep> {
-    steps.iter().filter(|s| s.seq <= boundary).cloned().collect()
+    steps
+        .iter()
+        .filter(|s| s.seq <= boundary)
+        .cloned()
+        .collect()
 }
 
 /// The `seq`s of `Done` steps that a later `Reversed` marker undid. Each
@@ -122,18 +141,14 @@ fn steps_through(steps: &[WalStep], boundary: u64) -> Vec<WalStep> {
 pub(crate) fn cancelled_dones(steps: &[WalStep]) -> std::collections::BTreeSet<u64> {
     let mut cancelled = std::collections::BTreeSet::new();
     for marker in steps.iter().filter(|s| s.state == WalStepState::Reversed) {
-        if let Some(done) = steps
-            .iter()
-            .rev()
-            .find(|s| {
-                s.seq < marker.seq
-                    && s.state == WalStepState::Done
-                    && s.step_ord == marker.step_ord
-                    && s.action == marker.action
-                    && s.reconcile_id == marker.reconcile_id
-                    && !cancelled.contains(&s.seq)
-            })
-        {
+        if let Some(done) = steps.iter().rev().find(|s| {
+            s.seq < marker.seq
+                && s.state == WalStepState::Done
+                && s.step_ord == marker.step_ord
+                && s.action == marker.action
+                && s.reconcile_id == marker.reconcile_id
+                && !cancelled.contains(&s.seq)
+        }) {
             cancelled.insert(done.seq);
         }
     }
@@ -154,7 +169,9 @@ fn applied_cid(step: &WalStep) -> ContentId {
         crate::journal::GlyphOp::Install { cid, .. }
         | crate::journal::GlyphOp::Noop { cid, .. }
         | crate::journal::GlyphOp::Remove { cid, .. } => *cid,
-        crate::journal::GlyphOp::Replace { new_cid, old_cid, .. } => match step.action {
+        crate::journal::GlyphOp::Replace {
+            new_cid, old_cid, ..
+        } => match step.action {
             WalAction::Apply => *new_cid,
             WalAction::Reverse => *old_cid,
         },
@@ -183,11 +200,16 @@ mod tests {
             glyph_key: glyph.key(),
             action: WalAction::Apply,
             state: WalStepState::Done,
-            op: GlyphOp::Install { cid: cid(glyph), glyph: glyph.clone() },
-            inverse: Some(Inverse::RemoveAptPackage { name: match glyph {
-                Glyph::AptPackage { name } => name.clone(),
-                _ => unreachable!(),
-            } }),
+            op: GlyphOp::Install {
+                cid: cid(glyph),
+                glyph: glyph.clone(),
+            },
+            inverse: Some(Inverse::RemoveAptPackage {
+                name: match glyph {
+                    Glyph::AptPackage { name } => name.clone(),
+                    _ => unreachable!(),
+                },
+            }),
             changed: Some(true),
             unit_path: vec![],
             at: chrono::Utc::now(),
@@ -212,7 +234,10 @@ mod tests {
 
     #[test]
     fn a_done_then_reversed_key_is_not_applied() {
-        let steps = vec![done_apply(1, 0, &apt("nginx")), reversed(2, 0, &apt("nginx"))];
+        let steps = vec![
+            done_apply(1, 0, &apt("nginx")),
+            reversed(2, 0, &apt("nginx")),
+        ];
         assert!(applied_outcomes(&steps).is_empty());
     }
 
@@ -241,6 +266,11 @@ mod tests {
         first.inverse = Some(Inverse::Nothing);
         let second = done_apply(2, 0, &apt("nginx"));
         let applied = applied_outcomes(&[first, second]);
-        assert_eq!(applied[0].inverse, Inverse::RemoveAptPackage { name: "nginx".into() });
+        assert_eq!(
+            applied[0].inverse,
+            Inverse::RemoveAptPackage {
+                name: "nginx".into()
+            }
+        );
     }
 }

@@ -17,7 +17,10 @@ impl Reconciler for Host {
         let changed = self.present.lock().unwrap().get(&key) != Some(&cid);
         self.present.lock().unwrap().insert(key.clone(), cid);
         Ok(Outcome {
-            op: GlyphOp::Install { cid, glyph: glyph.clone() },
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
             cid,
             inverse: inverse_of(glyph),
             changed,
@@ -35,13 +38,23 @@ fn apt(name: &str) -> Glyph {
 
 fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
     scroll_format::to_bytes(&Manifest::from_scrolls(
-        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        vec![Scroll {
+            name: "h1".into(),
+            policy: None,
+            contents: scroll_format::Contents::Glyphs(glyphs),
+        }],
         "test",
     ))
 }
 
 fn foreman(room: Arc<MemoryPlanRoom>) -> Foreman {
-    Foreman::new("h1".into(), Box::new(room), Box::new(Host::default())).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() })
+    Foreman::new("h1".into(), Box::new(room), Box::new(Host::default())).with_retry_config(
+        RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        },
+    )
 }
 
 #[test]
@@ -62,15 +75,23 @@ fn a_committed_attempt_yields_exactly_one_reconcile_revision() {
         .filter(|a| a.phase == AttemptPhase::Committed)
         .collect();
     assert_eq!(committed.len(), 1);
-    let reconcile_revisions = revisions.iter().filter(|r| r.kind == RevisionKind::Reconcile).count();
-    assert_eq!(reconcile_revisions, committed.len(), "one revision per committed attempt");
+    let reconcile_revisions = revisions
+        .iter()
+        .filter(|r| r.kind == RevisionKind::Reconcile)
+        .count();
+    assert_eq!(
+        reconcile_revisions,
+        committed.len(),
+        "one revision per committed attempt"
+    );
 }
 
 #[test]
 fn the_revision_projects_the_attempts_applied_ops() {
     let room = Arc::new(MemoryPlanRoom::new());
     let f = foreman(room.clone());
-    f.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")])).unwrap();
+    f.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")]))
+        .unwrap();
 
     let revisions = f.revisions().unwrap();
     let latest = revisions.last().unwrap();
@@ -88,7 +109,11 @@ fn a_rolled_back_attempt_projects_no_revision() {
 
     let f = foreman(room.clone());
     let revisions = f.revisions().unwrap();
-    assert_eq!(revisions.len(), 1, "only Init; a rolled-back attempt is not history");
+    assert_eq!(
+        revisions.len(),
+        1,
+        "only Init; a rolled-back attempt is not history"
+    );
     assert_eq!(revisions[0].kind, RevisionKind::Init);
 }
 
@@ -97,13 +122,17 @@ fn revision_by_id_matches_the_list() {
     let room = Arc::new(MemoryPlanRoom::new());
     let f = foreman(room.clone());
     f.apply_manifest(&manifest(vec![apt("nginx")])).unwrap();
-    f.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")])).unwrap();
+    f.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")]))
+        .unwrap();
 
     let revisions = f.revisions().unwrap();
     for rev in &revisions {
         assert_eq!(f.revision(rev.id).unwrap().as_ref(), Some(rev));
     }
-    assert_eq!(f.latest_revision_id().unwrap(), Some(revisions.last().unwrap().id));
+    assert_eq!(
+        f.latest_revision_id().unwrap(),
+        Some(revisions.last().unwrap().id)
+    );
     assert!(f.revision(9_999).unwrap().is_none());
 }
 
@@ -115,8 +144,18 @@ fn a_committed_attempt_with_no_separate_revision_row_still_projects() {
         cid: scroll_format::content_id_of_glyph(&apt("nginx")),
         glyph: apt("nginx"),
     };
-    room.append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Intended, &op, None, None, &[])
-        .unwrap();
+    room.append_wal_step(
+        1,
+        0,
+        "apt:nginx",
+        WalAction::Apply,
+        WalStepState::Intended,
+        &op,
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
     room.append_wal_step(
         1,
         0,
@@ -133,7 +172,11 @@ fn a_committed_attempt_with_no_separate_revision_row_still_projects() {
 
     let f = foreman(room.clone());
     let revisions = f.revisions().unwrap();
-    assert_eq!(revisions.len(), 2, "the committed attempt is projected with no separately-appended row");
+    assert_eq!(
+        revisions.len(),
+        2,
+        "the committed attempt is projected with no separately-appended row"
+    );
     assert_eq!(revisions[1].kind, RevisionKind::Reconcile);
     let keys: Vec<String> = revisions[1].outcomes.iter().map(|o| o.op.key()).collect();
     assert_eq!(keys, vec!["apt:nginx".to_string()]);
@@ -147,8 +190,18 @@ fn sqlite_and_memory_project_the_same_revisions() {
             cid: scroll_format::content_id_of_glyph(&apt("nginx")),
             glyph: apt("nginx"),
         };
-        room.append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Done, &op, None, Some(true), &[])
-            .unwrap();
+        room.append_wal_step(
+            1,
+            0,
+            "apt:nginx",
+            WalAction::Apply,
+            WalStepState::Done,
+            &op,
+            None,
+            Some(true),
+            &[],
+        )
+        .unwrap();
         room.set_attempt_phase(1, AttemptPhase::Committed).unwrap();
         let revs = room.revisions().unwrap();
         (revs.len(), revs.iter().map(|r| r.kind).collect())

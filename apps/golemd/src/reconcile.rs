@@ -34,10 +34,14 @@ pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
         seen.insert(key.clone());
         let new_cid = glyph_content_id(glyph);
         match prior.iter().find(|o| o.op.key() == key) {
-            None => ops.push(GlyphOp::Install { cid: new_cid, glyph: glyph.clone() }),
-            Some(prev) if prev.cid == new_cid => {
-                ops.push(GlyphOp::Noop { cid: new_cid, glyph: glyph.clone() })
-            }
+            None => ops.push(GlyphOp::Install {
+                cid: new_cid,
+                glyph: glyph.clone(),
+            }),
+            Some(prev) if prev.cid == new_cid => ops.push(GlyphOp::Noop {
+                cid: new_cid,
+                glyph: glyph.clone(),
+            }),
             Some(prev) => ops.push(GlyphOp::Replace {
                 old_cid: prev.cid,
                 new_cid,
@@ -75,13 +79,21 @@ mod tests {
             path: path.into(),
             entry: scroll_format::Entry::File {
                 contents: contents.into(),
-                perms: scroll_format::Perms { mode: 0o644, owner: None, group: None },
+                perms: scroll_format::Perms {
+                    mode: 0o644,
+                    owner: None,
+                    group: None,
+                },
             },
         }
     }
 
     fn scroll(glyphs: Vec<Glyph>) -> Scroll {
-        Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }
+        Scroll {
+            name: "h1".into(),
+            policy: None,
+            contents: scroll_format::Contents::Glyphs(glyphs),
+        }
     }
 
     fn nested(children: Vec<(&str, Vec<Glyph>)>) -> Scroll {
@@ -104,7 +116,10 @@ mod tests {
     fn applied(glyph: Glyph) -> Outcome {
         Outcome {
             cid: glyph_content_id(&glyph),
-            op: GlyphOp::Install { cid: glyph_content_id(&glyph), glyph: glyph.clone() },
+            op: GlyphOp::Install {
+                cid: glyph_content_id(&glyph),
+                glyph: glyph.clone(),
+            },
             inverse: Inverse::Nothing,
             changed: true,
         }
@@ -113,13 +128,25 @@ mod tests {
     #[test]
     fn new_glyph_against_empty_prior_is_install() {
         let ops = plan(&[], &scroll(vec![apt("nginx")]));
-        assert_eq!(ops, vec![GlyphOp::Install { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+        assert_eq!(
+            ops,
+            vec![GlyphOp::Install {
+                cid: glyph_content_id(&apt("nginx")),
+                glyph: apt("nginx")
+            }]
+        );
     }
 
     #[test]
     fn unchanged_glyph_is_noop() {
         let ops = plan(&[applied(apt("nginx"))], &scroll(vec![apt("nginx")]));
-        assert_eq!(ops, vec![GlyphOp::Noop { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+        assert_eq!(
+            ops,
+            vec![GlyphOp::Noop {
+                cid: glyph_content_id(&apt("nginx")),
+                glyph: apt("nginx")
+            }]
+        );
     }
 
     #[test]
@@ -139,7 +166,13 @@ mod tests {
     #[test]
     fn glyph_only_in_prior_is_remove() {
         let ops = plan(&[applied(apt("nginx"))], &scroll(vec![]));
-        assert_eq!(ops, vec![GlyphOp::Remove { cid: glyph_content_id(&apt("nginx")), glyph: apt("nginx") }]);
+        assert_eq!(
+            ops,
+            vec![GlyphOp::Remove {
+                cid: glyph_content_id(&apt("nginx")),
+                glyph: apt("nginx")
+            }]
+        );
     }
 
     #[test]
@@ -149,22 +182,41 @@ mod tests {
         assert_eq!(
             ops,
             vec![
-                GlyphOp::Install { cid: glyph_content_id(&apt("one")), glyph: apt("one") },
-                GlyphOp::Install { cid: glyph_content_id(&apt("two")), glyph: apt("two") },
+                GlyphOp::Install {
+                    cid: glyph_content_id(&apt("one")),
+                    glyph: apt("one")
+                },
+                GlyphOp::Install {
+                    cid: glyph_content_id(&apt("two")),
+                    glyph: apt("two")
+                },
             ]
         );
     }
 
     #[test]
     fn removes_come_out_in_reverse_prior_order() {
-        let prior = vec![applied(apt("first")), applied(apt("second")), applied(apt("third"))];
+        let prior = vec![
+            applied(apt("first")),
+            applied(apt("second")),
+            applied(apt("third")),
+        ];
         let ops = plan(&prior, &scroll(vec![]));
         assert_eq!(
             ops,
             vec![
-                GlyphOp::Remove { cid: glyph_content_id(&apt("third")), glyph: apt("third") },
-                GlyphOp::Remove { cid: glyph_content_id(&apt("second")), glyph: apt("second") },
-                GlyphOp::Remove { cid: glyph_content_id(&apt("first")), glyph: apt("first") },
+                GlyphOp::Remove {
+                    cid: glyph_content_id(&apt("third")),
+                    glyph: apt("third")
+                },
+                GlyphOp::Remove {
+                    cid: glyph_content_id(&apt("second")),
+                    glyph: apt("second")
+                },
+                GlyphOp::Remove {
+                    cid: glyph_content_id(&apt("first")),
+                    glyph: apt("first")
+                },
             ]
         );
     }
@@ -176,9 +228,18 @@ mod tests {
         assert_eq!(
             ops,
             vec![
-                GlyphOp::Install { cid: glyph_content_id(&apt("a")), glyph: apt("a") },
-                GlyphOp::Install { cid: glyph_content_id(&apt("b")), glyph: apt("b") },
-                GlyphOp::Remove { cid: glyph_content_id(&apt("old")), glyph: apt("old") },
+                GlyphOp::Install {
+                    cid: glyph_content_id(&apt("a")),
+                    glyph: apt("a")
+                },
+                GlyphOp::Install {
+                    cid: glyph_content_id(&apt("b")),
+                    glyph: apt("b")
+                },
+                GlyphOp::Remove {
+                    cid: glyph_content_id(&apt("old")),
+                    glyph: apt("old")
+                },
             ]
         );
     }

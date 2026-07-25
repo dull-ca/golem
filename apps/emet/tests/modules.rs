@@ -116,8 +116,15 @@ fn parameterized_open_type_crosses_module() {
     let c = compile_fixture("BoxesEntry.emet").expect("imported parameterized Box(..) compiles");
     assert_eq!(scroll_names(&c), vec!["boxed".to_string()]);
     assert_eq!(
-        c.scrolls[0].glyphs().iter().map(|g| g.key()).collect::<Vec<_>>(),
-        vec!["systemd:boxed.service".to_string(), "systemd:matched.service".to_string()],
+        c.scrolls[0]
+            .glyphs()
+            .iter()
+            .map(|g| g.key())
+            .collect::<Vec<_>>(),
+        vec![
+            "systemd:boxed.service".to_string(),
+            "systemd:matched.service".to_string()
+        ],
     );
 }
 

@@ -42,7 +42,11 @@ fn leading_junk_reports_the_offending_token() {
 fn apt_package_missing_name_field() {
     let e = err(r#"main = [ aptPackage { unit = "u" } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`aptPackage` requires a `name` field"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("`aptPackage` requires a `name` field"),
+        "msg: {}",
+        e.msg
+    );
     assert_eq!(e.span, 9..19);
 }
 
@@ -50,7 +54,11 @@ fn apt_package_missing_name_field() {
 fn systemd_service_missing_unit_field() {
     let e = err(r#"main = [ systemdService { name = "n" } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`systemdService` requires a `unit` field"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("`systemdService` requires a `unit` field"),
+        "msg: {}",
+        e.msg
+    );
     assert_eq!(e.span, 9..23);
 }
 
@@ -138,22 +146,14 @@ fn signature_name_mismatch() {
 fn signature_with_no_binding() {
     let e = err(r#"f : String"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(
-        e.msg.contains("no accompanying binding"),
-        "msg: {}",
-        e.msg
-    );
+    assert!(e.msg.contains("no accompanying binding"), "msg: {}", e.msg);
 }
 
 #[test]
 fn trailing_signature_with_no_binding() {
     let e = err("f : String\nf = \"a\"\ng : String");
     assert_eq!(e.phase, Phase::Parse);
-    assert!(
-        e.msg.contains("no accompanying binding"),
-        "msg: {}",
-        e.msg
-    );
+    assert!(e.msg.contains("no accompanying binding"), "msg: {}", e.msg);
     assert!(e.msg.contains("`g`"), "msg: {}", e.msg);
 }
 
@@ -200,11 +200,7 @@ fn missing_main_is_type_error_with_message() {
 fn str_alias_is_unknown_type_constructor() {
     let e = err("f : Str -> Str\nf x = x\nmain = [ scroll { name = \"n\", glyphs = [] } ]");
     assert_eq!(e.phase, Phase::Type);
-    assert!(
-        e.msg.contains("unknown type constructor"),
-        "msg: {}",
-        e.msg
-    );
+    assert!(e.msg.contains("unknown type constructor"), "msg: {}", e.msg);
     assert!(e.msg.contains("`Str`"), "msg: {}", e.msg);
 }
 
@@ -212,10 +208,6 @@ fn str_alias_is_unknown_type_constructor() {
 fn glyphs_alias_is_unknown_type_constructor() {
     let e = err("f : Glyphs\nf = []\nmain = [ scroll { name = \"n\", glyphs = [] } ]");
     assert_eq!(e.phase, Phase::Type);
-    assert!(
-        e.msg.contains("unknown type constructor"),
-        "msg: {}",
-        e.msg
-    );
+    assert!(e.msg.contains("unknown type constructor"), "msg: {}", e.msg);
     assert!(e.msg.contains("`Glyphs`"), "msg: {}", e.msg);
 }

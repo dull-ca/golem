@@ -17,7 +17,10 @@ impl Reconciler for FailOne {
             return Err(EnactError::Fatal("scripted".into()));
         }
         Ok(Outcome {
-            op: GlyphOp::Install { cid, glyph: glyph.clone() },
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
             cid,
             inverse: inverse_of(glyph),
             changed: true,
@@ -42,7 +45,9 @@ fn manifest_bytes() -> Vec<u8> {
 }
 
 async fn serve(foreman: Foreman) -> String {
-    let app = http::router(http::AppState { foreman: Arc::new(foreman) });
+    let app = http::router(http::AppState {
+        foreman: Arc::new(foreman),
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -56,7 +61,9 @@ async fn a_failing_reconcile_is_http_200_with_a_rolled_back_report() {
     let foreman = Foreman::new(
         "h1".into(),
         Box::new(MemoryPlanRoom::new()),
-        Box::new(FailOne { bad: "apt:bad".into() }),
+        Box::new(FailOne {
+            bad: "apt:bad".into(),
+        }),
     )
     .with_retry_config(RetryConfig {
         max_attempts: 1,

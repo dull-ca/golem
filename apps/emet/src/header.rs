@@ -35,7 +35,9 @@ impl<'a> Cursor<'a> {
     }
 
     fn span(&self) -> std::ops::Range<usize> {
-        self.tokens[self.pos.min(self.tokens.len() - 1)].span.clone()
+        self.tokens[self.pos.min(self.tokens.len() - 1)]
+            .span
+            .clone()
     }
 
     fn bump(&mut self) -> &Token {
@@ -63,7 +65,10 @@ impl<'a> Cursor<'a> {
 /// returning them alongside the untouched body tokens. A file that does not
 /// start with `module` is treated as a header-less entry module.
 pub fn split(tokens: Vec<Token>) -> Result<Header, HeaderError> {
-    let mut cursor = Cursor { tokens: &tokens, pos: 0 };
+    let mut cursor = Cursor {
+        tokens: &tokens,
+        pos: 0,
+    };
 
     let (name, exposing) = if *cursor.peek() == Tok::Module {
         parse_module_header(&mut cursor)?
@@ -77,7 +82,12 @@ pub fn split(tokens: Vec<Token>) -> Result<Header, HeaderError> {
     }
 
     let body = tokens[cursor.pos..].to_vec();
-    Ok(Header { name, exposing, imports, body })
+    Ok(Header {
+        name,
+        exposing,
+        imports,
+        body,
+    })
 }
 
 fn parse_module_header(cursor: &mut Cursor) -> Result<(Option<String>, Exposing), HeaderError> {
@@ -177,5 +187,10 @@ fn parse_import(cursor: &mut Cursor) -> Result<Import, HeaderError> {
         ImportExposing::None
     };
     let end = cursor.span().start;
-    Ok(Import { module, alias, exposing, span: start..end })
+    Ok(Import {
+        module,
+        alias,
+        exposing,
+        span: start..end,
+    })
 }

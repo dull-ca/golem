@@ -128,52 +128,91 @@ pub mod fake {
 
     impl CommandRunner for FakeCommandRunner {
         fn run(&self, program: &str, args: &[&str]) -> EnactResult<CommandOutput> {
-            self.log.lock().unwrap().push(format!("{program} {}", args.join(" ")));
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("{program} {}", args.join(" ")));
             let mut host = self.host.lock().unwrap();
             match (program, args) {
                 ("dpkg-query", _) => {
                     let name = args.last().copied().unwrap_or_default();
                     if host.installed.contains(name) {
-                        Ok(CommandOutput { status: 0, stdout: "install ok installed".into(), stderr: String::new() })
+                        Ok(CommandOutput {
+                            status: 0,
+                            stdout: "install ok installed".into(),
+                            stderr: String::new(),
+                        })
                     } else {
-                        Ok(CommandOutput { status: 1, stdout: String::new(), stderr: "no packages found".into() })
+                        Ok(CommandOutput {
+                            status: 1,
+                            stdout: String::new(),
+                            stderr: "no packages found".into(),
+                        })
                     }
                 }
                 // The apt apply refreshes the package list before install;
                 // model the refresh as a no-op success so it does not trip the
                 // unmodeled-command Fatal below.
-                ("apt-get", ["update"]) => {
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
-                }
+                ("apt-get", ["update"]) => Ok(CommandOutput {
+                    status: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
                 ("apt-get", _) if args.first() == Some(&"install") => {
                     let name = args.last().copied().unwrap_or_default();
                     host.installed.insert(name.to_string());
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
                 }
                 ("apt-get", _) if args.first() == Some(&"remove") => {
                     let name = args.last().copied().unwrap_or_default();
                     host.installed.remove(name);
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
                 }
                 // The systemd apply reloads before enabling; model it as a
                 // no-op so it does not trip the unmodeled-command Fatal below.
-                ("systemctl", ["daemon-reload"]) => {
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
-                }
+                ("systemctl", ["daemon-reload"]) => Ok(CommandOutput {
+                    status: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
                 ("systemctl", _) if args.first() == Some(&"is-enabled") => {
                     let unit = args.last().copied().unwrap_or_default();
                     if host.enabled.contains(unit) {
-                        Ok(CommandOutput { status: 0, stdout: "enabled\n".into(), stderr: String::new() })
+                        Ok(CommandOutput {
+                            status: 0,
+                            stdout: "enabled\n".into(),
+                            stderr: String::new(),
+                        })
                     } else {
-                        Ok(CommandOutput { status: 1, stdout: "disabled\n".into(), stderr: String::new() })
+                        Ok(CommandOutput {
+                            status: 1,
+                            stdout: "disabled\n".into(),
+                            stderr: String::new(),
+                        })
                     }
                 }
                 ("systemctl", _) if args.first() == Some(&"is-active") => {
                     let unit = args.last().copied().unwrap_or_default();
                     if host.active.contains(unit) {
-                        Ok(CommandOutput { status: 0, stdout: "active\n".into(), stderr: String::new() })
+                        Ok(CommandOutput {
+                            status: 0,
+                            stdout: "active\n".into(),
+                            stderr: String::new(),
+                        })
                     } else {
-                        Ok(CommandOutput { status: 3, stdout: "inactive\n".into(), stderr: String::new() })
+                        Ok(CommandOutput {
+                            status: 3,
+                            stdout: "inactive\n".into(),
+                            stderr: String::new(),
+                        })
                     }
                 }
                 ("systemctl", _) if args.first() == Some(&"enable") => {
@@ -185,33 +224,56 @@ pub mod fake {
                         return Ok(CommandOutput {
                             status: 1,
                             stdout: String::new(),
-                            stderr: format!("Failed to enable unit: Unit {unit} is transient or generated."),
+                            stderr: format!(
+                                "Failed to enable unit: Unit {unit} is transient or generated."
+                            ),
                         });
                     }
                     host.enabled.insert(unit.to_string());
                     host.active.insert(unit.to_string());
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
                 }
                 ("systemctl", _) if args.first() == Some(&"disable") => {
                     let unit = args.last().copied().unwrap_or_default();
                     host.enabled.remove(unit);
                     host.active.remove(unit);
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
                 }
                 ("systemctl", _) if args.first() == Some(&"stop") => {
                     let unit = args.last().copied().unwrap_or_default();
                     host.active.remove(unit);
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
                 }
                 ("systemctl", _) if args.first() == Some(&"start") => {
                     let unit = args.last().copied().unwrap_or_default();
                     host.active.insert(unit.to_string());
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
                 }
-                ("systemctl", _) if args.first() == Some(&"try-restart") => {
-                    Ok(CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
-                }
-                _ => Err(EnactError::Fatal(format!("unexpected command: {program} {}", args.join(" ")))),
+                ("systemctl", _) if args.first() == Some(&"try-restart") => Ok(CommandOutput {
+                    status: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
+                _ => Err(EnactError::Fatal(format!(
+                    "unexpected command: {program} {}",
+                    args.join(" ")
+                ))),
             }
         }
     }

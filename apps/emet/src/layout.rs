@@ -129,7 +129,10 @@ impl Layout {
             }
             if first.tok != Tok::LBrace {
                 let n = first.col;
-                self.stack.push(Ctx::Implicit { column: n, origin: Origin::Module });
+                self.stack.push(Ctx::Implicit {
+                    column: n,
+                    origin: Origin::Module,
+                });
                 self.queue.push_back(vtok(Tok::VLBrace, &first));
                 self.just_opened = true;
             }
@@ -188,7 +191,11 @@ impl Layout {
         // dedent has already closed the block and the top is the module context,
         // so this fires nothing and the output is unchanged.
         if t.tok == Tok::In {
-            if let Some(Ctx::Implicit { origin: Origin::Keyword, .. }) = self.top() {
+            if let Some(Ctx::Implicit {
+                origin: Origin::Keyword,
+                ..
+            }) = self.top()
+            {
                 self.stack.pop();
                 self.queue.push_back(vtok(Tok::VRBrace, &t));
             }
@@ -225,7 +232,10 @@ impl Layout {
                     })
                     .unwrap_or(0);
                 if n > enclosing {
-                    self.stack.push(Ctx::Implicit { column: n, origin: Origin::Keyword });
+                    self.stack.push(Ctx::Implicit {
+                        column: n,
+                        origin: Origin::Keyword,
+                    });
                     self.queue.push_back(vtok(Tok::VLBrace, &next));
                     self.just_opened = true;
                 } else {

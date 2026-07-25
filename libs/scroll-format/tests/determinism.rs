@@ -1,5 +1,5 @@
 use scroll_format::{
-    content_id, content_id_of_glyph, from_bytes, to_bytes, Contents, ContentId, Entry,
+    content_id, content_id_of_glyph, from_bytes, to_bytes, ContentId, Contents, Entry,
     FromBytesError, Glyph, Manifest, Perms, Scroll, FORMAT_VERSION,
 };
 
@@ -8,13 +8,21 @@ fn fixed_scroll() -> Scroll {
         name: "web".to_string(),
         policy: None,
         contents: Contents::Glyphs(vec![
-            Glyph::AptPackage { name: "nginx".to_string() },
-            Glyph::SystemdService { unit: "nginx.service".to_string() },
+            Glyph::AptPackage {
+                name: "nginx".to_string(),
+            },
+            Glyph::SystemdService {
+                unit: "nginx.service".to_string(),
+            },
             Glyph::Filesystem {
                 path: "/etc/nginx/nginx.conf".to_string(),
                 entry: Entry::File {
                     contents: "worker_processes auto;".to_string(),
-                    perms: Perms { mode: 0o644, owner: None, group: None },
+                    perms: Perms {
+                        mode: 0o644,
+                        owner: None,
+                        group: None,
+                    },
                 },
             },
             Glyph::LineInFile {
@@ -42,13 +50,12 @@ const GOLDEN_SCROLL_BYTES: &[u8] = &[
     3, 119, 101, 98, 0, 0, 4, 0, 5, 110, 103, 105, 110, 120, 1, 13, 110, 103, 105, 110, 120, 46,
     115, 101, 114, 118, 105, 99, 101, 2, 21, 47, 101, 116, 99, 47, 110, 103, 105, 110, 120, 47,
     110, 103, 105, 110, 120, 46, 99, 111, 110, 102, 0, 22, 119, 111, 114, 107, 101, 114, 95, 112,
-    114, 111, 99, 101, 115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47,
-    101, 116, 99, 47, 104, 111, 115, 116, 115, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108,
-    111, 99, 97, 108, 104, 111, 115, 116,
+    114, 111, 99, 101, 115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47, 101,
+    116, 99, 47, 104, 111, 115, 116, 115, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108, 111, 99,
+    97, 108, 104, 111, 115, 116,
 ];
 
-const GOLDEN_CONTENT_ID: &str =
-    "b98f514234d172aad5972bad2f9de3aad9c0be9612702d78885725ddb28661f0";
+const GOLDEN_CONTENT_ID: &str = "b98f514234d172aad5972bad2f9de3aad9c0be9612702d78885725ddb28661f0";
 
 #[test]
 fn fixed_scroll_serializes_to_golden_bytes() {
@@ -157,7 +164,9 @@ fn nested_host() -> Scroll {
             Scroll {
                 name: "base".to_string(),
                 policy: None,
-                contents: Contents::Glyphs(vec![Glyph::AptPackage { name: "htop".to_string() }]),
+                contents: Contents::Glyphs(vec![Glyph::AptPackage {
+                    name: "htop".to_string(),
+                }]),
             },
         ]),
     }
@@ -179,12 +188,18 @@ fn a_leaf_glyph_content_id_is_independent_of_grouping() {
     let flat = Scroll {
         name: "h".to_string(),
         policy: None,
-        contents: Contents::Glyphs(vec![Glyph::AptPackage { name: "stockfish".to_string() }]),
+        contents: Contents::Glyphs(vec![Glyph::AptPackage {
+            name: "stockfish".to_string(),
+        }]),
     };
     let grouped = nested_host();
     let g_flat = content_id_of_glyph(flat.all_glyphs()[0]);
     let g_grouped = content_id_of_glyph(
-        grouped.all_glyphs().into_iter().find(|g| matches!(g, Glyph::AptPackage { name } if name == "stockfish")).unwrap(),
+        grouped
+            .all_glyphs()
+            .into_iter()
+            .find(|g| matches!(g, Glyph::AptPackage { name } if name == "stockfish"))
+            .unwrap(),
     );
     assert_eq!(g_flat, g_grouped);
 }

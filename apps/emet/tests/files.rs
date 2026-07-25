@@ -12,17 +12,25 @@ use emet::{
 };
 
 fn perms(mode: u16) -> Perms {
-    Perms { mode, owner: None, group: None }
+    Perms {
+        mode,
+        owner: None,
+        group: None,
+    }
 }
 
 #[test]
 fn file_produces_a_filesystem_file_glyph() {
-    let rs = glyphs(r#"[ file { path = "/etc/nginx.conf", contents = "listen 80;", mode = "0644" } ]"#);
+    let rs =
+        glyphs(r#"[ file { path = "/etc/nginx.conf", contents = "listen 80;", mode = "0644" } ]"#);
     assert_eq!(
         rs,
         vec![Glyph::Filesystem {
             path: "/etc/nginx.conf".into(),
-            entry: Entry::File { contents: "listen 80;".into(), perms: perms(0o644) },
+            entry: Entry::File {
+                contents: "listen 80;".into(),
+                perms: perms(0o644)
+            },
         }]
     );
 }
@@ -34,19 +42,25 @@ fn directory_produces_a_filesystem_directory_glyph() {
         rs,
         vec![Glyph::Filesystem {
             path: "/srv/registry/data".into(),
-            entry: Entry::Directory { perms: perms(0o755) },
+            entry: Entry::Directory {
+                perms: perms(0o755)
+            },
         }]
     );
 }
 
 #[test]
 fn symlink_produces_a_filesystem_symlink_glyph() {
-    let rs = glyphs(r#"[ symlink { path = "/etc/nginx/sites-enabled/app", target = "/etc/nginx/sites-available/app" } ]"#);
+    let rs = glyphs(
+        r#"[ symlink { path = "/etc/nginx/sites-enabled/app", target = "/etc/nginx/sites-available/app" } ]"#,
+    );
     assert_eq!(
         rs,
         vec![Glyph::Filesystem {
             path: "/etc/nginx/sites-enabled/app".into(),
-            entry: Entry::Symlink { target: "/etc/nginx/sites-available/app".into() },
+            entry: Entry::Symlink {
+                target: "/etc/nginx/sites-available/app".into()
+            },
         }]
     );
 }
@@ -74,56 +88,93 @@ main = [ scroll { name = "test", glyphs = [ file { path = "/etc/svc.conf", conte
         rs,
         vec![Glyph::Filesystem {
             path: "/etc/svc.conf".into(),
-            entry: Entry::File { contents: "listen 8080;".into(), perms: perms(0o644) },
+            entry: Entry::File {
+                contents: "listen 8080;".into(),
+                perms: perms(0o644)
+            },
         }]
     );
 }
 
 #[test]
 fn file_missing_field_is_a_parse_error() {
-    let e = err(r#"main = [ scroll { name = "test", glyphs = [ file { path = "/x", mode = "0644" } ] } ]"#);
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ file { path = "/x", mode = "0644" } ] } ]"#,
+    );
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`file` requires a `contents` field"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("`file` requires a `contents` field"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn file_unknown_field_is_a_parse_error() {
-    let e = err(r#"main = [ scroll { name = "test", glyphs = [ file { path = "/x", contents = "c", mode = "0644", when = "always" } ] } ]"#);
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ file { path = "/x", contents = "c", mode = "0644", when = "always" } ] } ]"#,
+    );
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("unknown file field `when`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("unknown file field `when`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn symlink_with_a_mode_is_a_parse_error() {
-    let e = err(r#"main = [ scroll { name = "test", glyphs = [ symlink { path = "/x", target = "/y", mode = "0644" } ] } ]"#);
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ symlink { path = "/x", target = "/y", mode = "0644" } ] } ]"#,
+    );
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("unknown symlink field `mode`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("unknown symlink field `mode`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn directory_with_contents_is_a_parse_error() {
-    let e = err(r#"main = [ scroll { name = "test", glyphs = [ directory { path = "/x", mode = "0755", contents = "c" } ] } ]"#);
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ directory { path = "/x", mode = "0755", contents = "c" } ] } ]"#,
+    );
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("unknown directory field `contents`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("unknown directory field `contents`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn directory_missing_mode_is_a_parse_error() {
     let e = err(r#"main = [ scroll { name = "test", glyphs = [ directory { path = "/x" } ] } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`directory` requires a `mode` field"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("`directory` requires a `mode` field"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn symlink_missing_target_is_a_parse_error() {
     let e = err(r#"main = [ scroll { name = "test", glyphs = [ symlink { path = "/x" } ] } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`symlink` requires a `target` field"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("`symlink` requires a `target` field"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn bad_mode_is_an_eval_error() {
-    let e = err(r#"main = [ scroll { name = "test", glyphs = [ file { path = "/x", contents = "c", mode = "nope" } ] } ]"#);
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ file { path = "/x", contents = "c", mode = "nope" } ] } ]"#,
+    );
     assert_eq!(e.phase, Phase::Analyze);
     assert!(e.msg.contains("invalid mode `nope`"), "got: {}", e.msg);
 }
@@ -132,14 +183,24 @@ fn bad_mode_is_an_eval_error() {
 fn line_in_file_missing_field_is_a_parse_error() {
     let e = err(r#"main = [ scroll { name = "test", glyphs = [ lineInFile { path = "/x" } ] } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`lineInFile` requires a `line` field"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("`lineInFile` requires a `line` field"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn line_in_file_unknown_field_is_a_parse_error() {
-    let e = err(r#"main = [ scroll { name = "test", glyphs = [ lineInFile { path = "/x", line = "l", when = "always" } ] } ]"#);
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ lineInFile { path = "/x", line = "l", when = "always" } ] } ]"#,
+    );
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("unknown lineInFile field `when`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("unknown lineInFile field `when`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -161,14 +222,21 @@ main =
     assert_eq!(
         rs,
         vec![
-            Glyph::AptPackage { name: "nginx".into() },
+            Glyph::AptPackage {
+                name: "nginx".into()
+            },
             Glyph::Filesystem {
                 path: "/srv/data".into(),
-                entry: Entry::Directory { perms: perms(0o755) },
+                entry: Entry::Directory {
+                    perms: perms(0o755)
+                },
             },
             Glyph::Filesystem {
                 path: "/etc/nginx.conf".into(),
-                entry: Entry::File { contents: "listen 80;".into(), perms: perms(0o644) },
+                entry: Entry::File {
+                    contents: "listen 80;".into(),
+                    perms: perms(0o644)
+                },
             },
             Glyph::LineInFile {
                 path: "/etc/hosts".into(),

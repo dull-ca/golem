@@ -22,7 +22,10 @@ fn two_top_level_decls_separated_by_vsemi() {
     let src = "a = x\nb = y";
     let ts = toks(src);
     let semis = ts.iter().filter(|t| **t == Tok::VSemi).count();
-    assert_eq!(semis, 1, "expected exactly one VSemi between two decls: {ts:?}");
+    assert_eq!(
+        semis, 1,
+        "expected exactly one VSemi between two decls: {ts:?}"
+    );
 }
 
 #[test]
@@ -31,7 +34,10 @@ fn continuation_line_no_semi() {
     let src = "main =\n  foo";
     let ts = toks(src);
     let semis = ts.iter().filter(|t| **t == Tok::VSemi).count();
-    assert_eq!(semis, 0, "indented continuation must not insert VSemi: {ts:?}");
+    assert_eq!(
+        semis, 0,
+        "indented continuation must not insert VSemi: {ts:?}"
+    );
 }
 
 #[test]
@@ -40,9 +46,17 @@ fn let_opens_and_closes_block_multiline() {
     let ts = toks(src);
     // Expect a VLBrace after `let` and a matching VRBrace before `in`.
     let let_pos = ts.iter().position(|t| *t == Tok::Let).unwrap();
-    assert_eq!(ts[let_pos + 1], Tok::VLBrace, "let must be followed by VLBrace: {ts:?}");
+    assert_eq!(
+        ts[let_pos + 1],
+        Tok::VLBrace,
+        "let must be followed by VLBrace: {ts:?}"
+    );
     let in_pos = ts.iter().position(|t| *t == Tok::In).unwrap();
-    assert_eq!(ts[in_pos - 1], Tok::VRBrace, "in must be preceded by VRBrace: {ts:?}");
+    assert_eq!(
+        ts[in_pos - 1],
+        Tok::VRBrace,
+        "in must be preceded by VRBrace: {ts:?}"
+    );
 }
 
 #[test]
@@ -51,5 +65,8 @@ fn nested_let_bindings_get_semi() {
     let ts = toks(src);
     // between the two bindings at the same column there should be a VSemi
     let semis = ts.iter().filter(|t| **t == Tok::VSemi).count();
-    assert!(semis >= 1, "expected a VSemi separating let bindings: {ts:?}");
+    assert!(
+        semis >= 1,
+        "expected a VSemi separating let bindings: {ts:?}"
+    );
 }

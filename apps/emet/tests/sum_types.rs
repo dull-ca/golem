@@ -28,7 +28,12 @@ fn maybe_with_default_uses_just_payload() {
     let rs = glyphs(
         r#"[ systemdService { unit = Maybe.withDefault "fallback.service" (Just "nginx.service") } ]"#,
     );
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "nginx.service".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }]
+    );
 }
 
 #[test]
@@ -40,7 +45,9 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = Maybe.withDe
 "#;
     assert_eq!(
         single_scroll_glyphs(src),
-        vec![Glyph::SystemdService { unit: "fallback.service".into() }]
+        vec![Glyph::SystemdService {
+            unit: "fallback.service".into()
+        }]
     );
 }
 
@@ -54,7 +61,9 @@ main = [ scroll { name = "test", glyphs = [ Maybe.withDefault (systemdService { 
 "#;
     assert_eq!(
         single_scroll_glyphs(src),
-        vec![Glyph::SystemdService { unit: "nginx.service".into() }]
+        vec![Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }]
     );
 }
 
@@ -67,7 +76,9 @@ main = [ scroll { name = "test", glyphs = [ Maybe.withDefault (systemdService { 
 "#;
     assert_eq!(
         single_scroll_glyphs(src),
-        vec![Glyph::SystemdService { unit: "nginx.service".into() }]
+        vec![Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }]
     );
 }
 
@@ -82,7 +93,9 @@ main = [ scroll { name = "test", glyphs = [ Maybe.withDefault (systemdService { 
 "#;
     assert_eq!(
         single_scroll_glyphs(src),
-        vec![Glyph::SystemdService { unit: "default.service".into() }]
+        vec![Glyph::SystemdService {
+            unit: "default.service".into()
+        }]
     );
 }
 

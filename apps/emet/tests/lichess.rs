@@ -1,8 +1,7 @@
 use emet::compile_file;
 
 fn lichess_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/lichess")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/lichess")
 }
 
 fn fleet() -> emet::Compiled {
@@ -56,7 +55,9 @@ fn a_service_lowers_to_workload_plus_firewall_opening() {
     let c = fleet();
     let k = keys(scroll(&c, "kaiju"));
     assert!(k.contains(&"apt:podman".to_string()));
-    assert!(k.contains(&"file:/etc/containers/systemd/mongod-lichess-primary.container".to_string()));
+    assert!(
+        k.contains(&"file:/etc/containers/systemd/mongod-lichess-primary.container".to_string())
+    );
     assert!(k.contains(&"systemd:mongod-lichess-primary.service".to_string()));
     assert!(k.contains(&"file:/etc/nftables.d/mongod-lichess-primary-27017.nft".to_string()));
 }
@@ -76,7 +77,9 @@ fn an_ingress_installs_nginx_writes_a_site_and_opens_443() {
     assert!(k.contains(&"apt:nginx".to_string()));
     assert!(k.contains(&"systemd:nginx.service".to_string()));
     assert!(k.contains(&"file:/etc/nginx/sites-enabled/lichess.org.conf".to_string()));
-    assert!(k.iter().any(|key| key.contains("nftables") && key.contains("ingress")));
+    assert!(k
+        .iter()
+        .any(|key| key.contains("nftables") && key.contains("ingress")));
 }
 
 #[test]
@@ -87,9 +90,10 @@ fn service_firewall_allows_internal_sources_to_the_service_port() {
         .glyphs()
         .iter()
         .find_map(|g| match g {
-            emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
-                if path == "/etc/nftables.d/mongod-lichess-primary-27017.nft" =>
-            {
+            emet::ir::Glyph::Filesystem {
+                path,
+                entry: emet::ir::Entry::File { contents, .. },
+            } if path == "/etc/nftables.d/mongod-lichess-primary-27017.nft" => {
                 Some(contents.clone())
             }
             _ => None,
@@ -108,11 +112,10 @@ fn ingress_site_block_proxies_to_the_named_service_over_ssl() {
         .glyphs()
         .iter()
         .find_map(|g| match g {
-            emet::ir::Glyph::Filesystem { path, entry: emet::ir::Entry::File { contents, .. } }
-                if path == "/etc/nginx/sites-enabled/lichess.org.conf" =>
-            {
-                Some(contents.clone())
-            }
+            emet::ir::Glyph::Filesystem {
+                path,
+                entry: emet::ir::Entry::File { contents, .. },
+            } if path == "/etc/nginx/sites-enabled/lichess.org.conf" => Some(contents.clone()),
             _ => None,
         })
         .expect("nginx site block present");

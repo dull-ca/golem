@@ -47,16 +47,33 @@ pub enum Value {
     /// A tuple `(a, b)` / `(a, b, c)`, or unit `()` as the empty tuple
     /// (ADR 0027).
     Tuple(Vec<Value>),
-    Data { ctor: String, args: Vec<Value> },
-    Closure { rec: Option<Rc<RecGroup>>, param: String, body: Rc<Spanned<Expr>>, env: Env },
-    Builtin { name: String, arity: usize, args: Vec<Value>, run: BuiltinFn },
+    Data {
+        ctor: String,
+        args: Vec<Value>,
+    },
+    Closure {
+        rec: Option<Rc<RecGroup>>,
+        param: String,
+        body: Rc<Spanned<Expr>>,
+        env: Env,
+    },
+    Builtin {
+        name: String,
+        arity: usize,
+        args: Vec<Value>,
+        run: BuiltinFn,
+    },
     /// A user sum-type value constructor collecting its `arity` arguments,
     /// yielding `Data { ctor, args }` once saturated (`apply`). A prelude
     /// constructor instead rides on `Builtin`, whose `run` is a `fn` pointer
     /// baked in at compile time — fine for a fixed constructor set, but user
     /// constructors are only known at runtime, so this variant carries the name
     /// and arity as data, letting one representation serve any user constructor.
-    Ctor { ctor: String, arity: usize, args: Vec<Value> },
+    Ctor {
+        ctor: String,
+        arity: usize,
+        args: Vec<Value>,
+    },
 }
 
 /// A group of mutually recursive declarations sharing one captured environment.
@@ -87,13 +104,17 @@ impl std::fmt::Debug for Value {
             Value::List(vs) => f.debug_tuple("List").field(vs).finish(),
             Value::Record(m) => f.debug_tuple("Record").field(m).finish(),
             Value::Tuple(vs) => f.debug_tuple("Tuple").field(vs).finish(),
-            Value::Data { ctor, args } => {
-                f.debug_struct("Data").field("ctor", ctor).field("args", args).finish()
-            }
+            Value::Data { ctor, args } => f
+                .debug_struct("Data")
+                .field("ctor", ctor)
+                .field("args", args)
+                .finish(),
             Value::Closure { param, .. } => {
                 f.debug_struct("Closure").field("param", param).finish()
             }
-            Value::Builtin { name, arity, args, .. } => f
+            Value::Builtin {
+                name, arity, args, ..
+            } => f
                 .debug_struct("Builtin")
                 .field("name", name)
                 .field("arity", arity)
@@ -139,7 +160,10 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::Int(n) => Value::Int(*n),
         Expr::Float(x) => Value::Float(*x),
         Expr::Char(c) => Value::Char(*c),
-        Expr::Var(name) => env.get(name).cloned().unwrap_or_else(|| unreachable!("unbound {name}")),
+        Expr::Var(name) => env
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| unreachable!("unbound {name}")),
         Expr::AptPackage(name) => Value::Glyph(Glyph::AptPackage {
             name: as_str(eval(env, name, depth)?),
         }),
@@ -168,17 +192,29 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         }),
         // A leaf lowers its glyph list, a branch recurses into its sub-scrolls;
         // the `ContentsExpr` arm already fixed which (ADR 0031 §7).
-        Expr::Scroll { name, policy, contents } => {
+        Expr::Scroll {
+            name,
+            policy,
+            contents,
+        } => {
             let name = as_str(eval(env, name, depth)?);
             let policy = match policy {
                 Some(p) => Some(as_policy(eval(env, p, depth)?)),
                 None => None,
             };
             let contents = match contents {
-                ContentsExpr::Glyphs(glyphs) => Contents::Glyphs(as_glyphs(eval(env, glyphs, depth)?)),
-                ContentsExpr::Groups(groups) => Contents::Groups(as_scrolls(eval(env, groups, depth)?)),
+                ContentsExpr::Glyphs(glyphs) => {
+                    Contents::Glyphs(as_glyphs(eval(env, glyphs, depth)?))
+                }
+                ContentsExpr::Groups(groups) => {
+                    Contents::Groups(as_scrolls(eval(env, groups, depth)?))
+                }
             };
-            Value::Scroll(Scroll { name, policy, contents })
+            Value::Scroll(Scroll {
+                name,
+                policy,
+                contents,
+            })
         }
         // The braceless shorthand sets only `on_exhaust`; every retry knob stays
         // at its default (ADR 0031 §3).
@@ -209,7 +245,10 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             }
             Value::Policy(policy)
         }
-        Expr::Ctor(name) => env.get(name).cloned().unwrap_or_else(|| unreachable!("unbound ctor {name}")),
+        Expr::Ctor(name) => env
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| unreachable!("unbound ctor {name}")),
         Expr::List(items) => {
             let mut vs = Vec::with_capacity(items.len());
             for it in items {
@@ -331,19 +370,27 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
 /// used only to answer "which variant, and what fields?" during a match.
 fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
     match g {
-        Glyph::AptPackage { name } => {
-            ("AptPackage", record_value(&[("name", Value::Str(name.clone()))]))
-        }
-        Glyph::SystemdService { unit } => {
-            ("SystemdService", record_value(&[("unit", Value::Str(unit.clone()))]))
-        }
+        Glyph::AptPackage { name } => (
+            "AptPackage",
+            record_value(&[("name", Value::Str(name.clone()))]),
+        ),
+        Glyph::SystemdService { unit } => (
+            "SystemdService",
+            record_value(&[("unit", Value::Str(unit.clone()))]),
+        ),
         Glyph::Filesystem { path, entry } => (
             "Filesystem",
-            record_value(&[("path", Value::Str(path.clone())), ("entry", entry_value(entry))]),
+            record_value(&[
+                ("path", Value::Str(path.clone())),
+                ("entry", entry_value(entry)),
+            ]),
         ),
         Glyph::LineInFile { path, line } => (
             "LineInFile",
-            record_value(&[("path", Value::Str(path.clone())), ("line", Value::Str(line.clone()))]),
+            record_value(&[
+                ("path", Value::Str(path.clone())),
+                ("line", Value::Str(line.clone())),
+            ]),
         ),
     }
 }
@@ -363,11 +410,15 @@ fn entry_value(entry: &Entry) -> Value {
             ]),
         ),
         Entry::Directory { perms } => ("Directory", record_value(&[("perms", perms_value(perms))])),
-        Entry::Symlink { target } => {
-            ("Symlink", record_value(&[("target", Value::Str(target.clone()))]))
-        }
+        Entry::Symlink { target } => (
+            "Symlink",
+            record_value(&[("target", Value::Str(target.clone()))]),
+        ),
     };
-    Value::Data { ctor: ctor.to_string(), args: vec![fields] }
+    Value::Data {
+        ctor: ctor.to_string(),
+        args: vec![fields],
+    }
 }
 
 /// Reify typed [`Perms`] back to the surface shape a pattern binds: `mode` as
@@ -384,13 +435,24 @@ fn perms_value(perms: &Perms) -> Value {
 
 fn maybe_str_value(s: &Option<String>) -> Value {
     match s {
-        Some(v) => Value::Data { ctor: "Just".to_string(), args: vec![Value::Str(v.clone())] },
-        None => Value::Data { ctor: "Nothing".to_string(), args: Vec::new() },
+        Some(v) => Value::Data {
+            ctor: "Just".to_string(),
+            args: vec![Value::Str(v.clone())],
+        },
+        None => Value::Data {
+            ctor: "Nothing".to_string(),
+            args: Vec::new(),
+        },
     }
 }
 
 fn record_value(fields: &[(&str, Value)]) -> Value {
-    Value::Record(fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+    Value::Record(
+        fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect(),
+    )
 }
 
 fn match_reified(
@@ -417,7 +479,12 @@ pub fn apply_top(func: Value, arg: Value) -> Value {
 
 pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalError> {
     match func {
-        Value::Closure { rec, param, body, env: captured } => {
+        Value::Closure {
+            rec,
+            param,
+            body,
+            env: captured,
+        } => {
             *depth += 1;
             if *depth > RECURSION_LIMIT {
                 return Err(EvalError {
@@ -433,15 +500,29 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
             *depth -= 1;
             result
         }
-        Value::Builtin { name, arity, mut args, run } => {
+        Value::Builtin {
+            name,
+            arity,
+            mut args,
+            run,
+        } => {
             args.push(arg);
             Ok(if args.len() == arity {
                 run(args)
             } else {
-                Value::Builtin { name, arity, args, run }
+                Value::Builtin {
+                    name,
+                    arity,
+                    args,
+                    run,
+                }
             })
         }
-        Value::Ctor { ctor, arity, mut args } => {
+        Value::Ctor {
+            ctor,
+            arity,
+            mut args,
+        } => {
             args.push(arg);
             Ok(if args.len() == arity {
                 Value::Data { ctor, args }
@@ -476,7 +557,13 @@ fn bind_group(captured: &Env, group: &Rc<RecGroup>) -> Env {
 fn decl_as_curried(d: &Decl) -> Spanned<Expr> {
     let mut e = d.body.clone();
     for p in d.params.iter().rev() {
-        e = Spanned(Expr::Lam { param: p.clone(), body: Box::new(e) }, d.span.clone());
+        e = Spanned(
+            Expr::Lam {
+                param: p.clone(),
+                body: Box::new(e),
+            },
+            d.span.clone(),
+        );
     }
     e
 }
@@ -619,7 +706,10 @@ fn eval_module_env(m: &Module, base: Env) -> Result<Env, EvalError> {
     for td in &m.type_decls {
         for variant in &td.variants {
             let value = if variant.fields.is_empty() {
-                Value::Data { ctor: variant.name.clone(), args: Vec::new() }
+                Value::Data {
+                    ctor: variant.name.clone(),
+                    args: Vec::new(),
+                }
             } else {
                 Value::Ctor {
                     ctor: variant.name.clone(),

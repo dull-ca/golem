@@ -60,23 +60,23 @@ pub enum Tok {
     As,
 
     // punctuation
-    Equals,   // =
-    Backslash,// \
-    Arrow,    // ->
-    Colon,    // :
-    Comma,    // ,
-    Dot,      // .
+    Equals,    // =
+    Backslash, // \
+    Arrow,     // ->
+    Colon,     // :
+    Comma,     // ,
+    Dot,       // .
     LParen,
     RParen,
     LBracket,
     RBracket,
-    LBrace,   // explicit { written by the user
-    RBrace,   // explicit }
+    LBrace, // explicit { written by the user
+    RBrace, // explicit }
 
     // virtual tokens inserted by the layout algorithm
-    VLBrace,  // {n}  -> virtual open
-    VRBrace,  // virtual close
-    VSemi,    // virtual ;  (separates decls at same indent)
+    VLBrace, // {n}  -> virtual open
+    VRBrace, // virtual close
+    VSemi,   // virtual ;  (separates decls at same indent)
 
     Eof,
 }
@@ -133,7 +133,7 @@ pub struct Token {
     pub tok: Tok,
     pub span: Span,
     pub line: usize,
-    pub col: usize,       // 1-based column of this token's first char
+    pub col: usize, // 1-based column of this token's first char
     pub first_on_line: bool,
 }
 
@@ -182,7 +182,13 @@ fn emit_string_segment(
     seg_start_i: usize,
     seg_start_col: usize,
 ) -> Result<SegmentEmission, LexError> {
-    let seg = scan_string_segment(chars, byte_at, seg_start_i, seg_start_col, string_start_byte)?;
+    let seg = scan_string_segment(
+        chars,
+        byte_at,
+        seg_start_i,
+        seg_start_col,
+        string_start_byte,
+    )?;
     let entered_interpolation = matches!(seg.end, SegmentEnd::Interpolation);
     let content_end_i = match seg.end {
         SegmentEnd::ClosingQuote => seg.next_i - 1,
@@ -194,7 +200,11 @@ fn emit_string_segment(
     } else {
         byte_at[seg_start_i]..byte_at[content_end_i]
     };
-    let part_col = if coalesced_literal { seg_start_col - 1 } else { seg_start_col };
+    let part_col = if coalesced_literal {
+        seg_start_col - 1
+    } else {
+        seg_start_col
+    };
     let part_tok = if coalesced_literal {
         Tok::Str(seg.literal)
     } else {
@@ -520,14 +530,38 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
         }
 
         match c {
-            '\\' => { push!(Tok::Backslash, 1); continue; }
-            ':' => { push!(Tok::Colon, 1); continue; }
-            ',' => { push!(Tok::Comma, 1); continue; }
-            '.' => { push!(Tok::Dot, 1); continue; }
-            '(' => { push!(Tok::LParen, 1); continue; }
-            ')' => { push!(Tok::RParen, 1); continue; }
-            '[' => { push!(Tok::LBracket, 1); continue; }
-            ']' => { push!(Tok::RBracket, 1); continue; }
+            '\\' => {
+                push!(Tok::Backslash, 1);
+                continue;
+            }
+            ':' => {
+                push!(Tok::Colon, 1);
+                continue;
+            }
+            ',' => {
+                push!(Tok::Comma, 1);
+                continue;
+            }
+            '.' => {
+                push!(Tok::Dot, 1);
+                continue;
+            }
+            '(' => {
+                push!(Tok::LParen, 1);
+                continue;
+            }
+            ')' => {
+                push!(Tok::RParen, 1);
+                continue;
+            }
+            '[' => {
+                push!(Tok::LBracket, 1);
+                continue;
+            }
+            ']' => {
+                push!(Tok::RBracket, 1);
+                continue;
+            }
             '{' => {
                 brace_depth += 1;
                 push!(Tok::LBrace, 1);
@@ -542,8 +576,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                     interp_open_depths.pop();
                     push!(Tok::InterpEnd, 1);
                     let emission = emit_string_segment(
-                        &mut toks, &chars, &byte_at, start_byte, line,
-                        false, false, i, col,
+                        &mut toks, &chars, &byte_at, start_byte, line, false, false, i, col,
                     )?;
                     if emission.entered_interpolation {
                         interp_open_depths.push(brace_depth);
@@ -564,9 +597,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             while j < chars.len() && chars[j].is_ascii_digit() {
                 j += 1;
             }
-            let is_float = j + 1 < chars.len()
-                && chars[j] == '.'
-                && chars[j + 1].is_ascii_digit();
+            let is_float = j + 1 < chars.len() && chars[j] == '.' && chars[j + 1].is_ascii_digit();
             if is_float {
                 j += 1;
                 while j < chars.len() && chars[j].is_ascii_digit() {
@@ -579,7 +610,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 })?;
                 let len = j - i;
                 let end_byte = byte_at[j];
-                toks.push(Token { tok: Tok::Float(value), span: start_byte..end_byte, line, col: start_col, first_on_line });
+                toks.push(Token {
+                    tok: Tok::Float(value),
+                    span: start_byte..end_byte,
+                    line,
+                    col: start_col,
+                    first_on_line,
+                });
                 i = j;
                 col += len;
                 continue;
@@ -591,7 +628,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             })?;
             let len = j - i;
             let end_byte = byte_at[j];
-            toks.push(Token { tok: Tok::Int(value), span: start_byte..end_byte, line, col: start_col, first_on_line });
+            toks.push(Token {
+                tok: Tok::Int(value),
+                span: start_byte..end_byte,
+                line,
+                col: start_col,
+                first_on_line,
+            });
             i = j;
             col += len;
             continue;
@@ -605,7 +648,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             let sym: String = chars[i..j].iter().collect();
             let len = j - i;
             let end_byte = byte_at[j];
-            toks.push(Token { tok: Tok::Op(sym), span: start_byte..end_byte, line, col: start_col, first_on_line });
+            toks.push(Token {
+                tok: Tok::Op(sym),
+                span: start_byte..end_byte,
+                line,
+                col: start_col,
+                first_on_line,
+            });
             i = j;
             col += len;
             continue;
@@ -632,8 +681,15 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
         // string literal
         if c == '"' {
             let emission = emit_string_segment(
-                &mut toks, &chars, &byte_at, start_byte, line, first_on_line,
-                true, i + 1, start_col + 1,
+                &mut toks,
+                &chars,
+                &byte_at,
+                start_byte,
+                line,
+                first_on_line,
+                true,
+                i + 1,
+                start_col + 1,
             )?;
             if emission.entered_interpolation {
                 interp_open_depths.push(brace_depth);
@@ -668,7 +724,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             };
             let len = j - i;
             let end_byte = byte_at[j];
-            toks.push(Token { tok, span: start_byte..end_byte, line, col: start_col, first_on_line });
+            toks.push(Token {
+                tok,
+                span: start_byte..end_byte,
+                line,
+                col: start_col,
+                first_on_line,
+            });
             i = j;
             col += len;
             continue;

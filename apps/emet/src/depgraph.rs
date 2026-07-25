@@ -19,8 +19,11 @@ use crate::ast::{Arm, ContentsExpr, Decl, EntryExpr, Expr, Pattern, Spanned};
 /// with more than one member (or a self-referential singleton) is a recursive
 /// clique to be processed together.
 pub fn scc_order(decls: &[Decl]) -> Vec<Vec<usize>> {
-    let names: HashMap<&str, usize> =
-        decls.iter().enumerate().map(|(i, d)| (d.name.as_str(), i)).collect();
+    let names: HashMap<&str, usize> = decls
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.name.as_str(), i))
+        .collect();
 
     let edges: Vec<Vec<usize>> = decls
         .iter()
@@ -83,7 +86,11 @@ fn free_vars_expr(
             free_vars_expr(path, bound, names, refs);
             free_vars_expr(line, bound, names, refs);
         }
-        Expr::Scroll { name, policy, contents } => {
+        Expr::Scroll {
+            name,
+            policy,
+            contents,
+        } => {
             free_vars_expr(name, bound, names, refs);
             if let Some(p) = policy {
                 free_vars_expr(p, bound, names, refs);
@@ -116,14 +123,19 @@ fn free_vars_expr(
             free_vars_expr(x, bound, names, refs);
         }
         Expr::Let { decls, body } => {
-            let previously: Vec<(String, bool)> =
-                decls.iter().map(|d| (d.name.clone(), bound.contains(&d.name))).collect();
+            let previously: Vec<(String, bool)> = decls
+                .iter()
+                .map(|d| (d.name.clone(), bound.contains(&d.name)))
+                .collect();
             for d in decls {
                 bound.insert(d.name.clone());
             }
             for d in decls {
-                let mut inner: Vec<(String, bool)> =
-                    d.params.iter().map(|p| (p.clone(), bound.contains(p))).collect();
+                let mut inner: Vec<(String, bool)> = d
+                    .params
+                    .iter()
+                    .map(|p| (p.clone(), bound.contains(p)))
+                    .collect();
                 for p in &d.params {
                     bound.insert(p.clone());
                 }
@@ -176,8 +188,10 @@ fn free_vars_arm(
 ) {
     let mut introduced = Vec::new();
     collect_pattern_binders(&arm.pat.0, &mut introduced);
-    let restore: Vec<(String, bool)> =
-        introduced.iter().map(|n| (n.clone(), bound.contains(n))).collect();
+    let restore: Vec<(String, bool)> = introduced
+        .iter()
+        .map(|n| (n.clone(), bound.contains(n)))
+        .collect();
     for n in &introduced {
         bound.insert(n.clone());
     }
@@ -192,7 +206,8 @@ fn free_vars_arm(
 fn collect_pattern_binders(pat: &Pattern, out: &mut Vec<String>) {
     match pat {
         // Literal patterns (`Str`/`Int`/`Char`) and `Nil` bind no names.
-        Pattern::Wildcard | Pattern::Str(_) | Pattern::Int(_) | Pattern::Char(_) | Pattern::Nil => {}
+        Pattern::Wildcard | Pattern::Str(_) | Pattern::Int(_) | Pattern::Char(_) | Pattern::Nil => {
+        }
         Pattern::Var(name) => out.push(name.clone()),
         Pattern::Ctor(_, subs) => {
             for s in subs {

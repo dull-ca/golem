@@ -41,8 +41,18 @@ main = [ scroll { name = "test", glyphs = services 4 } ]
 "#;
     let glyphs = common::single_scroll_glyphs(src);
     assert_eq!(glyphs.len(), 4);
-    assert_eq!(glyphs[0], Glyph::SystemdService { unit: "4.service".into() });
-    assert_eq!(glyphs[3], Glyph::SystemdService { unit: "1.service".into() });
+    assert_eq!(
+        glyphs[0],
+        Glyph::SystemdService {
+            unit: "4.service".into()
+        }
+    );
+    assert_eq!(
+        glyphs[3],
+        Glyph::SystemdService {
+            unit: "1.service".into()
+        }
+    );
 }
 
 #[test]

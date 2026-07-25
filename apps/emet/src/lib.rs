@@ -189,7 +189,10 @@ pub fn analyze_source(src: &str) -> Analysis {
     let module = match parse_source_multi(src) {
         Ok(m) => m,
         Err(errors) => {
-            return Analysis { diagnostics: errors, index: QueryIndex::default() };
+            return Analysis {
+                diagnostics: errors,
+                index: QueryIndex::default(),
+            };
         }
     };
     let no_imports = std::collections::HashMap::new();

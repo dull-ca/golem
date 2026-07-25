@@ -65,7 +65,13 @@ getPort h = h.port
 main = [ scroll { name = "x", glyphs = [ lineInFile { path = "/p", line = getPort { port = "9", extra = "y" } } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs[0], Glyph::LineInFile { path: "/p".into(), line: "9".into() });
+    assert_eq!(
+        rs[0],
+        Glyph::LineInFile {
+            path: "/p".into(),
+            line: "9".into()
+        }
+    );
 }
 
 // A closed signature still constrains exactly: an extra field is rejected.

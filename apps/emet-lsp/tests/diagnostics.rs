@@ -15,7 +15,9 @@ fn broken_program_yields_one_error_diagnostic() {
     assert_eq!(diagnostics.len(), 1);
     let diagnostic = &diagnostics[0];
     assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
-    assert!(diagnostic.message.starts_with("Type: unknown name `undefinedThing`"));
+    assert!(diagnostic
+        .message
+        .starts_with("Type: unknown name `undefinedThing`"));
     assert!(diagnostic.message.contains("not bound by any declaration"));
 }
 

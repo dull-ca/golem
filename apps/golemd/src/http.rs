@@ -57,7 +57,10 @@ struct Status {
 async fn status(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiError> {
     let host = s.foreman.host().to_string();
     let latest = blocking(s.foreman.clone(), |f| f.latest_revision_id()).await?;
-    Ok(Json(Status { host, latest_revision: latest }))
+    Ok(Json(Status {
+        host,
+        latest_revision: latest,
+    }))
 }
 
 async fn apply_manifest(
@@ -86,7 +89,10 @@ async fn state(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiEr
             content_id: Some(a.scroll_content_id.to_string()),
             scroll: Some(a.scroll),
         },
-        None => StateView { content_id: None, scroll: None },
+        None => StateView {
+            content_id: None,
+            scroll: None,
+        },
     };
     Ok(Json(view))
 }
@@ -124,7 +130,11 @@ impl ApiError {
             | crate::foreman::ForemanError::ManifestUndecodable { .. }
             | crate::foreman::ForemanError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        ApiError { status, kind: e.kind().to_string(), message: e.message() }
+        ApiError {
+            status,
+            kind: e.kind().to_string(),
+            message: e.message(),
+        }
     }
     fn internal(e: anyhow::Error) -> Self {
         Self {
@@ -134,7 +144,11 @@ impl ApiError {
         }
     }
     fn not_found(message: String) -> Self {
-        Self { status: StatusCode::NOT_FOUND, kind: "not-found".to_string(), message }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            kind: "not-found".to_string(),
+            message,
+        }
     }
 }
 

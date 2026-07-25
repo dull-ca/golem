@@ -8,25 +8,38 @@ use emet::{compile, ir::Glyph, Phase};
 #[test]
 fn minimal_apt_package() {
     let rs = glyphs(r#"[ aptPackage { name = "nginx" } ]"#);
-    assert_eq!(rs, vec![Glyph::AptPackage { name: "nginx".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::AptPackage {
+            name: "nginx".into()
+        }]
+    );
 }
 
 #[test]
 fn minimal_systemd_service() {
     let rs = glyphs(r#"[ systemdService { unit = "nginx.service" } ]"#);
-    assert_eq!(rs, vec![Glyph::SystemdService { unit: "nginx.service".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }]
+    );
 }
 
 #[test]
 fn mixed_glyph_list_checks_and_orders() {
-    let rs = glyphs(
-        r#"[ aptPackage { name = "nginx" }, systemdService { unit = "nginx.service" } ]"#,
-    );
+    let rs =
+        glyphs(r#"[ aptPackage { name = "nginx" }, systemdService { unit = "nginx.service" } ]"#);
     assert_eq!(
         rs,
         vec![
-            Glyph::AptPackage { name: "nginx".into() },
-            Glyph::SystemdService { unit: "nginx.service".into() },
+            Glyph::AptPackage {
+                name: "nginx".into()
+            },
+            Glyph::SystemdService {
+                unit: "nginx.service".into()
+            },
         ]
     );
 }
@@ -39,7 +52,12 @@ fn single_line_let_uses_parse_error_rule() {
         r#"main = let u = "u.service" in [ scroll { name = "test", glyphs = [ systemdService { unit = u } ] } ]"#,
     );
     assert_eq!(rs.len(), 1);
-    assert_eq!(rs[0], Glyph::SystemdService { unit: "u.service".into() });
+    assert_eq!(
+        rs[0],
+        Glyph::SystemdService {
+            unit: "u.service".into()
+        }
+    );
 }
 
 #[test]
@@ -84,7 +102,12 @@ basePkg name = aptPackage { name = name }
 main = [ scroll { name = "test", glyphs = [ basePkg "nginx" ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs, vec![Glyph::AptPackage { name: "nginx".into() }]);
+    assert_eq!(
+        rs,
+        vec![Glyph::AptPackage {
+            name: "nginx".into()
+        }]
+    );
 }
 
 #[test]
@@ -135,8 +158,18 @@ cfg = { pkg = "nginx", unit = "nginx.service" }
 main = [ scroll { name = "test", glyphs = [ aptPackage { name = cfg.pkg }, systemdService { unit = cfg.unit } ] } ]
 "#;
     let rs = single_scroll_glyphs(src);
-    assert_eq!(rs[0], Glyph::AptPackage { name: "nginx".into() });
-    assert_eq!(rs[1], Glyph::SystemdService { unit: "nginx.service".into() });
+    assert_eq!(
+        rs[0],
+        Glyph::AptPackage {
+            name: "nginx".into()
+        }
+    );
+    assert_eq!(
+        rs[1],
+        Glyph::SystemdService {
+            unit: "nginx.service".into()
+        }
+    );
 }
 
 #[test]
@@ -156,5 +189,10 @@ fn nested_let_multiline() {
     let rs = single_scroll_glyphs(src);
     assert_eq!(rs.len(), 2);
     assert_eq!(rs[0], Glyph::AptPackage { name: "pkg".into() });
-    assert_eq!(rs[1], Glyph::SystemdService { unit: "pkg.service".into() });
+    assert_eq!(
+        rs[1],
+        Glyph::SystemdService {
+            unit: "pkg.service".into()
+        }
+    );
 }

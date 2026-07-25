@@ -60,8 +60,18 @@ main = [ scroll { name = "test", glyphs = map (\n -> systemdService { unit = tag
 "#;
     let glyphs = common::single_scroll_glyphs(src);
     assert_eq!(glyphs.len(), 3);
-    assert_eq!(glyphs[0], Glyph::SystemdService { unit: "a.service".into() });
-    assert_eq!(glyphs[2], Glyph::SystemdService { unit: "c.service".into() });
+    assert_eq!(
+        glyphs[0],
+        Glyph::SystemdService {
+            unit: "a.service".into()
+        }
+    );
+    assert_eq!(
+        glyphs[2],
+        Glyph::SystemdService {
+            unit: "c.service".into()
+        }
+    );
 }
 
 #[test]

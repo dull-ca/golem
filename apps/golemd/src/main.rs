@@ -58,7 +58,8 @@ async fn main() -> Result<()> {
         ReconcilerKind::Host => Box::new(HostReconciler::system()),
         ReconcilerKind::Fake => Box::new(FakeReconciler::new()),
     };
-    let retry = golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
+    let retry =
+        golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
     let foreman = Arc::new(
         Foreman::new(cli.host.clone(), Box::new(planroom), reconciler).with_retry_config(retry),
     );

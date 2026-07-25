@@ -87,7 +87,10 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             let result = documents
                 .get(&position.text_document.uri)
                 .and_then(|source| hover_at(source, position.position));
-            ok_response(request.id, serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+            ok_response(
+                request.id,
+                serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+            )
         }
         Completion::METHOD => {
             let params: CompletionParams = match serde_json::from_value(request.params) {
@@ -99,7 +102,11 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
                 .get(&position.text_document.uri)
                 .map(|source| completion_at(source, position.position))
                 .unwrap_or_default();
-            ok_response(request.id, serde_json::to_value(CompletionResponse::Array(items)).unwrap_or(serde_json::Value::Null))
+            ok_response(
+                request.id,
+                serde_json::to_value(CompletionResponse::Array(items))
+                    .unwrap_or(serde_json::Value::Null),
+            )
         }
         GotoDefinition::METHOD => {
             let params: GotoDefinitionParams = match serde_json::from_value(request.params) {
@@ -107,10 +114,16 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
                 Err(error) => return error_response(request.id, error),
             };
             let position = params.text_document_position_params;
-            let location = documents.get(&position.text_document.uri).and_then(|source| {
-                definition_at(&position.text_document.uri, source, position.position)
-            });
-            ok_response(request.id, serde_json::to_value(location.map(GotoDefinitionResponse::Scalar)).unwrap_or(serde_json::Value::Null))
+            let location = documents
+                .get(&position.text_document.uri)
+                .and_then(|source| {
+                    definition_at(&position.text_document.uri, source, position.position)
+                });
+            ok_response(
+                request.id,
+                serde_json::to_value(location.map(GotoDefinitionResponse::Scalar))
+                    .unwrap_or(serde_json::Value::Null),
+            )
         }
         _ => ok_response(request.id, serde_json::Value::Null),
     }
@@ -137,7 +150,11 @@ fn handle_notification(
         DidOpenTextDocument::METHOD => {
             let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
             documents.set(&params.text_document.uri, params.text_document.text.clone());
-            publish(connection, params.text_document.uri, &params.text_document.text)?;
+            publish(
+                connection,
+                params.text_document.uri,
+                &params.text_document.text,
+            )?;
         }
         DidChangeTextDocument::METHOD => {
             let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
@@ -165,6 +182,8 @@ fn publish(
         method: PublishDiagnostics::METHOD.to_owned(),
         params: serde_json::to_value(params)?,
     };
-    connection.sender.send(Message::Notification(notification))?;
+    connection
+        .sender
+        .send(Message::Notification(notification))?;
     Ok(())
 }

@@ -21,12 +21,16 @@ fn err(src: &str) -> (Phase, String) {
 
 /// Render an `Int`-typed expression `e` into an observable glyph unit.
 fn int_program(expr: &str) -> String {
-    common::one_scroll(&format!("[ systemdService {{ unit = String.fromInt ({expr}) }} ]"))
+    common::one_scroll(&format!(
+        "[ systemdService {{ unit = String.fromInt ({expr}) }} ]"
+    ))
 }
 
 /// Render a `Float`-typed expression `e` into an observable glyph unit.
 fn float_program(expr: &str) -> String {
-    common::one_scroll(&format!("[ systemdService {{ unit = String.fromFloat ({expr}) }} ]"))
+    common::one_scroll(&format!(
+        "[ systemdService {{ unit = String.fromFloat ({expr}) }} ]"
+    ))
 }
 
 /// Render a `Bool`-typed expression into `"yes"`/`"no"`.
@@ -148,7 +152,10 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = "a" ++ "b" +
 
 #[test]
 fn list_length_is_int() {
-    assert_eq!(unit(&int_program("List.length [ \"a\", \"b\", \"c\" ]")), "3");
+    assert_eq!(
+        unit(&int_program("List.length [ \"a\", \"b\", \"c\" ]")),
+        "3"
+    );
 }
 
 #[test]

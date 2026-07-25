@@ -19,7 +19,9 @@ fn compile_within(src: String, budget: Duration) {
     match rx.recv_timeout(budget) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => panic!("compile failed: {}", e.msg),
-        Err(_) => panic!("compilation did not finish within {budget:?} — inference/eval is not linear"),
+        Err(_) => {
+            panic!("compilation did not finish within {budget:?} — inference/eval is not linear")
+        }
     }
 }
 

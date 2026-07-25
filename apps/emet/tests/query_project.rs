@@ -30,7 +30,11 @@ fn imported_name_resolves_to_definition_span_and_module() {
     assert!(
         project.diagnostics.is_empty(),
         "no diagnostics: {:?}",
-        project.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>()
+        project
+            .diagnostics
+            .iter()
+            .map(|d| &d.msg)
+            .collect::<Vec<_>>()
     );
 
     let entry_index = project.index_for(&entry).expect("entry module index");

@@ -100,8 +100,12 @@ main = [ scroll { name = "test", glyphs = List.map render (List.map Wrapped [ "a
     assert_eq!(
         glyphs,
         vec![
-            Glyph::SystemdService { unit: "a.service".into() },
-            Glyph::SystemdService { unit: "b.service".into() },
+            Glyph::SystemdService {
+                unit: "a.service".into()
+            },
+            Glyph::SystemdService {
+                unit: "b.service".into()
+            },
         ]
     );
 }
@@ -177,8 +181,12 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = recover (Ok 
     assert_eq!(
         glyphs,
         vec![
-            Glyph::SystemdService { unit: "ok.service".into() },
-            Glyph::SystemdService { unit: "err.service".into() },
+            Glyph::SystemdService {
+                unit: "ok.service".into()
+            },
+            Glyph::SystemdService {
+                unit: "err.service".into()
+            },
         ]
     );
 }
@@ -199,9 +207,15 @@ main = [ scroll { name = "test", glyphs = List.map (\u -> systemdService { unit 
     assert_eq!(
         glyphs,
         vec![
-            Glyph::SystemdService { unit: "a.service".into() },
-            Glyph::SystemdService { unit: "b.service".into() },
-            Glyph::SystemdService { unit: "c.service".into() },
+            Glyph::SystemdService {
+                unit: "a.service".into()
+            },
+            Glyph::SystemdService {
+                unit: "b.service".into()
+            },
+            Glyph::SystemdService {
+                unit: "c.service".into()
+            },
         ]
     );
 }
@@ -216,7 +230,11 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = recover (Ok 
 "#;
     let e = err(src);
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("Err"), "expected the missing constructor named, got: {}", e.msg);
+    assert!(
+        e.msg.contains("Err"),
+        "expected the missing constructor named, got: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -229,7 +247,11 @@ main = [ scroll { name = "test", glyphs = [ systemdService { unit = name Up } ] 
 "#;
     let e = err(src);
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("Down"), "expected the missing constructor named, got: {}", e.msg);
+    assert!(
+        e.msg.contains("Down"),
+        "expected the missing constructor named, got: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -254,7 +276,11 @@ main = [ scroll { name = "test", glyphs = [ ] } ]
 "#;
     let e = err(src);
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("Status"), "expected the duplicated name, got: {}", e.msg);
+    assert!(
+        e.msg.contains("Status"),
+        "expected the duplicated name, got: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -266,7 +292,11 @@ main = [ scroll { name = "test", glyphs = [ ] } ]
 "#;
     let e = err(src);
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("Foo"), "expected the duplicated constructor, got: {}", e.msg);
+    assert!(
+        e.msg.contains("Foo"),
+        "expected the duplicated constructor, got: {}",
+        e.msg
+    );
 }
 
 #[test]

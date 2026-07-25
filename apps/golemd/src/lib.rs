@@ -19,6 +19,6 @@ pub mod journal;
 pub mod planroom;
 pub mod reconcile;
 pub mod reconciler;
-pub mod report;
 pub mod reconcilers;
+pub mod report;
 pub mod wal;

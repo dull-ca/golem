@@ -30,8 +30,12 @@ main =
             name: "web".into(),
             policy: None,
             contents: Contents::Glyphs(vec![
-                Glyph::AptPackage { name: "nginx".into() },
-                Glyph::SystemdService { unit: "nginx.service".into() },
+                Glyph::AptPackage {
+                    name: "nginx".into()
+                },
+                Glyph::SystemdService {
+                    unit: "nginx.service".into()
+                },
             ]),
         }
     );
@@ -40,7 +44,9 @@ main =
         Scroll {
             name: "db".into(),
             policy: None,
-            contents: Contents::Glyphs(vec![Glyph::AptPackage { name: "postgresql".into() }]),
+            contents: Contents::Glyphs(vec![Glyph::AptPackage {
+                name: "postgresql".into()
+            }]),
         }
     );
 }
@@ -102,14 +108,23 @@ fn main_as_list_glyph_is_now_a_type_error() {
 fn scroll_missing_field_is_a_parse_error() {
     let e = err(r#"main = [ scroll { name = "web" } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("`scroll` needs exactly one of `glyphs` or `groups`"), "got: {}", e.msg);
+    assert!(
+        e.msg
+            .contains("`scroll` needs exactly one of `glyphs` or `groups`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn scroll_unknown_field_is_a_parse_error() {
     let e = err(r#"main = [ scroll { name = "web", glyphs = [ ], ipv4 = "10.0.0.1" } ]"#);
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("unknown scroll field `ipv4`"), "got: {}", e.msg);
+    assert!(
+        e.msg.contains("unknown scroll field `ipv4`"),
+        "got: {}",
+        e.msg
+    );
 }
 
 #[test]

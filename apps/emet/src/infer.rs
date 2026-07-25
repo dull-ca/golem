@@ -59,7 +59,11 @@ pub struct TypeError {
 }
 impl TypeError {
     fn new(msg: impl Into<String>, span: Span) -> Self {
-        TypeError { msg: msg.into(), span, note: None }
+        TypeError {
+            msg: msg.into(),
+            span,
+            note: None,
+        }
     }
     fn note(mut self, n: impl Into<String>) -> Self {
         self.note = Some(n.into());
@@ -107,7 +111,12 @@ struct Recorder {
 }
 
 impl Recorder {
-    fn open_scope(&mut self, region: Span, env: &TyEnv, added: HashMap<String, DefSite>) -> ScopeId {
+    fn open_scope(
+        &mut self,
+        region: Span,
+        env: &TyEnv,
+        added: HashMap<String, DefSite>,
+    ) -> ScopeId {
         let id = self.next_scope;
         self.next_scope += 1;
         let names: Vec<(String, Scheme)> =
@@ -232,7 +241,11 @@ impl Infer {
     /// unbound row var. Known fields win over spliced ones (`or_insert`), so a
     /// field already unified on this record is never overwritten. This is the
     /// row-level analogue of `prune` for records.
-    fn prune_record(&self, fields: &BTreeMap<String, Type>, row: &Row) -> (BTreeMap<String, Type>, Row) {
+    fn prune_record(
+        &self,
+        fields: &BTreeMap<String, Type>,
+        row: &Row,
+    ) -> (BTreeMap<String, Type>, Row) {
         let mut all = fields.clone();
         let mut tail = row.clone();
         while let Row::Open(r) = tail {
@@ -282,13 +295,12 @@ impl Infer {
     /// Fully apply the substitution (deep).
     fn apply(&self, t: &Type) -> Type {
         match self.prune(t) {
-            Type::Con(name, args) => {
-                Type::Con(name, args.iter().map(|a| self.apply(a)).collect())
-            }
+            Type::Con(name, args) => Type::Con(name, args.iter().map(|a| self.apply(a)).collect()),
             Type::Fun(a, b) => Type::Fun(Box::new(self.apply(&a)), Box::new(self.apply(&b))),
-            Type::Record(fs, row) => {
-                Type::Record(fs.iter().map(|(k, v)| (k.clone(), self.apply(v))).collect(), row)
-            }
+            Type::Record(fs, row) => Type::Record(
+                fs.iter().map(|(k, v)| (k.clone(), self.apply(v))).collect(),
+                row,
+            ),
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.apply(e)).collect()),
             other => other,
         }
@@ -358,7 +370,11 @@ impl Infer {
         }
         if !constraint_admits(c, &t) {
             return Err(TypeError::new(
-                format!("type `{}` does not satisfy `{}`", self.apply(&t), constraint_name(c)),
+                format!(
+                    "type `{}` does not satisfy `{}`",
+                    self.apply(&t),
+                    constraint_name(c)
+                ),
                 span.clone(),
             ));
         }
@@ -373,11 +389,7 @@ impl Infer {
             (Type::Var(v, c), _) => self.bind(*v, *c, &b, span),
             (_, Type::Var(v, c)) => self.bind(*v, *c, &a, span),
             (Type::Rigid(x), Type::Rigid(y)) if x == y => Ok(()),
-            (Type::Con(n1, a1), Type::Con(n2, a2))
-                if glyph_widens_into(n2, a2, n1, a1) =>
-            {
-                Ok(())
-            }
+            (Type::Con(n1, a1), Type::Con(n2, a2)) if glyph_widens_into(n2, a2, n1, a1) => Ok(()),
             (Type::Con(n1, a1), Type::Con(n2, a2)) => {
                 if n1 != n2 || a1.len() != a2.len() {
                     return Err(TypeError::new(
@@ -412,7 +424,11 @@ impl Infer {
                 Ok(())
             }
             _ => Err(TypeError::new(
-                format!("type mismatch: expected `{}`, found `{}`", self.apply(&a), self.apply(&b)),
+                format!(
+                    "type mismatch: expected `{}`, found `{}`",
+                    self.apply(&a),
+                    self.apply(&b)
+                ),
                 span.clone(),
             )),
         }
@@ -473,14 +489,24 @@ impl Infer {
                 self.unify(va, vb, span)?;
             }
         }
-        let only_a: BTreeMap<String, Type> =
-            fa.iter().filter(|(k, _)| !fb.contains_key(*k)).map(|(k, v)| (k.clone(), v.clone())).collect();
-        let only_b: BTreeMap<String, Type> =
-            fb.iter().filter(|(k, _)| !fa.contains_key(*k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let only_a: BTreeMap<String, Type> = fa
+            .iter()
+            .filter(|(k, _)| !fb.contains_key(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let only_b: BTreeMap<String, Type> = fb
+            .iter()
+            .filter(|(k, _)| !fa.contains_key(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         let mismatch = || {
             TypeError::new(
-                format!("record types differ: `{}` vs `{}`", self.apply(a), self.apply(b)),
+                format!(
+                    "record types differ: `{}` vs `{}`",
+                    self.apply(a),
+                    self.apply(b)
+                ),
                 span.clone(),
             )
         };
@@ -624,7 +650,11 @@ impl Infer {
         let mut env_rvs = HashSet::new();
         self.frv_env(env, &mut env_rvs);
         let row_vars: Vec<u32> = rvs.into_iter().filter(|r| !env_rvs.contains(r)).collect();
-        Scheme { vars, row_vars, ty: self.apply(t) }
+        Scheme {
+            vars,
+            row_vars,
+            ty: self.apply(t),
+        }
     }
 
     /// Replace a signature's `Rigid` type variables with fresh unification
@@ -647,7 +677,9 @@ impl Infer {
                 .clone(),
             Type::Con(name, args) => Type::Con(
                 name.clone(),
-                args.iter().map(|a| self.instantiate_rigids(a, mapping)).collect(),
+                args.iter()
+                    .map(|a| self.instantiate_rigids(a, mapping))
+                    .collect(),
             ),
             Type::Fun(a, b) => Type::Fun(
                 Box::new(self.instantiate_rigids(a, mapping)),
@@ -660,7 +692,10 @@ impl Infer {
                 row.clone(),
             ),
             Type::Tuple(elems) => Type::Tuple(
-                elems.iter().map(|e| self.instantiate_rigids(e, mapping)).collect(),
+                elems
+                    .iter()
+                    .map(|e| self.instantiate_rigids(e, mapping))
+                    .collect(),
             ),
             Type::Var(v, c) => Type::Var(*v, *c),
         }
@@ -758,7 +793,9 @@ impl Infer {
                 Box::new(self.skolemize(b, mapping)),
             ),
             Type::Record(fs, row) => Type::Record(
-                fs.iter().map(|(k, v)| (k.clone(), self.skolemize(v, mapping))).collect(),
+                fs.iter()
+                    .map(|(k, v)| (k.clone(), self.skolemize(v, mapping)))
+                    .collect(),
                 row.clone(),
             ),
             Type::Tuple(elems) => {
@@ -785,7 +822,9 @@ impl Infer {
         match self.prune(t) {
             Type::Rigid(name) => skolems.contains(&name),
             Type::Con(_, args) => args.iter().any(|a| self.mentions_skolem(skolems, a)),
-            Type::Fun(a, b) => self.mentions_skolem(skolems, &a) || self.mentions_skolem(skolems, &b),
+            Type::Fun(a, b) => {
+                self.mentions_skolem(skolems, &a) || self.mentions_skolem(skolems, &b)
+            }
             Type::Record(fs, _) => fs.values().any(|v| self.mentions_skolem(skolems, v)),
             Type::Tuple(elems) => elems.iter().any(|e| self.mentions_skolem(skolems, e)),
             Type::Var(_, _) => false,
@@ -854,9 +893,8 @@ fn merge_constraints(a: Constraint, b: Constraint) -> Option<Constraint> {
         (Constraint::Number, Constraint::Number) => Some(Constraint::Number),
         (Constraint::Comparable, Constraint::Comparable) => Some(Constraint::Comparable),
         (Constraint::Appendable, Constraint::Appendable) => Some(Constraint::Appendable),
-        (Constraint::Number, Constraint::Comparable) | (Constraint::Comparable, Constraint::Number) => {
-            Some(Constraint::Number)
-        }
+        (Constraint::Number, Constraint::Comparable)
+        | (Constraint::Comparable, Constraint::Number) => Some(Constraint::Number),
         _ => None,
     }
 }
@@ -948,7 +986,10 @@ fn widen_glyph_subtype(inf: &Infer, t: &Type) -> Type {
 }
 
 fn is_glyph_subtype(name: &str) -> bool {
-    matches!(name, "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile")
+    matches!(
+        name,
+        "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
+    )
 }
 
 /// The directed widening arm of `unify` (ADR 0017): a concrete glyph subtype
@@ -1006,7 +1047,11 @@ impl TyEnv {
 }
 
 fn mono(t: Type) -> Scheme {
-    Scheme { vars: vec![], row_vars: vec![], ty: t }
+    Scheme {
+        vars: vec![],
+        row_vars: vec![],
+        ty: t,
+    }
 }
 
 fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, TypeError> {
@@ -1032,8 +1077,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 inf.rec_use(span, name);
                 Ok(inf.instantiate(s))
             }
-            None => Err(TypeError::new(format!("unknown name `{name}`"), span.clone())
-                .note("not bound by any declaration, `let`, or lambda parameter")),
+            None => Err(
+                TypeError::new(format!("unknown name `{name}`"), span.clone())
+                    .note("not bound by any declaration, `let`, or lambda parameter"),
+            ),
         },
 
         Expr::Ctor(name) => match env.get(name) {
@@ -1041,7 +1088,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 inf.rec_use(span, name);
                 Ok(inf.instantiate(s))
             }
-            None => Err(TypeError::new(format!("unknown constructor `{name}`"), span.clone())),
+            None => Err(TypeError::new(
+                format!("unknown constructor `{name}`"),
+                span.clone(),
+            )),
         },
 
         Expr::AptPackage(name) => {
@@ -1083,7 +1133,11 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             Ok(con("LineInFile"))
         }
 
-        Expr::Scroll { name, policy, contents } => {
+        Expr::Scroll {
+            name,
+            policy,
+            contents,
+        } => {
             let nt = infer_expr(inf, env, name)?;
             inf.unify(&nt, &con("String"), &name.1)?;
             if let Some(p) = policy {
@@ -1147,7 +1201,13 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             let tv = inf.fresh();
             let env2 = env.insert(param.clone(), mono(tv.clone()));
             let mut added = HashMap::new();
-            added.insert(param.clone(), DefSite { span: span.clone(), module: None });
+            added.insert(
+                param.clone(),
+                DefSite {
+                    span: span.clone(),
+                    module: None,
+                },
+            );
             inf.rec_open_scope(body.1.clone(), &env2, added);
             let bt = infer_expr(inf, &env2, body)?;
             inf.rec_close_scope();
@@ -1384,9 +1444,10 @@ fn lower_pattern(pat: &Pattern) -> UPat {
         Pattern::Str(s) => UPat::Str(s.clone()),
         Pattern::Int(n) => UPat::Int(*n),
         Pattern::Char(c) => UPat::Char(*c),
-        Pattern::Ctor(name, subs) => {
-            UPat::Ctor(name.clone(), subs.iter().map(|s| lower_pattern(&s.0)).collect())
-        }
+        Pattern::Ctor(name, subs) => UPat::Ctor(
+            name.clone(),
+            subs.iter().map(|s| lower_pattern(&s.0)).collect(),
+        ),
         // List patterns lower to the synthetic `[]`/`::` constructors, so the
         // Maranget checker treats `List` as an ordinary two-constructor sum:
         // a `case` is exhaustive exactly when it covers both, and a second `[]`
@@ -1563,10 +1624,7 @@ fn useful(inf: &mut Infer, matrix: &[Vec<UPat>], vector: &[UPat], col_types: &[T
             useful(inf, &specialize(matrix, &head), rest, rest_types)
         }
         UPat::Wild => {
-            let heads: Vec<Head> = matrix
-                .iter()
-                .filter_map(|row| head_of(&row[0]))
-                .collect();
+            let heads: Vec<Head> = matrix.iter().filter_map(|row| head_of(&row[0])).collect();
             let signature = complete_signature(inf, col_ty);
             let complete = match &signature {
                 Some(ctors) => ctors.iter().all(|(name, arity)| {
@@ -1636,7 +1694,9 @@ fn missing_constructors(inf: &Infer, scrutinee: &Type, matrix: &[Vec<UPat>]) -> 
             let missing: Vec<String> = ctors
                 .iter()
                 .filter(|(name, arity)| {
-                    !covered.iter().any(|h| *h == Head::Ctor(name.clone(), *arity))
+                    !covered
+                        .iter()
+                        .any(|h| *h == Head::Ctor(name.clone(), *arity))
                 })
                 .map(|(name, _)| name.clone())
                 .collect();
@@ -1653,7 +1713,15 @@ fn missing_constructors(inf: &Infer, scrutinee: &Type, matrix: &[Vec<UPat>]) -> 
 fn decl_def_sites(decls: &[Decl]) -> HashMap<String, DefSite> {
     decls
         .iter()
-        .map(|d| (d.name.clone(), DefSite { span: d.span.clone(), module: None }))
+        .map(|d| {
+            (
+                d.name.clone(),
+                DefSite {
+                    span: d.span.clone(),
+                    module: None,
+                },
+            )
+        })
         .collect()
 }
 
@@ -1666,7 +1734,13 @@ fn pattern_def_sites(pat: &Spanned<Pattern>) -> HashMap<String, DefSite> {
 fn collect_pattern_binders(pat: &Spanned<Pattern>, out: &mut HashMap<String, DefSite>) {
     match &pat.0 {
         Pattern::Var(name) => {
-            out.insert(name.clone(), DefSite { span: pat.1.clone(), module: None });
+            out.insert(
+                name.clone(),
+                DefSite {
+                    span: pat.1.clone(),
+                    module: None,
+                },
+            );
         }
         Pattern::Ctor(_, subs) => {
             for sub in subs {
@@ -1692,7 +1766,13 @@ fn decl_as_lambda(decl: &Decl) -> Spanned<Expr> {
     let mut e = decl.body.clone();
     for p in decl.params.iter().rev() {
         let span = decl.span.clone();
-        e = Spanned(Expr::Lam { param: p.clone(), body: Box::new(e) }, span);
+        e = Spanned(
+            Expr::Lam {
+                param: p.clone(),
+                body: Box::new(e),
+            },
+            span,
+        );
     }
     e
 }
@@ -1707,7 +1787,12 @@ fn decl_as_lambda(decl: &Decl) -> Spanned<Expr> {
 /// group and polymorphic outside it. Groups come out in dependency order, so a
 /// group sees the generalized schemes of the groups it depends on and source
 /// order no longer matters for forward references.
-fn infer_decls(inf: &mut Infer, env: &TyEnv, decls: &[Decl], top_level: bool) -> Result<TyEnv, TypeError> {
+fn infer_decls(
+    inf: &mut Infer,
+    env: &TyEnv,
+    decls: &[Decl],
+    top_level: bool,
+) -> Result<TyEnv, TypeError> {
     let mut cur = env.clone();
     for group in crate::depgraph::scc_order(decls) {
         cur = infer_group(inf, &cur, decls, &group, top_level)?;
@@ -1811,19 +1896,26 @@ fn type_with_param_vars(ty: &Type, param_vars: &HashMap<String, u32>) -> Type {
         },
         Type::Con(name, args) => Type::Con(
             name.clone(),
-            args.iter().map(|a| type_with_param_vars(a, param_vars)).collect(),
+            args.iter()
+                .map(|a| type_with_param_vars(a, param_vars))
+                .collect(),
         ),
         Type::Fun(a, b) => Type::Fun(
             Box::new(type_with_param_vars(a, param_vars)),
             Box::new(type_with_param_vars(b, param_vars)),
         ),
         Type::Record(fs, row) => Type::Record(
-            fs.iter().map(|(k, v)| (k.clone(), type_with_param_vars(v, param_vars))).collect(),
+            fs.iter()
+                .map(|(k, v)| (k.clone(), type_with_param_vars(v, param_vars)))
+                .collect(),
             row.clone(),
         ),
-        Type::Tuple(elems) => {
-            Type::Tuple(elems.iter().map(|e| type_with_param_vars(e, param_vars)).collect())
-        }
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|e| type_with_param_vars(e, param_vars))
+                .collect(),
+        ),
         Type::Var(v, c) => Type::Var(*v, *c),
     }
 }
@@ -1863,7 +1955,10 @@ fn validate_type_refs_inner(
                 ),
                 span.clone(),
             )),
-            None => Err(TypeError::new(format!("unknown type constructor `{name}`"), span.clone())),
+            None => Err(TypeError::new(
+                format!("unknown type constructor `{name}`"),
+                span.clone(),
+            )),
         },
         Type::Fun(a, b) => {
             validate_type_refs_inner(a, span, type_arities, bound)?;
@@ -1921,7 +2016,10 @@ fn register_type_decls(
                 td.span.clone(),
             ));
         }
-        if type_arities.insert(td.name.clone(), td.params.len()).is_some() {
+        if type_arities
+            .insert(td.name.clone(), td.params.len())
+            .is_some()
+        {
             return Err(TypeError::new(
                 format!("duplicate type declaration `{}`", td.name),
                 td.span.clone(),
@@ -1943,12 +2041,21 @@ fn register_type_decls(
         let bound: HashSet<String> = td.params.iter().cloned().collect();
         let result_ty = Type::Con(
             td.name.clone(),
-            td.params.iter().map(|p| Type::Var(param_vars[p], Constraint::None)).collect(),
+            td.params
+                .iter()
+                .map(|p| Type::Var(param_vars[p], Constraint::None))
+                .collect(),
         );
-        let quantified: Vec<(u32, Constraint)> =
-            td.params.iter().map(|p| (param_vars[p], Constraint::None)).collect();
-        let members: Vec<(String, usize)> =
-            td.variants.iter().map(|v| (v.name.clone(), v.fields.len())).collect();
+        let quantified: Vec<(u32, Constraint)> = td
+            .params
+            .iter()
+            .map(|p| (param_vars[p], Constraint::None))
+            .collect();
+        let members: Vec<(String, usize)> = td
+            .variants
+            .iter()
+            .map(|v| (v.name.clone(), v.fields.len()))
+            .collect();
         inf.user_sum_ctors.insert(td.name.clone(), members);
 
         for variant in &td.variants {
@@ -1968,8 +2075,13 @@ fn register_type_decls(
                 let field_ty = type_with_param_vars(&field.0, &param_vars);
                 ctor_ty = Type::Fun(Box::new(field_ty), Box::new(ctor_ty));
             }
-            let scheme = Scheme { vars: quantified.clone(), row_vars: vec![], ty: ctor_ty };
-            inf.user_ctor_schemes.insert(variant.name.clone(), scheme.clone());
+            let scheme = Scheme {
+                vars: quantified.clone(),
+                row_vars: vec![],
+                ty: ctor_ty,
+            };
+            inf.user_ctor_schemes
+                .insert(variant.name.clone(), scheme.clone());
             out = out.insert(variant.name.clone(), scheme);
         }
     }
@@ -2123,7 +2235,10 @@ pub fn analyze_module(
     imported_defs: HashMap<String, DefSite>,
     file_span: Span,
 ) -> (Option<TypeError>, QueryIndex) {
-    let mut inf = Infer { recorder: Some(Recorder::default()), ..Infer::default() };
+    let mut inf = Infer {
+        recorder: Some(Recorder::default()),
+        ..Infer::default()
+    };
     inf.seed_imported_constructors(imported_ctors);
 
     let error = run_recorded(&mut inf, m, base, imported_types, imported_defs, file_span);
@@ -2160,8 +2275,10 @@ fn run_recorded(
     match result {
         Ok(final_env) => {
             if let (Some(r), Some(id)) = (&mut inf.recorder, top_scope) {
-                let names: Vec<(String, Scheme)> =
-                    final_env.entries().map(|(n, s)| (n.clone(), s.clone())).collect();
+                let names: Vec<(String, Scheme)> = final_env
+                    .entries()
+                    .map(|(n, s)| (n.clone(), s.clone()))
+                    .collect();
                 r.index.scope_table.insert(id, names);
             }
             None
@@ -2172,11 +2289,8 @@ fn run_recorded(
 
 fn finish_main(inf: &mut Infer, final_env: &TyEnv) -> Result<(TyEnv, Type), TypeError> {
     let main = final_env.get("main").ok_or_else(|| {
-        TypeError::new(
-            "module has no `main` declaration",
-            0..0,
-        )
-        .note("add `main = [ ... ]` producing the scroll list")
+        TypeError::new("module has no `main` declaration", 0..0)
+            .note("add `main = [ ... ]` producing the scroll list")
     })?;
     let main_ty = inf.instantiate(main);
     let main_ty = inf.apply(&main_ty);
