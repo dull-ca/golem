@@ -1207,9 +1207,14 @@ fn glyph_action_of(op: &GlyphOp) -> GlyphAction {
 
 /// One [`GlyphLine`] per op in enact order (ADR 0029 addendum): a `Noop` is
 /// `Unchanged` with zero attempts; a still-failing op is `Failed` carrying its
-/// message and attempts; an op that applied but was undone by this unit's
-/// `on_exhaust = rollback` is `RolledBack`; anything else that applied and stayed
-/// is `Applied`.
+/// message and its exact round count; an op that applied but was undone by this
+/// unit's `on_exhaust = rollback` is `RolledBack`; anything else that applied and
+/// stayed is `Applied`.
+///
+// NOTE: the `Ok` arms report attempts = 1 unconditionally. A retryable that
+// failed a round or two before it succeeded still reads 1, because the round
+// count that survives here (`rounds`) is the unit's, not the op's — only the
+// `Failed` arm's count is per-op exact.
 fn glyph_lines(
     ops: &[GlyphOp],
     classes: &[StepClass],

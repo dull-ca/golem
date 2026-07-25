@@ -256,6 +256,8 @@ def _render_report(name: str, report: dict) -> None:
         console.print(f"    [{ucolor}]{path}: {outcome}[/{ucolor}]")
         glyphs = unit.get("glyphs")
         if glyphs:
+            # The glyphs list already shows every failure, so its per-glyph
+            # `class` (absent from a line) is looked up from `failures` by key.
             classes = {
                 f.get("glyph_key"): f.get("class", "")
                 for f in unit.get("failures") or []
@@ -263,6 +265,8 @@ def _render_report(name: str, report: dict) -> None:
             for glyph in glyphs:
                 _render_glyph_line(glyph, classes)
         else:
+            # NOTE: a golemd predating ADR 0029's per-glyph lines omits `glyphs`;
+            # `failures` is the fallback and shows only what failed.
             for failure in unit.get("failures") or []:
                 _render_failure_line(failure)
 

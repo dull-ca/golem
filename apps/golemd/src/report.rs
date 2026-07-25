@@ -70,6 +70,8 @@ pub struct GlyphFailure {
     pub rolled_back: bool,
 }
 
+/// Which `GlyphOp` the diff enacted for a line. Serialized `install` / `replace`
+/// / `remove` / `noop` — the tags the fleet CLI matches on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GlyphAction {
@@ -79,6 +81,11 @@ pub enum GlyphAction {
     Noop,
 }
 
+/// How a line's op ended: `Applied` ran and stayed; `Unchanged` is a `Noop` the
+/// diff skipped; `Failed` never settled; `RolledBack` applied but was undone by
+/// its own unit's `on_exhaust = rollback` — undone by a *different* unit is not
+/// reported here. Serialized `applied` / `unchanged` / `failed` / `rolled_back` —
+/// the tags the fleet CLI matches on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GlyphOutcome {
@@ -88,6 +95,10 @@ pub enum GlyphOutcome {
     RolledBack,
 }
 
+/// One op's fate in a unit's `glyphs` list. `attempts` is exact only for
+/// `Failed`; an `Applied`/`RolledBack` line reports `1` even if the op failed a
+/// few rounds before it succeeded, because per-op success-round history is not
+/// retained. `message` is the reconciler's reason, `Failed` lines only.
 #[derive(Debug, Clone, Serialize)]
 pub struct GlyphLine {
     pub glyph_key: String,
@@ -98,7 +109,11 @@ pub struct GlyphLine {
 }
 
 /// One leaf unit's slice of the report: its root-to-leaf `unit_path`, its
-/// outcome, the per-glyph lines in enact order, and the glyphs it left failing.
+/// outcome, the per-glyph `glyphs` lines in enact order (every op, `Noop`s
+/// included), and `failures` — the glyphs it left failing. `failures` is a
+/// deliberate subset of `glyphs`: it predates the lines and older fleet clients
+/// still render from it, and it carries the fail class and phase that a
+/// `Failed` line does not.
 #[derive(Debug, Clone, Serialize)]
 pub struct UnitReport {
     pub unit_path: Vec<String>,
