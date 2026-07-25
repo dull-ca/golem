@@ -364,7 +364,7 @@ impl Infer {
         }
         if self.occurs(v, &t) {
             return Err(TypeError::new(
-                format!("infinite type: t{v} occurs in `{}`", self.apply(&t)),
+                format!("infinite type: `{}` occurs in itself", render_type(&self.apply(&t))),
                 span.clone(),
             ));
         }
@@ -372,7 +372,7 @@ impl Infer {
             return Err(TypeError::new(
                 format!(
                     "type `{}` does not satisfy `{}`",
-                    self.apply(&t),
+                    render_type(&self.apply(&t)),
                     constraint_name(c)
                 ),
                 span.clone(),
@@ -395,8 +395,8 @@ impl Infer {
                     return Err(TypeError::new(
                         format!(
                             "type mismatch: expected `{}`, found `{}`",
-                            self.apply(&a),
-                            self.apply(&b)
+                            render_type(&self.apply(&a)),
+                            render_type(&self.apply(&b))
                         ),
                         span.clone(),
                     ));
@@ -426,8 +426,8 @@ impl Infer {
             _ => Err(TypeError::new(
                 format!(
                     "type mismatch: expected `{}`, found `{}`",
-                    self.apply(&a),
-                    self.apply(&b)
+                    render_type(&self.apply(&a)),
+                    render_type(&self.apply(&b))
                 ),
                 span.clone(),
             )),
@@ -949,6 +949,103 @@ fn constraint_name(c: Constraint) -> &'static str {
         Constraint::Number => "number",
         Constraint::Comparable => "comparable",
         Constraint::Appendable => "appendable",
+    }
+}
+
+pub(crate) fn render_type(t: &Type) -> String {
+    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut next: u32 = 0;
+    let mut out = String::new();
+    render_into(t, &mut names, &mut next, &mut out, false);
+    out
+}
+
+fn var_letter(n: u32) -> String {
+    let letter = (b'a' + (n % 26) as u8) as char;
+    let cycle = n / 26;
+    if cycle == 0 {
+        letter.to_string()
+    } else {
+        format!("{letter}{cycle}")
+    }
+}
+
+fn render_into(
+    t: &Type,
+    names: &mut HashMap<u32, String>,
+    next: &mut u32,
+    out: &mut String,
+    paren_fun: bool,
+) {
+    match t {
+        Type::Var(n, _) => {
+            let name = names.entry(*n).or_insert_with(|| {
+                let s = var_letter(*next);
+                *next += 1;
+                s
+            });
+            out.push_str(name);
+        }
+        Type::Rigid(name) => out.push_str(name),
+        Type::Con(name, args) if args.is_empty() => out.push_str(name),
+        Type::Con(name, args) => {
+            out.push_str(name);
+            for arg in args {
+                out.push(' ');
+                let wrap = matches!(arg, Type::Con(_, inner) if !inner.is_empty())
+                    || matches!(arg, Type::Fun(_, _));
+                if wrap {
+                    out.push('(');
+                    render_into(arg, names, next, out, false);
+                    out.push(')');
+                } else {
+                    render_into(arg, names, next, out, false);
+                }
+            }
+        }
+        Type::Fun(a, b) => {
+            let wrap_a = matches!(**a, Type::Fun(_, _));
+            if paren_fun {
+                out.push('(');
+            }
+            if wrap_a {
+                out.push('(');
+                render_into(a, names, next, out, false);
+                out.push(')');
+            } else {
+                render_into(a, names, next, out, false);
+            }
+            out.push_str(" -> ");
+            render_into(b, names, next, out, false);
+            if paren_fun {
+                out.push(')');
+            }
+        }
+        Type::Record(fields, row) => {
+            out.push_str("{ ");
+            for (i, (k, v)) in fields.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(k);
+                out.push_str(" : ");
+                render_into(v, names, next, out, false);
+            }
+            if let Row::Open(_) = row {
+                out.push_str(" | ..");
+            }
+            out.push_str(" }");
+        }
+        Type::Tuple(elems) => {
+            out.push('(');
+            for (i, elem) in elems.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                render_into(elem, names, next, out, false);
+            }
+            out.push(')');
+        }
     }
 }
 
@@ -2309,7 +2406,10 @@ fn finish_main(inf: &mut Infer, final_env: &TyEnv) -> Result<(TyEnv, Type), Type
     match normalized {
         Some(ty) => Ok((final_env.clone(), ty)),
         None => Err(TypeError::new(
-            format!("`main` must be `List Scroll` (a list of scrolls), but is `{main_ty}`"),
+            format!(
+                "`main` must be `List Scroll` (a list of scrolls), but is `{}`",
+                render_type(&main_ty)
+            ),
             0..0,
         )),
     }

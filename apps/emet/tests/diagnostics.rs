@@ -211,3 +211,19 @@ fn glyphs_alias_is_unknown_type_constructor() {
     assert!(e.msg.contains("unknown type constructor"), "msg: {}", e.msg);
     assert!(e.msg.contains("`Glyphs`"), "msg: {}", e.msg);
 }
+
+#[test]
+fn arity_too_many_does_not_leak_internal_typevars() {
+    let e = err("f : Int -> Int\nf x = x\nmain = [ f 1 2 ]");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(!e.msg.contains("t1"), "leaked internal typevar: {}", e.msg);
+    assert!(!e.msg.contains("t2"), "leaked internal typevar: {}", e.msg);
+    assert!(!e.msg.contains("t9"), "leaked internal typevar: {}", e.msg);
+}
+
+#[test]
+fn occurs_error_renders_friendly_typevars() {
+    let e = err("main = (\\x -> x x)");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(!e.msg.contains("t1"), "leaked internal typevar: {}", e.msg);
+}
