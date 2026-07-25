@@ -243,7 +243,11 @@ fn crash_mid_reversal_resumes_rather_than_restarting() {
     drop(f2);
 
     let attempt = room.latest_attempt().unwrap().unwrap();
-    assert_eq!(attempt.phase, AttemptPhase::RollingBack, "left mid-rollback by the crash");
+    assert_eq!(
+        attempt.phase,
+        AttemptPhase::Enacting,
+        "per-unit rollback runs inside enact, so the attempt is still Enacting when the crash lands"
+    );
     let reversed_before = room
         .wal_steps_for(attempt.reconcile_id)
         .unwrap()

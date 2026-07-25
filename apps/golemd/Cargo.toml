@@ -21,3 +21,7 @@ postcard     = { workspace = true }
 tempfile     = { workspace = true }
 nix          = { workspace = true }
 toml         = { workspace = true }
+fastrand     = { workspace = true }
+
+[dev-dependencies]
+reqwest      = { workspace = true }

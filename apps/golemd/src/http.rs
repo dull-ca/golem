@@ -65,7 +65,12 @@ async fn apply_manifest(
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let bytes = body.to_vec();
-    Ok(Json(blocking(s.foreman.clone(), move |f| f.apply_manifest(&bytes)).await?))
+    let foreman = s.foreman.clone();
+    let report = tokio::task::spawn_blocking(move || foreman.apply_manifest(&bytes))
+        .await
+        .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
+        .map_err(ApiError::from_foreman)?;
+    Ok(Json(report))
 }
 
 #[derive(Serialize)]
@@ -100,22 +105,41 @@ async fn revision(
     }
 }
 
+/// A structured error body (`{ kind, message }`) with a status held out of the
+/// JSON (ADR 0029 §5). Reserved for genuine daemon/transport failures — a
+/// reconcile that ran and reported per-glyph failures is a 200 with a
+/// `ReconcileReport`, not an `ApiError`.
+#[derive(Serialize)]
 struct ApiError {
+    #[serde(skip)]
     status: StatusCode,
+    kind: String,
     message: String,
 }
 
 impl ApiError {
+    fn from_foreman(e: crate::foreman::ForemanError) -> Self {
+        let status = match e {
+            crate::foreman::ForemanError::WalUnreadable { .. }
+            | crate::foreman::ForemanError::ManifestUndecodable { .. }
+            | crate::foreman::ForemanError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError { status, kind: e.kind().to_string(), message: e.message() }
+    }
     fn internal(e: anyhow::Error) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: format!("{e:#}") }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            kind: "internal".to_string(),
+            message: format!("{e:#}"),
+        }
     }
     fn not_found(message: String) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message }
+        Self { status: StatusCode::NOT_FOUND, kind: "not-found".to_string(), message }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (self.status, self.message).into_response()
+        (self.status, Json(self)).into_response()
     }
 }
