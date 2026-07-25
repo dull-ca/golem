@@ -328,3 +328,28 @@ fn empty_case_is_reported_as_no_arms() {
     assert_eq!(e.phase, Phase::Type);
     assert!(e.msg.contains("no arms") || e.msg.contains("at least one"), "msg: {}", e.msg);
 }
+
+#[test]
+fn number_constraint_is_plain_language() {
+    let e = err("main = [ ]\nx = 1 + \"two\"");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(!e.msg.contains("satisfy"), "jargon leaked: {}", e.msg);
+    assert!(e.msg.to_lowercase().contains("number"), "msg: {}", e.msg);
+    assert!(e.msg.contains("String"), "should name the offending type: {}", e.msg);
+}
+
+#[test]
+fn if_condition_must_be_bool() {
+    let e = err("main = [ ]\ny = if 1 then 2 else 3");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("Bool"), "should mention Bool: {}", e.msg);
+    assert!(e.msg.to_lowercase().contains("condition"), "msg: {}", e.msg);
+}
+
+#[test]
+fn policy_field_wants_a_policy() {
+    let e = err(r#"main = [ scroll { name = "w", glyphs = [], policy = "aggressive" } ]"#);
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("Policy"), "should mention Policy: {}", e.msg);
+    assert!(!e.msg.contains("expected `String`"), "reversed framing leaked: {}", e.msg);
+}

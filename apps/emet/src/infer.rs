@@ -369,14 +369,20 @@ impl Infer {
             ));
         }
         if !constraint_admits(c, &t) {
-            return Err(TypeError::new(
-                format!(
-                    "type `{}` does not satisfy `{}`",
-                    render_type(&self.apply(&t)),
-                    constraint_name(c)
+            let rendered = render_type(&self.apply(&t));
+            let msg = match c {
+                Constraint::Number => {
+                    format!("this needs to be a number (Int or Float), but it's a `{rendered}`")
+                }
+                Constraint::Comparable => format!(
+                    "this needs to be comparable (Int, Float, String, or Char), but it's a `{rendered}`"
                 ),
-                span.clone(),
-            ));
+                Constraint::Appendable => {
+                    format!("this needs to be appendable (String or List), but it's a `{rendered}`")
+                }
+                Constraint::None => format!("type `{rendered}` is not allowed here"),
+            };
+            return Err(TypeError::new(msg, span.clone()));
         }
         self.subst.insert(v, t);
         Ok(())
@@ -1272,7 +1278,15 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             inf.unify(&nt, &con("String"), &name.1)?;
             if let Some(p) = policy {
                 let pt = infer_expr(inf, env, p)?;
-                inf.unify(&pt, &con("Policy"), &p.1)?;
+                inf.unify(&pt, &con("Policy"), &p.1).map_err(|_| {
+                    TypeError::new(
+                        format!(
+                            "the `policy` field takes a `Policy` (from `keep`/`rollback`/`retry`), but this is a `{}`",
+                            render_type(&inf.apply(&pt))
+                        ),
+                        p.1.clone(),
+                    )
+                })?;
             }
             match contents {
                 ContentsExpr::Glyphs(glyphs) => {
@@ -1385,7 +1399,15 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
 
         Expr::If { cond, then_, else_ } => {
             let ct = infer_expr(inf, env, cond)?;
-            inf.unify(&ct, &con("Bool"), &cond.1)?;
+            inf.unify(&ct, &con("Bool"), &cond.1).map_err(|_| {
+                TypeError::new(
+                    format!(
+                        "the condition of an `if` must be a `Bool`, but this is a `{}`",
+                        render_type(&inf.apply(&ct))
+                    ),
+                    cond.1.clone(),
+                )
+            })?;
             let tt = infer_expr(inf, env, then_)?;
             let tt = widen_glyph_subtype(inf, &tt);
             let et = infer_expr(inf, env, else_)?;
