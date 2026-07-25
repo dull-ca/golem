@@ -109,6 +109,11 @@ where
     select! { Tok::Ident(name) => name }
 }
 
+// The head of a top-level or `let` binding. Plain `ident()` accepted a reserved
+// constructor word (`file`, `keep`, …) as a bind name, so `keep n = n + 1`
+// parsed — the name was definable but unusable, since every later mention lexed
+// back as the reserved word (audit #16). Rejecting it here names the trap at the
+// point it happens. Params still use `ident()`: they shadow nothing at the head.
 fn binding_head<'src, I>(
 ) -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
@@ -409,8 +414,11 @@ where
 
         // `rollback` / `keep` build a policy without braces (the build/match
         // split of ADR 0017), so they are atoms in their own right rather than
-        // record constructors. A braced use falls through to `build_constructor`,
-        // which rejects it with the "written without braces" hint.
+        // record constructors. A `.rewind()` peek catches a following `{`: a
+        // braced use is rejected here, in this `try_map`, with the "written
+        // without braces" hint. Without the peek it read the `{ … }` as an
+        // application argument and surfaced a bare type error (audit #19); the
+        // `build_constructor` policy-word arm no longer sees the atom path.
         let policy_word = select! {
             Tok::Ident(name) if name == "rollback" || name == "keep" => name,
         }
@@ -605,6 +613,13 @@ where
                 )
             });
 
+        // A `=>` where an arm's `->` belongs is redirected here rather than in
+        // `humanize_expected`. `.validate` + `emitter.emit` for the same reason
+        // as `float_reject` above: the arm sits inside `repeated()`, which
+        // rewinds and swallows a hard failure, so the message must be emitted
+        // non-fatally to survive (ADR 0026). A humanizer clause could not reach
+        // it — `compile` shows `errors[0]`, and the collected `=>` error sorts
+        // behind an earlier one, so the humanizer path never fired (audit #12).
         let arm_arrow = choice((
             just(Tok::Arrow).ignored(),
             just(Tok::Op("=>".to_string())).validate(|_, e, emitter| {
@@ -1282,6 +1297,11 @@ fn humanize_expected(raw: &str) -> String {
     } else {
         String::new()
     };
+    // Hints keyed on the shape of an unexpected token, appended after the
+    // `expected …` list. The `=>` case here is the fallback for a `=>` that
+    // reaches the humanizer un-redirected; an arm's `=>` is caught earlier at
+    // `arm_arrow`. `\` covers a lambda written with the wrong head (audit
+    // #23/#24); an expected `=` covers a definition missing it (audit #04).
     let found_hint = if raw.contains("found '=>'") {
         " — case arms use `->`, not `=>`"
     } else if raw.contains("found '\\'") {

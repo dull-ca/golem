@@ -1395,6 +1395,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
         }
 
         Expr::Case { scrutinee, arms } => {
+            // Guard before the exhaustiveness pass: an armless `case … of`
+            // reached `check_exhaustive` and reported "add a _ catch-all"
+            // (audit #11), which points at the wrong fix. It needs any arm, not
+            // a catch-all.
             if arms.is_empty() {
                 return Err(TypeError::new(
                     "this `case` has no arms — a `case … of` needs at least one `pattern -> expression` arm",

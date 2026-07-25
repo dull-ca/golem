@@ -418,6 +418,11 @@ fn scan_string_segment(
                 't' => '\t',
                 '"' => '"',
                 '\\' => '\\',
+                // An unknown escape has to die here. The catch-all once
+                // returned `other`, dropping the backslash so `\q` reached the
+                // type checker as the mangled string `q` — the silent corruption
+                // of audit #08. Mirrors the char-literal escape check.
+                // See docs/adr/0032-friendly-elm-style-diagnostics.md.
                 other => {
                     return Err(LexError {
                         msg: format!("unknown string escape `\\{other}`"),
