@@ -109,6 +109,23 @@ where
     select! { Tok::Ident(name) => name }
 }
 
+fn binding_head<'src, I>(
+) -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+where
+    I: ValueInput<'src, Token = Tok, Span = TokSpan>,
+{
+    select! { Tok::Ident(name) => name }.try_map(|name, span| {
+        if is_reserved_constructor(&name) {
+            Err(Rich::custom(
+                span,
+                format!("`{name}` is a reserved word and can't be used as a name to bind"),
+            ))
+        } else {
+            Ok(name)
+        }
+    })
+}
+
 fn field_name<'src, I>(
 ) -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
@@ -397,13 +414,20 @@ where
         let policy_word = select! {
             Tok::Ident(name) if name == "rollback" || name == "keep" => name,
         }
-        .map_with(|name, e| {
+        .then(just(Tok::LBrace).or_not().rewind())
+        .try_map(|(name, braced), span| {
+            if braced.is_some() {
+                return Err(Rich::custom(
+                    span,
+                    format!("`{name}` is written without braces (e.g. `policy = {name}`)"),
+                ));
+            }
             let tag = if name == "rollback" {
                 crate::ast::OnExhaustTag::Rollback
             } else {
                 crate::ast::OnExhaustTag::Keep
             };
-            Spanned(Expr::PolicyExhaust(tag), span_range(e.span()))
+            Ok(Spanned(Expr::PolicyExhaust(tag), span_range(span)))
         });
 
         // Every reserved word commits into one constructor branch, then `try_map`
@@ -908,7 +932,7 @@ where
         .then(expr)
         .map(|(params, body)| SigOrBind::Bind { params, body });
 
-    let item = ident()
+    let item = binding_head()
         .map_with(|name, e| (name, span_range(e.span()).start))
         .then(sig_tail.or(binding_tail))
         .map(|((name, start), tail)| match tail {
@@ -962,7 +986,7 @@ where
         .then(expr)
         .map(|(params, body)| SigOrBind::Bind { params, body });
 
-    let value_item = ident()
+    let value_item = binding_head()
         .map_with(|name, e| (name, span_range(e.span()).start))
         .then(sig_tail.or(binding_tail))
         .map(|((name, start), tail)| match tail {

@@ -291,3 +291,18 @@ fn unclosed_bracket_message_mentions_unclosed() {
     );
     assert!(e.msg.contains("']'"), "should still name the delimiter: {}", e.msg);
 }
+
+#[test]
+fn binding_a_reserved_word_is_rejected() {
+    let e = err("keep n = n + 1\n\nmain = [ ]");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(e.msg.contains("`keep`"), "should name the word: {}", e.msg);
+    assert!(e.msg.contains("reserved"), "should say reserved: {}", e.msg);
+}
+
+#[test]
+fn braced_rollback_points_at_braceless_form() {
+    let e = err(r#"main = [ scroll { name = "w", glyphs = [], policy = rollback { } } ]"#);
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(e.msg.contains("without braces"), "msg: {}", e.msg);
+}
