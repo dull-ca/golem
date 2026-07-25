@@ -95,8 +95,8 @@ filter p xs =
   case xs of
     [] -> []
     (x :: rest) -> if p x then x :: filter p rest else filter p rest
-keep n = n == "yes"
-main = [ scroll { name = "test", glyphs = List.map (\n -> systemdService { unit = n }) (filter keep [ "yes", "no", "yes" ]) } ]
+isYes n = n == "yes"
+main = [ scroll { name = "test", glyphs = List.map (\n -> systemdService { unit = n }) (filter isYes [ "yes", "no", "yes" ]) } ]
 "#;
     let glyphs = common::single_scroll_glyphs(src);
     assert_eq!(glyphs.len(), 2);
