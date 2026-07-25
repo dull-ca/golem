@@ -70,12 +70,40 @@ pub struct GlyphFailure {
     pub rolled_back: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GlyphAction {
+    Install,
+    Replace,
+    Remove,
+    Noop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GlyphOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+    RolledBack,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GlyphLine {
+    pub glyph_key: String,
+    pub action: GlyphAction,
+    pub outcome: GlyphOutcome,
+    pub attempts: u32,
+    pub message: Option<String>,
+}
+
 /// One leaf unit's slice of the report: its root-to-leaf `unit_path`, its
-/// outcome, and the glyphs it left failing.
+/// outcome, the per-glyph lines in enact order, and the glyphs it left failing.
 #[derive(Debug, Clone, Serialize)]
 pub struct UnitReport {
     pub unit_path: Vec<String>,
     pub outcome: UnitOutcome,
+    pub glyphs: Vec<GlyphLine>,
     pub failures: Vec<GlyphFailure>,
 }
 
@@ -117,10 +145,66 @@ mod tests {
         let unit = UnitReport {
             unit_path: vec!["h".into(), "u".into()],
             outcome: UnitOutcome::Settled,
+            glyphs: vec![],
             failures: vec![],
         };
         let json = serde_json::to_value(&unit).unwrap();
         assert_eq!(json["outcome"], "settled");
+    }
+
+    #[test]
+    fn glyph_line_actions_and_outcomes_serialize_snake_case() {
+        let applied = GlyphLine {
+            glyph_key: "apt:podman".into(),
+            action: GlyphAction::Install,
+            outcome: GlyphOutcome::Applied,
+            attempts: 1,
+            message: None,
+        };
+        let unchanged = GlyphLine {
+            glyph_key: "file:/x".into(),
+            action: GlyphAction::Noop,
+            outcome: GlyphOutcome::Unchanged,
+            attempts: 0,
+            message: None,
+        };
+        let failed = GlyphLine {
+            glyph_key: "systemd:fishnet.service".into(),
+            action: GlyphAction::Replace,
+            outcome: GlyphOutcome::Failed,
+            attempts: 5,
+            message: Some("mirror down".into()),
+        };
+        let rolled_back = GlyphLine {
+            glyph_key: "apt:podman".into(),
+            action: GlyphAction::Remove,
+            outcome: GlyphOutcome::RolledBack,
+            attempts: 1,
+            message: None,
+        };
+        assert_eq!(serde_json::to_value(&applied).unwrap()["action"], "install");
+        assert_eq!(
+            serde_json::to_value(&applied).unwrap()["outcome"],
+            "applied"
+        );
+        assert_eq!(
+            serde_json::to_value(&unchanged).unwrap()["outcome"],
+            "unchanged"
+        );
+        assert_eq!(serde_json::to_value(&unchanged).unwrap()["action"], "noop");
+        assert_eq!(serde_json::to_value(&failed).unwrap()["outcome"], "failed");
+        assert_eq!(
+            serde_json::to_value(&failed).unwrap()["action"],
+            "replace"
+        );
+        assert_eq!(
+            serde_json::to_value(&rolled_back).unwrap()["outcome"],
+            "rolled_back"
+        );
+        assert_eq!(
+            serde_json::to_value(&rolled_back).unwrap()["action"],
+            "remove"
+        );
     }
 
     #[test]
@@ -151,11 +235,13 @@ mod tests {
         let settled = UnitReport {
             unit_path: vec!["h".into(), "a".into()],
             outcome: UnitOutcome::Settled,
+            glyphs: vec![],
             failures: vec![],
         };
         let partial = UnitReport {
             unit_path: vec!["h".into(), "b".into()],
             outcome: UnitOutcome::Partial,
+            glyphs: vec![],
             failures: vec![],
         };
         let all_settled = ReconcileReport::roll_up(rev.clone(), vec![settled.clone()]);

@@ -44,7 +44,8 @@ use crate::planroom::PlanRoom;
 use crate::reconcile::plan;
 use crate::reconciler::{EnactError, Reconciler};
 use crate::report::{
-    FailClassReport, FailPhase, GlyphFailure, ReconcileReport, UnitOutcome, UnitReport,
+    FailClassReport, FailPhase, GlyphAction, GlyphFailure, GlyphLine, GlyphOutcome,
+    ReconcileReport, UnitOutcome, UnitReport,
 };
 use crate::wal::applied_outcomes;
 
@@ -101,6 +102,7 @@ pub(crate) struct UnitFailure {
 /// unit outcome.
 pub(crate) struct UnitResult {
     pub unit_path: Vec<String>,
+    pub glyphs: Vec<GlyphLine>,
     pub failures: Vec<UnitFailure>,
     pub outcome: UnitOutcome,
 }
@@ -305,7 +307,9 @@ impl Foreman {
         let revision = self
             .settle(attempt.reconcile_id, &desired)
             .map_err(|e| ForemanError::Internal(e.into()))?;
-        Ok(ReconcileReport::roll_up(revision, unit_reports))
+        let report = ReconcileReport::roll_up(revision, unit_reports);
+        log_settled(&report);
+        Ok(report)
     }
 
     /// The `Remove` ops for glyphs that belong to no present leaf unit — a unit
@@ -449,8 +453,10 @@ impl Foreman {
         } else {
             UnitOutcome::Partial
         };
+        let glyphs = glyph_lines(ops, &classes, rolled_back, round);
         Ok(UnitResult {
             unit_path: unit_path.to_vec(),
+            glyphs,
             failures: failures
                 .into_iter()
                 .map(|mut f| {
@@ -794,13 +800,6 @@ impl Foreman {
                     .expect("a committed attempt projects a revision"),
             )
             .map(|rev| rev.expect("the latest revision id resolves"))?;
-        // NOTE: the closing info line of an apply — the revision id this attempt
-        // projected and how many outcomes it holds.
-        info!(
-            revision = revision.id,
-            outcomes = revision.outcomes.len(),
-            "revision recorded"
-        );
         Ok(revision)
     }
 
@@ -1197,6 +1196,53 @@ fn unit_failures(
     failures
 }
 
+fn glyph_action_of(op: &GlyphOp) -> GlyphAction {
+    match op {
+        GlyphOp::Install { .. } => GlyphAction::Install,
+        GlyphOp::Replace { .. } => GlyphAction::Replace,
+        GlyphOp::Remove { .. } => GlyphAction::Remove,
+        GlyphOp::Noop { .. } => GlyphAction::Noop,
+    }
+}
+
+/// One [`GlyphLine`] per op in enact order (ADR 0029 addendum): a `Noop` is
+/// `Unchanged` with zero attempts; a still-failing op is `Failed` carrying its
+/// message and attempts; an op that applied but was undone by this unit's
+/// `on_exhaust = rollback` is `RolledBack`; anything else that applied and stayed
+/// is `Applied`.
+fn glyph_lines(
+    ops: &[GlyphOp],
+    classes: &[StepClass],
+    rolled_back: bool,
+    rounds: u32,
+) -> Vec<GlyphLine> {
+    ops.iter()
+        .zip(classes.iter())
+        .map(|(op, class)| {
+            let action = glyph_action_of(op);
+            let (outcome, attempts, message) = match (class, action) {
+                (StepClass::Failed(retry_class, msg), _) => {
+                    let attempts = match retry_class {
+                        RetryClass::Fatal => 1,
+                        RetryClass::Retryable => rounds,
+                    };
+                    (GlyphOutcome::Failed, attempts, Some(msg.clone()))
+                }
+                (StepClass::Ok, GlyphAction::Noop) => (GlyphOutcome::Unchanged, 0, None),
+                (StepClass::Ok, _) if rolled_back => (GlyphOutcome::RolledBack, 1, None),
+                (StepClass::Ok, _) => (GlyphOutcome::Applied, 1, None),
+            };
+            GlyphLine {
+                glyph_key: op.key(),
+                action,
+                outcome,
+                attempts,
+                message,
+            }
+        })
+        .collect()
+}
+
 /// Which side of the bracket a failed op runs on — a `Remove` fails in
 /// `Reverse`, everything else in `Enact`. (A reverse-then-apply `Replace` whose
 /// reverse leg failed is reported under `Enact`; the distinction the report cares
@@ -1244,6 +1290,38 @@ fn log_step_failure(glyph_key: &str, round: u32, class: &StepClass) {
     }
 }
 
+fn top_outcome_tag(outcome: crate::report::TopOutcome) -> &'static str {
+    match outcome {
+        crate::report::TopOutcome::Settled => "settled",
+        crate::report::TopOutcome::Partial => "partial",
+        crate::report::TopOutcome::RolledBack => "rolled_back",
+    }
+}
+
+/// The closing info line of an apply: the revision this attempt projected, its
+/// outcome count, the rolled-up top outcome, and the per-unit fate counts.
+fn log_settled(report: &ReconcileReport) {
+    let mut settled = 0u32;
+    let mut partial = 0u32;
+    let mut rolled_back = 0u32;
+    for unit in &report.units {
+        match unit.outcome {
+            UnitOutcome::Settled => settled += 1,
+            UnitOutcome::Partial => partial += 1,
+            UnitOutcome::RolledBack => rolled_back += 1,
+        }
+    }
+    info!(
+        revision = report.revision.id,
+        outcomes = report.revision.outcomes.len(),
+        outcome = top_outcome_tag(report.outcome),
+        units_settled = settled,
+        units_partial = partial,
+        units_rolled_back = rolled_back,
+        "revision recorded"
+    );
+}
+
 /// Map a foreman-internal [`UnitResult`] onto the wire [`UnitReport`] (ADR 0029
 /// §5). The internal outcome, phase, and class enums translate one-for-one.
 fn unit_report_from(result: UnitResult) -> UnitReport {
@@ -1269,6 +1347,7 @@ fn unit_report_from(result: UnitResult) -> UnitReport {
     UnitReport {
         unit_path: result.unit_path,
         outcome: result.outcome,
+        glyphs: result.glyphs,
         failures,
     }
 }
@@ -1893,6 +1972,81 @@ mod tests {
     }
 
     // --- Task 8: report shape, typed errors, sibling-remove regression ---
+
+    #[test]
+    fn a_rolled_back_unit_reports_glyph_lines_in_enact_order() {
+        use crate::report::{GlyphAction, GlyphOutcome};
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("systemd:fishnet.service")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+            jitter_fraction: 0.0,
+            on_exhaust: OnExhaustConfig::Rollback,
+            ..Default::default()
+        });
+        let leaf = leaf_scroll(
+            "unit",
+            vec![
+                apt("podman"),
+                unit_file("/etc/containers/systemd/fishnet.container", "v1"),
+                Glyph::SystemdService {
+                    unit: "fishnet.service".into(),
+                },
+            ],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        let unit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "unit")
+            .unwrap();
+        assert_eq!(unit.outcome, UnitOutcome::RolledBack);
+        let outcomes: Vec<GlyphOutcome> = unit.glyphs.iter().map(|g| g.outcome).collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                GlyphOutcome::RolledBack,
+                GlyphOutcome::RolledBack,
+                GlyphOutcome::Failed
+            ]
+        );
+        let actions: Vec<GlyphAction> = unit.glyphs.iter().map(|g| g.action).collect();
+        assert_eq!(
+            actions,
+            vec![
+                GlyphAction::Install,
+                GlyphAction::Install,
+                GlyphAction::Install
+            ]
+        );
+        let failed = unit.glyphs.iter().find(|g| g.outcome == GlyphOutcome::Failed).unwrap();
+        assert_eq!(failed.glyph_key, "systemd:fishnet.service");
+        assert_eq!(failed.attempts, 5);
+        assert_eq!(failed.message.as_deref(), Some("scripted retryable for systemd:fishnet.service"));
+    }
+
+    #[test]
+    fn a_noop_reconcile_reports_all_unchanged_glyph_lines() {
+        use crate::report::GlyphOutcome;
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = leaf_scroll("host", vec![apt("podman"), apt("fishnet")]);
+        foreman.apply_scroll(scroll.clone()).unwrap();
+        let report = foreman.apply_scroll(scroll).unwrap();
+        assert_eq!(report.units.len(), 1);
+        assert_eq!(report.units[0].outcome, UnitOutcome::Settled);
+        assert!(!report.units[0].glyphs.is_empty());
+        assert!(report
+            .units[0]
+            .glyphs
+            .iter()
+            .all(|g| g.outcome == GlyphOutcome::Unchanged && g.attempts == 0));
+    }
 
     #[test]
     fn apply_manifest_returns_a_report_with_units_in_source_order() {
