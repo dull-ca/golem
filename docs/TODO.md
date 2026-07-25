@@ -309,5 +309,17 @@ standalone project.
   repo was archived (`~/personal-repos/golem-lang-archive-2026-07-23.tar.gz`)
   and its working copy removed.
 
+- **Parallel apply (agreed next step, 2026-07-25).** `fleet apply` fans the
+  same manifest out to every target host sequentially today. Across-host
+  parallelism is the safe, fleet-side win: the hosts are independent machines,
+  so applying to several at once is just concurrent HTTP with per-host reports —
+  no golemd change. Within-host parallel *units* is the harder, deferred half:
+  it would need golemd to serialize the shared, non-reentrant resources two
+  units can contend on — apt/dpkg (one dpkg lock) and the apt package index —
+  and to dedupe/queue per-file `lineInFile` writes so two units editing the same
+  file don't race. So the plan is across-host parallelism first (fleet-side),
+  with within-host parallelism gated on that serialization work (Dr. Dub's
+  constraints, 2026-07-25).
+
 - **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
   is published.

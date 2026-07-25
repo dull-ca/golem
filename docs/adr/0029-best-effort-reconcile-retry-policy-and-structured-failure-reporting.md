@@ -510,3 +510,42 @@ Every mechanism this ADR adds is layered *on* the WAL, not around it:
   The four-glyph contract and the manifest are otherwise unchanged — `golemd.toml`
   and the report shape are golemd's private operational and API surfaces; the
   scroll `policy` that overrides the config *is* on the wire (ADR 0031 §5).
+
+## Addendum — per-glyph report lines (implementation, 2026-07-25)
+
+The first real dogfood run (Dr. Dub, host `scaly`) exposed a gap in §5's report
+shape. A flat unit installed apt:podman and a quadlet `file` successfully, its
+`systemd:fishnet.service` failed five rounds (`retries-exhausted`), and
+`on_exhaust = rollback` reversed the two successes. The report carried only the
+one `GlyphFailure`, so the render showed the failure and nothing else: the two
+succeeded-then-reverted glyphs were invisible, and the zero-outcome revision read
+"no changes" — wrong, because nothing was *committed* (it rolled back), not
+because there was nothing to do.
+
+`UnitReport` therefore gains a **`glyphs: Vec<GlyphLine>`** — one line per op in
+enact order, Noops included — beside the retained `failures`:
+
+```
+GlyphLine {
+    glyph_key: String,
+    action:    "install" | "replace" | "remove" | "noop",
+    outcome:   "applied" | "unchanged" | "failed" | "rolled_back",
+    attempts:  u32,                  // rounds this op ran (0 for a Noop)
+    message:   Option<String>,       // the reconciler's reason, for Failed only
+}
+```
+
+An op that applied and stayed is `applied`; a Noop is `unchanged`; a still-failing
+op is `failed` (carrying the same message/attempts its `GlyphFailure` holds); an
+op that applied but was undone by *this* unit's `on_exhaust = rollback` is
+`rolled_back`. So an operator sees successes and rollbacks, not only failures.
+
+This is **additive and does not change the §5 decision**: `failures` stays exactly
+as specified (the fleet CLI still parses it, and it is the render fallback when an
+older golemd omits `glyphs`), and the HTTP contract is unchanged — still an in-band
+200 report. Two rendering fixes ride along, both client-side: `fleet apply` now
+renders the `glyphs` list per unit (`✓` applied, `·` unchanged, `↩` rolled back,
+`✗` failed) instead of only the failures block, and a zero-outcome revision reads
+"nothing committed — rolled back" or "already up to date" rather than the
+misleading "no changes". The `revision recorded` settle log gains the rolled-up
+top outcome and per-unit settled/partial/rolled-back counts.
