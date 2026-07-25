@@ -145,6 +145,19 @@ pub struct SelectedScroll {
 
 const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/systemd"];
 
+/// The synthetic terminal segment every vanished-removes group appends to its
+/// resolved unit path, so the group's `unit_path` is one segment longer than the
+/// surviving ancestor it resolved to and therefore disjoint from that ancestor's
+/// own path. Without it a group resolving to a present unit's path — a flat host
+/// (`[host]`) or a glyph dropped from a still-present unit B (`[host, b]`) — would
+/// share that unit's `unit_path`, and a removes-group rollback would reverse the
+/// present unit's applied steps. Both those present units are leaves whose path
+/// ends at the resolved node, so appending any segment makes the group disjoint.
+/// The marker is chosen so a group reports legibly as `… / b / <removes>`; angle
+/// brackets are unconventional in an authored scroll name, and Emet does not
+/// reserve names, so this is a naming convention rather than an enforced literal.
+const REMOVES_SEGMENT: &str = "<removes>";
+
 impl Foreman {
     pub fn new(host: String, planroom: Box<dyn PlanRoom>, reconciler: Box<dyn Reconciler>) -> Self {
         let foreman = Self {
@@ -234,6 +247,7 @@ impl Foreman {
             .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
             .map_err(|e| ForemanError::Internal(e.into()))?;
 
+        let started = Instant::now();
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
         for unit in &units {
@@ -243,7 +257,7 @@ impl Foreman {
                 .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
                 .collect();
             let result = self
-                .enact_unit(attempt.reconcile_id, &ops, &prior, &unit.path, &effective)
+                .enact_unit(attempt.reconcile_id, &ops, &prior, &unit.path, &effective, started)
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
         }
@@ -254,7 +268,7 @@ impl Foreman {
         {
             let effective = resolve_retry(&self.retry, &group.policy_chain);
             let result = self
-                .enact_unit(attempt.reconcile_id, &group.ops, &prior, &group.unit_path, &effective)
+                .enact_unit(attempt.reconcile_id, &group.ops, &prior, &group.unit_path, &effective, started)
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
         }
@@ -271,9 +285,12 @@ impl Foreman {
     /// that vanished between manifests (ADR 0031 §4). The whole-scroll diff over
     /// `all_glyphs` yields these removes; each is grouped under the longest prefix
     /// of its recorded `unit_path` that still exists as a node in the new scroll
-    /// tree — the nearest surviving ancestor — so its failures report there and
-    /// inherit that surviving prefix's policy chain. An empty recorded path (an
-    /// old host-root placeholder row) falls back to the host root.
+    /// tree — the nearest surviving ancestor — whose policy chain the group
+    /// inherits. An empty recorded path (an old host-root placeholder row) falls
+    /// back to the host root. The group's own `unit_path` is that resolved path
+    /// plus a [`REMOVES_SEGMENT`] terminal, keeping it disjoint from every present
+    /// unit's path so a removes-group rollback never reverses a present unit's
+    /// steps; policy resolution still runs on the un-suffixed resolved path.
     fn plan_vanished_removes<'a>(
         &self,
         prior: &[Outcome],
@@ -292,13 +309,15 @@ impl Foreman {
         let mut groups: Vec<RemoveGroup> = Vec::new();
         for op in removes {
             let recorded_path = recorded.get(&op.key()).cloned().unwrap_or_default();
-            let path = surviving_prefix(&recorded_path, &nodes)
+            let resolved = surviving_prefix(&recorded_path, &nodes)
                 .unwrap_or_else(|| vec![self.host.clone()]);
-            match groups.iter_mut().find(|g| g.unit_path == path) {
+            let mut unit_path = resolved.clone();
+            unit_path.push(REMOVES_SEGMENT.to_string());
+            match groups.iter_mut().find(|g| g.unit_path == unit_path) {
                 Some(g) => g.ops.push(op),
                 None => {
-                    let policy_chain = policy_chain_for_path(desired, &path);
-                    groups.push(RemoveGroup { unit_path: path, ops: vec![op], policy_chain });
+                    let policy_chain = policy_chain_for_path(desired, &resolved);
+                    groups.push(RemoveGroup { unit_path, ops: vec![op], policy_chain });
                 }
             }
         }
@@ -321,11 +340,15 @@ impl Foreman {
     /// [`UnitResult`]. Round 1 runs every op once; between rounds the still-failing
     /// retryable ops are re-driven after [`round_delay`], stopping when nothing
     /// remains, `max_attempts` rounds are reached, or the `max_elapsed_ms`
-    /// wall-time budget from attempt-open is spent — whichever trips first. A
-    /// `Failed` op never aborts the loop; its class is tracked in memory (the WAL
-    /// records the bracket for crash recovery, not the class). After the loop the
-    /// unit's `on_exhaust` (`rollback` | `keep`) settles its fate, scoped to this
-    /// unit's `unit_path` so a sibling unit is never touched (ADR 0029 §4, §2).
+    /// wall-time budget is spent — whichever trips first. The budget is measured
+    /// against `started`, captured once when the attempt opened and shared across
+    /// every unit, so `max_elapsed_ms` bounds the whole reconcile's retrying rather
+    /// than resetting per unit — a unit reached after the budget is already spent
+    /// gets only its opening round (ADR 0029 §3). A `Failed` op never aborts the
+    /// loop; its class is tracked in memory (the WAL records the bracket for crash
+    /// recovery, not the class). After the loop the unit's `on_exhaust` (`rollback`
+    /// | `keep`) settles its fate, scoped to this unit's `unit_path` so a sibling
+    /// unit is never touched (ADR 0029 §4, §2).
     fn enact_unit(
         &self,
         reconcile_id: u64,
@@ -333,8 +356,8 @@ impl Foreman {
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
+        started: Instant,
     ) -> Result<UnitResult> {
-        let started = Instant::now();
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
         for (ord, op) in ops.iter().enumerate() {
             classes.push(self.enact_one(reconcile_id, ord as u64, op, prior, unit_path, 1)?);
@@ -588,12 +611,20 @@ impl Foreman {
     /// running unit has no separate reversal; the unit's lifecycle stays owned by
     /// its `systemdService` step), so a crash mid-propagation recovers like any
     /// other step. Scoped to files golem itself wrote under unit directories, so
-    /// it never restarts units for host-managed config golem did not touch.
+    /// it never restarts units for host-managed config golem did not touch. A
+    /// changed file whose `Done` a later `Reversed` cancelled — a unit that applied
+    /// its config then rolled back under `on_exhaust = rollback` — is excluded via
+    /// [`crate::wal::cancelled_dones`], the same pairing the applied-set fold uses,
+    /// so a rolled-back unit's service is never spuriously restarted (ADR 0029 §4).
     fn propagate_config(&self, reconcile_id: u64) -> Result<()> {
         let steps = self.planroom.wal_steps_for(reconcile_id)?;
+        let cancelled = crate::wal::cancelled_dones(&steps);
         let mut units: Vec<String> = Vec::new();
         for step in &steps {
             if step.state != WalStepState::Done || step.changed != Some(true) {
+                continue;
+            }
+            if cancelled.contains(&step.seq) {
                 continue;
             }
             if let Some(path) = changed_file_path(&step.op) {
@@ -1347,6 +1378,8 @@ mod tests {
         fatal: Mutex<Vec<String>>,
         retryable_left: Mutex<BTreeMap<String, u32>>,
         retryable_always: Mutex<Vec<String>>,
+        fatal_reverse: Mutex<Vec<String>>,
+        restarts: Mutex<Vec<String>>,
     }
     impl ScriptedReconciler {
         fn new() -> Self {
@@ -1355,7 +1388,13 @@ mod tests {
                 fatal: Mutex::new(Vec::new()),
                 retryable_left: Mutex::new(BTreeMap::new()),
                 retryable_always: Mutex::new(Vec::new()),
+                fatal_reverse: Mutex::new(Vec::new()),
+                restarts: Mutex::new(Vec::new()),
             }
+        }
+        fn fatal_reverse_on(self, key: &str) -> Self {
+            self.fatal_reverse.lock().unwrap().push(key.into());
+            self
         }
         fn fatal_on(self, key: &str) -> Self {
             self.fatal.lock().unwrap().push(key.into());
@@ -1374,6 +1413,9 @@ mod tests {
         }
         fn present_keys(&self) -> Vec<String> {
             self.present.lock().unwrap().keys().cloned().collect()
+        }
+        fn restarts(&self) -> Vec<String> {
+            self.restarts.lock().unwrap().clone()
         }
     }
     impl Reconciler for ScriptedReconciler {
@@ -1403,7 +1445,15 @@ mod tests {
             })
         }
         fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
-            self.present.lock().unwrap().remove(&outcome.op.key());
+            let key = outcome.op.key();
+            if self.fatal_reverse.lock().unwrap().iter().any(|k| k == &key) {
+                return Err(EnactError::Fatal(format!("scripted fatal reverse for {key}")));
+            }
+            self.present.lock().unwrap().remove(&key);
+            Ok(())
+        }
+        fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+            self.restarts.lock().unwrap().push(unit.to_string());
             Ok(())
         }
     }
@@ -1449,6 +1499,16 @@ mod tests {
 
     fn apt(name: &str) -> Glyph {
         Glyph::AptPackage { name: name.into() }
+    }
+
+    fn unit_file(path: &str, contents: &str) -> Glyph {
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::File {
+                contents: contents.into(),
+                perms: scroll_format::Perms { mode: 0o644, owner: None, group: None },
+            },
+        }
     }
 
     fn manifest(scrolls: Vec<Scroll>) -> Vec<u8> {
@@ -1665,6 +1725,101 @@ mod tests {
         assert_eq!(report.outcome, TopOutcome::Settled);
         assert!(!applied_keys(&foreman).contains(&"apt:removed".to_string()));
         assert!(applied_keys(&foreman).contains(&"apt:stays".to_string()));
+    }
+
+    // --- Review fixes: removes-group path isolation, whole-reconcile budget,
+    //     rollback-aware config propagation ---
+
+    #[test]
+    fn a_flat_host_removes_rollback_does_not_reverse_a_present_glyph() {
+        let reconciler = ScriptedReconciler::new().fatal_reverse_on("apt:goes").ok_default();
+        let foreman = foreman_with(reconciler)
+            .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+        foreman.apply_scroll(leaf_scroll("host", vec![apt("goes")])).unwrap();
+        assert!(applied_keys(&foreman).contains(&"apt:goes".to_string()));
+
+        let report = foreman.apply_scroll(leaf_scroll("host", vec![apt("stays")])).unwrap();
+        let _ = report;
+        assert!(
+            applied_keys(&foreman).contains(&"apt:stays".to_string()),
+            "a failing vanished-remove rolling back must not reverse the present unit's freshly-applied glyph"
+        );
+    }
+
+    #[test]
+    fn a_dropped_glyph_removes_rollback_does_not_reverse_the_surviving_unit() {
+        let reconciler = ScriptedReconciler::new().fatal_reverse_on("apt:dropped").ok_default();
+        let foreman = foreman_with(reconciler)
+            .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
+        let kept = "file:/etc/app/kept.conf".to_string();
+        let before = branch_scroll(
+            "host",
+            vec![leaf_scroll("b", vec![unit_file("/etc/app/kept.conf", "v1"), apt("dropped")])],
+        );
+        foreman.apply_scroll(before).unwrap();
+        assert!(applied_keys(&foreman).contains(&kept));
+
+        let after = branch_scroll(
+            "host",
+            vec![leaf_scroll("b", vec![unit_file("/etc/app/kept.conf", "v2")])],
+        );
+        foreman.apply_scroll(after).unwrap();
+        assert!(
+            applied_keys(&foreman).contains(&kept),
+            "a dropped glyph's remove rolling back must not reverse unit b's replaced glyph"
+        );
+    }
+
+    #[test]
+    fn max_elapsed_bounds_the_whole_reconcile_not_each_unit() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("apt:one")
+            .retryable_always("apt:two")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 5,
+            backoff_multiplier: 1.0,
+            max_delay_ms: 5,
+            jitter_fraction: 0.0,
+            max_elapsed_ms: 1,
+            on_exhaust: OnExhaustConfig::Keep,
+        });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("one")]),
+                leaf_scroll("second", vec![apt("two")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let first = report.units.iter().find(|u| u.unit_path.last().unwrap() == "first").unwrap();
+        let second = report.units.iter().find(|u| u.unit_path.last().unwrap() == "second").unwrap();
+        assert_eq!(first.failures[0].class, FailClassReport::RetriesExhausted);
+        assert_eq!(second.failures[0].class, FailClassReport::RetriesExhausted);
+        assert_eq!(
+            second.failures[0].attempts, 1,
+            "the budget spent on the first unit leaves the second only its opening round"
+        );
+    }
+
+    #[test]
+    fn a_rolled_back_config_file_is_not_restarted_on_settle() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let leaf = leaf_scroll(
+            "unit",
+            vec![
+                unit_file("/etc/containers/systemd/registry.container", "v1"),
+                apt("bad"),
+            ],
+        );
+        let report = foreman.apply_scroll(branch_scroll("host", vec![leaf])).unwrap();
+        assert_eq!(report.units[0].outcome, UnitOutcome::RolledBack);
+        assert!(
+            foreman.rec.restarts().is_empty(),
+            "a unit whose config rolled back must not restart its service"
+        );
     }
 
     // --- existing contract tests (updated to per-unit best-effort) ---

@@ -119,7 +119,7 @@ fn steps_through(steps: &[WalStep], boundary: u64) -> Vec<WalStep> {
 /// prevents two markers claiming the same one) keeps an apply→reverse→apply
 /// cycle honest: only the first `Done` is cancelled, and the re-applied `Done`
 /// stays live.
-fn cancelled_dones(steps: &[WalStep]) -> std::collections::BTreeSet<u64> {
+pub(crate) fn cancelled_dones(steps: &[WalStep]) -> std::collections::BTreeSet<u64> {
     let mut cancelled = std::collections::BTreeSet::new();
     for marker in steps.iter().filter(|s| s.state == WalStepState::Reversed) {
         if let Some(done) = steps
