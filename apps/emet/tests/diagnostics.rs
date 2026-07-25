@@ -306,3 +306,25 @@ fn braced_rollback_points_at_braceless_form() {
     assert_eq!(e.phase, Phase::Parse);
     assert!(e.msg.contains("without braces"), "msg: {}", e.msg);
 }
+
+#[test]
+fn arrow_typo_hint() {
+    let e = err("f x =\n  case x of\n    1 => \"a\"\n    _ => \"b\"\n\nmain = f 1");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(e.msg.contains("=>") && e.msg.contains("->"), "msg: {}", e.msg);
+}
+
+#[test]
+fn missing_equals_hint() {
+    let e = err("f x x + 1\n\nmain = f 2");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(e.msg.contains("="), "should mention '=': {}", e.msg);
+    assert!(e.msg.to_lowercase().contains("definition") || e.msg.contains("'='"), "msg: {}", e.msg);
+}
+
+#[test]
+fn empty_case_is_reported_as_no_arms() {
+    let e = err("f x =\n  case x of\n\nmain = f 1");
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("no arms") || e.msg.contains("at least one"), "msg: {}", e.msg);
+}

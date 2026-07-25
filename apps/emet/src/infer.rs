@@ -1395,6 +1395,12 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
         }
 
         Expr::Case { scrutinee, arms } => {
+            if arms.is_empty() {
+                return Err(TypeError::new(
+                    "this `case` has no arms — a `case … of` needs at least one `pattern -> expression` arm",
+                    span.clone(),
+                ));
+            }
             let st = infer_expr(inf, env, scrutinee)?;
             let result = inf.fresh();
             for arm in arms {

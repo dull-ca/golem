@@ -605,8 +605,18 @@ where
                 )
             });
 
+        let arm_arrow = choice((
+            just(Tok::Arrow).ignored(),
+            just(Tok::Op("=>".to_string())).validate(|_, e, emitter| {
+                emitter.emit(Rich::<Tok, TokSpan>::custom(
+                    e.span(),
+                    "case arms use `->`, not `=>`",
+                ));
+            }),
+        ));
+
         let arm = pattern_parser()
-            .then_ignore(just(Tok::Arrow))
+            .then_ignore(arm_arrow)
             .then(expr.clone())
             .map(|(pat, body)| Arm { pat, body });
 
@@ -1272,6 +1282,15 @@ fn humanize_expected(raw: &str) -> String {
     } else {
         String::new()
     };
+    let found_hint = if raw.contains("found '=>'") {
+        " — case arms use `->`, not `=>`"
+    } else if raw.contains("found '\\'") {
+        " — a lambda is written `\\x -> body`"
+    } else if items.iter().any(|i| i == "'='") {
+        " — this looks like a definition missing its `=`"
+    } else {
+        ""
+    };
     let joined = match items.len() {
         1 => items[0].clone(),
         2 => format!("{} or {}", items[0], items[1]),
@@ -1280,7 +1299,7 @@ fn humanize_expected(raw: &str) -> String {
             format!("{}, or {}", items.join(", "), last)
         }
     };
-    format!("{head}expected {joined}{close_hint}")
+    format!("{head}expected {joined}{close_hint}{found_hint}")
 }
 
 /// Parse a complete laid-out token stream (as produced by
