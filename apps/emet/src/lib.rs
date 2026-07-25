@@ -224,10 +224,11 @@ pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
     resolve::analyze_entry(entry)
 }
 
-/// Pre-apply analysis over the IR graph. It detects conflicting declarations
-/// for the same glyph key within each scroll; two different scrolls may share
-/// glyph keys without conflict. It is the hook where cycle checks and
-/// conflicting-write checks live as the IR grows.
+/// Pre-apply analysis over the IR graph. The conflict scope is the leaf unit,
+/// not the whole scroll (ADR 0031 §1): each leaf is one conflict scope, so two
+/// declarations of the same glyph key inside one leaf with differing bodies are
+/// an error, while sibling leaves may carry the same key without conflict. It is
+/// the hook where cycle checks and conflicting-write checks live as the IR grows.
 pub fn analyze(scrolls: &[Scroll]) -> Result<(), String> {
     use std::collections::HashMap;
     for scroll in scrolls {
