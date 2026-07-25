@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use emet::{compile_file, Phase};
+use emet::{compile_file, compile_file_all, Phase};
 
 struct Project {
     root: PathBuf,
@@ -148,5 +148,20 @@ fn without_a_manifest_only_the_entry_directory_resolves() {
         err.msg.contains("cannot find imported module"),
         "expected a missing-module diagnostic, got: {}",
         err.msg
+    );
+}
+
+#[test]
+fn parse_error_msg_has_no_filename_prefix() {
+    let p = Project::new("noprefix");
+    let entry = p.write("Main.emet", "main = [ \"a\" ");
+
+    let errors = compile_file_all(&entry).expect_err("unclosed bracket is a parse error");
+    let e = &errors[0];
+    assert!(!e.msg.contains(".emet:"), "filename leaked into label: {}", e.msg);
+    assert!(
+        !e.msg.contains(entry.to_str().unwrap()),
+        "path leaked: {}",
+        e.msg
     );
 }

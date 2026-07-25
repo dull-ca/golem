@@ -237,12 +237,7 @@ fn load_graph(
             note: None,
         }]
     })?;
-    let module = crate::parse_source_multi(&source).map_err(|mut errors| {
-        for e in &mut errors {
-            e.msg = format!("{}: {}", path.display(), e.msg);
-        }
-        errors
-    })?;
+    let module = crate::parse_source_multi(&source)?;
     let name = module
         .name
         .clone()
