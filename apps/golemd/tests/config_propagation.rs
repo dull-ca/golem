@@ -57,7 +57,10 @@ fn quadlet(path: &str, contents: &str) -> Glyph {
 }
 
 fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
-    scroll_format::to_bytes(&Manifest::from_scrolls(vec![Scroll { name: "h1".into(), glyphs }], "test"))
+    scroll_format::to_bytes(&Manifest::from_scrolls(
+        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        "test",
+    ))
 }
 
 fn foreman(rec: Arc<RestartRecorder>) -> Foreman {

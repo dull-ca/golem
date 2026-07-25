@@ -34,7 +34,10 @@ fn apt(name: &str) -> Glyph {
 }
 
 fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
-    scroll_format::to_bytes(&Manifest::from_scrolls(vec![Scroll { name: "h1".into(), glyphs }], "test"))
+    scroll_format::to_bytes(&Manifest::from_scrolls(
+        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        "test",
+    ))
 }
 
 fn foreman(room: Arc<MemoryPlanRoom>) -> Foreman {
@@ -112,7 +115,7 @@ fn a_committed_attempt_with_no_separate_revision_row_still_projects() {
         cid: scroll_format::content_id_of_glyph(&apt("nginx")),
         glyph: apt("nginx"),
     };
-    room.append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Intended, &op, None, None)
+    room.append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Intended, &op, None, None, &[])
         .unwrap();
     room.append_wal_step(
         1,
@@ -123,6 +126,7 @@ fn a_committed_attempt_with_no_separate_revision_row_still_projects() {
         &op,
         Some(&inverse_of(&apt("nginx"))),
         Some(true),
+        &[],
     )
     .unwrap();
     room.set_attempt_phase(1, AttemptPhase::Committed).unwrap();
@@ -143,7 +147,7 @@ fn sqlite_and_memory_project_the_same_revisions() {
             cid: scroll_format::content_id_of_glyph(&apt("nginx")),
             glyph: apt("nginx"),
         };
-        room.append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Done, &op, None, Some(true))
+        room.append_wal_step(1, 0, "apt:nginx", WalAction::Apply, WalStepState::Done, &op, None, Some(true), &[])
             .unwrap();
         room.set_attempt_phase(1, AttemptPhase::Committed).unwrap();
         let revs = room.revisions().unwrap();

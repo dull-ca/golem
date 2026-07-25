@@ -93,11 +93,17 @@ fn file(path: &str, contents: &str) -> Glyph {
 }
 
 fn scroll_bytes(glyphs: Vec<Glyph>) -> Vec<u8> {
-    scroll_format::to_bytes(&Manifest::from_scrolls(vec![Scroll { name: "h1".into(), glyphs }], "test"))
+    scroll_format::to_bytes(&Manifest::from_scrolls(
+        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        "test",
+    ))
 }
 
 fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
-    scroll_format::to_bytes(&Manifest::from_scrolls(vec![Scroll { name: "h1".into(), glyphs }], "test"))
+    scroll_format::to_bytes(&Manifest::from_scrolls(
+        vec![Scroll { name: "h1".into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }],
+        "test",
+    ))
 }
 
 fn foreman(room: Arc<MemoryPlanRoom>, rec: Arc<Host>) -> Foreman {
@@ -164,6 +170,7 @@ fn a_new_manifest_is_refused_while_an_attempt_is_unsettled() {
         &GlyphOp::Install { cid: scroll_format::content_id_of_glyph(&apt("stuck")), glyph: apt("stuck") },
         None,
         None,
+        &[],
     )
     .unwrap();
 
