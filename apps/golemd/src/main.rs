@@ -37,6 +37,8 @@ struct Cli {
     listen: SocketAddr,
     #[arg(long, value_enum, default_value_t = ReconcilerKind::Fake, env = "GOLEM_RECONCILER")]
     reconciler: ReconcilerKind,
+    /// Path to a non-default golemd.toml. Absent, the built-in retry defaults
+    /// apply (`config::load`).
     #[arg(long)]
     config: Option<PathBuf>,
 }

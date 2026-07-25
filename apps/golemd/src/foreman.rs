@@ -47,6 +47,8 @@ pub struct Foreman {
     host: String,
     planroom: Box<dyn PlanRoom>,
     reconciler: Box<dyn Reconciler>,
+    /// Fleet default (from `golemd.toml`); the per-scroll `policy` cascade
+    /// overrides it per unit via `resolve_retry`.
     retry: RetryConfig,
     write: Mutex<()>,
 }
@@ -691,6 +693,12 @@ fn reversed_after(steps: &[WalStep], done: &WalStep) -> bool {
     })
 }
 
+/// Fold the per-scroll policy cascade over the fleet default to get one leaf
+/// unit's effective `RetryConfig`. Cascade order, NEAREST WINS: `golemd.toml`
+/// default → ancestor branch policies root→leaf → the leaf's own policy. A field
+/// unset at every scope stays at the config default (which itself falls back to
+/// the built-in). `policy_chain` is root-most first, so left-to-right folding
+/// lets the nearest (leaf) scope win. See ADR 0029 §3 and ADR 0031 §3.
 pub(crate) fn resolve_retry(base: &RetryConfig, policy_chain: &[&scroll_format::Policy]) -> RetryConfig {
     let mut cfg = *base;
     for policy in policy_chain {
