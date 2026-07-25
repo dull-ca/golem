@@ -16,8 +16,18 @@ use crate::prelude;
 
 pub type BuiltinFn = fn(Vec<Value>) -> Value;
 
+/// Where each glyph key was built, so `analyze` can underline the offending
+/// glyph of a conflict rather than `1:1` (ADR 0032 §3). Last occurrence wins:
+/// the conflict report points at the *second*, colliding declaration.
 pub type GlyphSpans = HashMap<String, Span>;
 
+// The span map rides a thread-local rather than an extra `&mut` param threaded
+// through the ~30 recursive `eval`/`apply` sites — the surgical choice, at the
+// cost of a channel. Both eval entry points (`run_module`'s spawn, resolve's
+// `on_eval_thread`) run on their own thread, so the channel is per-compile by
+// construction: parallel compiles land on distinct threads and cannot cross-
+// contaminate. `with_glyph_spans` saves and restores any prior value, so a
+// nested install never clobbers an outer one.
 thread_local! {
     static GLYPH_SPANS: RefCell<Option<GlyphSpans>> = const { RefCell::new(None) };
 }
@@ -46,6 +56,14 @@ fn with_glyph_spans<T>(work: impl FnOnce() -> T) -> (T, GlyphSpans) {
 
 pub const RECURSION_LIMIT: u64 = 20_000;
 
+// NOTE: the depth guard (`RECURSION_LIMIT`) must fire before the native stack
+// overflows, or a runaway recursion aborts the process instead of returning a
+// clean error. That margin is a three-way coupling: stack size, depth limit,
+// and per-`?`-site frame cost. Adding `span: Span` to `EvalError` widened every
+// frame across the giant `eval` match enough to break the invariant at 512MB
+// (in debug builds), so this is 1GB. The alternative is boxing the error
+// (`Result<Value, Box<EvalError>>`) to keep frames pointer-sized, at the cost
+// of widening `run_module`/`eval_entry`/`eval_library` and their callers.
 const EVAL_STACK_SIZE: usize = 1024 * 1024 * 1024;
 
 pub struct EvalError {
@@ -356,6 +374,11 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
     })
 }
 
+/// Reject a scroll name that is empty or carries an angle bracket. golemd owns a
+/// synthetic `<removes>` segment in a scroll's reported path (ADR 0031 §4); if an
+/// author could name a scroll with `<`/`>` that convention would be forgeable, so
+/// the ban makes it unforgeable (ADR 0032 §2b). Checked at eval, not parse,
+/// because a name can be any computed `String` — it exists only once evaluated.
 #[cold]
 #[inline(never)]
 fn reject_invalid_scroll_name(name: &str, span: &Span) -> Result<(), EvalError> {

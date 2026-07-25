@@ -2576,6 +2576,9 @@ fn finish_main(
     }
 }
 
+// The `List Scroll` mismatch underlines the `main` binding; the no-`main` error
+// falls back to `0..0` (file start) precisely because there is no decl to point
+// at — the same fallback `finish_main` receives, so both land sensibly.
 fn main_decl_span(m: &Module) -> Span {
     m.decls
         .iter()

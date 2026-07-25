@@ -236,6 +236,8 @@ pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
 /// declarations of the same glyph key inside one leaf with differing bodies are
 /// an error, while sibling leaves may carry the same key without conflict. It is
 /// the hook where cycle checks and conflicting-write checks live as the IR grows.
+/// `glyph_spans` (from the same eval run) locates the conflict at its glyph's
+/// source span (ADR 0032 §3); a key absent from the map falls back to `0..0`.
 pub fn analyze(scrolls: &[Scroll], glyph_spans: &eval::GlyphSpans) -> Result<(), Error> {
     use std::collections::HashMap;
     for scroll in scrolls {
