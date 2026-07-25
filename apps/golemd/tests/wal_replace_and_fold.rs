@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
+use golemd::config::RetryConfig;
 use golemd::foreman::Foreman;
 use golemd::journal::{GlyphOp, Inverse, Outcome, WalAction, WalStepState};
 use golemd::planroom::{MemoryPlanRoom, PlanRoom};
@@ -78,7 +78,7 @@ fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
 }
 
 fn foreman(room: Arc<MemoryPlanRoom>, rec: Arc<FileHost>) -> Foreman {
-    Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry(1, Duration::ZERO)
+    Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() })
 }
 
 #[test]

@@ -1,8 +1,8 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
+use golemd::config::RetryConfig;
 use golemd::foreman::Foreman;
 use golemd::journal::{AttemptPhase, GlyphOp, Outcome, WalAction, WalStepState};
 use golemd::planroom::{MemoryPlanRoom, PlanRoom, SqlitePlanRoom};
@@ -107,7 +107,7 @@ fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
 }
 
 fn foreman(room: Arc<MemoryPlanRoom>, rec: Arc<Host>) -> Foreman {
-    Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry(1, Duration::ZERO)
+    Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() })
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn a_new_manifest_is_refused_while_an_attempt_is_unsettled() {
     .unwrap();
 
     let rec = Arc::new(NeverReconciler);
-    let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(rec)).with_retry(1, Duration::ZERO);
+    let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(rec)).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
     let _ = f;
     let settled = room.latest_attempt().unwrap().unwrap();
     assert!(settled.phase.is_settled(), "recovery gates ingest by settling first");
@@ -213,7 +213,7 @@ fn ingest_is_refused_while_the_planroom_shows_an_unsettled_attempt() {
     }
     room.set_attempt_phase(1, AttemptPhase::RollingBack).unwrap();
     let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(StuckRollback))
-        .with_retry(1, Duration::ZERO);
+        .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
 
     let err = f
         .apply_manifest(&manifest(vec![apt("nginx")]))
@@ -280,7 +280,7 @@ fn recovery_is_durable_across_a_real_sqlite_restart() {
         Box::new(SqlitePlanRoom::open(&db).unwrap()),
         Box::new(rec.clone()),
     )
-    .with_retry(1, Duration::ZERO);
+    .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
     let crashed = std::panic::catch_unwind(AssertUnwindSafe(|| {
         f1.apply_manifest(&manifest(vec![apt("nginx"), apt("pg")]))
     }));
@@ -299,7 +299,7 @@ fn recovery_is_durable_across_a_real_sqlite_restart() {
         Box::new(SqlitePlanRoom::open(&db).unwrap()),
         Box::new(rec.clone()),
     )
-    .with_retry(1, Duration::ZERO);
+    .with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() });
     drop(f2);
 
     let reopened = SqlitePlanRoom::open(&db).unwrap();

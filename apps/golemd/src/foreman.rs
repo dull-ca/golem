@@ -33,6 +33,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use crate::config::RetryConfig;
 use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
     WalStep, WalStepState,
@@ -46,8 +47,7 @@ pub struct Foreman {
     host: String,
     planroom: Box<dyn PlanRoom>,
     reconciler: Box<dyn Reconciler>,
-    max_attempts: u32,
-    retry_delay: Duration,
+    retry: RetryConfig,
     write: Mutex<()>,
 }
 
@@ -64,8 +64,7 @@ impl Foreman {
             host,
             planroom,
             reconciler,
-            max_attempts: 5,
-            retry_delay: Duration::from_millis(200),
+            retry: RetryConfig::default(),
             write: Mutex::new(()),
         };
         if let Err(e) = foreman.recover() {
@@ -74,9 +73,8 @@ impl Foreman {
         foreman
     }
 
-    pub fn with_retry(mut self, max_attempts: u32, retry_delay: Duration) -> Self {
-        self.max_attempts = max_attempts;
-        self.retry_delay = retry_delay;
+    pub fn with_retry_config(mut self, cfg: RetryConfig) -> Self {
+        self.retry = cfg;
         self
     }
 
@@ -474,16 +472,16 @@ impl Foreman {
     }
 
     fn attempt(&self, op: &GlyphOp, mut run: impl FnMut() -> EnactResult<Outcome>) -> Result<Outcome> {
-        for n in 1..=self.max_attempts {
+        for n in 1..=self.retry.max_attempts {
             match run() {
                 Ok(outcome) => return Ok(outcome),
                 Err(EnactError::Fatal(msg)) => bail!("{op:?}: fatal: {msg}"),
-                Err(EnactError::Retryable(msg)) if n == self.max_attempts => {
+                Err(EnactError::Retryable(msg)) if n == self.retry.max_attempts => {
                     bail!("{op:?}: gave up after {n} attempts: {msg}")
                 }
                 Err(EnactError::Retryable(msg)) => {
                     warn!(?op, attempt = n, "retryable failure: {msg}");
-                    std::thread::sleep(self.retry_delay);
+                    std::thread::sleep(Duration::from_millis(self.retry.base_delay_ms));
                 }
             }
         }
@@ -491,16 +489,16 @@ impl Foreman {
     }
 
     fn attempt_reverse(&self, op: &GlyphOp, outcome: &Outcome) -> Result<()> {
-        for n in 1..=self.max_attempts {
+        for n in 1..=self.retry.max_attempts {
             match self.reconciler.reverse(outcome) {
                 Ok(()) => return Ok(()),
                 Err(EnactError::Fatal(msg)) => bail!("{op:?}: fatal: {msg}"),
-                Err(EnactError::Retryable(msg)) if n == self.max_attempts => {
+                Err(EnactError::Retryable(msg)) if n == self.retry.max_attempts => {
                     bail!("{op:?}: gave up after {n} attempts: {msg}")
                 }
                 Err(EnactError::Retryable(msg)) => {
                     warn!(?op, attempt = n, "retryable failure: {msg}");
-                    std::thread::sleep(self.retry_delay);
+                    std::thread::sleep(Duration::from_millis(self.retry.base_delay_ms));
                 }
             }
         }
@@ -814,9 +812,13 @@ mod tests {
         }
     }
 
+    fn retry_config(max_attempts: u32) -> RetryConfig {
+        RetryConfig { max_attempts, base_delay_ms: 0, ..Default::default() }
+    }
+
     fn foreman(host: &str, reconciler: Box<dyn Reconciler>) -> Foreman {
         Foreman::new(host.into(), Box::new(MemoryPlanRoom::new()), reconciler)
-            .with_retry(3, Duration::ZERO)
+            .with_retry_config(retry_config(3))
     }
 
     fn apt(name: &str) -> Glyph {
@@ -829,6 +831,17 @@ mod tests {
 
     fn scroll(host: &str, glyphs: Vec<Glyph>) -> Scroll {
         Scroll { name: host.into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }
+    }
+
+    #[test]
+    fn with_retry_config_is_stored() {
+        let foreman =
+            Foreman::new("h".into(), Box::new(MemoryPlanRoom::new()), Box::new(Recorder::default()))
+                .with_retry_config(crate::config::RetryConfig {
+                    max_attempts: 9,
+                    ..Default::default()
+                });
+        assert_eq!(foreman.retry.max_attempts, 9);
     }
 
     #[test]
@@ -900,7 +913,7 @@ mod tests {
     fn no_retry_config_attempts_once() {
         let failing = Arc::new(Failing::new(EnactError::Retryable));
         let f = Foreman::new("h1".into(), Box::new(MemoryPlanRoom::new()), Box::new(failing.clone()))
-            .with_retry(1, Duration::ZERO);
+            .with_retry_config(retry_config(1));
         assert!(f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])])).is_err());
         assert_eq!(failing.calls(), 1);
     }

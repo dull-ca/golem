@@ -37,6 +37,8 @@ struct Cli {
     listen: SocketAddr,
     #[arg(long, value_enum, default_value_t = ReconcilerKind::Fake, env = "GOLEM_RECONCILER")]
     reconciler: ReconcilerKind,
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -54,7 +56,10 @@ async fn main() -> Result<()> {
         ReconcilerKind::Host => Box::new(HostReconciler::system()),
         ReconcilerKind::Fake => Box::new(FakeReconciler::new()),
     };
-    let foreman = Arc::new(Foreman::new(cli.host.clone(), Box::new(planroom), reconciler));
+    let retry = golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
+    let foreman = Arc::new(
+        Foreman::new(cli.host.clone(), Box::new(planroom), reconciler).with_retry_config(retry),
+    );
 
     let app = http::router(http::AppState { foreman });
     let listener = TcpListener::bind(cli.listen)
