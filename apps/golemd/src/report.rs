@@ -1,7 +1,18 @@
+//! The wire report the write path returns, tree-shaped to mirror the host scroll
+//! (ADR 0029 §5): a top-level roll-up over one [`UnitReport`] per leaf unit, each
+//! carrying that unit's failed glyphs. `apply_manifest` returns this for every
+//! reconcile — a partial or rolled-back unit is reported *in-band*, not as an HTTP
+//! error (see `http.rs`). The `serde` tags here are load-bearing: the fleet CLI
+//! parses these exact strings, so a rename is a client-visible change, not a
+//! refactor.
+
 use serde::Serialize;
 
 use crate::journal::Revision;
 
+/// The reconcile's rolled-up fate across all units (`roll_up`). Serializes
+/// snake_case (`settled` | `partial` | `rolled_back`) — the tags `fleet apply`
+/// colors the whole apply by.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TopOutcome {
@@ -10,6 +21,10 @@ pub enum TopOutcome {
     RolledBack,
 }
 
+/// One leaf unit's fate: `Settled` (no failures), `RolledBack` (its
+/// `on_exhaust = rollback` undid this attempt's glyphs), or `Partial` (its
+/// `on_exhaust = keep` left the applied ones committed). Same snake_case tags as
+/// [`TopOutcome`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnitOutcome {
@@ -18,6 +33,9 @@ pub enum UnitOutcome {
     RolledBack,
 }
 
+/// Which side of the bracket a glyph failed on. `Recovery` is reserved for a
+/// failure surfaced by crash recovery; the live enact loop emits only `Enact`
+/// and `Reverse`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailPhase {
@@ -26,6 +44,9 @@ pub enum FailPhase {
     Recovery,
 }
 
+/// Why a glyph gave up: `Fatal` (never retried) or `RetriesExhausted` (a
+/// retryable that hit a limit). Serialized `fatal` / `retries-exhausted` (kebab,
+/// not the enum's default) — the exact tags the fleet CLI matches on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum FailClassReport {
     #[serde(rename = "fatal")]
@@ -34,6 +55,10 @@ pub enum FailClassReport {
     RetriesExhausted,
 }
 
+/// One glyph a unit could not settle. `attempts` is the rounds it ran;
+/// `rolled_back` is `true` only when its unit's `on_exhaust = rollback` undid it.
+/// `message` is the reconciler's reason — glyph key and reason only, never
+/// contents or secrets.
 #[derive(Debug, Clone, Serialize)]
 pub struct GlyphFailure {
     pub glyph_key: String,
@@ -45,6 +70,8 @@ pub struct GlyphFailure {
     pub rolled_back: bool,
 }
 
+/// One leaf unit's slice of the report: its root-to-leaf `unit_path`, its
+/// outcome, and the glyphs it left failing.
 #[derive(Debug, Clone, Serialize)]
 pub struct UnitReport {
     pub unit_path: Vec<String>,
@@ -52,6 +79,8 @@ pub struct UnitReport {
     pub failures: Vec<GlyphFailure>,
 }
 
+/// The write path's return value: the `Revision` this attempt committed, the
+/// rolled-up `outcome`, and the per-unit reports in source order.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconcileReport {
     pub revision: Revision,
@@ -60,6 +89,9 @@ pub struct ReconcileReport {
 }
 
 impl ReconcileReport {
+    /// Roll the per-unit outcomes into the top-level one (ADR 0029 §5): `Settled`
+    /// only when every unit settled; otherwise `Partial` if any unit kept a
+    /// partial set, else `RolledBack`.
     pub fn roll_up(revision: Revision, units: Vec<UnitReport>) -> ReconcileReport {
         let outcome = if units.iter().all(|u| u.outcome == UnitOutcome::Settled) {
             TopOutcome::Settled
