@@ -250,6 +250,7 @@ impl Foreman {
         let started = Instant::now();
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
+        let mut next_ord: u64 = 0;
         for unit in &units {
             let effective = resolve_retry(&self.retry, &unit.policy_chain);
             let ops: Vec<GlyphOp> = plan(&prior, &leaf_as_scroll(unit))
@@ -257,7 +258,7 @@ impl Foreman {
                 .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
                 .collect();
             let result = self
-                .enact_unit(attempt.reconcile_id, &ops, &prior, &unit.path, &effective, started)
+                .enact_unit(attempt.reconcile_id, &mut next_ord, &ops, &prior, &unit.path, &effective, started)
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
         }
@@ -268,7 +269,7 @@ impl Foreman {
         {
             let effective = resolve_retry(&self.retry, &group.policy_chain);
             let result = self
-                .enact_unit(attempt.reconcile_id, &group.ops, &prior, &group.unit_path, &effective, started)
+                .enact_unit(attempt.reconcile_id, &mut next_ord, &group.ops, &prior, &group.unit_path, &effective, started)
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
         }
@@ -352,15 +353,18 @@ impl Foreman {
     fn enact_unit(
         &self,
         reconcile_id: u64,
+        next_ord: &mut u64,
         ops: &[GlyphOp],
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
         started: Instant,
     ) -> Result<UnitResult> {
+        let base_ord = *next_ord;
+        *next_ord += ops.len() as u64;
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
-        for (ord, op) in ops.iter().enumerate() {
-            classes.push(self.enact_one(reconcile_id, ord as u64, op, prior, unit_path, 1)?);
+        for (offset, op) in ops.iter().enumerate() {
+            classes.push(self.enact_one(reconcile_id, base_ord + offset as u64, op, prior, unit_path, 1)?);
         }
         let mut round = 1u32;
         loop {
@@ -376,10 +380,10 @@ impl Foreman {
             }
             std::thread::sleep(round_delay(retry, round));
             round += 1;
-            for ord in remaining {
-                let op = &ops[ord as usize];
-                classes[ord as usize] =
-                    self.enact_one(reconcile_id, ord, op, prior, unit_path, round)?;
+            for offset in remaining {
+                let op = &ops[offset as usize];
+                classes[offset as usize] =
+                    self.enact_one(reconcile_id, base_ord + offset, op, prior, unit_path, round)?;
             }
         }
         let failures = unit_failures(ops, &classes, unit_path, round);
@@ -1739,7 +1743,12 @@ mod tests {
         assert!(applied_keys(&foreman).contains(&"apt:goes".to_string()));
 
         let report = foreman.apply_scroll(leaf_scroll("host", vec![apt("stays")])).unwrap();
-        let _ = report;
+        let removes = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().map(String::as_str) == Some("<removes>"))
+            .expect("the vanished-removes group reports its own unit");
+        assert_eq!(removes.outcome, UnitOutcome::RolledBack);
         assert!(
             applied_keys(&foreman).contains(&"apt:stays".to_string()),
             "a failing vanished-remove rolling back must not reverse the present unit's freshly-applied glyph"

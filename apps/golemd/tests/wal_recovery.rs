@@ -110,6 +110,21 @@ fn foreman(room: Arc<MemoryPlanRoom>, rec: Arc<Host>) -> Foreman {
     Foreman::new("h1".into(), Box::new(room), Box::new(rec)).with_retry_config(RetryConfig { max_attempts: 1, base_delay_ms: 0, ..Default::default() })
 }
 
+fn leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
+    Scroll { name: name.into(), policy: None, contents: scroll_format::Contents::Glyphs(glyphs) }
+}
+
+fn two_unit_manifest(a: Vec<Glyph>, b: Vec<Glyph>) -> Vec<u8> {
+    scroll_format::to_bytes(&Manifest::from_scrolls(
+        vec![Scroll {
+            name: "h1".into(),
+            policy: None,
+            contents: scroll_format::Contents::Groups(vec![leaf("a", a), leaf("b", b)]),
+        }],
+        "test",
+    ))
+}
+
 #[test]
 fn normal_reconcile_writes_intent_then_outcome_per_op() {
     let room = Arc::new(MemoryPlanRoom::new());
@@ -270,6 +285,70 @@ fn crash_mid_reversal_resumes_rather_than_restarting() {
         *counts.entry(k.clone()).or_insert(0) += 1;
     }
     assert!(counts.values().all(|&c| c == 1), "a reversal step is never restarted from scratch: {counts:?}");
+}
+
+#[test]
+fn two_units_never_share_a_step_ord_and_action_within_one_reconcile() {
+    let room = Arc::new(MemoryPlanRoom::new());
+    let rec = Host::new();
+    let f = foreman(room.clone(), rec.clone());
+    f.apply_manifest(&two_unit_manifest(vec![apt("one"), apt("two")], vec![apt("three")]))
+        .unwrap();
+
+    let attempt = room.latest_attempt().unwrap().unwrap();
+    let steps = room.wal_steps_for(attempt.reconcile_id).unwrap();
+    let mut seen: Vec<(u64, WalAction)> = Vec::new();
+    for step in &steps {
+        if step.state != WalStepState::Intended {
+            continue;
+        }
+        let key = (step.step_ord, step.action);
+        assert!(
+            !seen.contains(&key),
+            "two ops share (step_ord {}, action {:?}) within one reconcile: {:?}",
+            step.step_ord,
+            step.action,
+            step.glyph_key
+        );
+        seen.push(key);
+    }
+    assert_eq!(seen.len(), 3, "three ops across the two units each got a distinct step_ord");
+}
+
+#[test]
+fn a_crash_mid_attempt_reverses_every_units_applied_step() {
+    let room = Arc::new(MemoryPlanRoom::new());
+    let rec = Host::new();
+    rec.set_panic_on_apply("apt:three");
+
+    let f1 = foreman(room.clone(), rec.clone());
+    let crashed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        f1.apply_manifest(&two_unit_manifest(vec![apt("one"), apt("two")], vec![apt("three")]))
+    }));
+    assert!(crashed.is_err(), "the reconcile crashed while enacting unit b");
+    drop(f1);
+
+    let attempt = room.latest_attempt().unwrap().unwrap();
+    assert_eq!(attempt.phase, AttemptPhase::Enacting, "crash left the attempt unsettled");
+    assert!(
+        rec.present_keys().iter().any(|k| k == "apt:one" || k == "apt:two"),
+        "unit a's glyphs applied before the crash in unit b"
+    );
+
+    rec.clear_panic_on_apply();
+    let _f2 = foreman(room.clone(), rec.clone());
+
+    let settled = room.latest_attempt().unwrap().unwrap();
+    assert_eq!(settled.phase, AttemptPhase::RolledBack, "recovery settles the crashed attempt");
+    assert!(
+        rec.present_keys().is_empty(),
+        "the whole attempt reversed across both units, not just the crashing one"
+    );
+    let outcomes = room.wal_steps().unwrap();
+    assert!(
+        golemd::wal::applied_outcomes(&outcomes).is_empty(),
+        "the applied-set fold stays exact after a multi-unit rollback"
+    );
 }
 
 #[test]
