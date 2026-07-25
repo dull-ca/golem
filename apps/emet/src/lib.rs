@@ -232,7 +232,7 @@ pub fn analyze(scrolls: &[Scroll]) -> Result<(), String> {
     use std::collections::HashMap;
     for scroll in scrolls {
         let mut seen: HashMap<String, &Glyph> = HashMap::new();
-        for r in &scroll.glyphs {
+        for r in scroll.all_glyphs() {
             let k = r.key();
             if let Some(prev) = seen.get(&k) {
                 if *prev != r {

@@ -4,4 +4,4 @@
 //! compiler keeps treating these as "the IR." The substance of the model, and
 //! why every field is inert concrete data, is documented there.
 
-pub use scroll_format::{Entry, Glyph, Perms, Scroll};
+pub use scroll_format::{Contents, Entry, Glyph, OnExhaust, Perms, Policy, Scroll};

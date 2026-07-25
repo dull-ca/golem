@@ -372,6 +372,18 @@ where
             Tok::Ident(name) if is_reserved_constructor(&name) => name,
         };
 
+        let policy_word = select! {
+            Tok::Ident(name) if name == "rollback" || name == "keep" => name,
+        }
+        .map_with(|name, e| {
+            let tag = if name == "rollback" {
+                crate::ast::OnExhaustTag::Rollback
+            } else {
+                crate::ast::OnExhaustTag::Keep
+            };
+            Spanned(Expr::PolicyExhaust(tag), span_range(e.span()))
+        });
+
         // Every reserved word commits into one constructor branch, then `try_map`
         // dispatches on the name. Parsing them together (rather than as
         // alternatives) is why a wrong/missing field surfaces as a field error for
@@ -446,7 +458,7 @@ where
                 _ => Err(Rich::custom(e.span(), TUPLE_TOO_LARGE_MESSAGE)),
             });
 
-        let atom = choice((interpolated, str_lit, char_lit, float_lit, int_lit, constructor, var, qualified, ctor, paren, list, record));
+        let atom = choice((interpolated, str_lit, char_lit, float_lit, int_lit, policy_word, constructor, var, qualified, ctor, paren, list, record));
 
         let postfix = atom.foldl(
             just(Tok::Dot).ignore_then(field_name()).repeated(),
@@ -1009,7 +1021,16 @@ fn fold_decls(items: Vec<DeclItem>) -> Result<Vec<Decl>, ParseError> {
 fn is_reserved_constructor(name: &str) -> bool {
     matches!(
         name,
-        "aptPackage" | "systemdService" | "file" | "directory" | "symlink" | "lineInFile" | "scroll"
+        "aptPackage"
+            | "systemdService"
+            | "file"
+            | "directory"
+            | "symlink"
+            | "lineInFile"
+            | "scroll"
+            | "rollback"
+            | "keep"
+            | "retry"
     )
 }
 
@@ -1058,10 +1079,30 @@ fn build_constructor(
             path: Box::new(take_field(ctor, fields, "path", span)?),
             line: Box::new(take_field(ctor, fields, "line", span)?),
         },
-        "scroll" => Expr::Scroll {
-            name: Box::new(take_field(ctor, fields, "name", span)?),
-            glyphs: Box::new(take_field(ctor, fields, "glyphs", span)?),
-        },
+        "scroll" => {
+            let name = Box::new(take_field(ctor, fields, "name", span)?);
+            let policy = fields.remove("policy").map(Box::new);
+            let glyphs = fields.remove("glyphs");
+            let groups = fields.remove("groups");
+            let contents = match (glyphs, groups) {
+                (Some(g), None) => ContentsExpr::Glyphs(Box::new(g)),
+                (None, Some(g)) => ContentsExpr::Groups(Box::new(g)),
+                _ => {
+                    return Err(Rich::custom(
+                        span,
+                        "`scroll` needs exactly one of `glyphs` or `groups`".to_string(),
+                    ))
+                }
+            };
+            Expr::Scroll { name, policy, contents }
+        }
+        "retry" => Expr::PolicyRetry(std::mem::take(fields)),
+        "rollback" | "keep" => {
+            return Err(Rich::custom(
+                span,
+                format!("`{ctor}` is written without braces (e.g. `policy = {ctor}`)"),
+            ))
+        }
         _ => unreachable!("unknown constructor `{ctor}`"),
     };
     if let Some(extra) = fields.keys().next() {

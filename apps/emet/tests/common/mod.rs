@@ -17,7 +17,7 @@ pub fn single_scroll_glyphs(src: &str) -> Vec<Glyph> {
     match compile(src) {
         Ok(c) => {
             assert_eq!(c.scrolls.len(), 1, "expected exactly one scroll");
-            c.scrolls.into_iter().next().unwrap().glyphs
+            c.scrolls.into_iter().next().unwrap().glyphs().to_vec()
         }
         Err(e) => panic!("expected success, got {:?}: {}", e.phase, e.msg),
     }

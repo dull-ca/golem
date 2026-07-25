@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Arm, Decl, EntryExpr, Expr, Pattern, Spanned};
+use crate::ast::{Arm, ContentsExpr, Decl, EntryExpr, Expr, Pattern, Spanned};
 
 /// Partition `decls` into strongly connected components in dependency order:
 /// every component precedes the components that depend on it, and a component
@@ -83,9 +83,21 @@ fn free_vars_expr(
             free_vars_expr(path, bound, names, refs);
             free_vars_expr(line, bound, names, refs);
         }
-        Expr::Scroll { name, glyphs } => {
+        Expr::Scroll { name, policy, contents } => {
             free_vars_expr(name, bound, names, refs);
-            free_vars_expr(glyphs, bound, names, refs);
+            if let Some(p) = policy {
+                free_vars_expr(p, bound, names, refs);
+            }
+            match contents {
+                ContentsExpr::Glyphs(glyphs) => free_vars_expr(glyphs, bound, names, refs),
+                ContentsExpr::Groups(groups) => free_vars_expr(groups, bound, names, refs),
+            }
+        }
+        Expr::PolicyExhaust(_) => {}
+        Expr::PolicyRetry(fields) => {
+            for value in fields.values() {
+                free_vars_expr(value, bound, names, refs);
+            }
         }
         Expr::List(items) => {
             for it in items {

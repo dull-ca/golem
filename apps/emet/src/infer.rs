@@ -1083,14 +1083,49 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             Ok(con("LineInFile"))
         }
 
-        Expr::Scroll { name, glyphs } => {
+        Expr::Scroll { name, policy, contents } => {
             let nt = infer_expr(inf, env, name)?;
             inf.unify(&nt, &con("String"), &name.1)?;
-            let gt = infer_expr(inf, env, glyphs)?;
-            let gt = widen_glyph_subtype(inf, &gt);
-            let glyph_list = Type::Con("List".to_string(), vec![con("Glyph")]);
-            inf.unify(&gt, &glyph_list, &glyphs.1)?;
+            if let Some(p) = policy {
+                let pt = infer_expr(inf, env, p)?;
+                inf.unify(&pt, &con("Policy"), &p.1)?;
+            }
+            match contents {
+                ContentsExpr::Glyphs(glyphs) => {
+                    let gt = infer_expr(inf, env, glyphs)?;
+                    let gt = widen_glyph_subtype(inf, &gt);
+                    let glyph_list = Type::Con("List".to_string(), vec![con("Glyph")]);
+                    inf.unify(&gt, &glyph_list, &glyphs.1)?;
+                }
+                ContentsExpr::Groups(groups) => {
+                    let gt = infer_expr(inf, env, groups)?;
+                    let scroll_list = Type::Con("List".to_string(), vec![con("Scroll")]);
+                    inf.unify(&gt, &scroll_list, &groups.1)?;
+                }
+            }
             Ok(con("Scroll"))
+        }
+
+        Expr::PolicyExhaust(_) => Ok(con("Policy")),
+
+        Expr::PolicyRetry(fields) => {
+            for (key, value) in fields.iter() {
+                let expected = match key.as_str() {
+                    "maxAttempts" => con("Int"),
+                    "baseDelayMs" | "maxDelayMs" | "maxElapsedMs" => con("Int"),
+                    "backoffMultiplier" | "jitterFraction" => con("Float"),
+                    "onExhaust" => con("Policy"),
+                    other => {
+                        return Err(TypeError::new(
+                            format!("unknown `retry` field `{other}`"),
+                            value.1.clone(),
+                        ))
+                    }
+                };
+                let vt = infer_expr(inf, env, value)?;
+                inf.unify(&vt, &expected, &value.1)?;
+            }
+            Ok(con("Policy"))
         }
 
         Expr::List(items) => {
@@ -1738,7 +1773,8 @@ fn infer_group(
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "String" | "Char" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
-        | "Glyph" | "Entry" | "Scroll" | "Bool" | "Int" | "Float" | "Order" => Some(0),
+        | "Glyph" | "Entry" | "Scroll" | "Policy" | "OnExhaust" | "Contents" | "Bool" | "Int"
+        | "Float" | "Order" => Some(0),
         "List" | "Maybe" => Some(1),
         _ => None,
     }
@@ -1944,6 +1980,9 @@ fn builtin_types() -> Vec<(String, usize)> {
         "Glyph",
         "Entry",
         "Scroll",
+        "Policy",
+        "OnExhaust",
+        "Contents",
         "Bool",
         "Int",
         "Float",

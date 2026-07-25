@@ -172,8 +172,9 @@ fn print_text(compiled: &Compiled) {
     println!("main : {}", compiled.main_ty);
     println!("planned scrolls ({}):", compiled.scrolls.len());
     for s in &compiled.scrolls {
-        println!("  scroll `{}` ({} glyphs):", s.name, s.glyphs.len());
-        for g in &s.glyphs {
+        let glyphs = s.all_glyphs();
+        println!("  scroll `{}` ({} glyphs):", s.name, glyphs.len());
+        for g in glyphs {
             println!("    * {}", g.describe());
         }
     }

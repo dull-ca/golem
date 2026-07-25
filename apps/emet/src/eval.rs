@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::ast::*;
-use crate::ir::{Entry, Glyph, Perms, Scroll};
+use crate::ir::{Contents, Entry, Glyph, OnExhaust, Perms, Policy, Scroll};
 use crate::prelude;
 
 pub type BuiltinFn = fn(Vec<Value>) -> Value;
@@ -41,6 +41,7 @@ pub enum Value {
     Char(char),
     Glyph(Glyph),
     Scroll(Scroll),
+    Policy(Policy),
     List(Vec<Value>),
     Record(BTreeMap<String, Value>),
     /// A tuple `(a, b)` / `(a, b, c)`, or unit `()` as the empty tuple
@@ -82,6 +83,7 @@ impl std::fmt::Debug for Value {
             Value::Char(c) => f.debug_tuple("Char").field(c).finish(),
             Value::Glyph(g) => f.debug_tuple("Glyph").field(g).finish(),
             Value::Scroll(s) => f.debug_tuple("Scroll").field(s).finish(),
+            Value::Policy(p) => f.debug_tuple("Policy").field(p).finish(),
             Value::List(vs) => f.debug_tuple("List").field(vs).finish(),
             Value::Record(m) => f.debug_tuple("Record").field(m).finish(),
             Value::Tuple(vs) => f.debug_tuple("Tuple").field(vs).finish(),
@@ -164,10 +166,42 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             path: as_str(eval(env, path, depth)?),
             line: as_str(eval(env, line, depth)?),
         }),
-        Expr::Scroll { name, glyphs } => Value::Scroll(Scroll {
-            name: as_str(eval(env, name, depth)?),
-            glyphs: as_glyphs(eval(env, glyphs, depth)?),
+        Expr::Scroll { name, policy, contents } => {
+            let name = as_str(eval(env, name, depth)?);
+            let policy = match policy {
+                Some(p) => Some(as_policy(eval(env, p, depth)?)),
+                None => None,
+            };
+            let contents = match contents {
+                ContentsExpr::Glyphs(glyphs) => Contents::Glyphs(as_glyphs(eval(env, glyphs, depth)?)),
+                ContentsExpr::Groups(groups) => Contents::Groups(as_scrolls(eval(env, groups, depth)?)),
+            };
+            Value::Scroll(Scroll { name, policy, contents })
+        }
+        Expr::PolicyExhaust(tag) => Value::Policy(Policy {
+            on_exhaust: Some(match tag {
+                crate::ast::OnExhaustTag::Rollback => OnExhaust::Rollback,
+                crate::ast::OnExhaustTag::Keep => OnExhaust::Keep,
+            }),
+            ..Policy::default()
         }),
+        Expr::PolicyRetry(fields) => {
+            let mut policy = Policy::default();
+            for (key, value) in fields.iter() {
+                let v = eval(env, value, depth)?;
+                match key.as_str() {
+                    "maxAttempts" => policy.max_attempts = Some(as_int(v) as u32),
+                    "baseDelayMs" => policy.base_delay_ms = Some(as_int(v) as u64),
+                    "maxDelayMs" => policy.max_delay_ms = Some(as_int(v) as u64),
+                    "maxElapsedMs" => policy.max_elapsed_ms = Some(as_int(v) as u64),
+                    "backoffMultiplier" => policy.backoff_multiplier = Some(as_float(v)),
+                    "jitterFraction" => policy.jitter_fraction = Some(as_float(v)),
+                    "onExhaust" => policy.on_exhaust = as_policy(v).on_exhaust,
+                    other => unreachable!("unknown retry field {other} survived inference"),
+                }
+            }
+            Value::Policy(policy)
+        }
         Expr::Ctor(name) => env.get(name).cloned().unwrap_or_else(|| unreachable!("unbound ctor {name}")),
         Expr::List(items) => {
             let mut vs = Vec::with_capacity(items.len());
@@ -614,5 +648,33 @@ fn as_scroll(v: &Value) -> Scroll {
     match v {
         Value::Scroll(s) => s.clone(),
         _ => unreachable!("expected Scroll in main list"),
+    }
+}
+
+fn as_scrolls(v: Value) -> Vec<Scroll> {
+    match v {
+        Value::List(items) => items.iter().map(as_scroll).collect(),
+        _ => unreachable!("expected List of Scroll"),
+    }
+}
+
+fn as_policy(v: Value) -> Policy {
+    match v {
+        Value::Policy(p) => p,
+        _ => unreachable!("expected Policy"),
+    }
+}
+
+fn as_int(v: Value) -> i64 {
+    match v {
+        Value::Int(n) => n,
+        _ => unreachable!("expected Int"),
+    }
+}
+
+fn as_float(v: Value) -> f64 {
+    match v {
+        Value::Float(x) => x,
+        _ => unreachable!("expected Float"),
     }
 }

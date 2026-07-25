@@ -188,8 +188,11 @@ pub enum Expr {
     /// `List Scroll` (ADR 0009).
     Scroll {
         name: Box<Spanned<Expr>>,
-        glyphs: Box<Spanned<Expr>>,
+        policy: Option<Box<Spanned<Expr>>>,
+        contents: ContentsExpr,
     },
+    PolicyExhaust(OnExhaustTag),
+    PolicyRetry(BTreeMap<String, Spanned<Expr>>),
     List(Vec<Spanned<Expr>>),
     /// A reference to a sum-type value constructor (`Just`, `Nothing`, `True`,
     /// `LT`, …). Distinct from `Var`: constructors live in the prelude and,
@@ -250,6 +253,18 @@ pub enum EntryExpr {
     Symlink {
         target: Box<Spanned<Expr>>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentsExpr {
+    Glyphs(Box<Spanned<Expr>>),
+    Groups(Box<Spanned<Expr>>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnExhaustTag {
+    Rollback,
+    Keep,
 }
 
 /// One `pattern -> body` arm of a `case`.
