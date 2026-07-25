@@ -227,3 +227,26 @@ fn occurs_error_renders_friendly_typevars() {
     assert_eq!(e.phase, Phase::Type);
     assert!(!e.msg.contains("t1"), "leaked internal typevar: {}", e.msg);
 }
+
+#[test]
+fn expected_set_has_no_virtual_semicolon() {
+    let e = err("main =\n  let x = 1\n  x");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(!e.msg.contains("';'"), "virtual ; leaked: {}", e.msg);
+}
+
+#[test]
+fn expected_set_has_no_something_else() {
+    let e = err("f x x + 1\n\nmain = f 2");
+    assert_eq!(e.phase, Phase::Parse);
+    assert!(!e.msg.contains("something else"), "jargon leaked: {}", e.msg);
+    assert!(e.msg.contains("an expression"), "expected replacement: {}", e.msg);
+}
+
+#[test]
+fn expected_set_dedupes_repeated_brace() {
+    let e = err("main = x + * y");
+    assert_eq!(e.phase, Phase::Parse);
+    let n = e.msg.matches("'}'").count();
+    assert!(n <= 1, "duplicate '}}' in: {}", e.msg);
+}

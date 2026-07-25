@@ -1208,6 +1208,38 @@ const TUPLE_TOO_LARGE_MESSAGE: &str = "A tuple can have at most 3 elements. For 
 /// `layout::layout_all`) into a `Module`. Returns every error chumsky
 /// collected, or one synthetic "unexpected end of input" error if parsing
 /// failed without producing any.
+fn humanize_expected(raw: &str) -> String {
+    let Some(idx) = raw.find("expected ") else {
+        return raw.replace("something else", "an expression");
+    };
+    let (head, tail) = raw.split_at(idx);
+    let list = &tail["expected ".len()..];
+    let mut items: Vec<String> = Vec::new();
+    for piece in list.split(", ") {
+        let piece = piece.strip_prefix("or ").unwrap_or(piece);
+        let cleaned = piece.trim().replace("something else", "an expression");
+        if cleaned == "';'" {
+            continue;
+        }
+        if items.iter().any(|existing| existing == &cleaned) {
+            continue;
+        }
+        items.push(cleaned);
+    }
+    if items.is_empty() {
+        return format!("{head}expected an expression");
+    }
+    let joined = match items.len() {
+        1 => items[0].clone(),
+        2 => format!("{} or {}", items[0], items[1]),
+        _ => {
+            let last = items.pop().unwrap();
+            format!("{}, or {}", items.join(", "), last)
+        }
+    };
+    format!("{head}expected {joined}")
+}
+
 pub fn parse(
     tokens: &[Token],
     name: Option<String>,
@@ -1231,7 +1263,7 @@ pub fn parse(
         let out: Vec<ParseError> = errors
             .into_iter()
             .map(|e| ParseError {
-                msg: e.to_string(),
+                msg: humanize_expected(&e.to_string()),
                 span: span_range(*e.span()),
             })
             .collect();
