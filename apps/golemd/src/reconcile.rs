@@ -46,7 +46,7 @@ pub fn plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp> {
         }
     }
 
-    for prev in prior {
+    for prev in prior.iter().rev() {
         if !seen.contains(&prev.op.key()) {
             ops.push(GlyphOp::Remove {
                 cid: prev.cid,
@@ -148,6 +148,20 @@ mod tests {
             vec![
                 GlyphOp::Install { cid: glyph_content_id(&apt("one")), glyph: apt("one") },
                 GlyphOp::Install { cid: glyph_content_id(&apt("two")), glyph: apt("two") },
+            ]
+        );
+    }
+
+    #[test]
+    fn removes_come_out_in_reverse_prior_order() {
+        let prior = vec![applied(apt("first")), applied(apt("second")), applied(apt("third"))];
+        let ops = plan(&prior, &scroll(vec![]));
+        assert_eq!(
+            ops,
+            vec![
+                GlyphOp::Remove { cid: glyph_content_id(&apt("third")), glyph: apt("third") },
+                GlyphOp::Remove { cid: glyph_content_id(&apt("second")), glyph: apt("second") },
+                GlyphOp::Remove { cid: glyph_content_id(&apt("first")), glyph: apt("first") },
             ]
         );
     }
