@@ -99,6 +99,32 @@ main =
 }
 
 #[test]
+fn retry_record_sets_the_remaining_knobs() {
+    let src = r#"
+main =
+  [ scroll
+      { name = "x"
+      , policy = retry { maxDelayMs = 30000, maxElapsedMs = 120000, jitterFraction = 0.25 }
+      , glyphs = [ aptPackage { name = "one" } ]
+      }
+  ]
+"#;
+    let policy = scrolls(src)[0].policy.clone().unwrap();
+    assert_eq!(policy.max_delay_ms, Some(30000));
+    assert_eq!(policy.max_elapsed_ms, Some(120000));
+    assert_eq!(policy.jitter_fraction, Some(0.25));
+    assert_eq!(policy.max_attempts, None);
+}
+
+#[test]
+fn an_unknown_retry_field_is_a_type_error() {
+    let src = r#"main = [ scroll { name = "x", policy = retry { retrys = 3 }, glyphs = [ ] } ]"#;
+    let e = err(src);
+    assert_eq!(e.phase, Phase::Type);
+    assert!(e.msg.contains("retrys"), "got: {}", e.msg);
+}
+
+#[test]
 fn groups_must_be_a_scroll_list_not_a_glyph_list() {
     let src = r#"main = [ scroll { name = "x", groups = [ aptPackage { name = "one" } ] } ]"#;
     let e = err(src);
