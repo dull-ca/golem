@@ -372,6 +372,10 @@ where
             Tok::Ident(name) if is_reserved_constructor(&name) => name,
         };
 
+        // `rollback` / `keep` build a policy without braces (the build/match
+        // split of ADR 0017), so they are atoms in their own right rather than
+        // record constructors. A braced use falls through to `build_constructor`,
+        // which rejects it with the "written without braces" hint.
         let policy_word = select! {
             Tok::Ident(name) if name == "rollback" || name == "keep" => name,
         }
@@ -1084,6 +1088,11 @@ fn build_constructor(
             let policy = fields.remove("policy").map(Box::new);
             let glyphs = fields.remove("glyphs");
             let groups = fields.remove("groups");
+            // Leaf-xor-branch enforced at the surface, the same per-arm field
+            // discipline `build_constructor` already applies to the filesystem
+            // glyph (ADR 0019 §2 / ADR 0031 §7). The wording is load-bearing —
+            // `recursive_scroll.rs` asserts on "exactly one of `glyphs` or
+            // `groups`".
             let contents = match (glyphs, groups) {
                 (Some(g), None) => ContentsExpr::Glyphs(Box::new(g)),
                 (None, Some(g)) => ContentsExpr::Groups(Box::new(g)),
@@ -1097,6 +1106,8 @@ fn build_constructor(
             Expr::Scroll { name, policy, contents }
         }
         "retry" => Expr::PolicyRetry(std::mem::take(fields)),
+        // `rollback` / `keep` parse as atoms (see `policy_word`); reaching here
+        // means the author braced them, so point them at the braceless form.
         "rollback" | "keep" => {
             return Err(Rich::custom(
                 span,

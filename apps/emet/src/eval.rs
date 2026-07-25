@@ -166,6 +166,8 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             path: as_str(eval(env, path, depth)?),
             line: as_str(eval(env, line, depth)?),
         }),
+        // A leaf lowers its glyph list, a branch recurses into its sub-scrolls;
+        // the `ContentsExpr` arm already fixed which (ADR 0031 §7).
         Expr::Scroll { name, policy, contents } => {
             let name = as_str(eval(env, name, depth)?);
             let policy = match policy {
@@ -178,6 +180,8 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             };
             Value::Scroll(Scroll { name, policy, contents })
         }
+        // The braceless shorthand sets only `on_exhaust`; every retry knob stays
+        // at its default (ADR 0031 §3).
         Expr::PolicyExhaust(tag) => Value::Policy(Policy {
             on_exhaust: Some(match tag {
                 crate::ast::OnExhaustTag::Rollback => OnExhaust::Rollback,
@@ -196,7 +200,10 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
                     "maxElapsedMs" => policy.max_elapsed_ms = Some(as_int(v) as u64),
                     "backoffMultiplier" => policy.backoff_multiplier = Some(as_float(v)),
                     "jitterFraction" => policy.jitter_fraction = Some(as_float(v)),
+                    // `onExhaust` is a nested `Policy` (the shorthand value); only
+                    // its `on_exhaust` matters here.
                     "onExhaust" => policy.on_exhaust = as_policy(v).on_exhaust,
+                    // `infer` rejects any other field, so this cannot fire.
                     other => unreachable!("unknown retry field {other} survived inference"),
                 }
             }

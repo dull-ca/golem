@@ -1,3 +1,6 @@
+//! The recursive scroll surface: leaf/branch grouping and optional policy
+//! (ADR 0031 §7).
+
 mod common;
 
 use common::err;

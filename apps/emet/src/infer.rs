@@ -1108,6 +1108,11 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
 
         Expr::PolicyExhaust(_) => Ok(con("Policy")),
 
+        // `retry`'s knobs are a fixed, typed field set; an unknown field is a
+        // type error here (there is no open-record fallback). `onExhaust` takes a
+        // `Policy` — the shorthand `keep`/`rollback` value — rather than a
+        // bespoke `OnExhaust` type, so a policy is one uniform type wherever it
+        // appears (the `scroll` field and this nested field alike).
         Expr::PolicyRetry(fields) => {
             for (key, value) in fields.iter() {
                 let expected = match key.as_str() {
@@ -1769,7 +1774,9 @@ fn infer_group(
 /// decls extend this set; every type reference in a signature or variant field
 /// must resolve against one or the other. `Entry` is a built-in type now that a
 /// `Filesystem` glyph's `entry` field is matchable (ADR 0017/0019), so a
-/// signature or pattern may name it.
+/// signature or pattern may name it. `Policy`, `OnExhaust`, and `Contents` are
+/// first-class for the same reason (ADR 0031 §7): a library can compute a policy
+/// or a group tree behind a signature and hand it to `scroll`.
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "String" | "Char" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"

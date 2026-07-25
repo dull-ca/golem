@@ -183,15 +183,21 @@ pub enum Expr {
         path: Box<Spanned<Expr>>,
         line: Box<Spanned<Expr>>,
     },
-    /// `scroll { name = …, glyphs = … }` — the per-host container that groups
-    /// glyphs for one machine. Not a glyph; the program's output bottom is a
-    /// `List Scroll` (ADR 0009).
+    /// `scroll { name = …, policy = …, glyphs | groups = … }` — a node in the
+    /// recursive scroll tree (ADR 0031 §7). A leaf carries `glyphs`, a branch
+    /// carries named sub-`groups`; `contents` holds exactly one, never both.
+    /// `policy` is optional and cascades to the leaves beneath. Not a glyph; the
+    /// program's output bottom is a `List Scroll` of per-host roots (ADR 0009).
     Scroll {
         name: Box<Spanned<Expr>>,
         policy: Option<Box<Spanned<Expr>>>,
         contents: ContentsExpr,
     },
+    /// The braceless policy shorthand `rollback` / `keep` — an `on_exhaust`
+    /// choice with the other retry knobs left to default (ADR 0031 §3).
     PolicyExhaust(OnExhaustTag),
+    /// `retry { maxAttempts = …, onExhaust = keep, … }` — the full policy record
+    /// carrying the ADR 0029 §3 retry knobs. Fields are validated in `infer`.
     PolicyRetry(BTreeMap<String, Spanned<Expr>>),
     List(Vec<Spanned<Expr>>),
     /// A reference to a sum-type value constructor (`Just`, `Nothing`, `True`,
@@ -255,12 +261,18 @@ pub enum EntryExpr {
     },
 }
 
+/// The `glyphs`-xor-`groups` arm of a [`Expr::Scroll`], mirroring
+/// `scroll_format::Contents` at the surface: a scroll is a leaf (a `List Glyph`)
+/// or a branch (a `List Scroll`), never a mix. `build_constructor` (`parser.rs`)
+/// enforces the exclusion (ADR 0031 §7).
 #[derive(Debug, Clone)]
 pub enum ContentsExpr {
     Glyphs(Box<Spanned<Expr>>),
     Groups(Box<Spanned<Expr>>),
 }
 
+/// The `on_exhaust` choice a [`Expr::PolicyExhaust`] carries — the two braceless
+/// policy words, lowered to `scroll_format::OnExhaust` in `eval` (ADR 0031 §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnExhaustTag {
     Rollback,
