@@ -9,6 +9,7 @@ host before being POSTed to the guest's daemon.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -79,6 +80,38 @@ def compile_manifest(paths: Paths, source: Path) -> Path:
     if not out.exists():
         raise FleetError(f"emet did not emit {out}")
     return out
+
+
+def manifest_scroll_names(paths: Paths, source: Path) -> list[str]:
+    """The scroll (host) names an `.emet` source compiles to, read from a
+    `--json` build. A prebuilt manifest passed straight through has no source to
+    introspect, so this returns `[]` and the caller renders no manifest context.
+    A build failure is non-fatal here: names are context, not the apply itself."""
+    if not source.is_absolute():
+        source = paths.root / source
+    source = source.resolve()
+    if source.suffix != ".emet":
+        return []
+    result = subprocess.run(
+        ["cargo", "run", "-q", "-p", "emet", "--", "build", str(source), "--json"],
+        cwd=str(paths.root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        manifest = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        return []
+    scrolls = manifest.get("scrolls") if isinstance(manifest, dict) else None
+    names: list[str] = []
+    for addressed in scrolls or []:
+        scroll = addressed.get("scroll") if isinstance(addressed, dict) else None
+        name = scroll.get("name") if isinstance(scroll, dict) else None
+        if isinstance(name, str):
+            names.append(name)
+    return names
 
 
 def service_unit(host: str) -> str:

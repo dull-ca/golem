@@ -234,26 +234,82 @@ def _glyph_key_desc(glyph_key: Optional[str]) -> str:
 
 _UNIT_COLOR = {"settled": "green", "partial": "yellow", "rolled_back": "red"}
 
+_GLYPH_OUTCOME_STYLE = {
+    "applied": ("✓", "green", "applied"),
+    "unchanged": ("·", "dim", "unchanged"),
+    "rolled_back": ("↩", "yellow", "rolled back"),
+    "failed": ("✗", "red", "failed"),
+}
+
 
 def _render_report(name: str, report: dict) -> None:
     revision = report.get("revision") or {}
-    _render_revision(name, revision)
+    units = report.get("units") or []
+    _render_revision(name, revision, units)
     top = report.get("outcome", "")
     color = _UNIT_COLOR.get(top, "white")
     console.print(f"  [{color}]apply {top}[/{color}]")
-    for unit in report.get("units") or []:
+    for unit in units:
         path = " / ".join(unit.get("unit_path") or [])
         outcome = unit.get("outcome", "")
         ucolor = _UNIT_COLOR.get(outcome, "white")
         console.print(f"    [{ucolor}]{path}: {outcome}[/{ucolor}]")
-        for failure in unit.get("failures") or []:
-            desc = _glyph_key_desc(failure.get("glyph_key"))
-            cls = failure.get("class", "")
-            attempts = failure.get("attempts", 0)
-            message = failure.get("message", "")
-            console.print(
-                f"      [red]✗ {desc}  {cls} after {attempts} tries — {message}[/red]"
-            )
+        glyphs = unit.get("glyphs")
+        if glyphs:
+            classes = {
+                f.get("glyph_key"): f.get("class", "")
+                for f in unit.get("failures") or []
+            }
+            for glyph in glyphs:
+                _render_glyph_line(glyph, classes)
+        else:
+            for failure in unit.get("failures") or []:
+                _render_failure_line(failure)
+
+
+def _render_glyph_line(glyph: dict, classes: dict) -> None:
+    desc = _glyph_key_desc(glyph.get("glyph_key"))
+    outcome = glyph.get("outcome", "")
+    if outcome == "failed":
+        cls = classes.get(glyph.get("glyph_key")) or "failed"
+        attempts = glyph.get("attempts", 0)
+        message = glyph.get("message") or ""
+        console.print(
+            f"      [red]✗ {desc}  {cls} after {attempts} tries — {message}[/red]"
+        )
+        return
+    mark, style, label = _GLYPH_OUTCOME_STYLE.get(outcome, ("·", "white", outcome))
+    console.print(f"      [{style}]{mark} {desc}  {label}[/{style}]")
+
+
+def _render_failure_line(failure: dict) -> None:
+    desc = _glyph_key_desc(failure.get("glyph_key"))
+    cls = failure.get("class", "")
+    attempts = failure.get("attempts", 0)
+    message = failure.get("message", "")
+    console.print(
+        f"      [red]✗ {desc}  {cls} after {attempts} tries — {message}[/red]"
+    )
+
+
+def _render_manifest_context(scroll_names: list[str], applying: list[str]) -> None:
+    if not scroll_names:
+        return
+    console.print(
+        f"  manifest: {len(scroll_names)} "
+        f"scroll{'s' if len(scroll_names) != 1 else ''} "
+        f"([cyan]{', '.join(scroll_names)}[/cyan])"
+    )
+    targeted = [n for n in applying if n in scroll_names]
+    skipped = [n for n in scroll_names if n not in applying]
+    host_word = "host" if len(targeted) == 1 else "hosts"
+    line = (
+        f"  applying to {len(targeted)} running {host_word}: "
+        f"[green]{', '.join(targeted) or '—'}[/green]"
+    )
+    if skipped:
+        line += f"  [dim]({len(skipped)} skipped: {', '.join(skipped)})[/dim]"
+    console.print(line)
 
 
 def _render_apply_error(name: str, status: int, body: dict) -> None:
@@ -262,7 +318,7 @@ def _render_apply_error(name: str, status: int, body: dict) -> None:
     console.print(f"  [red]{name}: {kind} (HTTP {status})[/red]\n  {message}")
 
 
-def _render_revision(name: str, revision: dict) -> None:
+def _render_revision(name: str, revision: dict, units: Optional[list] = None) -> None:
     scroll = _cid_short(_cid_hex(revision.get("scroll_content_id")))
     console.print(
         f"  [green]{name}: revision {revision.get('id')}[/green] "
@@ -270,7 +326,13 @@ def _render_revision(name: str, revision: dict) -> None:
     )
     outcomes = revision.get("outcomes") or []
     if not outcomes:
-        console.print("    [dim]no changes[/dim]")
+        units = units or []
+        if any(u.get("outcome") == "rolled_back" for u in units):
+            console.print("    [yellow]nothing committed — rolled back[/yellow]")
+        elif units and all(u.get("outcome") == "settled" for u in units):
+            console.print("    [dim]already up to date[/dim]")
+        else:
+            console.print("    [dim]no changes[/dim]")
         return
     table = Table("", "op", "glyph", "content-id", box=None, pad_edge=False, show_header=False)
     for outcome in outcomes:
@@ -296,6 +358,8 @@ def apply(
     manifest_path = deploy_ops.compile_manifest(p, source)
     manifest = manifest_path.read_bytes()
     console.print(f"  manifest: {manifest_path} ({len(manifest)} bytes)")
+    scroll_names = deploy_ops.manifest_scroll_names(p, source)
+    _render_manifest_context(scroll_names, [record.name for record in records])
     for record in records:
         console.print(f"[bold]Applying to {record.name}[/bold]…")
         response = golemd_client.apply_manifest(record, manifest)
