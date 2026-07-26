@@ -283,10 +283,14 @@ attempt was `changed = true` and its path is under a unit directory**, run a
 not). "Affected unit" is resolved by mapping the changed file's path to its unit
 name (a quadlet `foo.container` → `foo.service`; a `foo.service` file → itself;
 a drop-in under `foo.service.d/` → `foo.service`). The restart is itself a WAL
-step (`action = 'apply'` on the systemd resource, its inverse `Nothing` — a
-restart of a running unit has no separate reversal; the unit's enabled/active
-lifecycle is still owned by the earlier `systemdService` step), so a crash during
-propagation recovers like any other step.
+step under a distinct `action = 'restart'` (its inverse `Nothing` — a restart of
+a running unit has no separate reversal; the unit's enabled/active lifecycle is
+still owned by the earlier `systemdService` step). The distinct action keeps the
+bracket out of the applied-set fold (`wal::applied_outcomes` folds only `apply`
+steps) and out of rollback, so a restart never registers its unit as applied — a
+service that failed to enact still diffs as an attempt next reconcile rather than
+being masked to a `Noop`. A crash during propagation recovers like any other
+step, re-running the idempotent try-restart.
 
 This keeps the unit's `Noop` honest — the *unit resource* genuinely did not
 change — while closing the gap that its *inputs* did. It is deliberately scoped

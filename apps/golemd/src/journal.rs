@@ -186,11 +186,22 @@ pub struct AppliedState {
 /// [`Inverse`]. A `Replace` that cannot update in place is recorded as a
 /// `Reverse` of the old version followed by an `Apply` of the new one; a rollback
 /// is a sequence of steps whose `action` is the opposite of the one it undoes.
+///
+/// `Restart` is a third, non-fold direction: the config-propagation pass
+/// (`foreman::propagate_config`, ADR 0020 §5) records each `try-restart` of a
+/// unit whose backing file changed as a `Restart` step. It is an operational
+/// record, not a claim on the applied set — a restart of a running unit has no
+/// separate reversal, the unit's lifecycle stays owned by its `systemdService`
+/// step. So `Restart` steps are deliberately excluded from every fold that
+/// derives host truth (`wal::applied_outcomes`) and from rollback
+/// (`foreman::next_reversible`); a crash mid-propagation re-runs the idempotent
+/// try-restart rather than reversing it (`foreman::redrive_intended`).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WalAction {
     Apply,
     Reverse,
+    Restart,
 }
 
 /// The lifecycle of one WAL step (ADR 0020 §1). A step is appended `Intended`

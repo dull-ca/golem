@@ -716,10 +716,16 @@ impl Foreman {
     /// its input did — so the running unit would otherwise never pick up the new
     /// config. Collect the distinct units mapped from this attempt's changed
     /// files ([`unit_for_config_file`]) and `restart_unit` each, appended as its
-    /// own WAL steps (keyed `restart:<unit>`, inverse `Nothing` — a restart of a
-    /// running unit has no separate reversal; the unit's lifecycle stays owned by
-    /// its `systemdService` step), so a crash mid-propagation recovers like any
-    /// other step. Scoped to files golem itself wrote under unit directories, so
+    /// own WAL steps under [`WalAction::Restart`] (keyed `restart:<unit>`, inverse
+    /// `Nothing` — a restart of a running unit has no separate reversal; the
+    /// unit's lifecycle stays owned by its `systemdService` step). The `Restart`
+    /// action keeps these brackets out of the applied-state fold
+    /// (`wal::applied_outcomes` folds only `Apply` steps) so a restart never
+    /// registers its unit as applied — a service that failed to enact must still
+    /// diff as an attempt next reconcile, never masked to `Noop` — and out of
+    /// rollback ([`next_reversible`]); a crash mid-propagation re-runs the
+    /// idempotent try-restart ([`Foreman::redrive_intended`]) rather than
+    /// reversing it. Scoped to files golem itself wrote under unit directories, so
     /// it never restarts units for host-managed config golem did not touch. A
     /// changed file whose `Done` a later `Reversed` cancelled — a unit that applied
     /// its config then rolled back under `on_exhaust = rollback` — is excluded via
@@ -767,7 +773,7 @@ impl Foreman {
                 reconcile_id,
                 step_ord,
                 &format!("restart:{unit}"),
-                WalAction::Apply,
+                WalAction::Restart,
                 WalStepState::Intended,
                 &op,
                 Some(&Inverse::Nothing),
@@ -783,7 +789,7 @@ impl Foreman {
                 reconcile_id,
                 step_ord,
                 &format!("restart:{unit}"),
-                WalAction::Apply,
+                WalAction::Restart,
                 state,
                 &op,
                 Some(&Inverse::Nothing),
@@ -844,10 +850,8 @@ impl Foreman {
     /// `Reversed`. Resumable and idempotent: it re-reads the WAL each iteration
     /// and [`next_reversible`] only returns a `Done` step not already `Reversed`,
     /// so a rollback interrupted by a crash continues from where the log stopped
-    /// and never reverses a step twice (ADR 0020 §3). A failed undo is logged and
-    /// the step is still marked `Reversed` — the reconcilers are idempotent, so a
-    /// re-drive on the next recovery converges. Reversing an `Apply` runs
-    /// `reverse`; reversing a `Reverse` re-`apply`s, restoring the old version.
+    /// and never reverses a step twice (ADR 0020 §3). Each step is undone by
+    /// [`Foreman::reverse_target`].
     fn rollback_attempt(&self, reconcile_id: u64) -> Result<()> {
         self.planroom
             .set_attempt_phase(reconcile_id, AttemptPhase::RollingBack)?;
@@ -856,32 +860,44 @@ impl Foreman {
             let Some(target) = next_reversible(&steps) else {
                 break;
             };
-            let cid = applied_cid_of(&target.op, target.action);
-            let outcome = Outcome {
-                op: target.op.clone(),
-                cid,
-                inverse: target.inverse.clone().unwrap_or(Inverse::Nothing),
-                changed: target.changed.unwrap_or(false),
-            };
-            let undone = match target.action {
-                WalAction::Apply => self.reconciler.reverse(&outcome),
-                WalAction::Reverse => self.reconciler.apply(target.op.glyph(), cid).map(|_| ()),
-            };
-            if let Err(e) = undone {
-                warn!(glyph_key = %target.glyph_key, phase = "reverse", ?e, "rollback step failed");
-            }
-            self.planroom.append_wal_step(
-                reconcile_id,
-                target.step_ord,
-                &target.glyph_key,
-                target.action,
-                WalStepState::Reversed,
-                &target.op,
-                target.inverse.as_ref(),
-                target.changed,
-                &target.unit_path,
-            )?;
+            self.reverse_target(reconcile_id, &target)?;
         }
+        Ok(())
+    }
+
+    /// Undo one still-applied step and mark it `Reversed`. Reversing an `Apply`
+    /// runs `reverse`; reversing a `Reverse` re-`apply`s, restoring the old
+    /// version. [`next_reversible`] never yields a [`WalAction::Restart`] step, so
+    /// that arm is unreachable — a restart has no reversal. A failed undo is
+    /// logged and the step is still marked `Reversed`; the reconcilers are
+    /// idempotent, so a re-drive on the next recovery converges (ADR 0020 §3).
+    fn reverse_target(&self, reconcile_id: u64, target: &WalStep) -> Result<()> {
+        let cid = applied_cid_of(&target.op, target.action);
+        let outcome = Outcome {
+            op: target.op.clone(),
+            cid,
+            inverse: target.inverse.clone().unwrap_or(Inverse::Nothing),
+            changed: target.changed.unwrap_or(false),
+        };
+        let undone = match target.action {
+            WalAction::Apply => self.reconciler.reverse(&outcome),
+            WalAction::Reverse => self.reconciler.apply(target.op.glyph(), cid).map(|_| ()),
+            WalAction::Restart => unreachable!("a Restart step is never reversible"),
+        };
+        if let Err(e) = undone {
+            warn!(glyph_key = %target.glyph_key, phase = "reverse", ?e, "rollback step failed");
+        }
+        self.planroom.append_wal_step(
+            reconcile_id,
+            target.step_ord,
+            &target.glyph_key,
+            target.action,
+            WalStepState::Reversed,
+            &target.op,
+            target.inverse.as_ref(),
+            target.changed,
+            &target.unit_path,
+        )?;
         Ok(())
     }
 
@@ -901,31 +917,7 @@ impl Foreman {
             let Some(target) = next_reversible(&scoped).cloned() else {
                 break;
             };
-            let cid = applied_cid_of(&target.op, target.action);
-            let outcome = Outcome {
-                op: target.op.clone(),
-                cid,
-                inverse: target.inverse.clone().unwrap_or(Inverse::Nothing),
-                changed: target.changed.unwrap_or(false),
-            };
-            let undone = match target.action {
-                WalAction::Apply => self.reconciler.reverse(&outcome),
-                WalAction::Reverse => self.reconciler.apply(target.op.glyph(), cid).map(|_| ()),
-            };
-            if let Err(e) = undone {
-                warn!(glyph_key = %target.glyph_key, phase = "reverse", ?e, "rollback step failed");
-            }
-            self.planroom.append_wal_step(
-                reconcile_id,
-                target.step_ord,
-                &target.glyph_key,
-                target.action,
-                WalStepState::Reversed,
-                &target.op,
-                target.inverse.as_ref(),
-                target.changed,
-                &target.unit_path,
-            )?;
+            self.reverse_target(reconcile_id, &target)?;
         }
         Ok(())
     }
@@ -963,10 +955,11 @@ impl Foreman {
     /// Resolve every `Intended` step of an interrupted attempt that has no
     /// terminal row — the steps golem crashed across, where the side effect may
     /// or may not have happened. Re-run each idempotently (`apply` re-`apply`s and
-    /// re-captures the inverse; `reverse` re-reverses) and record the result as
-    /// the step's `Done`/`Failed`, so rollback afterward sees a consistent log.
-    /// Safe because every reconciler observes host state first, so re-running
-    /// converges whether or not the interrupted call took effect (ADR 0020 §3).
+    /// re-captures the inverse; `reverse` re-reverses; a [`WalAction::Restart`]
+    /// re-runs the idempotent try-restart) and record the result as the step's
+    /// `Done`/`Failed`, so rollback afterward sees a consistent log. Safe because
+    /// every reconciler observes host state first, so re-running converges whether
+    /// or not the interrupted call took effect (ADR 0020 §3).
     fn redrive_intended(&self, attempt: &ReconcileAttempt) -> Result<()> {
         let steps = self.planroom.wal_steps_for(attempt.reconcile_id)?;
         for step in &steps {
@@ -987,6 +980,12 @@ impl Foreman {
                     };
                     self.reconciler.reverse(&outcome).map(|_| None)
                 }
+                WalAction::Restart => match step.op.glyph() {
+                    Glyph::SystemdService { unit } => {
+                        self.reconciler.restart_unit(unit).map(|_| None)
+                    }
+                    _ => Ok(None),
+                },
             };
             match redriven {
                 Ok(outcome) => {
@@ -998,6 +997,7 @@ impl Foreman {
                         WalAction::Reverse => {
                             (step.inverse.clone().unwrap_or(Inverse::Nothing), true)
                         }
+                        WalAction::Restart => (Inverse::Nothing, false),
                     };
                     self.planroom.append_wal_step(
                         attempt.reconcile_id,
@@ -1411,8 +1411,8 @@ fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
         GlyphOp::Replace {
             new_cid, old_cid, ..
         } => match action {
-            WalAction::Apply => *new_cid,
             WalAction::Reverse => *old_cid,
+            WalAction::Apply | WalAction::Restart => *new_cid,
         },
     }
 }
@@ -1437,12 +1437,15 @@ fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
 /// The latest `Done` step of the attempt not yet `Reversed` — the next one a
 /// rollback should undo. Scanning newest-first reverses in the opposite order to
 /// application (LIFO), and skipping already-`Reversed` steps is what makes
-/// [`Foreman::rollback_attempt`] resumable.
+/// [`Foreman::rollback_attempt`] resumable. [`WalAction::Restart`] steps are
+/// operational records with no reversal (the unit's lifecycle is owned by its
+/// `systemdService` step), so a rollback never picks one up.
 fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
-    steps
-        .iter()
-        .rev()
-        .find(|s| s.state == WalStepState::Done && !reversed_after(steps, s))
+    steps.iter().rev().find(|s| {
+        s.state == WalStepState::Done
+            && s.action != WalAction::Restart
+            && !reversed_after(steps, s)
+    })
 }
 
 fn reversed_after(steps: &[WalStep], done: &WalStep) -> bool {

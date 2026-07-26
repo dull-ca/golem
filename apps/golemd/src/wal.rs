@@ -173,8 +173,8 @@ fn applied_cid(step: &WalStep) -> ContentId {
         crate::journal::GlyphOp::Replace {
             new_cid, old_cid, ..
         } => match step.action {
-            WalAction::Apply => *new_cid,
             WalAction::Reverse => *old_cid,
+            WalAction::Apply | WalAction::Restart => *new_cid,
         },
     }
 }
@@ -259,6 +259,27 @@ mod tests {
         let mut failed = done_apply(2, 0, &apt("pg"));
         failed.state = WalStepState::Failed;
         assert!(applied_outcomes(&[intended, failed]).is_empty());
+    }
+
+    #[test]
+    fn a_restart_done_never_folds_into_the_applied_set() {
+        let glyph = Glyph::SystemdService {
+            unit: "app.service".into(),
+        };
+        let restart = WalStep {
+            glyph_key: "restart:app.service".into(),
+            action: WalAction::Restart,
+            op: GlyphOp::Noop {
+                cid: cid(&glyph),
+                glyph: glyph.clone(),
+            },
+            inverse: Some(Inverse::Nothing),
+            ..done_apply(1, 0, &apt("nginx"))
+        };
+        assert!(
+            applied_outcomes(&[restart]).is_empty(),
+            "a Restart bracket is an operational record, never an applied glyph"
+        );
     }
 
     #[test]
