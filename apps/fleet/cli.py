@@ -16,7 +16,6 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.markup import escape
 from rich.table import Table
 
 from . import config, golemd_client, vm
@@ -147,49 +146,6 @@ def deploy(
             console.print(f"  [green]{record.name}: golemd up[/green] {summary}")
 
 
-def _cid_hex(value: object) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        try:
-            return bytes(value).hex()
-        except (ValueError, TypeError):
-            return str(value)
-    return str(value)
-
-
-def _cid_short(cid: Optional[str], width: int = 12) -> str:
-    if not cid:
-        return "—"
-    return cid[:width] + "…" if len(cid) > width else cid
-
-
-def _glyph_desc(glyph: object) -> str:
-    if not isinstance(glyph, dict) or not glyph:
-        return "?"
-    (kind, body) = next(iter(glyph.items()))
-    body = body or {}
-    if kind == "AptPackage":
-        return f"apt {body.get('name')}"
-    if kind == "SystemdService":
-        return f"systemd {body.get('unit')}"
-    if kind == "LineInFile":
-        return f"line {body.get('path')}: {body.get('line')}"
-    if kind == "Filesystem":
-        path = body.get("path")
-        entry = body.get("entry")
-        ekind = next(iter(entry)) if isinstance(entry, dict) and entry else "File"
-        ebody = entry.get(ekind, {}) if isinstance(entry, dict) else {}
-        if ekind == "Symlink":
-            return f"symlink {path} → {ebody.get('target')}"
-        if ekind == "Directory":
-            return f"dir {path}"
-        return f"file {path}"
-    return str(kind)
-
-
 def _count_glyphs(scroll: object) -> int:
     if not isinstance(scroll, dict):
         return 0
@@ -204,134 +160,6 @@ def _count_glyphs(scroll: object) -> int:
         if isinstance(groups, list):
             return sum(_count_glyphs(child) for child in groups)
     return 0
-
-
-_OP_VERB = {"Install": "install", "Remove": "remove", "Replace": "replace", "Noop": "noop"}
-
-
-def _op_parts(op: object) -> tuple[str, str, Optional[str]]:
-    if not isinstance(op, dict) or not op:
-        return ("?", "?", None)
-    (kind, body) = next(iter(op.items()))
-    body = body or {}
-    verb = _OP_VERB.get(kind, str(kind).lower())
-    cid = _cid_hex(body.get("cid") if body.get("cid") is not None else body.get("new_cid"))
-    return (verb, _glyph_desc(body.get("glyph")), cid)
-
-
-_GLYPH_KEY_KIND = {"apt": "apt", "systemd": "systemd", "file": "file", "fileline": "line"}
-
-
-def _glyph_key_desc(glyph_key: Optional[str]) -> str:
-    if not glyph_key:
-        return "?"
-    prefix, _, rest = glyph_key.partition(":")
-    kind = _GLYPH_KEY_KIND.get(prefix)
-    if kind is None:
-        return glyph_key
-    return f"{kind} {rest}"
-
-
-_UNIT_COLOR = {"settled": "green", "partial": "yellow", "rolled_back": "red"}
-
-_GLYPH_OUTCOME_STYLE = {
-    "applied": ("✓", "green", "applied"),
-    "unchanged": ("·", "dim", "unchanged"),
-    "rolled_back": ("↩", "yellow", "rolled back"),
-    "failed": ("✗", "red", "failed"),
-}
-
-
-def _render_report(name: str, report: dict) -> None:
-    revision = report.get("revision") or {}
-    units = report.get("units") or []
-    _render_revision(name, revision, units)
-    top = report.get("outcome", "")
-    color = _UNIT_COLOR.get(top, "white")
-    console.print(f"  [{color}]apply {top}[/{color}]")
-    for unit in units:
-        path = " / ".join(unit.get("unit_path") or [])
-        outcome = unit.get("outcome", "")
-        ucolor = _UNIT_COLOR.get(outcome, "white")
-        console.print(f"    [{ucolor}]{path}: {outcome}[/{ucolor}]")
-        glyphs = unit.get("glyphs")
-        failures = unit.get("failures") or []
-        if glyphs:
-            # The glyphs list already shows every failure, so its per-glyph
-            # `class` and `details` (absent from a line) are looked up from
-            # `failures` by key.
-            classes = {f.get("glyph_key"): f.get("class", "") for f in failures}
-            details = {
-                f.get("glyph_key"): f.get("details")
-                for f in failures
-                if f.get("details")
-            }
-            for glyph in glyphs:
-                _render_glyph_line(glyph, classes, details)
-        else:
-            # NOTE: a golemd predating ADR 0029's per-glyph lines omits `glyphs`;
-            # `failures` is the fallback and shows only what failed.
-            for failure in failures:
-                _render_failure_line(failure)
-
-
-def _tries(attempts: int) -> str:
-    return "1 try" if attempts == 1 else f"{attempts} tries"
-
-
-def _first_line(message: str) -> str:
-    lines = message.splitlines()
-    remaining = list(lines)
-    first = ""
-    while remaining:
-        candidate = remaining.pop(0)
-        if candidate.strip():
-            first = candidate
-            break
-    if any(line.strip() for line in remaining):
-        return f"{first}…"
-    return first
-
-
-_DETAILS_MAX_LINES = 50
-
-
-def _render_details_block(details: Optional[str]) -> None:
-    if not details:
-        return
-    # NOTE: forensics are raw systemctl/journalctl output — untrusted for rich
-    # markup, so escape every line or a stray `[...]` would be parsed as a tag.
-    # golemd already caps the payload at 50 lines; slicing here just guards a
-    # future sender that doesn't.
-    for line in details.splitlines()[:_DETAILS_MAX_LINES]:
-        console.print(f"        [dim]{escape(line)}[/dim]")
-
-
-def _render_glyph_line(glyph: dict, classes: dict, details: dict) -> None:
-    desc = _glyph_key_desc(glyph.get("glyph_key"))
-    outcome = glyph.get("outcome", "")
-    if outcome == "failed":
-        cls = classes.get(glyph.get("glyph_key")) or "failed"
-        attempts = glyph.get("attempts", 0)
-        message = glyph.get("message") or ""
-        console.print(
-            f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {_first_line(message)}[/red]"
-        )
-        _render_details_block(details.get(glyph.get("glyph_key")))
-        return
-    mark, style, label = _GLYPH_OUTCOME_STYLE.get(outcome, ("·", "white", outcome))
-    console.print(f"      [{style}]{mark} {desc}  {label}[/{style}]")
-
-
-def _render_failure_line(failure: dict) -> None:
-    desc = _glyph_key_desc(failure.get("glyph_key"))
-    cls = failure.get("class", "")
-    attempts = failure.get("attempts", 0)
-    message = failure.get("message", "")
-    console.print(
-        f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {_first_line(message)}[/red]"
-    )
-    _render_details_block(failure.get("details"))
 
 
 def _render_manifest_context(scroll_names: list[str], applying: list[str]) -> None:
@@ -352,36 +180,6 @@ def _render_manifest_context(scroll_names: list[str], applying: list[str]) -> No
     if skipped:
         line += f"  [dim]({len(skipped)} skipped: {', '.join(skipped)})[/dim]"
     console.print(line)
-
-
-def _render_apply_error(name: str, status: int, body: dict) -> None:
-    kind = body.get("kind", "error")
-    message = body.get("message", "")
-    console.print(f"  [red]{name}: {kind} (HTTP {status})[/red]\n  {message}")
-
-
-def _render_revision(name: str, revision: dict, units: Optional[list] = None) -> None:
-    scroll = _cid_short(_cid_hex(revision.get("scroll_content_id")))
-    console.print(
-        f"  [green]{name}: revision {revision.get('id')}[/green] "
-        f"([cyan]{revision.get('kind', '')}[/cyan])  scroll [dim]{scroll}[/dim]"
-    )
-    outcomes = revision.get("outcomes") or []
-    if not outcomes:
-        units = units or []
-        if any(u.get("outcome") == "rolled_back" for u in units):
-            console.print("    [yellow]nothing committed — rolled back[/yellow]")
-        elif units and all(u.get("outcome") == "settled" for u in units):
-            console.print("    [dim]already up to date[/dim]")
-        else:
-            console.print("    [dim]no changes[/dim]")
-        return
-    table = Table("", "op", "glyph", "content-id", box=None, pad_edge=False, show_header=False)
-    for outcome in outcomes:
-        verb, glyph, cid = _op_parts(outcome.get("op"))
-        mark = "[green]✓[/green]" if outcome.get("changed") else "[dim]·[/dim]"
-        table.add_row(mark, verb, glyph, f"[dim]{_cid_short(cid)}[/dim]")
-    console.print(table)
 
 
 @app.command()
