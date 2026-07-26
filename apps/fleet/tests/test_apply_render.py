@@ -82,6 +82,28 @@ class RenderReportTests(unittest.TestCase):
         self.assertIn("unit not found", out)
         self.assertEqual(out.count("systemd fishnet.service"), 1)
 
+    def test_single_attempt_failure_says_one_try_not_tries(self):
+        report = {
+            "revision": {"id": 4, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
+            "outcome": "rolled_back",
+            "units": [{
+                "unit_path": ["host", "app"],
+                "outcome": "rolled_back",
+                "failures": [{
+                    "glyph_key": "apt:nginx",
+                    "unit_path": ["host", "app"],
+                    "phase": "enact",
+                    "class": "fatal",
+                    "attempts": 1,
+                    "message": "no such package",
+                    "rolled_back": True,
+                }],
+            }],
+        }
+        out = self._render(report)
+        self.assertIn("after 1 try", out)
+        self.assertNotIn("after 1 tries", out)
+
     def test_all_unchanged_reports_already_up_to_date(self):
         report = {
             "revision": {"id": 3, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},

@@ -271,6 +271,10 @@ def _render_report(name: str, report: dict) -> None:
                 _render_failure_line(failure)
 
 
+def _tries(attempts: int) -> str:
+    return "1 try" if attempts == 1 else f"{attempts} tries"
+
+
 def _render_glyph_line(glyph: dict, classes: dict) -> None:
     desc = _glyph_key_desc(glyph.get("glyph_key"))
     outcome = glyph.get("outcome", "")
@@ -279,7 +283,7 @@ def _render_glyph_line(glyph: dict, classes: dict) -> None:
         attempts = glyph.get("attempts", 0)
         message = glyph.get("message") or ""
         console.print(
-            f"      [red]✗ {desc}  {cls} after {attempts} tries — {message}[/red]"
+            f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {message}[/red]"
         )
         return
     mark, style, label = _GLYPH_OUTCOME_STYLE.get(outcome, ("·", "white", outcome))
@@ -292,7 +296,7 @@ def _render_failure_line(failure: dict) -> None:
     attempts = failure.get("attempts", 0)
     message = failure.get("message", "")
     console.print(
-        f"      [red]✗ {desc}  {cls} after {attempts} tries — {message}[/red]"
+        f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {message}[/red]"
     )
 
 

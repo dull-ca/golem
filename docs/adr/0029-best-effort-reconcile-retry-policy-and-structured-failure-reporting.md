@@ -549,3 +549,15 @@ renders the `glyphs` list per unit (`✓` applied, `·` unchanged, `↩` rolled 
 "nothing committed — rolled back" or "already up to date" rather than the
 misleading "no changes". The `revision recorded` settle log gains the rolled-up
 top outcome and per-unit settled/partial/rolled-back counts.
+
+A second dogfood run refined §3's `max_elapsed_ms` clock. §3 measured the budget
+from the instant the attempt opened, so a slow first-pass enact spent it before any
+retry happened: a cold `apt install podman` that took 2m43s exhausted the 120s
+default, and every later glyph reported `retries-exhausted` after a single try. The
+budget now starts at the attempt's **first retry decision** — the first time any
+unit is about to sleep between rounds — and is shared attempt-wide from there.
+First-pass enacts never consume it, and a unit that settles in round one leaves the
+clock unset for a later unit; the sibling-fairness property of §3 is unchanged
+(once retrying starts, a later unit shares the earlier unit's remaining budget). The
+fleet render also now says "after 1 try" rather than "after 1 tries" when a glyph
+failed on its single attempt.

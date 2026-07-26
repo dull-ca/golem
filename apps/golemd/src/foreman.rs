@@ -31,6 +31,7 @@ use anyhow::Result;
 use scroll_format::{
     from_bytes, AddressedScroll, ContentId, Contents, Entry, Glyph, LeafUnit, Policy, Scroll,
 };
+use std::cell::Cell;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
@@ -259,7 +260,7 @@ impl Foreman {
             .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
             .map_err(|e| ForemanError::Internal(e.into()))?;
 
-        let started = Instant::now();
+        let retry_clock: Cell<Option<Instant>> = Cell::new(None);
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
         let mut next_ord: u64 = 0;
@@ -277,7 +278,7 @@ impl Foreman {
                     &prior,
                     &unit.path,
                     &effective,
-                    started,
+                    &retry_clock,
                 )
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
@@ -296,7 +297,7 @@ impl Foreman {
                     &prior,
                     &group.unit_path,
                     &effective,
-                    started,
+                    &retry_clock,
                 )
                 .map_err(ForemanError::Internal)?;
             unit_reports.push(unit_report_from(result));
@@ -376,10 +377,13 @@ impl Foreman {
     /// retryable ops are re-driven after [`round_delay`], stopping when nothing
     /// remains, `max_attempts` rounds are reached, or the `max_elapsed_ms`
     /// wall-time budget is spent — whichever trips first. The budget is measured
-    /// against `started`, captured once when the attempt opened and shared across
-    /// every unit, so `max_elapsed_ms` bounds the whole reconcile's retrying rather
-    /// than resetting per unit — a unit reached after the budget is already spent
-    /// gets only its opening round (ADR 0029 §3). A `Failed` op never aborts the
+    /// against `retry_clock`, a single lazily-started clock shared across every
+    /// unit that begins at the attempt's first retry decision — the first time any
+    /// unit is about to sleep between rounds — so first-pass enacts never consume
+    /// the budget and `max_elapsed_ms` bounds only the whole reconcile's retrying.
+    /// A unit reached after the budget is already spent gets only its opening
+    /// round; a unit that settles in round one leaves the clock untouched for a
+    /// later unit (ADR 0029 §3, addendum). A `Failed` op never aborts the
     /// loop; its class is tracked in memory (the WAL records the bracket for crash
     /// recovery, not the class). After the loop the unit's `on_exhaust` (`rollback`
     /// | `keep`) settles its fate, scoped to this unit's `unit_path` so a sibling
@@ -392,7 +396,7 @@ impl Foreman {
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
-        started: Instant,
+        retry_clock: &Cell<Option<Instant>>,
     ) -> Result<UnitResult> {
         // NOTE: `step_ord` is unique across ALL units of an attempt — the shared
         // `next_ord` counter advances by `ops.len()` per unit, never resetting. The
@@ -420,8 +424,14 @@ impl Foreman {
             if round + 1 > retry.max_attempts {
                 break;
             }
-            if started.elapsed().as_millis() as u64 >= retry.max_elapsed_ms {
+            if retry_clock
+                .get()
+                .is_some_and(|clock| clock.elapsed().as_millis() as u64 >= retry.max_elapsed_ms)
+            {
                 break;
+            }
+            if retry_clock.get().is_none() {
+                retry_clock.set(Some(Instant::now()));
             }
             std::thread::sleep(round_delay(retry, round));
             round += 1;
@@ -2235,6 +2245,39 @@ mod tests {
         assert_eq!(
             second.failures[0].attempts, 1,
             "the budget spent on the first unit leaves the second only its opening round"
+        );
+    }
+
+    #[test]
+    fn a_first_round_success_does_not_start_the_retry_clock() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("apt:two")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 0,
+            backoff_multiplier: 1.0,
+            max_delay_ms: 0,
+            jitter_fraction: 0.0,
+            max_elapsed_ms: 0,
+            on_exhaust: OnExhaustConfig::Keep,
+        });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("one")]),
+                leaf_scroll("second", vec![apt("two")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        assert_eq!(
+            second.failures[0].attempts, 2,
+            "a fully-successful first unit must not start the clock, so the retrying unit still gets its opening round plus one retry before the zero budget trips"
         );
     }
 
