@@ -295,8 +295,9 @@ pub mod fake {
                     stderr: String::new(),
                 }),
                 ("apt-get", _) if args.first() == Some(&"install") => {
-                    let name = args.last().copied().unwrap_or_default();
-                    host.installed.insert(name.to_string());
+                    for name in args.iter().skip(1).filter(|a| !a.starts_with('-')) {
+                        host.installed.insert((*name).to_string());
+                    }
                     Ok(CommandOutput {
                         status: 0,
                         stdout: String::new(),

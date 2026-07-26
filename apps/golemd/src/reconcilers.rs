@@ -44,19 +44,46 @@ use crate::reconciler::{EnactError, EnactResult, Reconciler};
 /// inject the fake).
 pub struct HostReconciler<R: CommandRunner> {
     runner: R,
+    apt: std::sync::Mutex<()>,
 }
 
 impl HostReconciler<SystemCommandRunner> {
     pub fn system() -> Self {
         Self {
             runner: SystemCommandRunner,
+            apt: std::sync::Mutex::new(()),
         }
     }
 }
 
 impl<R: CommandRunner> HostReconciler<R> {
     pub fn with_runner(runner: R) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            apt: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn batch_install(&self, names: &[String]) -> EnactResult<()> {
+        let _guard = self.apt.lock().unwrap_or_else(|p| p.into_inner());
+        let mut args: Vec<&str> = vec!["install", "-y"];
+        for n in names {
+            args.push(n.as_str());
+        }
+        let installed = self.runner.run("apt-get", &args)?;
+        if installed.succeeded() {
+            return Ok(());
+        }
+        for n in names {
+            let one = self.runner.run("apt-get", &["install", "-y", n])?;
+            if !one.succeeded() {
+                return Err(EnactError::Retryable(format!(
+                    "apt-get install {n}: {}",
+                    one.stderr
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Install `name` if absent, capturing an [`Inverse::RemoveAptPackage`] so
@@ -349,6 +376,14 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         }
     }
 
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+        let names = apt_install_names(ops);
+        if names.is_empty() {
+            return Ok(());
+        }
+        self.batch_install(&names)
+    }
+
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
         match &outcome.inverse {
             Inverse::Nothing => Ok(()),
@@ -390,6 +425,22 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
 /// why and the sturdier signal to move to.
 fn is_generated_unit(stderr: &str) -> bool {
     stderr.contains("transient or generated")
+}
+
+fn apt_install_names(ops: &[GlyphOp]) -> Vec<String> {
+    let mut names = Vec::new();
+    for op in ops {
+        if let GlyphOp::Install {
+            glyph: Glyph::AptPackage { name },
+            ..
+        } = op
+        {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
 }
 
 fn outcome(glyph: &Glyph, cid: ContentId, inverse: Inverse, changed: bool) -> Outcome {
@@ -995,6 +1046,95 @@ mod tests {
         let cid = glyph_content_id(&glyph);
         assert!(rec.apply(&glyph, cid).unwrap().changed);
         assert!(!rec.apply(&glyph, cid).unwrap().changed);
+    }
+
+    fn install_op(glyph: &Glyph) -> GlyphOp {
+        GlyphOp::Install {
+            cid: glyph_content_id(glyph),
+            glyph: glyph.clone(),
+        }
+    }
+
+    #[test]
+    fn prepare_batches_all_apt_installs_into_one_invocation() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&apt("podman")), install_op(&apt("htop"))];
+        rec.prepare(&ops).unwrap();
+        let log = runner_of(&rec).log();
+        let batched = log.iter().any(|c| c == "apt-get install -y podman htop");
+        assert!(batched, "expected one batched install, log was {log:?}");
+        let per_glyph = log
+            .iter()
+            .filter(|c| c.as_str() == "apt-get install -y podman")
+            .count();
+        assert_eq!(per_glyph, 0, "no per-glyph install when the batch succeeds");
+        assert!(runner_of(&rec).is_installed("podman") && runner_of(&rec).is_installed("htop"));
+    }
+
+    struct FlakyBatchRunner {
+        inner: FakeCommandRunner,
+    }
+    impl FlakyBatchRunner {
+        fn new() -> Self {
+            Self {
+                inner: FakeCommandRunner::new(),
+            }
+        }
+        fn inner_installed(&self, p: &str) -> bool {
+            self.inner.is_installed(p)
+        }
+    }
+    impl CommandRunner for FlakyBatchRunner {
+        fn run(&self, program: &str, args: &[&str]) -> EnactResult<crate::host::CommandOutput> {
+            if program == "apt-get" && args.first() == Some(&"install") {
+                let pkgs: Vec<&str> = args
+                    .iter()
+                    .skip(1)
+                    .filter(|a| !a.starts_with('-'))
+                    .copied()
+                    .collect();
+                if pkgs.len() > 1 {
+                    return Ok(crate::host::CommandOutput {
+                        status: 100,
+                        stdout: String::new(),
+                        stderr: "batch unresolved".into(),
+                    });
+                }
+                if pkgs == ["nope"] {
+                    return Ok(crate::host::CommandOutput {
+                        status: 100,
+                        stdout: String::new(),
+                        stderr: "no such package nope".into(),
+                    });
+                }
+            }
+            self.inner.run(program, args)
+        }
+    }
+
+    #[test]
+    fn a_failed_batch_falls_back_to_per_glyph_installs() {
+        let rec = HostReconciler::with_runner(FlakyBatchRunner::new());
+        let ok = rec.prepare(&[install_op(&apt("podman")), install_op(&apt("htop"))]);
+        assert!(
+            ok.is_ok(),
+            "two good packages install per-glyph after the batch fails"
+        );
+
+        let bad = rec.prepare(&[install_op(&apt("podman")), install_op(&apt("nope"))]);
+        match bad {
+            Err(EnactError::Retryable(m)) => {
+                assert!(
+                    m.contains("nope"),
+                    "the fallback fails only the bad package: {m}"
+                )
+            }
+            other => panic!("expected a Retryable naming the bad package, got {other:?}"),
+        }
+        assert!(
+            runner_of(&rec).inner_installed("podman"),
+            "the good sibling still installed via fallback"
+        );
     }
 
     #[test]

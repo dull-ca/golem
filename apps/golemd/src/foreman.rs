@@ -331,6 +331,13 @@ impl Foreman {
             })
             .collect();
         let shared = shared_pairs(&unit_ops);
+        let enacting_ops: Vec<GlyphOp> = unit_ops.iter().flatten().cloned().collect();
+        if let Err(e) = self.reconciler.prepare(&enacting_ops) {
+            warn!(
+                error = %format!("{e:?}"),
+                "prepare pre-pass reported a failure; per-unit enact will classify"
+            );
+        }
         // NOTE: the success set is attempt-scoped and shared across every unit: a
         // shared `(key, cid)` pair enters it only once a real apply succeeds, so a
         // later declarer credits only what a prior declarer actually put on the
@@ -2132,6 +2139,13 @@ mod tests {
                 changed: true,
             })
         }
+        fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("prepare {}", ops.len()));
+            Ok(())
+        }
         fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
             let key = outcome.op.key();
             self.events.lock().unwrap().push(format!("reverse {key}"));
@@ -2298,6 +2312,34 @@ mod tests {
             .unwrap();
         assert!(healthy.failures.is_empty());
         assert!(applied_keys(&foreman).contains(&"apt:good".to_string()));
+    }
+
+    #[test]
+    fn prepare_runs_once_before_any_unit_enact() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![apt("podman")]),
+                leaf_scroll("b", vec![apt("htop")]),
+            ],
+        );
+        foreman.apply_scroll(scroll).unwrap();
+        let events = foreman.rec.events();
+        let prepares: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.starts_with("prepare "))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(prepares.len(), 1, "prepare runs exactly once");
+        let first_apply = events.iter().position(|e| e.starts_with("apply ")).unwrap();
+        assert!(prepares[0] < first_apply, "prepare precedes every apply");
+        assert_eq!(
+            events[prepares[0]], "prepare 2",
+            "prepare sees both distinct enacting ops"
+        );
     }
 
     // --- Task 5: backoff/jitter/dual limits ---

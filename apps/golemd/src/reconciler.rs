@@ -8,7 +8,7 @@ use scroll_format::{ContentId, Entry, Glyph};
 use std::sync::Arc;
 
 use crate::host::CommandSink;
-use crate::journal::{Inverse, Outcome};
+use crate::journal::{GlyphOp, Inverse, Outcome};
 
 /// Why an enact step failed, and whether retrying could help: `Retryable` is
 /// retried by the foreman's attempt spine, `Fatal` aborts the reconcile at once.
@@ -49,6 +49,9 @@ pub trait Reconciler: Send + Sync {
     ) -> EnactResult<Outcome> {
         self.apply(glyph, cid)
     }
+    fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<()> {
+        Ok(())
+    }
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
@@ -76,6 +79,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     ) -> EnactResult<Outcome> {
         (**self).apply_streaming(glyph, cid, sink)
     }
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+        (**self).prepare(ops)
+    }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
     }
@@ -98,6 +104,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Box<R> {
         sink: &mut CommandSink<'_>,
     ) -> EnactResult<Outcome> {
         (**self).apply_streaming(glyph, cid, sink)
+    }
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+        (**self).prepare(ops)
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
@@ -154,6 +163,10 @@ impl<R: Reconciler> Reconciler for PanicCatching<R> {
             self.inner.apply_streaming(glyph, cid, sink)
         }))
         .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
+    }
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.prepare(ops)))
+            .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
     }
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.reverse(outcome)))
