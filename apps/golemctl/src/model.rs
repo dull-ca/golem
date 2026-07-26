@@ -47,6 +47,7 @@ pub struct ApplyModel {
     pub reconcile_id: u64,
     pub phase: Phase,
     pub units: Vec<UnitNode>,
+    pub root_logs: VecDeque<String>,
     pub cursor: u64,
     pub report: Option<serde_json::Value>,
 }
@@ -75,6 +76,7 @@ impl ApplyModel {
             reconcile_id: 0,
             phase: Phase::Planning,
             units: Vec::new(),
+            root_logs: VecDeque::new(),
             cursor: 0,
             report: None,
         }
@@ -112,10 +114,19 @@ impl ApplyModel {
             }
         }
         for ev in p.events {
-            if let Some(node) = self.units.iter_mut().find(|u| u.unit_path == ev.unit_path) {
-                node.logs.push_back(format!("{}: {}", ev.glyph_key, ev.message));
-                while node.logs.len() > LOG_RING_CAP {
-                    node.logs.pop_front();
+            let line = format!("{}: {}", ev.glyph_key, ev.message);
+            match self.units.iter_mut().find(|u| u.unit_path == ev.unit_path) {
+                Some(node) => {
+                    node.logs.push_back(line);
+                    while node.logs.len() > LOG_RING_CAP {
+                        node.logs.pop_front();
+                    }
+                }
+                None => {
+                    self.root_logs.push_back(line);
+                    while self.root_logs.len() > LOG_RING_CAP {
+                        self.root_logs.pop_front();
+                    }
                 }
             }
         }

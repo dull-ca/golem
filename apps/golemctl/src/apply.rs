@@ -10,13 +10,17 @@
 //! the nonzero code lets a caller (fleet, CI) branch on it.
 
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use iocraft::prelude::*;
+use tokio::sync::Notify;
 
 use crate::model::ApplyModel;
 use crate::poll::{get_latest, get_progress, post_manifest, Event, Progress};
-use crate::view;
+use crate::view::UnitTree;
 
 pub fn plain_line(ev: &Event) -> String {
     format!(
@@ -88,31 +92,107 @@ async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
     }
 }
 
-// The string-redraw baseline: fold each poll into the model and re-render the
-// pure view to stderr, clearing between frames. Animation therefore advances at
-// poll cadence, not smoothly — the self-animating iocraft components exist
-// (see `view::Spinner`) but are not yet mounted here. This path and `--reattach`
-// are smoke-verified only (a live render loop needs a pty harness the plan does
-// not build); the tested surface is the fold, `render_to_string`, `plain_line`,
-// `should_stop`, and `exit_code`.
+// The shared handle the mounted view and the poll task both hold: the folded
+// model behind a lock, a `done` flag the view watches to exit, and a `Notify`
+// the poll task rings after each fold to wake a fresh frame — devenv's
+// model-behind-a-lock + notify pattern (`devenv-tui::app`), minimally adapted.
+#[derive(Clone)]
+struct Live {
+    model: Arc<Mutex<ApplyModel>>,
+    done: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+// The mounted live loop: iocraft's inline `render_loop` on stderr hosting the
+// `UnitTree`, whose spinner marks self-animate on their own ~80ms timer while a
+// separate tokio task polls golemd every ~1s and folds each `Progress` into the
+// shared model. The network poll runs on the real tokio runtime — not inside an
+// iocraft hook, which iocraft's own executor would not drive to completion — and
+// rings `notify` after each fold; the view's `use_future` waits on that (or a
+// short timeout) and bumps a redraw `State` so the new data re-reads the lock.
+// The spinner ticks independently in between. `render_loop` is inline (no
+// alternate screen, no full-screen clear) — it line-diffs each frame, preserving
+// scrollback — and takes its width from the terminal, so nothing here hardcodes
+// a column count. The poll task sets `done` on the terminal phase and rings
+// `notify`; the view then calls `system.exit()`, so the loop unmounts on its own
+// frame boundary and the final report prints to stdout after unmount.
+// Smoke-verified against a fake-reconciler golemd (spinner frames change between
+// samples while a glyph is in flight); the fold, `render_to_string`,
+// `plain_line`, `should_stop`, and `exit_code` stay the unit-tested surface.
 async fn run_tui(addr: &str, id: u64) -> Result<i32> {
-    let mut model = ApplyModel::new();
+    let live = Live {
+        model: Arc::new(Mutex::new(ApplyModel::new())),
+        done: Arc::new(AtomicBool::new(false)),
+        notify: Arc::new(Notify::new()),
+    };
+
+    let poller = tokio::spawn(poll_into(live.clone(), addr.to_string(), id));
+
+    let mut element = element! {
+        ContextProvider(value: Context::owned(live.clone())) {
+            ApplyView
+        }
+    };
+    element.render_loop().output(Output::Stderr).await?;
+    let _ = poller.await;
+
+    let report = live.model.lock().ok().and_then(|m| m.report.clone());
+    if let Some(report) = &report {
+        print_report(report);
+    }
+    Ok(exit_code(report.as_ref()))
+}
+
+async fn poll_into(live: Live, addr: String, id: u64) {
     let mut cursor = 0u64;
     loop {
-        let p = get_progress(addr, id, cursor).await?;
+        let Ok(p) = get_progress(&addr, id, cursor).await else {
+            live.done.store(true, Ordering::Release);
+            live.notify.notify_waiters();
+            break;
+        };
         cursor = p.cursor;
         let terminal = should_stop(&p);
-        let report = p.report.clone();
-        model.apply_progress(p);
-        eprint!("\x1b[2J\x1b[H");
-        eprintln!("{}", view::render_to_string(&model, 100));
+        if let Ok(mut m) = live.model.lock() {
+            m.apply_progress(p);
+        }
         if terminal {
-            if let Some(report) = &report {
-                print_report(report);
-            }
-            return Ok(exit_code(report.as_ref()));
+            live.done.store(true, Ordering::Release);
+        }
+        live.notify.notify_waiters();
+        if terminal {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+}
+
+#[component]
+fn ApplyView(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
+    let live = hooks.use_context::<Live>().clone();
+    let mut redraw = hooks.use_state(|| 0u64);
+
+    let notify = live.notify.clone();
+    hooks.use_future(async move {
+        loop {
+            tokio::select! {
+                _ = notify.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            let Some(v) = redraw.try_get() else { break };
+            redraw.set(v.wrapping_add(1));
+        }
+    });
+
+    let mut system = hooks.use_context_mut::<SystemContext>();
+    if live.done.load(Ordering::Acquire) {
+        system.exit();
+    }
+
+    element! {
+        ContextProvider(value: Context::owned(live.model.clone())) {
+            UnitTree
+        }
     }
 }
 

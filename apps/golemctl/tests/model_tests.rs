@@ -91,6 +91,54 @@ fn the_view_renders_unit_paths_marks_and_active_logs() {
 }
 
 #[test]
+fn an_event_at_the_host_root_lands_in_the_top_level_log() {
+    let mut m = ApplyModel::new();
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::Enacting,
+        units: vec![UnitProgress {
+            unit_path: vec!["scaly".into(), "a".into()],
+            glyphs: vec![glyph("apt:podman", GlyphState::InProgress)],
+        }],
+        events: vec![event(
+            9,
+            &["scaly"],
+            "reconcile",
+            "reconcile panicked: poisoned lock",
+        )],
+        cursor: 9,
+        report: None,
+    });
+    assert_eq!(m.units.len(), 1);
+    assert!(m.units[0].logs.is_empty());
+    assert_eq!(m.root_logs.len(), 1);
+    assert!(m.root_logs[0].contains("reconcile panicked"));
+}
+
+#[test]
+fn the_view_renders_root_events_in_a_top_level_log_region() {
+    let mut m = ApplyModel::new();
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::Enacting,
+        units: vec![UnitProgress {
+            unit_path: vec!["scaly".into(), "a".into()],
+            glyphs: vec![glyph("apt:podman", GlyphState::InProgress)],
+        }],
+        events: vec![event(
+            9,
+            &["scaly"],
+            "reconcile",
+            "reconcile panicked: poisoned lock",
+        )],
+        cursor: 9,
+        report: None,
+    });
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains("reconcile panicked"));
+}
+
+#[test]
 fn a_failed_glyph_shows_the_x_mark() {
     let mut m = ApplyModel::new();
     m.apply_progress(Progress {
