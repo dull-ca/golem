@@ -31,7 +31,7 @@ use anyhow::Result;
 use scroll_format::{
     from_bytes, AddressedScroll, ContentId, Contents, Entry, Glyph, LeafUnit, Policy, Scroll,
 };
-use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
@@ -309,10 +309,10 @@ impl Foreman {
                 detail: e.to_string(),
             })?;
         let prior = applied_outcomes(&steps);
-        let retry_clock: Cell<Option<Instant>> = Cell::new(None);
+        let retry_clock: Mutex<Option<Instant>> = Mutex::new(None);
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
-        let mut next_ord: u64 = 0;
+        let next_ord = AtomicU64::new(0);
         for unit in &units {
             let effective = resolve_retry(&self.retry, &unit.policy_chain);
             let ops: Vec<GlyphOp> = plan(&prior, &leaf_as_scroll(unit))
@@ -322,7 +322,7 @@ impl Foreman {
             let result = self
                 .enact_unit(
                     reconcile_id,
-                    &mut next_ord,
+                    &next_ord,
                     &ops,
                     &prior,
                     &unit.path,
@@ -341,7 +341,7 @@ impl Foreman {
             let result = self
                 .enact_unit(
                     reconcile_id,
-                    &mut next_ord,
+                    &next_ord,
                     &group.ops,
                     &prior,
                     &group.unit_path,
@@ -486,19 +486,18 @@ impl Foreman {
     fn enact_unit(
         &self,
         reconcile_id: u64,
-        next_ord: &mut u64,
+        next_ord: &AtomicU64,
         ops: &[GlyphOp],
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
-        retry_clock: &Cell<Option<Instant>>,
+        retry_clock: &Mutex<Option<Instant>>,
     ) -> Result<UnitResult> {
         // NOTE: `step_ord` is unique across ALL units of an attempt — the shared
         // `next_ord` counter advances by `ops.len()` per unit, never resetting. The
         // WAL grouping predicates (`has_terminal`/`next_reversible`/`reversed_after`,
         // `wal::cancelled_dones`) key on `(step_ord, action)` and depend on it.
-        let base_ord = *next_ord;
-        *next_ord += ops.len() as u64;
+        let base_ord = next_ord.fetch_add(ops.len() as u64, Ordering::SeqCst);
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
         for (offset, op) in ops.iter().enumerate() {
             classes.push(self.enact_one(
@@ -519,14 +518,17 @@ impl Foreman {
             if round + 1 > retry.max_attempts {
                 break;
             }
-            if retry_clock
-                .get()
-                .is_some_and(|clock| clock.elapsed().as_millis() as u64 >= retry.max_elapsed_ms)
             {
-                break;
+                let clock = retry_clock.lock().unwrap();
+                if clock.is_some_and(|c| c.elapsed().as_millis() as u64 >= retry.max_elapsed_ms) {
+                    break;
+                }
             }
-            if retry_clock.get().is_none() {
-                retry_clock.set(Some(Instant::now()));
+            {
+                let mut clock = retry_clock.lock().unwrap();
+                if clock.is_none() {
+                    *clock = Some(Instant::now());
+                }
             }
             let delay = round_delay(retry, round);
             for offset in &remaining {
@@ -2868,6 +2870,18 @@ mod tests {
             .unwrap()
             .contains(&"reverse apt:nginx".to_string()));
         assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+    }
+
+    #[test]
+    fn atomic_step_ord_reserves_disjoint_blocks() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let next = AtomicU64::new(0);
+        let a = next.fetch_add(3, Ordering::SeqCst);
+        let b = next.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(a, 0);
+        assert_eq!(b, 3);
+        assert_eq!(next.load(Ordering::SeqCst), 5);
+        assert!(b >= a + 3, "the second block never overlaps the first");
     }
 
     #[test]
