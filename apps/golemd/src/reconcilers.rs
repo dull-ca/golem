@@ -43,6 +43,29 @@ use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
 /// Enacts the four glyph kinds on a real host, driving apt and systemd through a
 /// [`CommandRunner`] `R` (the `system()` constructor uses the real one; tests
 /// inject the fake).
+///
+/// The three locks are the per-kind serialization the parallel unit executor
+/// leans on (ADR 0034 §3). Each guards a host-command hazard, at the coarsest
+/// granularity the hazard actually needs — never in-memory state:
+/// - `apt` — global, because the host holds one dpkg lock; two concurrent
+///   `apt-get` invocations collide. It serializes every apt command (install,
+///   remove, the ADR 0030 refresh) and the batch pre-pass.
+/// - `line_locks` — one mutex **per target path**, because `lineInFile` is a
+///   read-modify-write ([`apply_line_in_file`]: `file_has_line` then
+///   `append_line`) that two writers to the same file race. Distinct paths hold
+///   distinct locks and proceed at once.
+/// - `daemon_reload` — global, but held **only** around `systemctl daemon-reload`,
+///   not the surrounding `enable`/`start`. A reload reprocesses every unit file
+///   and runs generators, so two units reloading at once is a cross-unit TOCTOU
+///   (ADR 0034 §3); enabling distinct units touches independent state and needs no
+///   lock. Whether the window must extend through the following `enable` is an open
+///   question (ADR 0034 Open Questions), left to the first real concurrent run.
+///
+/// Filesystem glyphs take no lock — distinct paths are independent and the write
+/// is atomic temp-and-rename. Every lock is acquired poison-tolerantly
+/// (`unwrap_or_else(|p| p.into_inner())`): a panic mid-command cannot corrupt an
+/// empty `()` guard or the path map's shape, so a poisoned lock is safe to reclaim.
+/// The locks serialize host commands, not in-memory invariants.
 pub struct HostReconciler<R: CommandRunner> {
     runner: R,
     apt: std::sync::Mutex<()>,

@@ -140,8 +140,9 @@ pub struct Foreman {
     /// Fleet default (from `golemd.toml`); the per-scroll `policy` cascade
     /// overrides it per unit via `resolve_retry`.
     retry: RetryConfig,
-    /// Host-wide enact width (from `golemd.toml [enact]`); read by the coming
-    /// parallel-unit executor (ADR 0034 §3).
+    /// Host-wide enact width (from `golemd.toml [enact]`): the size of the worker
+    /// pool `run_reconcile` drains the unit queue with. `workers = 1` reproduces
+    /// fully-serial enact (ADR 0034 §3).
     enact: EnactConfig,
     write: Mutex<()>,
     progress: ProgressRegistry,
@@ -305,6 +306,22 @@ impl Foreman {
     /// opened and marked `Enacting` by [`Foreman::ingest`]; that open, unsettled
     /// attempt is what gates a concurrent ingest between the two lock
     /// acquisitions (ADR 0020 §3).
+    ///
+    /// Four phases in fixed order (ADR 0034 §3): the serial batch pre-pass
+    /// ([`Reconciler::prepare`], apt front-loaded into one invocation); the
+    /// **parallel unit phase** below; the serial cross-unit removes; then settle.
+    /// The unit phase drains `units` on a bounded worker pool of `self.enact.workers`
+    /// threads — an `AtomicU64` hands each worker the next index, and each runs one
+    /// unit's whole `enact_unit` (its round loop, its `on_exhaust`) before taking
+    /// another. Reports land in per-index slots so `unit_reports` stays in source
+    /// order however the workers interleave; the first `Err` any worker raises is
+    /// captured and returned after the pool joins.
+    ///
+    /// The one ordering guarantee that survives parallelism: **within** a unit,
+    /// glyphs still enact in source order. **Between** units there is deliberately
+    /// none — the authored model promises no cross-unit ordering (ADR 0034 §3, §4),
+    /// so the executor is free to run them at once. `workers = 1` collapses this to
+    /// the fully-serial walk, the safe fallback.
     pub fn run_reconcile(
         &self,
         reconcile_id: u64,
@@ -325,10 +342,10 @@ impl Foreman {
         let retry_clock: Mutex<Option<Instant>> = Mutex::new(None);
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
-        // NOTE: `next_ord` is an AtomicU64 so the parallel-unit executor (ADR 0034
-        // §3) can reserve each unit's disjoint `step_ord` block from concurrent
-        // threads; `enact_unit`'s `fetch_add(ops.len())` keeps per-unit ords
-        // disjoint whatever order the reservations interleave.
+        // NOTE: `next_ord` is an AtomicU64 so each worker reserves its unit's
+        // disjoint `step_ord` block from its own thread (ADR 0034 §3);
+        // `enact_unit`'s `fetch_add(ops.len())` keeps per-unit ords disjoint
+        // whatever order the reservations interleave.
         let next_ord = AtomicU64::new(0);
         let unit_ops: Vec<Vec<GlyphOp>> = units
             .iter()
@@ -350,10 +367,9 @@ impl Foreman {
         //   - `succeeded`: shared `(key, cid)` pairs a real apply (or a claim) has
         //     put on the host. A pair is *inserted* on first success; later shared
         //     declarers of it credit instead of re-applying.
-        // The two mutable sets are `Mutex`, not `Cell`, so the coming parallel
-        // executor (ADR 0034 §3) reads and mutates them across concurrent unit
-        // threads; the Mutex makes claim-once and credit-after-success both
-        // first-writer-wins.
+        // The two mutable sets are `Mutex`, not `Cell`, so the worker pool (ADR
+        // 0034 §3) reads and mutates them across concurrent unit threads; the Mutex
+        // makes claim-once and credit-after-success both first-writer-wins.
         let shared = shared_pairs(&unit_ops);
         let enacting_ops: Vec<GlyphOp> = unit_ops.iter().flatten().cloned().collect();
         // NOTE: the first unit declaring a batch-installed package claims the real
@@ -729,7 +745,7 @@ impl Foreman {
     ///
     /// A non-shared op is never credited (#2 and the seeding in #3/#4 are gated on
     /// `shared`). The `succeeded` mutex makes crediting first-success-wins under the
-    /// coming parallel executor (ADR 0034 §3); it only suppresses a *redundant*
+    /// worker pool (ADR 0034 §3); it only suppresses a *redundant*
     /// apply after a success, never coordinates two racing real applies (idempotent
     /// by construction). A later observer of a package whose name was already
     /// claimed (removed from `batch_installed`) falls through to arm #4 and honestly
@@ -1328,6 +1344,12 @@ impl Foreman {
     /// applied glyphs are never in the set and stay committed. This is the
     /// deliberate per-unit `on_exhaust = rollback`; whole-attempt crash recovery
     /// still uses the unscoped [`Foreman::rollback_attempt`].
+    ///
+    /// The `unit_path` filter is also the isolation boundary under parallel enact
+    /// (ADR 0034 §3): with sibling units enacting concurrently, the WAL this reads
+    /// may hold a sibling's in-flight brackets — interleaved by `seq`, not grouped.
+    /// Scoping the search to this unit's path is what keeps a rolling-back unit from
+    /// reversing a sibling's still-committing steps.
     fn rollback_unit(&self, reconcile_id: u64, unit_path: &[String]) -> Result<()> {
         loop {
             let steps = self.planroom.wal_steps_for(reconcile_id)?;
@@ -2360,6 +2382,13 @@ mod tests {
             self.foreman = self.foreman.with_retry_config(cfg);
             self
         }
+        // NOTE: dedup/claim COUNT assertions (`enacts_once`, shared-glyph rollback,
+        // the crediting tests) pin `EnactConfig { workers: 1 }` through this helper.
+        // With workers > 1, two units racing a real apply of the same key is a
+        // legitimate outcome that varies the counts — idempotence, not dedup, is the
+        // invariant then (ADR 0034 §1). Pin workers = 1 whenever a test asserts an
+        // exact apply/claim/credit count; leave it at the default only when the test
+        // is about concurrency itself.
         fn with_enact_config(mut self, cfg: EnactConfig) -> Self {
             self.foreman = self.foreman.with_enact_config(cfg);
             self
