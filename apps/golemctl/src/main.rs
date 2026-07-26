@@ -12,11 +12,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Compile (or read) a manifest, fire it at golemd, and follow the
+    /// reconcile live. See [`golemctl::apply`] for the surface and exit codes.
     Apply {
         source: PathBuf,
         addr: String,
+        /// Emit plain lines and the report as JSON, no TUI (also the non-TTY path).
         #[arg(long)]
         json: bool,
+        /// Skip the POST and resume the newest attempt via `/reconciles/latest`.
         #[arg(long)]
         reattach: bool,
     },

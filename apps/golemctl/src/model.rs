@@ -1,7 +1,21 @@
+//! The apply model and the fold that drives it from poll responses (ADR 0033
+//! §3). The model/fold/view split is adopted from devenv-tui's
+//! `ActivityModel`: a tree of nodes, typed events folded into it, and a view
+//! that is a pure function of the model — `iocraft` is the shared dependency
+//! underneath. Here the tree is one [`UnitNode`] per `unit_path`, and the poll
+//! response replaces devenv's activity-event channel as the fold's input.
+//!
+//! [`apply_progress`](ApplyModel::apply_progress) upserts each unit's glyph
+//! rows by path (the projection is authoritative — a later poll overwrites the
+//! prior state), then appends the poll's `events` to the matching node's log
+//! ring. Nodes are never removed; the projection only grows.
+
 use std::collections::VecDeque;
 
 use crate::poll::{GlyphState, Phase, Progress};
 
+// Per-unit log lines retained; the view shows only the last few of an active
+// unit, so the ring bounds memory without touching what the user sees.
 pub const LOG_RING_CAP: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,6 +51,9 @@ pub struct ApplyModel {
     pub report: Option<serde_json::Value>,
 }
 
+// A unit is Failed if any glyph failed, Settled only once every glyph reached a
+// terminal non-failed state (applied/unchanged/rolled-back), else Active. Failed
+// wins over a still-pending sibling so a failure is never hidden by in-flight work.
 fn unit_state(glyphs: &[GlyphRow]) -> UnitState {
     if glyphs.iter().any(|g| g.state == GlyphState::Failed) {
         UnitState::Failed

@@ -1,3 +1,14 @@
+//! The pure view over [`ApplyModel`] (ADR 0033 §3) — the unit tree a person
+//! watches while an apply runs. Each unit is a header row with its mark, then a
+//! row per glyph; the recent log lines of the *active* unit stream in beneath
+//! it. [`render_to_string`] is the tested surface and the render the run loop
+//! currently drives.
+//!
+//! The marks:
+//! - `✓` settled (applied)   · `·` unchanged (a no-op)
+//! - `↩` rolled back         · `✗` failed
+//! - the spinner frame       — active (pending / in progress)
+
 use iocraft::prelude::*;
 
 use crate::model::{ApplyModel, UnitState};
@@ -8,6 +19,8 @@ pub const XMARK: &str = "✗";
 pub const ROLLED_BACK: &str = "↩";
 pub const UNCHANGED: &str = "·";
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// Log lines shown under the active unit — the tail of its ring, matching
+// devenv-tui's "recent lines under the active node" rule.
 const ACTIVE_LOG_LINES: usize = 5;
 
 pub fn glyph_mark(state: GlyphState) -> &'static str {
@@ -37,6 +50,8 @@ pub fn view(model: &ApplyModel) -> impl Into<AnyElement<'static>> {
         for g in &unit.glyphs {
             let mut line = format!("  {} {}", glyph_mark(g.state), g.glyph_key);
             if let Some(ms) = g.next_retry_in_ms {
+                // Server-computed countdown from the projection's
+                // `next_retry_in_ms`; shown only while a retry is scheduled.
                 line.push_str(&format!("  (retry in {ms}ms)"));
             }
             rows.push(element!(Text(content: line)).into_any());
@@ -60,6 +75,13 @@ pub fn render_to_string(model: &ApplyModel, width: usize) -> String {
     element.render(Some(width)).to_string()
 }
 
+// Self-animating components: a `Spinner` that advances its own frame on a
+// timer, and a `StatusIndicator` that shows the spinner while active and a
+// settled mark otherwise. They compile and are exported, but the run loop
+// (`apply::run_tui`) does not yet mount them — it redraws `render_to_string`
+// each poll, so the spinner frame only advances at poll cadence. Wiring the
+// animated iocraft render loop is deferred polish (ADR 0033 §3); these are
+// ready for it.
 #[component]
 pub fn Spinner(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut frame = hooks.use_state(|| 0usize);

@@ -1,3 +1,14 @@
+//! The apply loop: fire the manifest, then poll until settled (ADR 0033 §3).
+//! [`run`] picks the surface — the live unit tree on a TTY, plain lines
+//! otherwise. `--json` and a non-terminal stdout both take the plain path (a
+//! pipe or CI gets deterministic lines, no spinner); `--reattach` skips the
+//! POST and resumes the newest attempt via `/reconciles/latest`.
+//!
+//! Exit-code contract: `settled` → 0, any other terminal `outcome`
+//! (`partial`, `rolled_back`) → nonzero. A partial or rolled-back reconcile is
+//! a *result*, not a transport error (ADR 0029 §5), so the report still prints;
+//! the nonzero code lets a caller (fleet, CI) branch on it.
+
 use std::io::IsTerminal;
 use std::time::Duration;
 
@@ -28,6 +39,8 @@ pub fn print_report(report: &serde_json::Value) {
     }
 }
 
+// `settled` and a settle with no report both exit 0; every other terminal
+// outcome (`partial`, `rolled_back`) exits 1. See the module contract.
 fn exit_code(report: Option<&serde_json::Value>) -> i32 {
     match report.and_then(|r| r.get("outcome")).and_then(|o| o.as_str()) {
         Some("settled") => 0,
@@ -75,6 +88,13 @@ async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
     }
 }
 
+// The string-redraw baseline: fold each poll into the model and re-render the
+// pure view to stderr, clearing between frames. Animation therefore advances at
+// poll cadence, not smoothly — the self-animating iocraft components exist
+// (see `view::Spinner`) but are not yet mounted here. This path and `--reattach`
+// are smoke-verified only (a live render loop needs a pty harness the plan does
+// not build); the tested surface is the fold, `render_to_string`, `plain_line`,
+// `should_stop`, and `exit_code`.
 async fn run_tui(addr: &str, id: u64) -> Result<i32> {
     let mut model = ApplyModel::new();
     let mut cursor = 0u64;

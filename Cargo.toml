@@ -37,6 +37,9 @@ reqwest      = { version = "0.12", default-features = false, features = ["json",
 axum         = "0.7"
 fastrand     = "2"
 base64       = "0.22"
+# Pinned to devenv's `0.8` line (ADR 0033 §3). The released 0.8.2 resolves the
+# render/stderr API cleanly, so devenv's git patch to `main` is not needed; the
+# `unstable-output-streams` feature supplies the stderr rendering an apply wants.
 iocraft      = { version = "=0.8.2", features = ["unstable-output-streams"] }
 
 [profile.release]

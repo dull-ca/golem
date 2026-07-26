@@ -1,3 +1,17 @@
+//! The typed client for golemd's fire-then-poll apply protocol (ADR 0033
+//! §1–2). [`post_manifest`] fires the manifest and gets back a `202
+//! { reconcile_id }`; [`get_progress`] then polls `GET
+//! /reconciles/<id>?after=<cursor>` until the projection settles. The
+//! projection — the folded per-glyph [`GlyphState`] under each [`UnitProgress`]
+//! — is the truth; `events` is the ordered log golemd streams alongside it,
+//! rendered as garnish under the active unit. [`get_latest`] hits
+//! `/reconciles/latest` to reattach to the newest attempt when the caller has
+//! lost its id.
+//!
+//! These types mirror golemd's `report`/projection wire shape; `serde` field
+//! and variant names are the contract, so their spelling matches the JSON
+//! exactly (`snake_case` enums).
+
 use anyhow::{bail, Result};
 use serde::Deserialize;
 
@@ -39,6 +53,9 @@ pub struct GlyphProgress {
     pub action: String,
     pub state: GlyphState,
     pub rounds: u32,
+    // NOTE: server-computed and clamped, read from golemd's live round loop —
+    // the WAL never records a scheduled retry (ADR 0033 §2). Present only while
+    // a retry is pending; absent on a recovered attempt after a daemon restart.
     pub next_retry_in_ms: Option<u64>,
 }
 
@@ -64,7 +81,13 @@ pub struct Progress {
     pub phase: Phase,
     pub units: Vec<UnitProgress>,
     pub events: Vec<Event>,
+    // The next `?after` to pass: events past this are unseen. Resuming from it
+    // after a dropped poll misses nothing the server buffer still holds.
     pub cursor: u64,
+    // `null` until the attempt settles, then the full `ReconcileReport` (ADR
+    // 0029 §5) — the same body the synchronous 200 used to return. Kept as raw
+    // JSON: golemctl only reads `outcome` for its exit code and pretty-prints
+    // the rest.
     pub report: Option<serde_json::Value>,
 }
 
