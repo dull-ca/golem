@@ -42,6 +42,7 @@ use crate::journal::{
     WalStep, WalStepState,
 };
 use crate::planroom::PlanRoom;
+use crate::progress::{EventLevel, ProgressRegistry};
 use crate::reconcile::plan;
 use crate::reconciler::{EnactError, Reconciler};
 use crate::report::{
@@ -140,6 +141,7 @@ pub struct Foreman {
     /// overrides it per unit via `resolve_retry`.
     retry: RetryConfig,
     write: Mutex<()>,
+    progress: ProgressRegistry,
 }
 
 #[derive(Debug)]
@@ -171,6 +173,7 @@ impl Foreman {
             reconciler,
             retry: RetryConfig::default(),
             write: Mutex::new(()),
+            progress: ProgressRegistry::new(),
         };
         if let Err(e) = foreman.recover() {
             warn!(?e, "startup recovery failed");
@@ -185,6 +188,10 @@ impl Foreman {
 
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    pub fn progress(&self) -> &ProgressRegistry {
+        &self.progress
     }
 
     pub fn apply_manifest(&self, bytes: &[u8]) -> Result<ReconcileReport, ForemanError> {
@@ -228,6 +235,7 @@ impl Foreman {
         self.planroom
             .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
             .map_err(ForemanError::Internal)?;
+        self.progress.open(attempt.reconcile_id);
         Ok((attempt.reconcile_id, selected))
     }
 
@@ -441,10 +449,19 @@ impl Foreman {
             if retry_clock.get().is_none() {
                 retry_clock.set(Some(Instant::now()));
             }
-            std::thread::sleep(round_delay(retry, round));
+            let delay = round_delay(retry, round);
+            for offset in &remaining {
+                self.progress.set_retry(
+                    reconcile_id,
+                    &ops[*offset as usize].key(),
+                    delay.as_millis() as u64,
+                );
+            }
+            std::thread::sleep(delay);
             round += 1;
             for offset in remaining {
                 let op = &ops[offset as usize];
+                self.progress.clear_retry(reconcile_id, &op.key());
                 classes[offset as usize] =
                     self.enact_one(reconcile_id, base_ord + offset, op, prior, unit_path, round)?;
             }
@@ -595,6 +612,13 @@ impl Foreman {
             None,
             unit_path,
         )?;
+        self.progress.record(
+            reconcile_id,
+            EventLevel::Info,
+            unit_path,
+            &op.key(),
+            &format!("{} {}", action_tag_for(op), op.key()),
+        );
         match self.reconciler.apply(glyph, cid) {
             Ok(outcome) => {
                 self.planroom.append_wal_step(
@@ -624,6 +648,7 @@ impl Foreman {
                 )?;
                 let class = classify(e);
                 log_step_failure(&op.key(), round, &class);
+                self.record_failure(reconcile_id, unit_path, &op.key(), &class);
                 Ok(class)
             }
         }
@@ -683,9 +708,26 @@ impl Foreman {
                 )?;
                 let class = classify(e);
                 log_step_failure(&op.key(), round, &class);
+                self.record_failure(reconcile_id, unit_path, &op.key(), &class);
                 Ok(class)
             }
         }
+    }
+
+    fn record_failure(
+        &self,
+        reconcile_id: u64,
+        unit_path: &[String],
+        glyph_key: &str,
+        class: &StepClass,
+    ) {
+        let (level, reason) = match class {
+            StepClass::Failed(RetryClass::Retryable, m) => (EventLevel::Warn, m.clone()),
+            StepClass::Failed(RetryClass::Fatal, m) => (EventLevel::Error, m.clone()),
+            StepClass::Ok => (EventLevel::Info, String::new()),
+        };
+        self.progress
+            .record(reconcile_id, level, unit_path, glyph_key, &reason);
     }
 
     /// The outcome whose inverse a `Reverse`/`Remove` step will consume. Normally
@@ -1229,6 +1271,15 @@ fn glyph_action_of(op: &GlyphOp) -> GlyphAction {
         GlyphOp::Replace { .. } => GlyphAction::Replace,
         GlyphOp::Remove { .. } => GlyphAction::Remove,
         GlyphOp::Noop { .. } => GlyphAction::Noop,
+    }
+}
+
+fn action_tag_for(op: &GlyphOp) -> &'static str {
+    match op {
+        GlyphOp::Install { .. } => "install",
+        GlyphOp::Replace { .. } => "replace",
+        GlyphOp::Remove { .. } => "remove",
+        GlyphOp::Noop { .. } => "noop",
     }
 }
 
@@ -2137,6 +2188,24 @@ mod tests {
             Err(e) => assert_eq!(e.kind(), "manifest-undecodable"),
             Ok(_) => panic!("expected a typed error"),
         }
+    }
+
+    #[test]
+    fn an_apply_emits_progress_events_for_each_installed_glyph() {
+        let f = foreman_with(ScriptedReconciler::new().ok_default());
+        let scroll = Scroll {
+            name: "host".into(),
+            policy: None,
+            contents: Contents::Glyphs(vec![apt("nginx"), apt("pg")]),
+        };
+        let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
+        let (id, sel) = f.foreman.ingest(&bytes).unwrap();
+        f.foreman.run_reconcile(id, sel).unwrap();
+        let events = f.foreman.progress().events_after(id, 0);
+        let messages: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
+        assert!(messages.iter().any(|m| m.contains("apt:nginx")));
+        assert!(messages.iter().any(|m| m.contains("apt:pg")));
+        assert!(events.iter().all(|e| e.seq >= 1));
     }
 
     #[test]
