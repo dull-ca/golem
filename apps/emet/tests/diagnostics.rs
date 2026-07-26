@@ -268,8 +268,16 @@ fn expected_set_has_no_virtual_semicolon() {
 fn expected_set_has_no_something_else() {
     let e = err("f x x + 1\n\nmain = f 2");
     assert_eq!(e.phase, Phase::Parse);
-    assert!(!e.msg.contains("something else"), "jargon leaked: {}", e.msg);
-    assert!(e.msg.contains("an expression"), "expected replacement: {}", e.msg);
+    assert!(
+        !e.msg.contains("something else"),
+        "jargon leaked: {}",
+        e.msg
+    );
+    assert!(
+        e.msg.contains("an expression"),
+        "expected replacement: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -289,7 +297,11 @@ fn unclosed_bracket_message_mentions_unclosed() {
         "expected an unclosed hint: {}",
         e.msg
     );
-    assert!(e.msg.contains("']'"), "should still name the delimiter: {}", e.msg);
+    assert!(
+        e.msg.contains("']'"),
+        "should still name the delimiter: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -311,7 +323,11 @@ fn braced_rollback_points_at_braceless_form() {
 fn arrow_typo_hint() {
     let e = err("f x =\n  case x of\n    1 => \"a\"\n    _ => \"b\"\n\nmain = f 1");
     assert_eq!(e.phase, Phase::Parse);
-    assert!(e.msg.contains("=>") && e.msg.contains("->"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("=>") && e.msg.contains("->"),
+        "msg: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -319,14 +335,22 @@ fn missing_equals_hint() {
     let e = err("f x x + 1\n\nmain = f 2");
     assert_eq!(e.phase, Phase::Parse);
     assert!(e.msg.contains("="), "should mention '=': {}", e.msg);
-    assert!(e.msg.to_lowercase().contains("definition") || e.msg.contains("'='"), "msg: {}", e.msg);
+    assert!(
+        e.msg.to_lowercase().contains("definition") || e.msg.contains("'='"),
+        "msg: {}",
+        e.msg
+    );
 }
 
 #[test]
 fn empty_case_is_reported_as_no_arms() {
     let e = err("f x =\n  case x of\n\nmain = f 1");
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("no arms") || e.msg.contains("at least one"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("no arms") || e.msg.contains("at least one"),
+        "msg: {}",
+        e.msg
+    );
 }
 
 // AUDIT #27 is deferred (docs/TODO.md): `f x -1` still parses as `(f x) - 1`,
@@ -338,7 +362,11 @@ fn empty_case_is_reported_as_no_arms() {
 fn negative_literal_argument_still_parses_as_subtraction() {
     let e = err("take2 a b = a\nmain = [ take2 3 -1 ]");
     assert_eq!(e.phase, Phase::Type);
-    assert!(!e.msg.contains("not yet supported"), "no rejection expected yet: {}", e.msg);
+    assert!(
+        !e.msg.contains("not yet supported"),
+        "no rejection expected yet: {}",
+        e.msg
+    );
     assert!(
         e.msg.to_lowercase().contains("number"),
         "subtraction on a partial application fails the number constraint: {}",
@@ -362,7 +390,11 @@ fn duplicate_top_level_binding_is_rejected() {
     let e = err("x = 1\nx = 2\n\nmain = [ ]");
     assert_eq!(e.phase, Phase::Parse);
     assert!(e.msg.contains("`x`"), "should name x: {}", e.msg);
-    assert!(e.msg.contains("twice") || e.msg.contains("defined"), "msg: {}", e.msg);
+    assert!(
+        e.msg.contains("twice") || e.msg.contains("defined"),
+        "msg: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -376,7 +408,11 @@ fn duplicate_let_binding_is_rejected() {
 fn unbound_name_suggests_nearest() {
     let e = err("greeting = \"hi\"\nmain = greetnig");
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("greeting"), "should suggest greeting: {}", e.msg);
+    assert!(
+        e.msg.contains("greeting"),
+        "should suggest greeting: {}",
+        e.msg
+    );
     assert!(e.msg.contains("did you mean"), "msg: {}", e.msg);
 }
 
@@ -384,7 +420,11 @@ fn unbound_name_suggests_nearest() {
 fn unknown_constructor_suggests_nearest() {
     let e = err("main = Nothin");
     assert_eq!(e.phase, Phase::Type);
-    assert!(e.msg.contains("Nothing"), "should suggest Nothing: {}", e.msg);
+    assert!(
+        e.msg.contains("Nothing"),
+        "should suggest Nothing: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -400,7 +440,11 @@ fn number_constraint_is_plain_language() {
     assert_eq!(e.phase, Phase::Type);
     assert!(!e.msg.contains("satisfy"), "jargon leaked: {}", e.msg);
     assert!(e.msg.to_lowercase().contains("number"), "msg: {}", e.msg);
-    assert!(e.msg.contains("String"), "should name the offending type: {}", e.msg);
+    assert!(
+        e.msg.contains("String"),
+        "should name the offending type: {}",
+        e.msg
+    );
 }
 
 #[test]
@@ -416,7 +460,11 @@ fn policy_field_wants_a_policy() {
     let e = err(r#"main = [ scroll { name = "w", glyphs = [], policy = "aggressive" } ]"#);
     assert_eq!(e.phase, Phase::Type);
     assert!(e.msg.contains("Policy"), "should mention Policy: {}", e.msg);
-    assert!(!e.msg.contains("expected `String`"), "reversed framing leaked: {}", e.msg);
+    assert!(
+        !e.msg.contains("expected `String`"),
+        "reversed framing leaked: {}",
+        e.msg
+    );
 }
 
 #[test]

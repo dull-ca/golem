@@ -158,7 +158,11 @@ fn parse_error_msg_has_no_filename_prefix() {
 
     let errors = compile_file_all(&entry).expect_err("unclosed bracket is a parse error");
     let e = &errors[0];
-    assert!(!e.msg.contains(".emet:"), "filename leaked into label: {}", e.msg);
+    assert!(
+        !e.msg.contains(".emet:"),
+        "filename leaked into label: {}",
+        e.msg
+    );
     assert!(
         !e.msg.contains(entry.to_str().unwrap()),
         "path leaked: {}",
@@ -170,7 +174,10 @@ fn parse_error_msg_has_no_filename_prefix() {
 fn parse_error_identifies_the_imported_module() {
     let p = Project::new("importedparse");
     p.write("emet.json", r#"{ "source-directories": ["lib"] }"#);
-    p.write("lib/Pkgs.emet", "module Pkgs exposing (..)\n\nbroken = [ \"a\" \n");
+    p.write(
+        "lib/Pkgs.emet",
+        "module Pkgs exposing (..)\n\nbroken = [ \"a\" \n",
+    );
     let entry = p.write(
         "app/Main.emet",
         "import Pkgs\n\nmain = [ scroll { name = \"h\", glyphs = [] } ]\n",
@@ -178,7 +185,11 @@ fn parse_error_identifies_the_imported_module() {
 
     let errors = compile_file_all(&entry).expect_err("imported module has an unclosed bracket");
     let e = &errors[0];
-    assert_eq!(e.phase, Phase::Parse, "an unclosed bracket is a parse error");
+    assert_eq!(
+        e.phase,
+        Phase::Parse,
+        "an unclosed bracket is a parse error"
+    );
     let file = e
         .file
         .as_ref()

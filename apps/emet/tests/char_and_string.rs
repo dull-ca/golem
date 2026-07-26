@@ -470,7 +470,11 @@ fn unknown_string_escape_is_a_lex_error() {
         Err(e) => e,
     };
     assert_eq!(e.phase, emet::Phase::Lex);
-    assert!(e.msg.contains("\\q"), "should name the bad escape: {}", e.msg);
+    assert!(
+        e.msg.contains("\\q"),
+        "should name the bad escape: {}",
+        e.msg
+    );
 }
 
 #[test]

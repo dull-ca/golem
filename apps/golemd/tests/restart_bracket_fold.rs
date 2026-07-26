@@ -2,9 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use golemd::config::{OnExhaustConfig, RetryConfig};
 use golemd::foreman::Foreman;
-use golemd::journal::{
-    AttemptPhase, GlyphOp, Inverse, Outcome, WalAction, WalStepState,
-};
+use golemd::journal::{AttemptPhase, GlyphOp, Inverse, Outcome, WalAction, WalStepState};
 use golemd::planroom::{MemoryPlanRoom, PlanRoom};
 use golemd::reconciler::{inverse_of, EnactError, EnactResult, Reconciler};
 use golemd::report::{GlyphOutcome, UnitOutcome};

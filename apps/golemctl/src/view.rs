@@ -217,7 +217,9 @@ pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
     if lines.len() <= height {
         return lines;
     }
-    lines = drop_from_bottom(lines, height, |l| matches!(l, Line::Branch { settled: true, .. }));
+    lines = drop_from_bottom(lines, height, |l| {
+        matches!(l, Line::Branch { settled: true, .. })
+    });
     if lines.len() <= height {
         return lines;
     }
@@ -225,7 +227,9 @@ pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
     if lines.len() <= height {
         return lines;
     }
-    lines = drop_from_bottom(lines, height, |l| matches!(l, Line::Log { host: false, .. }));
+    lines = drop_from_bottom(lines, height, |l| {
+        matches!(l, Line::Log { host: false, .. })
+    });
     if lines.len() <= height {
         return lines;
     }
@@ -331,7 +335,8 @@ pub fn render_to_string(model: &ApplyModel, width: usize) -> String {
 }
 
 pub fn render_to_string_bounded(model: &ApplyModel, width: usize, height: usize) -> String {
-    let rows: Vec<AnyElement<'static>> = fit(lines(model), height).iter().map(static_line).collect();
+    let rows: Vec<AnyElement<'static>> =
+        fit(lines(model), height).iter().map(static_line).collect();
     let mut element: AnyElement<'static> = element! {
         View(flex_direction: FlexDirection::Column) {
             #(rows)
@@ -356,7 +361,10 @@ pub fn UnitTree(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     // never hit. One row of headroom keeps the diff-based repaint inline.
     let budget = (height as usize).saturating_sub(1);
     let rows: Vec<AnyElement<'static>> = match model.lock() {
-        Ok(model) => fit(lines(&model), budget).iter().map(animated_line).collect(),
+        Ok(model) => fit(lines(&model), budget)
+            .iter()
+            .map(animated_line)
+            .collect(),
         Err(_) => Vec::new(),
     };
 

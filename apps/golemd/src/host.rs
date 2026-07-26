@@ -119,11 +119,7 @@ impl CommandRunner for SystemCommandRunner {
     }
 }
 
-fn pump<R: std::io::Read>(
-    stream: R,
-    level: EventLevel,
-    tx: mpsc::Sender<(EventLevel, String)>,
-) {
+fn pump<R: std::io::Read>(stream: R, level: EventLevel, tx: mpsc::Sender<(EventLevel, String)>) {
     let reader = BufReader::new(stream);
     for line in reader.lines().map_while(Result::ok) {
         if tx.send((level, line)).is_err() {

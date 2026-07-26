@@ -124,8 +124,8 @@ impl ProgressRegistry {
 
     pub fn open(&self, reconcile_id: u64) {
         let mut inner = self.inner.lock().unwrap();
-        if !inner.rings.contains_key(&reconcile_id) {
-            inner.rings.insert(reconcile_id, AttemptRing::new());
+        if let std::collections::btree_map::Entry::Vacant(entry) = inner.rings.entry(reconcile_id) {
+            entry.insert(AttemptRing::new());
             inner.order.push_back(reconcile_id);
             while inner.order.len() > ATTEMPT_LRU {
                 if let Some(evicted) = inner.order.pop_front() {

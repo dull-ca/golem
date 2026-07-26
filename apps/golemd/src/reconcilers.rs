@@ -158,7 +158,9 @@ impl<R: CommandRunner> HostReconciler<R> {
         let started_only = if enabled.succeeded() {
             false
         } else if is_generated_unit(&enabled.stderr) {
-            let started = self.runner.run_streaming("systemctl", &["start", unit], sink)?;
+            let started = self
+                .runner
+                .run_streaming("systemctl", &["start", unit], sink)?;
             if !started.succeeded() {
                 return Err(EnactError::Retryable(format!(
                     "systemctl start {unit}: {}",
@@ -858,7 +860,10 @@ mod tests {
         let mut count = 0usize;
         let mut sink = |_lvl: EventLevel, _line: &str| count += 1;
         rec.apply_streaming(&glyph, cid, &mut sink).unwrap();
-        assert_eq!(count, 0, "a file reconciler runs no command, so it streams nothing");
+        assert_eq!(
+            count, 0,
+            "a file reconciler runs no command, so it streams nothing"
+        );
     }
 
     fn apt(name: &str) -> Glyph {

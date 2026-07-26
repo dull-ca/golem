@@ -80,7 +80,10 @@ fn the_header_renders_before_any_unit_exists() {
 #[test]
 fn a_branch_row_renders_above_its_indented_children() {
     let m = model(vec![
-        unit(&["scaly", "base"], vec![glyph("apt:htop", GlyphState::Applied)]),
+        unit(
+            &["scaly", "base"],
+            vec![glyph("apt:htop", GlyphState::Applied)],
+        ),
         unit(
             &["scaly", "fishnet-a"],
             vec![glyph("apt:podman", GlyphState::InProgress)],
@@ -139,8 +142,14 @@ fn a_failed_leaf_bubbles_the_x_to_its_branch() {
 #[test]
 fn a_settled_branch_resolves_the_checkmark() {
     let m = model(vec![
-        unit(&["scaly", "a"], vec![glyph("apt:podman", GlyphState::Applied)]),
-        unit(&["scaly", "b"], vec![glyph("apt:htop", GlyphState::Unchanged)]),
+        unit(
+            &["scaly", "a"],
+            vec![glyph("apt:podman", GlyphState::Applied)],
+        ),
+        unit(
+            &["scaly", "b"],
+            vec![glyph("apt:htop", GlyphState::Unchanged)],
+        ),
     ]);
     let out = view::render_to_string(&m, 100);
     assert!(out.lines().any(|l| l.trim() == "✓ scaly"));
@@ -230,7 +239,11 @@ fn an_active_glyph_renders_its_cmd_tail_under_the_row() {
     m.apply_progress(progress_with(
         vec![],
         vec![
-            cmd_event(&["scaly", "a"], "apt:podman", "Unpacking podman (4.3.1) ..."),
+            cmd_event(
+                &["scaly", "a"],
+                "apt:podman",
+                "Unpacking podman (4.3.1) ...",
+            ),
             cmd_event(&["scaly", "a"], "apt:podman", "Setting up conmon ..."),
         ],
     ));
@@ -247,14 +260,21 @@ fn the_cmd_tail_collapses_when_the_glyph_settles() {
     )]);
     m.apply_progress(progress_with(
         vec![],
-        vec![cmd_event(&["scaly", "a"], "apt:podman", "Unpacking podman ...")],
+        vec![cmd_event(
+            &["scaly", "a"],
+            "apt:podman",
+            "Unpacking podman ...",
+        )],
     ));
     assert!(view::render_to_string(&m, 100).contains("Unpacking podman ..."));
 
     m.apply_progress(Progress {
         reconcile_id: 1,
         phase: Phase::Settled,
-        units: vec![unit(&["scaly", "a"], vec![glyph("apt:podman", GlyphState::Applied)])],
+        units: vec![unit(
+            &["scaly", "a"],
+            vec![glyph("apt:podman", GlyphState::Applied)],
+        )],
         events: vec![],
         cursor: 2,
         report: Some(serde_json::json!({ "outcome": "settled" })),
@@ -289,7 +309,10 @@ fn lifecycle_log_region_is_unaffected_by_cmd_tails() {
         ],
     ));
     let out = view::render_to_string(&m, 100);
-    assert!(out.contains("install apt:podman"), "lifecycle line still renders");
+    assert!(
+        out.contains("install apt:podman"),
+        "lifecycle line still renders"
+    );
     assert!(out.contains("Unpacking podman ..."), "cmd tail renders too");
 }
 
@@ -305,7 +328,10 @@ fn resolve_terminal_size_floors_degenerate_dimensions() {
         (view::DEFAULT_COLS, 40),
         "each axis floors independently"
     );
-    assert_eq!(view::resolve_terminal_size(120, 0), (120, view::DEFAULT_ROWS));
+    assert_eq!(
+        view::resolve_terminal_size(120, 0),
+        (120, view::DEFAULT_ROWS)
+    );
     assert_eq!(
         view::resolve_terminal_size(120, 40),
         (120, 40),

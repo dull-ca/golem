@@ -47,7 +47,10 @@ pub fn print_report(report: &serde_json::Value) {
 // `settled` and a settle with no report both exit 0; every other terminal
 // outcome (`partial`, `rolled_back`) exits 1. See the module contract.
 fn exit_code(report: Option<&serde_json::Value>) -> i32 {
-    match report.and_then(|r| r.get("outcome")).and_then(|o| o.as_str()) {
+    match report
+        .and_then(|r| r.get("outcome"))
+        .and_then(|o| o.as_str())
+    {
         Some("settled") => 0,
         None => 0,
         _ => 1,
@@ -282,8 +285,14 @@ mod tests {
     #[test]
     fn exit_code_is_nonzero_for_partial_outcomes() {
         assert_eq!(exit_code(None), 0);
-        assert_eq!(exit_code(Some(&serde_json::json!({ "outcome": "settled" }))), 0);
-        assert_eq!(exit_code(Some(&serde_json::json!({ "outcome": "partial" }))), 1);
+        assert_eq!(
+            exit_code(Some(&serde_json::json!({ "outcome": "settled" }))),
+            0
+        );
+        assert_eq!(
+            exit_code(Some(&serde_json::json!({ "outcome": "partial" }))),
+            1
+        );
         assert_eq!(
             exit_code(Some(&serde_json::json!({ "outcome": "rolled_back" }))),
             1
@@ -305,10 +314,19 @@ mod tests {
         // mid-poll, no live server required.
         let persistence = Arc::new(Mutex::new(Persistence::open(0)));
 
-        poll_into(live.clone(), "http://127.0.0.1:0".to_string(), 1, persistence).await;
+        poll_into(
+            live.clone(),
+            "http://127.0.0.1:0".to_string(),
+            1,
+            persistence,
+        )
+        .await;
 
         assert!(live.done.load(Ordering::Acquire));
         let err = live.error.lock().unwrap().take();
-        assert!(err.is_some(), "expected a transport error, got a silent done");
+        assert!(
+            err.is_some(),
+            "expected a transport error, got a silent done"
+        );
     }
 }

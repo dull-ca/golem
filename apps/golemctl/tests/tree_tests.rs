@@ -35,7 +35,10 @@ fn model(units: Vec<UnitProgress>) -> ApplyModel {
 #[test]
 fn a_shared_prefix_becomes_one_branch_with_children() {
     let m = model(vec![
-        unit(&["scaly", "base"], vec![glyph("apt:htop", GlyphState::Applied)]),
+        unit(
+            &["scaly", "base"],
+            vec![glyph("apt:htop", GlyphState::Applied)],
+        ),
         unit(
             &["scaly", "fishnet-a"],
             vec![glyph("apt:podman", GlyphState::InProgress)],
@@ -51,7 +54,10 @@ fn a_shared_prefix_becomes_one_branch_with_children() {
 #[test]
 fn a_branch_spins_while_any_descendant_is_active() {
     let m = model(vec![
-        unit(&["scaly", "base"], vec![glyph("apt:htop", GlyphState::Applied)]),
+        unit(
+            &["scaly", "base"],
+            vec![glyph("apt:htop", GlyphState::Applied)],
+        ),
         unit(
             &["scaly", "fishnet-a"],
             vec![glyph("apt:podman", GlyphState::InProgress)],
@@ -84,7 +90,10 @@ fn a_wholly_rolled_back_subtree_aggregates_to_rolled_back() {
             &["scaly", "a"],
             vec![glyph("apt:podman", GlyphState::RolledBack)],
         ),
-        unit(&["scaly", "b"], vec![glyph("apt:htop", GlyphState::RolledBack)]),
+        unit(
+            &["scaly", "b"],
+            vec![glyph("apt:htop", GlyphState::RolledBack)],
+        ),
     ]);
     let tree = build(&m.units);
     assert_eq!(tree[0].state, BranchState::RolledBack);
@@ -93,8 +102,14 @@ fn a_wholly_rolled_back_subtree_aggregates_to_rolled_back() {
 #[test]
 fn a_settled_branch_resolves_applied_when_any_work_happened() {
     let m = model(vec![
-        unit(&["scaly", "a"], vec![glyph("apt:podman", GlyphState::Applied)]),
-        unit(&["scaly", "b"], vec![glyph("apt:htop", GlyphState::Unchanged)]),
+        unit(
+            &["scaly", "a"],
+            vec![glyph("apt:podman", GlyphState::Applied)],
+        ),
+        unit(
+            &["scaly", "b"],
+            vec![glyph("apt:htop", GlyphState::Unchanged)],
+        ),
     ]);
     let tree = build(&m.units);
     assert_eq!(tree[0].state, BranchState::Applied);
@@ -103,8 +118,14 @@ fn a_settled_branch_resolves_applied_when_any_work_happened() {
 #[test]
 fn a_settled_branch_resolves_unchanged_when_every_descendant_was_a_noop() {
     let m = model(vec![
-        unit(&["scaly", "a"], vec![glyph("apt:podman", GlyphState::Unchanged)]),
-        unit(&["scaly", "b"], vec![glyph("apt:htop", GlyphState::Unchanged)]),
+        unit(
+            &["scaly", "a"],
+            vec![glyph("apt:podman", GlyphState::Unchanged)],
+        ),
+        unit(
+            &["scaly", "b"],
+            vec![glyph("apt:htop", GlyphState::Unchanged)],
+        ),
     ]);
     let tree = build(&m.units);
     assert_eq!(tree[0].state, BranchState::Unchanged);

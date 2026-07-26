@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn committed_phase_serializes_as_settled() {
-        let v = serde_json::to_value(&phase_view(AttemptPhase::Committed)).unwrap();
+        let v = serde_json::to_value(phase_view(AttemptPhase::Committed)).unwrap();
         assert_eq!(v, "settled");
     }
 

@@ -125,7 +125,10 @@ pub async fn post_manifest(addr: &str, bytes: Vec<u8>) -> Result<Reconcile202> {
 }
 
 pub async fn get_progress(addr: &str, id: u64, after: u64) -> Result<Progress> {
-    let url = format!("{}/reconciles/{id}?after={after}", addr.trim_end_matches('/'));
+    let url = format!(
+        "{}/reconciles/{id}?after={after}",
+        addr.trim_end_matches('/')
+    );
     let resp = reqwest::get(&url).await?;
     let status = resp.status();
     let text = resp.text().await?;

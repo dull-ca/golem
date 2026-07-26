@@ -59,18 +59,30 @@ fn cmd_events_roll_a_bounded_per_glyph_tail_and_evict_the_oldest() {
     let mut m = ApplyModel::new();
     m.apply_progress(in_progress_unit(
         1,
-        &["Unpacking podman ...", "Setting up conmon ...", "Processing triggers ..."],
+        &[
+            "Unpacking podman ...",
+            "Setting up conmon ...",
+            "Processing triggers ...",
+        ],
     ));
     assert_eq!(
         podman_tail(&m),
-        vec!["Unpacking podman ...", "Setting up conmon ...", "Processing triggers ..."]
+        vec![
+            "Unpacking podman ...",
+            "Setting up conmon ...",
+            "Processing triggers ..."
+        ]
     );
 
     m.apply_progress(in_progress_unit(4, &["Setting up podman ..."]));
     assert_eq!(podman_tail(&m).len(), CMD_TAIL_LINES);
     assert_eq!(
         podman_tail(&m),
-        vec!["Setting up conmon ...", "Processing triggers ...", "Setting up podman ..."],
+        vec![
+            "Setting up conmon ...",
+            "Processing triggers ...",
+            "Setting up podman ..."
+        ],
         "the 4th line evicts the 1st"
     );
 }
@@ -78,7 +90,10 @@ fn cmd_events_roll_a_bounded_per_glyph_tail_and_evict_the_oldest() {
 #[test]
 fn a_cmd_tail_collapses_when_the_glyph_settles() {
     let mut m = ApplyModel::new();
-    m.apply_progress(in_progress_unit(1, &["Unpacking podman ...", "Setting up podman ..."]));
+    m.apply_progress(in_progress_unit(
+        1,
+        &["Unpacking podman ...", "Setting up podman ..."],
+    ));
     assert!(!podman_tail(&m).is_empty());
 
     m.apply_progress(Progress {
@@ -118,7 +133,12 @@ fn applying_progress_builds_the_unit_tree_and_appends_logs() {
             unit_path: vec!["scaly".into(), "a".into()],
             glyphs: vec![glyph("apt:podman", GlyphState::InProgress)],
         }],
-        events: vec![event(1, &["scaly", "a"], "apt:podman", "install apt:podman")],
+        events: vec![event(
+            1,
+            &["scaly", "a"],
+            "apt:podman",
+            "install apt:podman",
+        )],
         cursor: 1,
         report: None,
     });
@@ -163,7 +183,12 @@ fn the_view_renders_unit_paths_marks_and_active_logs() {
                 glyphs: vec![glyph("apt:podman", GlyphState::InProgress)],
             },
         ],
-        events: vec![event(1, &["scaly", "fishnet-a"], "apt:podman", "install apt:podman")],
+        events: vec![event(
+            1,
+            &["scaly", "fishnet-a"],
+            "apt:podman",
+            "install apt:podman",
+        )],
         cursor: 1,
         report: None,
     });

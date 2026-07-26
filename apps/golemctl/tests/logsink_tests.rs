@@ -89,12 +89,22 @@ fn events_land_in_all_log_and_their_units_slug_file() {
     let guard = TmpdirGuard::new();
 
     let mut sink = LogSink::create(42).unwrap();
-    sink.write_event(&event(&["scaly", "a"], "apt:podman", "info", "install apt:podman"))
-        .unwrap();
+    sink.write_event(&event(
+        &["scaly", "a"],
+        "apt:podman",
+        "info",
+        "install apt:podman",
+    ))
+    .unwrap();
     sink.write_event(&event(&["<removes>"], "apt:old", "info", "remove apt:old"))
         .unwrap();
-    sink.write_event(&event(&["scaly", "a"], "apt:podman", "warn", "dpkg lock held"))
-        .unwrap();
+    sink.write_event(&event(
+        &["scaly", "a"],
+        "apt:podman",
+        "warn",
+        "dpkg lock held",
+    ))
+    .unwrap();
 
     let dir = guard.path().join("golemctl").join("apply-42");
     let all = fs::read_to_string(dir.join("all.log")).unwrap();
@@ -124,8 +134,14 @@ fn an_event_line_carries_timestamp_level_glyph_and_message() {
         "enact failed (round 1): dpkg lock held; retrying in 2s",
     ))
     .unwrap();
-    let line = fs::read_to_string(guard.path().join("golemctl").join("apply-7").join("all.log"))
-        .unwrap();
+    let line = fs::read_to_string(
+        guard
+            .path()
+            .join("golemctl")
+            .join("apply-7")
+            .join("all.log"),
+    )
+    .unwrap();
     assert!(line.contains("2026-07-26T14:03:11Z"));
     assert!(line.contains("warn"));
     assert!(line.contains("apt:podman"));

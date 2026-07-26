@@ -702,14 +702,8 @@ impl Foreman {
         // stays glyph-only, with no reconcile-scoped state threaded through it.
         let key = op.key();
         let mut sink = |level: EventLevel, line: &str| {
-            self.progress.record_kind(
-                reconcile_id,
-                level,
-                EventKind::Cmd,
-                unit_path,
-                &key,
-                line,
-            );
+            self.progress
+                .record_kind(reconcile_id, level, EventKind::Cmd, unit_path, &key, line);
         };
         match self.reconciler.apply_streaming(glyph, cid, &mut sink) {
             Ok(outcome) => {
@@ -1666,9 +1660,7 @@ fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
 /// `systemdService` step), so a rollback never picks one up.
 fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
     steps.iter().rev().find(|s| {
-        s.state == WalStepState::Done
-            && s.action != WalAction::Restart
-            && !reversed_after(steps, s)
+        s.state == WalStepState::Done && s.action != WalAction::Restart && !reversed_after(steps, s)
     })
 }
 

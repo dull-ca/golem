@@ -364,7 +364,10 @@ impl Infer {
         }
         if self.occurs(v, &t) {
             return Err(TypeError::new(
-                format!("infinite type: `{}` occurs in itself", render_type(&self.apply(&t))),
+                format!(
+                    "infinite type: `{}` occurs in itself",
+                    render_type(&self.apply(&t))
+                ),
                 span.clone(),
             ));
         }
