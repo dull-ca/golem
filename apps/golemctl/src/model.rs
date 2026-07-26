@@ -19,6 +19,11 @@ use crate::poll::{GlyphState, Phase, Progress};
 // unit, so the ring bounds memory without touching what the user sees.
 pub const LOG_RING_CAP: usize = 200;
 
+// NOTE: superseded by `tree::BranchState` (ADR 0033 §3c). The renderer builds a
+// real tree and aggregates branch state from the glyph rows directly, so it
+// never reads `UnitNode.state`. This flat per-unit rollup and `unit_state`
+// survive only because `model_tests` still assert on them; nothing in the render
+// path does. Retire both if those tests move to asserting on the tree.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnitState {
     Active,

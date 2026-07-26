@@ -86,6 +86,10 @@ fn indent(depth: usize) -> String {
 
 fn glyph_suffix(g: &GlyphRow) -> String {
     let mut suffix = format!(" {}", g.glyph_key);
+    // The countdown is the projection's server-computed `next_retry_in_ms` — the
+    // one in-memory seam the WAL cannot carry (ADR 0033 §2) — present only while
+    // golemd has a retry scheduled, so it rides an in-progress row, never a
+    // terminal ✗.
     if let Some(ms) = g.next_retry_in_ms {
         suffix.push_str(&format!("  (retry in {ms}ms)"));
     }

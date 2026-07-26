@@ -9,6 +9,10 @@ use crate::poll::Event;
 // run can be read whole or one scroll at a time after the spinner clears. IO
 // errors degrade to a single warning and never abort the apply — the files are a
 // record, not a dependency of the reconcile.
+//
+// The files are the after-the-fact record devenv-tui drops on exit, so they are
+// left on disk deliberately: no rotation, no cleanup — $TMPDIR is the lifecycle,
+// and one apply's log is small.
 pub struct LogSink {
     dir: PathBuf,
     all: File,
