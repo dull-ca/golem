@@ -26,6 +26,7 @@ fn fleet_smoke_programs_compile() {
 
 #[test]
 fn example_fleets_compile() {
+    compiles("examples/fishnet-farm/farm.emet");
     compiles("examples/lichess/fleet.emet");
     compiles("examples/registry/registry.emet");
     compiles("examples/registry/clients.emet");
