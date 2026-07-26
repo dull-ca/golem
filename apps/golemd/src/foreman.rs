@@ -346,8 +346,12 @@ impl Foreman {
         // observe — the batch already made the package present, so every per-unit
         // apply sees `changed = false`/`Inverse::Nothing` (ADR 0034 §2). A Mutex,
         // not a Cell, so the parallel executor reads and removes from it across
-        // concurrent unit threads. On a `prepare` failure the set stays empty and
-        // the per-unit applies classify the failure as before.
+        // concurrent unit threads. `HostReconciler::prepare` reports its
+        // batch/fallback failure at warn level and still returns `Ok` with
+        // whatever `batch_installed` dpkg truth shows, so a partially successful
+        // fallback is never discarded (ADR 0034 §2); the `Err` arm below is now
+        // reached only by a caught reconciler panic, for which the claim set
+        // starts empty and the per-unit applies classify the failure as before.
         let batch_installed = match self.reconciler.prepare(&enacting_ops) {
             Ok(outcome) => outcome.batch_installed,
             Err(e) => {
@@ -3973,6 +3977,117 @@ mod tests {
         assert_eq!(
             podman_claimed, 1,
             "apt:podman is claimed exactly once — no double-claim"
+        );
+    }
+
+    #[test]
+    fn on_exhaust_rollback_reverses_a_batch_installed_package_when_the_fallback_partially_failed() {
+        // Mirrors the real `HostReconciler::prepare`: the batch (and its per-glyph
+        // fallback) partially fails — podman installs, nope does not — and
+        // `prepare` still returns `Ok` carrying podman in `batch_installed`, the
+        // dpkg-verified receipt, rather than discarding it on the swallowed error.
+        // `apply` mirrors `BatchHost`: an apt glyph already present on the host
+        // (the batch's doing) reports `changed = false`/`Inverse::Nothing`, the
+        // exact idempotence that makes the foreman's claim the only path to a
+        // real `RemoveAptPackage` bracket.
+        struct PartiallyFailingFallbackHost {
+            installed: Mutex<std::collections::BTreeSet<String>>,
+            reversed: Mutex<Vec<(String, Inverse)>>,
+        }
+        impl Reconciler for PartiallyFailingFallbackHost {
+            fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+                let mut installed = self.installed.lock().unwrap();
+                installed.insert("podman".into());
+                let mut batch_installed = std::collections::HashSet::new();
+                batch_installed.insert("podman".to_string());
+                Ok(crate::reconciler::PrepareOutcome { batch_installed })
+            }
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                if let Glyph::SystemdService { unit } = glyph {
+                    if unit == "doomed" {
+                        return Err(EnactError::Fatal("scripted fatal for doomed".into()));
+                    }
+                }
+                if let Glyph::AptPackage { name } = glyph {
+                    let mut installed = self.installed.lock().unwrap();
+                    let already = installed.contains(name);
+                    installed.insert(name.clone());
+                    return Ok(Outcome {
+                        op: GlyphOp::Install {
+                            cid,
+                            glyph: glyph.clone(),
+                        },
+                        cid,
+                        inverse: if already {
+                            Inverse::Nothing
+                        } else {
+                            crate::reconciler::inverse_of(glyph)
+                        },
+                        changed: !already,
+                    });
+                }
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                let key = outcome.op.key();
+                self.reversed
+                    .lock()
+                    .unwrap()
+                    .push((key, outcome.inverse.clone()));
+                if let Inverse::RemoveAptPackage { name } = &outcome.inverse {
+                    self.installed.lock().unwrap().remove(name);
+                }
+                Ok(())
+            }
+        }
+        let host = Arc::new(PartiallyFailingFallbackHost {
+            installed: Mutex::new(std::collections::BTreeSet::new()),
+            reversed: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = scroll(
+            "host",
+            vec![
+                apt("podman"),
+                Glyph::SystemdService {
+                    unit: "doomed".into(),
+                },
+            ],
+        );
+        let report = f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert!(
+            host.reversed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, inv)| k == "apt:podman"
+                    && matches!(inv, Inverse::RemoveAptPackage { name } if name == "podman")),
+            "the on_exhaust rollback reverses apt:podman with the real RemoveAptPackage even \
+             though the batch's per-glyph fallback partially failed this attempt"
+        );
+        assert!(
+            !host.installed.lock().unwrap().contains("podman"),
+            "the batch-installed podman is removed from the host by the rollback, not left \
+             permanently untracked"
         );
     }
 }

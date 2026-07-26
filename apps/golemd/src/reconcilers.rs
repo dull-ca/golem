@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 
 use nix::unistd::{chown, Gid, Group, Uid, User};
 use scroll_format::{ContentId, Entry, Glyph, Perms};
+use tracing::warn;
 
 use crate::host::{CommandRunner, CommandSink, SystemCommandRunner};
 use crate::journal::{GlyphOp, Inverse, Outcome};
@@ -390,14 +391,20 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
             .filter(|n| !self.apt_installed(n).unwrap_or(false))
             .cloned()
             .collect();
-        let batch = self.batch_install(&names);
+        if let Err(e) = self.batch_install(&names) {
+            warn!(
+                error = %format!("{e:?}"),
+                "batch install (and its per-glyph fallback) reported a failure; \
+                 per-unit enact will classify the still-unresolved packages"
+            );
+        }
         let mut batch_installed = std::collections::HashSet::new();
         for name in absent_before {
             if self.apt_installed(&name).unwrap_or(false) {
                 batch_installed.insert(name);
             }
         }
-        batch.map(|()| PrepareOutcome { batch_installed })
+        Ok(PrepareOutcome { batch_installed })
     }
 
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
@@ -1137,19 +1144,28 @@ mod tests {
             "two good packages install per-glyph after the batch fails"
         );
 
-        let bad = rec.prepare(&[install_op(&apt("podman")), install_op(&apt("nope"))]);
-        match bad {
-            Err(EnactError::Retryable(m)) => {
-                assert!(
-                    m.contains("nope"),
-                    "the fallback fails only the bad package: {m}"
-                )
-            }
-            other => panic!("expected a Retryable naming the bad package, got {other:?}"),
-        }
+        let partial = rec.prepare(&[install_op(&apt("curl")), install_op(&apt("nope"))]);
+        let outcome = partial.expect(
+            "prepare stays Ok even when the fallback partially fails; the verify loop's dpkg \
+             truth is the receipt, and per-unit enact classifies whatever is still unresolved",
+        );
         assert!(
-            runner_of(&rec).inner_installed("podman"),
+            outcome.batch_installed.contains("curl"),
+            "the good sibling's dpkg-verified install is still reported, got {:?}",
+            outcome.batch_installed
+        );
+        assert!(
+            !outcome.batch_installed.contains("nope"),
+            "the still-unresolved package is excluded, got {:?}",
+            outcome.batch_installed
+        );
+        assert!(
+            runner_of(&rec).inner_installed("curl"),
             "the good sibling still installed via fallback"
+        );
+        assert!(
+            !runner_of(&rec).inner_installed("nope"),
+            "the bad package never installed"
         );
     }
 
