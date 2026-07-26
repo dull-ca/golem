@@ -17,6 +17,7 @@ pub mod host;
 pub mod http;
 pub mod journal;
 pub mod planroom;
+pub mod progress;
 pub mod reconcile;
 pub mod reconciler;
 pub mod reconcilers;
