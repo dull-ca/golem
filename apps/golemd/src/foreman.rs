@@ -309,9 +309,17 @@ impl Foreman {
                 detail: e.to_string(),
             })?;
         let prior = applied_outcomes(&steps);
+        // NOTE: `retry_clock` is a Mutex, not a Cell, so the attempt-wide retry
+        // budget survives units running concurrently (ADR 0034 §3). The clock is
+        // started lazily on the first unit that actually retries and shared across
+        // all units, bounding the whole reconcile — not each unit (ADR 0029 §3).
         let retry_clock: Mutex<Option<Instant>> = Mutex::new(None);
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
+        // NOTE: `next_ord` is an AtomicU64 so the parallel-unit executor (ADR 0034
+        // §3) can reserve each unit's disjoint `step_ord` block from concurrent
+        // threads; `enact_unit`'s `fetch_add(ops.len())` keeps per-unit ords
+        // disjoint whatever order the reservations interleave.
         let next_ord = AtomicU64::new(0);
         let unit_ops: Vec<Vec<GlyphOp>> = units
             .iter()
@@ -504,10 +512,12 @@ impl Foreman {
         retry: &RetryConfig,
         retry_clock: &Mutex<Option<Instant>>,
     ) -> Result<UnitResult> {
-        // NOTE: `step_ord` is unique across ALL units of an attempt — the shared
-        // `next_ord` counter advances by `ops.len()` per unit, never resetting. The
-        // WAL grouping predicates (`has_terminal`/`next_reversible`/`reversed_after`,
-        // `wal::cancelled_dones`) key on `(step_ord, action)` and depend on it.
+        // NOTE: `step_ord` is unique across ALL units of an attempt — one atomic
+        // `fetch_add(ops.len())` reserves this unit a disjoint `[base_ord, base_ord
+        // + ops.len())` block, so blocks never overlap however concurrent units
+        // interleave their reservations (ADR 0034 §3). The WAL grouping predicates
+        // (`has_terminal`/`next_reversible`/`reversed_after`, `wal::cancelled_dones`)
+        // key on `(step_ord, action)` and depend on it.
         let base_ord = next_ord.fetch_add(ops.len() as u64, Ordering::SeqCst);
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
         for (offset, op) in ops.iter().enumerate() {
@@ -600,6 +610,14 @@ impl Foreman {
         })
     }
 
+    /// Record a duplicate op's bracket without touching the host — the enacting
+    /// unit already ran the real `apply` for this `(key, cid)`. The bracket is
+    /// byte-identical to the idempotent re-observation it replaces: `Intended`
+    /// then `Done`, `changed = false`, `Inverse::Nothing`, under this unit's own
+    /// `step_ord` and `unit_path`, no reconciler call. So a unit-scoped rollback
+    /// of a crediting unit reverses `Inverse::Nothing` — zero host effect — and
+    /// the applied-set fold is unchanged: only the first-declaring unit holds the
+    /// real inverse and can undo the host change (ADR 0034 §1).
     fn enact_credited(
         &self,
         reconcile_id: u64,
@@ -1369,10 +1387,13 @@ struct RemoveGroup<'a> {
     policy_chain: Vec<&'a scroll_format::Policy>,
 }
 
-/// A leaf unit flattened into a leaf `Scroll` so [`plan`] can diff its glyphs
-/// against the whole prior applied set. The diff naturally yields Installs and
-/// Replaces for this unit's glyphs; the caller filters out Removes (which the
-/// whole-scroll vanished-removes pass owns — Resolution 1).
+/// A per-op mask over `unit_ops`, source order preserved: `true` marks an op an
+/// earlier op (in an earlier unit, or earlier in the same unit) already declared
+/// with the same `(key, cid)`. The first occurrence stays `false` and enacts for
+/// real; the duplicates are credited (`enact_credited`) instead of re-run. Only
+/// `(key, cid)` identity dedups — the same key with a divergent cid is NOT
+/// deduped and remains silent last-wins on the host (ADR 0034 §1, a recorded
+/// wart to surface, not resolve here).
 fn dedup_plan(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
     let mut seen: std::collections::HashSet<(String, ContentId)> = std::collections::HashSet::new();
     let mut credited = Vec::with_capacity(unit_ops.len());
@@ -1396,6 +1417,10 @@ fn enacted_cid_of(op: &GlyphOp) -> ContentId {
     }
 }
 
+/// A leaf unit flattened into a leaf `Scroll` so [`plan`] can diff its glyphs
+/// against the whole prior applied set. The diff naturally yields Installs and
+/// Replaces for this unit's glyphs; the caller filters out Removes (which the
+/// whole-scroll vanished-removes pass owns — Resolution 1).
 fn leaf_as_scroll(unit: &LeafUnit<'_>) -> Scroll {
     Scroll {
         name: unit.path.last().cloned().unwrap_or_default(),
