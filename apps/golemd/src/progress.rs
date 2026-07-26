@@ -13,8 +13,12 @@
 //! `seq` is a per-attempt monotone cursor: `record` stamps each event with the
 //! next `seq`, and `events_after(after)` returns the slice `> after`, so a
 //! client passes back the `cursor` it last saw and misses nothing the ring
-//! still holds. The ring is bounded at `EVENT_RING_CAP` events per attempt
-//! (oldest dropped past the cap, `seq` stays monotone across the drop) and only
+//! still holds. Eviction is **per-kind** (ADR 0033 §2 `kind` split): the
+//! `lifecycle` stream and the high-volume `cmd` stream each carry their own
+//! bound (`LIFECYCLE_RING_CAP`, `CMD_RING_CAP`) and evict only themselves, so a
+//! command flood drops old `cmd` lines and never crowds out lifecycle events.
+//! The `seq` cursor stays a single monotone stream across both kinds — one
+//! ordered slice to the client — only the eviction bound is split. Only
 //! `ATTEMPT_LRU` attempts are kept live at once — a poll targets the current or
 //! just-finished attempt, so two is enough and a chatty rollback cannot bloat
 //! daemon memory unbounded.
@@ -26,7 +30,14 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-pub const EVENT_RING_CAP: usize = 1024;
+/// The lifecycle-event bound: golemd's own decision lines (install/replace/
+/// remove, enact-failed-round-N, giving-up, rollback, revision-recorded). A
+/// handful per glyph, so a modest cap it never exhausts (ADR 0033 §2).
+pub const LIFECYCLE_RING_CAP: usize = 1024;
+/// The command-output bound: raw stdout/stderr lines of apt/systemd commands,
+/// which a single `apt install` can push into the hundreds. Given a larger cap
+/// so it evicts only itself under a flood (ADR 0033 §2).
+pub const CMD_RING_CAP: usize = 4096;
 const ATTEMPT_LRU: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -37,11 +48,29 @@ pub enum EventLevel {
     Error,
 }
 
+/// Which stream an event belongs to (ADR 0033 §2). `Lifecycle` is golemd's
+/// decision log; `Cmd` is the raw command output forwarded line by line. They
+/// share one `seq` cursor but evict under separate bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    Lifecycle,
+    Cmd,
+}
+
+fn ring_cap(kind: EventKind) -> usize {
+    match kind {
+        EventKind::Lifecycle => LIFECYCLE_RING_CAP,
+        EventKind::Cmd => CMD_RING_CAP,
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProgressEvent {
     pub seq: u64,
     pub at: DateTime<Utc>,
     pub level: EventLevel,
+    pub kind: EventKind,
     pub unit_path: Vec<String>,
     pub glyph_key: String,
     pub message: String,
@@ -59,6 +88,17 @@ impl AttemptRing {
             next_seq: 1,
             events: VecDeque::new(),
             retries: BTreeMap::new(),
+        }
+    }
+
+    fn evict(&mut self, kind: EventKind) {
+        let cap = ring_cap(kind);
+        while self.events.iter().filter(|e| e.kind == kind).count() > cap {
+            if let Some(pos) = self.events.iter().position(|e| e.kind == kind) {
+                self.events.remove(pos);
+            } else {
+                break;
+            }
         }
     }
 }
@@ -103,6 +143,25 @@ impl ProgressRegistry {
         glyph_key: &str,
         message: &str,
     ) {
+        self.record_kind(
+            reconcile_id,
+            level,
+            EventKind::Lifecycle,
+            unit_path,
+            glyph_key,
+            message,
+        );
+    }
+
+    pub fn record_kind(
+        &self,
+        reconcile_id: u64,
+        level: EventLevel,
+        kind: EventKind,
+        unit_path: &[String],
+        glyph_key: &str,
+        message: &str,
+    ) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(ring) = inner.rings.get_mut(&reconcile_id) {
             let seq = ring.next_seq;
@@ -111,13 +170,12 @@ impl ProgressRegistry {
                 seq,
                 at: Utc::now(),
                 level,
+                kind,
                 unit_path: unit_path.to_vec(),
                 glyph_key: glyph_key.to_string(),
                 message: message.to_string(),
             });
-            while ring.events.len() > EVENT_RING_CAP {
-                ring.events.pop_front();
-            }
+            ring.evict(kind);
         }
     }
 
@@ -212,7 +270,7 @@ mod tests {
     fn the_ring_drops_oldest_past_the_cap_but_keeps_seq_monotone() {
         let reg = ProgressRegistry::new();
         reg.open(1);
-        for i in 0..(EVENT_RING_CAP as u64 + 5) {
+        for i in 0..(LIFECYCLE_RING_CAP as u64 + 5) {
             reg.record(
                 1,
                 EventLevel::Info,
@@ -222,9 +280,69 @@ mod tests {
             );
         }
         let all = reg.events_after(1, 0);
-        assert_eq!(all.len(), EVENT_RING_CAP);
-        assert_eq!(all.last().unwrap().seq, EVENT_RING_CAP as u64 + 5);
+        assert_eq!(all.len(), LIFECYCLE_RING_CAP);
+        assert_eq!(all.last().unwrap().seq, LIFECYCLE_RING_CAP as u64 + 5);
         assert!(all.first().unwrap().seq > 1);
+    }
+
+    #[test]
+    fn a_cmd_flood_never_evicts_lifecycle_events() {
+        let reg = ProgressRegistry::new();
+        reg.open(1);
+        reg.record(
+            1,
+            EventLevel::Info,
+            &["scaly".into()],
+            "apt:podman",
+            "install apt:podman",
+        );
+        for i in 0..(CMD_RING_CAP as u64 + 500) {
+            reg.record_kind(
+                1,
+                EventLevel::Info,
+                EventKind::Cmd,
+                &["scaly".into()],
+                "apt:podman",
+                &format!("Unpacking chunk {i}"),
+            );
+        }
+        let all = reg.events_after(1, 0);
+        let lifecycle: Vec<_> = all
+            .iter()
+            .filter(|e| e.kind == EventKind::Lifecycle)
+            .collect();
+        let cmd: Vec<_> = all.iter().filter(|e| e.kind == EventKind::Cmd).collect();
+        assert_eq!(
+            lifecycle.len(),
+            1,
+            "the lone lifecycle event survives the cmd flood"
+        );
+        assert_eq!(lifecycle[0].message, "install apt:podman");
+        assert_eq!(cmd.len(), CMD_RING_CAP, "cmd evicts only itself to its cap");
+    }
+
+    #[test]
+    fn seq_stays_monotone_across_interleaved_kinds() {
+        let reg = ProgressRegistry::new();
+        reg.open(1);
+        reg.record(1, EventLevel::Info, &[], "apt:x", "install apt:x");
+        reg.record_kind(
+            1,
+            EventLevel::Info,
+            EventKind::Cmd,
+            &[],
+            "apt:x",
+            "Unpacking x",
+        );
+        reg.record(1, EventLevel::Warn, &[], "apt:x", "enact failed");
+        let all = reg.events_after(1, 0);
+        let seqs: Vec<u64> = all.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3]);
+        let kinds: Vec<EventKind> = all.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![EventKind::Lifecycle, EventKind::Cmd, EventKind::Lifecycle]
+        );
     }
 
     #[test]

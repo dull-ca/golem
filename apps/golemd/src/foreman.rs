@@ -42,7 +42,7 @@ use crate::journal::{
     WalStep, WalStepState,
 };
 use crate::planroom::PlanRoom;
-use crate::progress::{EventLevel, ProgressRegistry};
+use crate::progress::{EventKind, EventLevel, ProgressRegistry};
 use crate::reconcile::plan;
 use crate::reconciler::{EnactError, Reconciler};
 use crate::report::{
@@ -695,7 +695,18 @@ impl Foreman {
             &op.key(),
             &format!("{} {}", action_tag_for(op), op.key()),
         );
-        match self.reconciler.apply(glyph, cid) {
+        let key = op.key();
+        let mut sink = |level: EventLevel, line: &str| {
+            self.progress.record_kind(
+                reconcile_id,
+                level,
+                EventKind::Cmd,
+                unit_path,
+                &key,
+                line,
+            );
+        };
+        match self.reconciler.apply_streaming(glyph, cid, &mut sink) {
             Ok(outcome) => {
                 self.planroom.append_wal_step(
                     reconcile_id,

@@ -5,8 +5,12 @@
 //! reconcilers do real filesystem I/O directly — see `reconcilers.rs` — and are
 //! tested against tempfiles instead.)
 
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
+use crate::progress::EventLevel;
 use crate::reconciler::{EnactError, EnactResult};
 
 /// The captured result of one command: its exit status and both output streams.
@@ -22,10 +26,31 @@ impl CommandOutput {
     }
 }
 
+/// The sink one streaming command forwards each output line to as it arrives:
+/// `(level, line)` — stdout at `Info`, stderr at `Warn` (ADR 0033 §2). The
+/// reconciler builds a closure that records each line into the progress ring
+/// tagged `{unit_path, glyph_key, kind:"cmd"}`.
+pub type CommandSink<'a> = dyn FnMut(EventLevel, &str) + 'a;
+
 /// Run one host command and capture its output. The seam between the apt/systemd
 /// reconcilers and the real machine.
 pub trait CommandRunner: Send + Sync {
     fn run(&self, program: &str, args: &[&str]) -> EnactResult<CommandOutput>;
+
+    /// Run a command, forwarding each stdout/stderr line to `sink` as it is
+    /// produced while still returning the captured [`CommandOutput`] for the
+    /// caller's success/stderr checks (ADR 0033 §2). The default delegates to
+    /// [`CommandRunner::run`] and forwards nothing — an opt-in seam, so the fake
+    /// runner and every existing call site are unchanged; only
+    /// [`SystemCommandRunner`] overrides it to stream.
+    fn run_streaming(
+        &self,
+        program: &str,
+        args: &[&str],
+        _sink: &mut CommandSink<'_>,
+    ) -> EnactResult<CommandOutput> {
+        self.run(program, args)
+    }
 }
 
 /// The production runner: spawns the program via `std::process::Command`.
@@ -42,6 +67,78 @@ impl CommandRunner for SystemCommandRunner {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
+    }
+
+    fn run_streaming(
+        &self,
+        program: &str,
+        args: &[&str],
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<CommandOutput> {
+        let mut child = Command::new(program)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| EnactError::Retryable(format!("spawn {program}: {e}")))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (tx, rx) = mpsc::channel::<(EventLevel, String)>();
+        let stdout_handle = stdout.map(|out| {
+            let tx = tx.clone();
+            thread::spawn(move || pump(out, EventLevel::Info, tx))
+        });
+        let stderr_handle = stderr.map(|err| {
+            let tx = tx.clone();
+            thread::spawn(move || pump(err, EventLevel::Warn, tx))
+        });
+        drop(tx);
+        let mut stdout_lines: Vec<String> = Vec::new();
+        let mut stderr_lines: Vec<String> = Vec::new();
+        for (level, line) in rx {
+            sink(level, &line);
+            match level {
+                EventLevel::Warn => stderr_lines.push(line),
+                _ => stdout_lines.push(line),
+            }
+        }
+        if let Some(h) = stdout_handle {
+            let _ = h.join();
+        }
+        if let Some(h) = stderr_handle {
+            let _ = h.join();
+        }
+        let status = child
+            .wait()
+            .map_err(|e| EnactError::Retryable(format!("wait {program}: {e}")))?;
+        Ok(CommandOutput {
+            status: status.code().unwrap_or(-1),
+            stdout: join_lines(&stdout_lines),
+            stderr: join_lines(&stderr_lines),
+        })
+    }
+}
+
+fn pump<R: std::io::Read>(
+    stream: R,
+    level: EventLevel,
+    tx: mpsc::Sender<(EventLevel, String)>,
+) {
+    let reader = BufReader::new(stream);
+    for line in reader.lines().map_while(Result::ok) {
+        if tx.send((level, line)).is_err() {
+            break;
+        }
+    }
+}
+
+fn join_lines(lines: &[String]) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let mut joined = lines.join("\n");
+        joined.push('\n');
+        joined
     }
 }
 
@@ -123,6 +220,49 @@ pub mod fake {
 
         pub fn log(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
+        }
+    }
+
+    /// A [`CommandRunner`] that **opts into** streaming (ADR 0033 §2): its
+    /// `run_streaming` forwards a scripted list of stdout lines to the sink
+    /// before delegating the state change to a wrapped [`FakeCommandRunner`], so
+    /// a test can assert `cmd` lines flow without a real subprocess. The default
+    /// `run` (non-streaming) forwards nothing, exactly like the production
+    /// contract — only the streaming path emits.
+    pub struct ScriptedStreamingRunner {
+        inner: FakeCommandRunner,
+        program: String,
+        lines: Vec<String>,
+    }
+
+    impl ScriptedStreamingRunner {
+        pub fn for_install(package: &str, lines: &[&str]) -> Self {
+            let _ = package;
+            Self {
+                inner: FakeCommandRunner::new(),
+                program: "apt-get".to_string(),
+                lines: lines.iter().map(|l| l.to_string()).collect(),
+            }
+        }
+    }
+
+    impl CommandRunner for ScriptedStreamingRunner {
+        fn run(&self, program: &str, args: &[&str]) -> EnactResult<CommandOutput> {
+            self.inner.run(program, args)
+        }
+
+        fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            sink: &mut CommandSink<'_>,
+        ) -> EnactResult<CommandOutput> {
+            if program == self.program && args.first() == Some(&"install") {
+                for line in &self.lines {
+                    sink(EventLevel::Info, line);
+                }
+            }
+            self.inner.run(program, args)
         }
     }
 

@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use nix::unistd::{chown, Gid, Group, Uid, User};
 use scroll_format::{ContentId, Entry, Glyph, Perms};
 
-use crate::host::{CommandRunner, SystemCommandRunner};
+use crate::host::{CommandRunner, CommandSink, SystemCommandRunner};
 use crate::journal::{GlyphOp, Inverse, Outcome};
 use crate::reconciler::{EnactError, EnactResult, Reconciler};
 
@@ -69,18 +69,26 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// A single refresh per reconcile would be cheaper, but this stateless
     /// per-glyph adapter has no reconcile-scoped hook to hang one update on
     /// without threading shared state through the port.
-    fn apply_apt(&self, name: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+    fn apply_apt(
+        &self,
+        name: &str,
+        cid: ContentId,
+        glyph: &Glyph,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
         if self.apt_installed(name)? {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
         }
-        let updated = self.runner.run("apt-get", &["update"])?;
+        let updated = self.runner.run_streaming("apt-get", &["update"], sink)?;
         if !updated.succeeded() {
             return Err(EnactError::Retryable(format!(
                 "apt-get update: {}",
                 updated.stderr
             )));
         }
-        let installed = self.runner.run("apt-get", &["install", "-y", name])?;
+        let installed = self
+            .runner
+            .run_streaming("apt-get", &["install", "-y", name], sink)?;
         if !installed.succeeded() {
             return Err(EnactError::Retryable(format!(
                 "apt-get install {name}: {}",
@@ -123,24 +131,34 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// ([`is_generated_unit`]). A structural probe — `systemctl is-enabled`
     /// returning `generated` — is the more robust future signal, independent of
     /// systemd's error wording.
-    fn apply_systemd(&self, unit: &str, cid: ContentId, glyph: &Glyph) -> EnactResult<Outcome> {
+    fn apply_systemd(
+        &self,
+        unit: &str,
+        cid: ContentId,
+        glyph: &Glyph,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
         let prior_enabled = self.systemd_enabled(unit)?;
         let prior_active = self.systemd_active(unit)?;
         if prior_enabled && prior_active {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
         }
-        let reloaded = self.runner.run("systemctl", &["daemon-reload"])?;
+        let reloaded = self
+            .runner
+            .run_streaming("systemctl", &["daemon-reload"], sink)?;
         if !reloaded.succeeded() {
             return Err(EnactError::Retryable(format!(
                 "systemctl daemon-reload: {}",
                 reloaded.stderr
             )));
         }
-        let enabled = self.runner.run("systemctl", &["enable", "--now", unit])?;
+        let enabled = self
+            .runner
+            .run_streaming("systemctl", &["enable", "--now", unit], sink)?;
         let started_only = if enabled.succeeded() {
             false
         } else if is_generated_unit(&enabled.stderr) {
-            let started = self.runner.run("systemctl", &["start", unit])?;
+            let started = self.runner.run_streaming("systemctl", &["start", unit], sink)?;
             if !started.succeeded() {
                 return Err(EnactError::Retryable(format!(
                     "systemctl start {unit}: {}",
@@ -298,9 +316,23 @@ impl<R: CommandRunner> HostReconciler<R> {
 
 impl<R: CommandRunner> Reconciler for HostReconciler<R> {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+        let mut discard = |_level, _line: &str| {};
+        self.apply_streaming(glyph, cid, &mut discard)
+    }
+
+    /// Dispatch on the glyph kind, routing the command-driven kinds (apt,
+    /// systemd) through the streaming runner so their output reaches `sink` (ADR
+    /// 0033 §2). The filesystem and `lineInFile` kinds run no command, so they
+    /// never touch `sink` — command streaming cannot leak file contents.
+    fn apply_streaming(
+        &self,
+        glyph: &Glyph,
+        cid: ContentId,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
         match glyph {
-            Glyph::AptPackage { name } => self.apply_apt(name, cid, glyph),
-            Glyph::SystemdService { unit } => self.apply_systemd(unit, cid, glyph),
+            Glyph::AptPackage { name } => self.apply_apt(name, cid, glyph, sink),
+            Glyph::SystemdService { unit } => self.apply_systemd(unit, cid, glyph, sink),
             Glyph::Filesystem { path, entry } => match entry {
                 Entry::File { contents, perms } => apply_file(path, contents, perms, cid, glyph),
                 Entry::Directory { perms } => apply_directory(path, perms, cid, glyph),
@@ -778,8 +810,51 @@ fn remove_line_in_file(path: &str, line: &str) -> EnactResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::fake::FakeCommandRunner;
+    use crate::host::fake::{FakeCommandRunner, ScriptedStreamingRunner};
+    use crate::progress::EventLevel;
     use crate::reconcile::glyph_content_id;
+
+    #[test]
+    fn apt_apply_streams_scripted_command_lines_to_the_sink() {
+        let runner = ScriptedStreamingRunner::for_install(
+            "podman",
+            &["Unpacking podman (4.3.1) ...", "Setting up podman ..."],
+        );
+        let rec = HostReconciler::with_runner(runner);
+        let glyph = apt("podman");
+        let cid = glyph_content_id(&glyph);
+
+        let mut seen: Vec<(EventLevel, String)> = Vec::new();
+        let mut sink = |level: EventLevel, line: &str| seen.push((level, line.to_string()));
+        let outcome = rec.apply_streaming(&glyph, cid, &mut sink).unwrap();
+
+        assert!(outcome.changed);
+        let messages: Vec<&str> = seen.iter().map(|(_, m)| m.as_str()).collect();
+        assert!(
+            messages.contains(&"Unpacking podman (4.3.1) ..."),
+            "expected the install output to stream, saw {messages:?}"
+        );
+        assert!(messages.contains(&"Setting up podman ..."));
+        assert!(
+            seen.iter().all(|(lvl, _)| matches!(lvl, EventLevel::Info)),
+            "scripted stdout lines stream at Info"
+        );
+    }
+
+    #[test]
+    fn filesystem_apply_streaming_touches_no_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.conf");
+        let path = path.to_str().unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let glyph = file_glyph(path, "desired\n", 0o644);
+        let cid = glyph_content_id(&glyph);
+
+        let mut count = 0usize;
+        let mut sink = |_lvl: EventLevel, _line: &str| count += 1;
+        rec.apply_streaming(&glyph, cid, &mut sink).unwrap();
+        assert_eq!(count, 0, "a file reconciler runs no command, so it streams nothing");
+    }
 
     fn apt(name: &str) -> Glyph {
         Glyph::AptPackage { name: name.into() }

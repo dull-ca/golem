@@ -7,6 +7,7 @@
 use scroll_format::{ContentId, Entry, Glyph};
 use std::sync::Arc;
 
+use crate::host::CommandSink;
 use crate::journal::{Inverse, Outcome};
 
 /// Why an enact step failed, and whether retrying could help: `Retryable` is
@@ -28,6 +29,21 @@ pub type EnactResult<T> = Result<T, EnactError>;
 pub trait Reconciler: Send + Sync {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome>;
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()>;
+    /// Enact one glyph while forwarding the host commands' output line by line to
+    /// `sink` (ADR 0033 §2). The default ignores the sink and delegates to
+    /// [`Reconciler::apply`], so the fake reconciler and every existing test emit
+    /// no `cmd` events; only [`HostReconciler`](crate::reconcilers::HostReconciler)
+    /// overrides it to route apt/systemd commands through the streaming runner.
+    /// The foreman builds `sink` with the op's `{reconcile_id, unit_path,
+    /// glyph_key}` context, which the glyph-only `apply` signature does not carry.
+    fn apply_streaming(
+        &self,
+        glyph: &Glyph,
+        cid: ContentId,
+        _sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
+        self.apply(glyph, cid)
+    }
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
@@ -47,6 +63,14 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
         (**self).reverse(outcome)
     }
+    fn apply_streaming(
+        &self,
+        glyph: &Glyph,
+        cid: ContentId,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
+        (**self).apply_streaming(glyph, cid, sink)
+    }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
     }
@@ -61,6 +85,14 @@ impl<R: Reconciler + ?Sized> Reconciler for Box<R> {
     }
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
         (**self).reverse(outcome)
+    }
+    fn apply_streaming(
+        &self,
+        glyph: &Glyph,
+        cid: ContentId,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
+        (**self).apply_streaming(glyph, cid, sink)
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
@@ -104,6 +136,17 @@ impl<R: Reconciler> Reconciler for PanicCatching<R> {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.inner.apply(glyph, cid)
+        }))
+        .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
+    }
+    fn apply_streaming(
+        &self,
+        glyph: &Glyph,
+        cid: ContentId,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.apply_streaming(glyph, cid, sink)
         }))
         .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
     }

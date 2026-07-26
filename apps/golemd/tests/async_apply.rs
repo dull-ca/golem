@@ -3,9 +3,11 @@ use std::time::Duration;
 
 use golemd::config::RetryConfig;
 use golemd::foreman::Foreman;
+use golemd::host::CommandSink;
 use golemd::http;
 use golemd::journal::{GlyphOp, Outcome};
 use golemd::planroom::MemoryPlanRoom;
+use golemd::progress::{EventKind, EventLevel};
 use golemd::reconciler::{inverse_of, EnactResult, Reconciler};
 use scroll_format::{ContentId, Contents, Glyph, Manifest, Scroll};
 
@@ -54,6 +56,42 @@ impl Reconciler for PanicOn {
             inverse: inverse_of(glyph),
             changed: true,
         })
+    }
+    fn reverse(&self, _o: &Outcome) -> EnactResult<()> {
+        Ok(())
+    }
+}
+
+/// Opts into streaming (ADR 0033 §2): `apply_streaming` forwards two scripted
+/// stdout lines to the sink before settling like `Ok1`, so the whole path —
+/// reconciler sink → foreman ring `record_kind(Cmd)` → projection `events` —
+/// can be asserted end to end. Its plain `apply` (the default the port would
+/// otherwise reach) emits nothing, matching the production contract.
+struct StreamingOk {
+    lines: Vec<String>,
+}
+impl Reconciler for StreamingOk {
+    fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+        Ok(Outcome {
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
+            cid,
+            inverse: inverse_of(glyph),
+            changed: true,
+        })
+    }
+    fn apply_streaming(
+        &self,
+        glyph: &Glyph,
+        cid: ContentId,
+        sink: &mut CommandSink<'_>,
+    ) -> EnactResult<Outcome> {
+        for line in &self.lines {
+            sink(EventLevel::Info, line);
+        }
+        self.apply(glyph, cid)
     }
     fn reverse(&self, _o: &Outcome) -> EnactResult<()> {
         Ok(())
@@ -125,6 +163,45 @@ async fn apply_returns_202_then_polls_to_settled_with_report() {
     assert_eq!(p["report"]["outcome"], "settled");
     assert_eq!(p["units"][0]["glyphs"][0]["glyph_key"], "apt:nginx");
     assert_eq!(p["units"][0]["glyphs"][0]["state"], "applied");
+}
+
+#[test]
+fn cmd_output_flows_from_the_reconciler_sink_to_the_projection_tagged_cmd() {
+    let reconciler = StreamingOk {
+        lines: vec![
+            "Unpacking nginx (1.24.0) ...".to_string(),
+            "Setting up nginx ...".to_string(),
+        ],
+    };
+    let f = Foreman::new(
+        "h1".into(),
+        Box::new(MemoryPlanRoom::new()),
+        Box::new(reconciler),
+    )
+    .with_retry_config(quiet_retry());
+    let (id, selected) = f.ingest(&manifest_bytes()).unwrap();
+    f.run_reconcile(id, selected).unwrap();
+
+    let p = f.progress_projection(id, 0).unwrap().unwrap();
+    let cmd: Vec<&golemd::progress::ProgressEvent> = p
+        .events
+        .iter()
+        .filter(|e| e.kind == EventKind::Cmd)
+        .collect();
+    assert_eq!(
+        cmd.len(),
+        2,
+        "both scripted command lines reach the projection, saw {:?}",
+        p.events
+    );
+    assert_eq!(cmd[0].message, "Unpacking nginx (1.24.0) ...");
+    assert_eq!(cmd[0].glyph_key, "apt:nginx");
+    assert!(p.events.iter().any(|e| e.kind == EventKind::Lifecycle));
+    let cmd_seqs: Vec<u64> = cmd.iter().map(|e| e.seq).collect();
+    assert!(
+        cmd_seqs.windows(2).all(|w| w[0] < w[1]),
+        "cmd events keep the shared monotone seq"
+    );
 }
 
 #[tokio::test]
