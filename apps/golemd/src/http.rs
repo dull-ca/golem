@@ -129,6 +129,7 @@ impl ApiError {
             crate::foreman::ForemanError::WalUnreadable { .. }
             | crate::foreman::ForemanError::ManifestUndecodable { .. }
             | crate::foreman::ForemanError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            crate::foreman::ForemanError::ReconcileInProgress { .. } => StatusCode::CONFLICT,
         };
         ApiError {
             status,

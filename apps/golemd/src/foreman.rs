@@ -142,6 +142,7 @@ pub struct Foreman {
     write: Mutex<()>,
 }
 
+#[derive(Debug)]
 pub struct SelectedScroll {
     pub content_id: ContentId,
     pub scroll: Scroll,
@@ -187,21 +188,47 @@ impl Foreman {
     }
 
     pub fn apply_manifest(&self, bytes: &[u8]) -> Result<ReconcileReport, ForemanError> {
+        let (reconcile_id, selected) = self.ingest(bytes)?;
+        self.run_reconcile(reconcile_id, selected)
+    }
+
+    pub fn ingest(&self, bytes: &[u8]) -> Result<(u64, SelectedScroll), ForemanError> {
         let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
             detail: e.to_string(),
         })?;
         let selected = self.select(&manifest.scrolls);
-        // NOTE: one info line per apply for the manifest itself (host, this
-        // host's scroll content id in hex, glyph count); the per-op and
-        // per-revision lines below keep the whole apply to a handful of lines.
-        // Only glyph *keys* are ever logged — never file contents or secrets.
         info!(
             host = %self.host,
             scroll = %selected.content_id,
             glyphs = selected.scroll.all_glyphs().len(),
             "manifest ingested"
         );
-        self.reconcile(selected)
+        let _w = self.write.lock().unwrap();
+        if let Some(attempt) =
+            self.planroom
+                .latest_attempt()
+                .map_err(|e| ForemanError::WalUnreadable {
+                    detail: e.to_string(),
+                })?
+        {
+            if !attempt.phase.is_settled() {
+                return Err(ForemanError::ReconcileInProgress {
+                    reconcile_id: attempt.reconcile_id,
+                });
+            }
+        }
+        self.recover_locked()
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        let attempt = self
+            .planroom
+            .open_attempt(Some(selected.content_id))
+            .map_err(ForemanError::Internal)?;
+        self.planroom
+            .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
+            .map_err(ForemanError::Internal)?;
+        Ok((attempt.reconcile_id, selected))
     }
 
     fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
@@ -217,50 +244,27 @@ impl Foreman {
         }
     }
 
-    /// Plan and enact one manifest under the write lock. First recovers any
-    /// interrupted attempt, then refuses to proceed if the latest attempt is
-    /// still unsettled — this is the ingest gate that stops a new manifest from
-    /// overwriting an in-progress reversal (ADR 0020 §3). Diffs the desired
-    /// scroll against the WAL-folded applied set, opens an attempt, and enacts.
-    /// On success runs config propagation and settles; on failure rolls back the
-    /// steps applied this attempt and returns the error, leaving the node at its
-    /// last committed state.
-    fn reconcile(&self, desired: SelectedScroll) -> Result<ReconcileReport, ForemanError> {
+    /// Plan and enact one already-ingested attempt under the write lock. Diffs
+    /// the desired scroll against the WAL-folded applied set and enacts each unit
+    /// best-effort. On success runs config propagation and settles; on a unit's
+    /// exhausted retries it rolls back that unit's applied steps and reports the
+    /// failure, leaving the node at its last committed state. The attempt was
+    /// opened and marked `Enacting` by [`Foreman::ingest`]; that open, unsettled
+    /// attempt is what gates a concurrent ingest between the two lock
+    /// acquisitions (ADR 0020 §3).
+    pub fn run_reconcile(
+        &self,
+        reconcile_id: u64,
+        desired: SelectedScroll,
+    ) -> Result<ReconcileReport, ForemanError> {
         let _w = self.write.lock().unwrap();
-        self.recover_locked()
-            .map_err(|e| ForemanError::WalUnreadable {
-                detail: e.to_string(),
-            })?;
         let steps = self
             .planroom
             .wal_steps()
             .map_err(|e| ForemanError::WalUnreadable {
                 detail: e.to_string(),
             })?;
-        if let Some(attempt) =
-            self.planroom
-                .latest_attempt()
-                .map_err(|e| ForemanError::WalUnreadable {
-                    detail: e.to_string(),
-                })?
-        {
-            if !attempt.phase.is_settled() {
-                return Err(ForemanError::Internal(anyhow::anyhow!(
-                    "reconcile {} is unsettled ({:?}); refusing new manifest",
-                    attempt.reconcile_id,
-                    attempt.phase
-                )));
-            }
-        }
         let prior = applied_outcomes(&steps);
-        let attempt = self
-            .planroom
-            .open_attempt(Some(desired.content_id))
-            .map_err(ForemanError::Internal)?;
-        self.planroom
-            .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
-            .map_err(ForemanError::Internal)?;
-
         let retry_clock: Cell<Option<Instant>> = Cell::new(None);
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
@@ -273,7 +277,7 @@ impl Foreman {
                 .collect();
             let result = self
                 .enact_unit(
-                    attempt.reconcile_id,
+                    reconcile_id,
                     &mut next_ord,
                     &ops,
                     &prior,
@@ -292,7 +296,7 @@ impl Foreman {
             let effective = resolve_retry(&self.retry, &group.policy_chain);
             let result = self
                 .enact_unit(
-                    attempt.reconcile_id,
+                    reconcile_id,
                     &mut next_ord,
                     &group.ops,
                     &prior,
@@ -304,10 +308,10 @@ impl Foreman {
             unit_reports.push(unit_report_from(result));
         }
 
-        self.propagate_config(attempt.reconcile_id)
+        self.propagate_config(reconcile_id)
             .map_err(ForemanError::Internal)?;
         let revision = self
-            .settle(attempt.reconcile_id, &desired)
+            .settle(reconcile_id, &desired)
             .map_err(ForemanError::Internal)?;
         let report = ReconcileReport::roll_up(revision, unit_reports);
         log_settled(&report);
@@ -1067,6 +1071,7 @@ impl Foreman {
 pub enum ForemanError {
     WalUnreadable { detail: String },
     ManifestUndecodable { detail: String },
+    ReconcileInProgress { reconcile_id: u64 },
     Internal(anyhow::Error),
 }
 
@@ -1075,6 +1080,7 @@ impl ForemanError {
         match self {
             ForemanError::WalUnreadable { .. } => "wal-unreadable",
             ForemanError::ManifestUndecodable { .. } => "manifest-undecodable",
+            ForemanError::ReconcileInProgress { .. } => "reconcile-in-progress",
             ForemanError::Internal(_) => "internal",
         }
     }
@@ -1086,6 +1092,9 @@ impl ForemanError {
             }
             ForemanError::ManifestUndecodable { detail } => {
                 format!("golemd couldn't decode the manifest: {detail}")
+            }
+            ForemanError::ReconcileInProgress { reconcile_id } => {
+                format!("a reconcile ({reconcile_id}) is already running on this host; poll it instead of re-applying")
             }
             ForemanError::Internal(e) => format!("{e:#}"),
         }
@@ -2128,6 +2137,25 @@ mod tests {
             Err(e) => assert_eq!(e.kind(), "manifest-undecodable"),
             Ok(_) => panic!("expected a typed error"),
         }
+    }
+
+    #[test]
+    fn a_second_ingest_while_unsettled_is_reconcile_in_progress() {
+        let f = foreman_with(ScriptedReconciler::new().ok_default());
+        let scroll = Scroll {
+            name: "host".into(),
+            policy: None,
+            contents: Contents::Glyphs(vec![apt("nginx")]),
+        };
+        let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
+        let (id, _sel) = f.foreman.ingest(&bytes).unwrap();
+        assert_eq!(id, 1);
+        let err = f.foreman.ingest(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            ForemanError::ReconcileInProgress { reconcile_id: 1 }
+        ));
+        assert_eq!(err.kind(), "reconcile-in-progress");
     }
 
     #[test]
