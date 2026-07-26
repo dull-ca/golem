@@ -1,4 +1,4 @@
-//! golemd's operational config: the `golemd.toml [retry]` table.
+//! golemd's operational config: the `golemd.toml` `[retry]` and `[enact]` tables.
 //!
 //! This is golemd's PRIVATE surface — it is never on the manifest wire and never
 //! hashed. Absent file, every field falls back to a built-in default, so a
@@ -20,11 +20,15 @@
 //! max_attempts       = 5        # cap on rounds per op (round 1 + up to 4 retries)
 //! max_elapsed_ms     = 120000   # wall-time budget for the whole reconcile's retrying
 //! on_exhaust         = "rollback"  # "rollback" | "keep" when a limit trips
+//!
+//! [enact]
+//! workers            = 4        # concurrent units the parallel enact executor runs
 //! ```
 //!
-//! This `[retry]` table is the fleet-wide default; the per-scroll `policy`
+//! The `[retry]` table is the fleet-wide default; the per-scroll `policy`
 //! cascade overrides it, nearest scope winning (`foreman::resolve_retry`,
-//! ADR 0029 §3, ADR 0031 §3).
+//! ADR 0029 §3, ADR 0031 §3). `[enact]` has no per-scroll override — it is a
+//! host-wide knob.
 
 use std::path::Path;
 
@@ -88,6 +92,11 @@ impl Default for RetryConfig {
     }
 }
 
+/// How many leaf units the enact executor runs concurrently. Consumed by the
+/// coming parallel-unit executor (ADR 0034 §3), which the attempt-scoped claim
+/// and success sets are already Mutex-guarded for; the units loop is serial
+/// until it lands, so today this only sets the width it will use. `workers = 1`
+/// is the serial fallback.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnactConfig {
     pub workers: usize,
@@ -99,6 +108,8 @@ impl Default for EnactConfig {
     }
 }
 
+/// The whole resolved `golemd.toml`: the fleet-default retry pace and the
+/// host-wide enact width.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GolemdConfig {
     pub retry: RetryConfig,

@@ -64,6 +64,13 @@ pub trait Reconciler: Send + Sync {
     ) -> EnactResult<Outcome> {
         self.apply(glyph, cid)
     }
+    /// Optional pre-pass over an attempt's whole op set before any per-unit enact,
+    /// returning a [`PrepareOutcome`] the foreman seeds its claim set from. The
+    /// contract is unconditional `Ok`: a prepare that partially failed reports
+    /// whatever host truth it can confirm rather than aborting the attempt, leaving
+    /// the per-unit applies to classify anything it could not settle. The default
+    /// is a no-op; [`HostReconciler`](crate::reconcilers::HostReconciler) overrides
+    /// it to batch apt installs (ADR 0034 §2).
     fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         Ok(PrepareOutcome::default())
     }

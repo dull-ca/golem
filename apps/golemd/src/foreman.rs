@@ -140,6 +140,8 @@ pub struct Foreman {
     /// Fleet default (from `golemd.toml`); the per-scroll `policy` cascade
     /// overrides it per unit via `resolve_retry`.
     retry: RetryConfig,
+    /// Host-wide enact width (from `golemd.toml [enact]`); read by the coming
+    /// parallel-unit executor (ADR 0034 §3).
     enact: EnactConfig,
     write: Mutex<()>,
     progress: ProgressRegistry,
@@ -337,21 +339,32 @@ impl Foreman {
                     .collect()
             })
             .collect();
+        // NOTE: `enact_or_credit` reads three attempt-scoped sets, each covering a
+        // different slice of an op's lifecycle (ADR 0034 §1–2):
+        //   - `shared`: a per-op immutable mask, computed once. `true` marks an op
+        //     whose `(key, cid)` pair is declared by more than one unit — a
+        //     crediting *candidate*. Read-only, so no lock ([`shared_pairs`]).
+        //   - `batch_installed`: apt names the pre-pass actually installed this
+        //     attempt. A unit *removes* a name to claim it (drain-once); once empty
+        //     for a name, later declarers apply for real.
+        //   - `succeeded`: shared `(key, cid)` pairs a real apply (or a claim) has
+        //     put on the host. A pair is *inserted* on first success; later shared
+        //     declarers of it credit instead of re-applying.
+        // The two mutable sets are `Mutex`, not `Cell`, so the coming parallel
+        // executor (ADR 0034 §3) reads and mutates them across concurrent unit
+        // threads; the Mutex makes claim-once and credit-after-success both
+        // first-writer-wins.
         let shared = shared_pairs(&unit_ops);
         let enacting_ops: Vec<GlyphOp> = unit_ops.iter().flatten().cloned().collect();
-        // NOTE: the claim set holds the apt package names the batch pre-pass
-        // ACTUALLY installed this attempt (absent before, install succeeded). The
-        // first unit declaring each such package claims the real
-        // `Inverse::RemoveAptPackage` its per-unit `apply_apt` can no longer
-        // observe — the batch already made the package present, so every per-unit
-        // apply sees `changed = false`/`Inverse::Nothing` (ADR 0034 §2). A Mutex,
-        // not a Cell, so the parallel executor reads and removes from it across
-        // concurrent unit threads. `HostReconciler::prepare` reports its
-        // batch/fallback failure at warn level and still returns `Ok` with
-        // whatever `batch_installed` dpkg truth shows, so a partially successful
-        // fallback is never discarded (ADR 0034 §2); the `Err` arm below is now
-        // reached only by a caught reconciler panic, for which the claim set
-        // starts empty and the per-unit applies classify the failure as before.
+        // NOTE: the first unit declaring a batch-installed package claims the real
+        // `Inverse::RemoveAptPackage` its per-unit `apply_apt` can no longer observe
+        // — the batch already made the package present, so every per-unit apply sees
+        // `changed = false`/`Inverse::Nothing` (ADR 0034 §2). `HostReconciler::prepare`
+        // reports any batch/fallback failure at warn level and still returns `Ok`
+        // with whatever `batch_installed` dpkg truth shows, so a partially
+        // successful fallback is never discarded; the `Err` arm below is reached
+        // only by a caught reconciler panic, for which the set starts empty and the
+        // per-unit applies classify the failure as before.
         let batch_installed = match self.reconciler.prepare(&enacting_ops) {
             Ok(outcome) => outcome.batch_installed,
             Err(e) => {
@@ -363,11 +376,6 @@ impl Foreman {
             }
         };
         let batch_installed: Mutex<std::collections::HashSet<String>> = Mutex::new(batch_installed);
-        // NOTE: the success set is attempt-scoped and shared across every unit: a
-        // shared `(key, cid)` pair enters it only once a real apply succeeds, so a
-        // later declarer credits only what a prior declarer actually put on the
-        // host (ADR 0034 §1). A Mutex, not a Cell, so the coming parallel executor
-        // (ADR 0034 §3) reads and writes it from concurrent unit threads.
         let succeeded: Mutex<std::collections::HashSet<(String, ContentId)>> =
             Mutex::new(std::collections::HashSet::new());
         for (idx, unit) in units.iter().enumerate() {
@@ -663,36 +671,47 @@ impl Foreman {
         })
     }
 
-    /// Enact one op, crediting it only when its shared `(key, cid)` pair has
-    /// already **succeeded** a real apply this attempt (ADR 0034 §1). A shared op
-    /// whose pair is in `succeeded` writes the credited bracket ([`enact_credited`],
-    /// no host effect); otherwise it runs the real [`enact_one`] and, on a `Ok`
-    /// class, records the pair so later declarers credit. A non-shared op is never
-    /// credited. This is what makes a failed first-declarer harmless: the pair
-    /// never enters the set, so the next declarer applies for real rather than
-    /// crediting a phantom the host lacks — pre-dedup semantics, safe by reconciler
-    /// idempotence. The `succeeded` mutex makes crediting first-success-wins under
-    /// the coming parallel executor (ADR 0034 §3); it only suppresses a *redundant*
-    /// apply after a success, never coordinates two racing real applies (idempotent
-    /// by construction). A `Noop` never participates in crediting — it takes neither
-    /// branch, so it can neither be credited by a sibling nor enter `succeeded`
-    /// itself: [`enact_one`]'s `Noop` arm writes no WAL step, and a phantom `Done`
-    /// from crediting it would shadow the real prior inverse still on record for
-    /// that key (ADR 0020 inverse-loss).
+    /// Route one op down exactly one of four branches, tried in this order — the
+    /// order is the correctness argument, each earlier arm foreclosing a bug the
+    /// later arms would otherwise cause (ADR 0034 §1–2):
     ///
-    /// An apt `Install` whose package the batch pre-pass already installed this
-    /// attempt takes a third path: the FIRST unit to reach it **claims** it
-    /// ([`enact_claimed`]) — removing the name from `batch_installed` under the
-    /// mutex so only one claimer wins — and records the real
-    /// `Inverse::RemoveAptPackage` bracket WITHOUT re-running apt, since the batch
-    /// already made the package present (its per-unit `apply_apt` would only
-    /// observe `changed = false`/`Inverse::Nothing`). The claimer ALSO inserts the
-    /// pair into `succeeded` when the op is shared, so sibling declarers of the
-    /// same package credit (`changed = false`) rather than redundantly running
-    /// `apply_apt` — the claim is the enacting bracket, the credits its no-op
-    /// mirrors, exactly as an ordinary real apply would seed the set. A later
-    /// observer whose name was already claimed (removed from the set) takes the
-    /// normal apply path and honestly observes the package installed.
+    /// 1. **`Noop` → [`enact_one`] passthrough.** A `Noop` never participates in
+    ///    crediting or claiming: it takes none of the arms below, so it can neither
+    ///    be credited by a sibling nor seed `succeeded`. This arm comes first
+    ///    because crediting a `Noop` would write a phantom `Done` shadowing the real
+    ///    prior inverse still on record for that key — `enact_one`'s `Noop` arm
+    ///    writes no WAL step precisely to keep that prior the latest (ADR 0020
+    ///    inverse-loss).
+    /// 2. **Shared pair already in `succeeded` → [`enact_credited`].** A sibling
+    ///    already ran a real `apply` that put this `(key, cid)` on the host, so this
+    ///    op writes the credited bracket (no host effect). Gating on `succeeded`
+    ///    — not merely on being a shared candidate — is what makes a failed
+    ///    first-declarer harmless: the pair never entered the set, so this arm is
+    ///    skipped and the op falls through to a real apply rather than crediting a
+    ///    phantom the host lacks (pre-dedup semantics, safe by reconciler
+    ///    idempotence).
+    /// 3. **Apt `Install` whose name is still in `batch_installed` →
+    ///    [`enact_claimed`].** The batch pre-pass already made this package present,
+    ///    so no per-unit `apply_apt` can observe the install (each would see
+    ///    `changed = false`/`Inverse::Nothing`) and no unit would hold the real
+    ///    inverse. The FIRST unit to reach the package `remove`s the name under the
+    ///    mutex so only one claimer wins, and records the real
+    ///    `Inverse::RemoveAptPackage` bracket without re-running apt. This arm must
+    ///    precede the real-apply arm: reaching #4 for a batch-installed package
+    ///    would record `Inverse::Nothing`, leaving no unit able to reverse the
+    ///    batch install (the untracked-batch-install bug).
+    /// 4. **Otherwise → real [`enact_one`], seeding `succeeded` on `Ok`.** The op
+    ///    runs its reconciler `apply`; on an `Ok` class a shared op records its pair
+    ///    so later declarers credit at arm #2. Arms #3 and #4 both seed `succeeded`
+    ///    when shared, so a claim seeds the set exactly as a real apply would.
+    ///
+    /// A non-shared op is never credited (#2 and the seeding in #3/#4 are gated on
+    /// `shared`). The `succeeded` mutex makes crediting first-success-wins under the
+    /// coming parallel executor (ADR 0034 §3); it only suppresses a *redundant*
+    /// apply after a success, never coordinates two racing real applies (idempotent
+    /// by construction). A later observer of a package whose name was already
+    /// claimed (removed from `batch_installed`) falls through to arm #4 and honestly
+    /// observes the package installed.
     #[allow(clippy::too_many_arguments)]
     fn enact_or_credit(
         &self,
@@ -775,9 +794,12 @@ impl Foreman {
     }
 
     /// Record the bracket for an apt `Install` the batch pre-pass already
-    /// installed this attempt, without re-running apt (ADR 0034 §2). The observed
-    /// truth — the package was absent before the batch and the batch put it there
-    /// — is the claim, so the bracket carries the real
+    /// installed this attempt, without re-running apt (ADR 0034 §2). The claim is
+    /// as trustworthy as a real apply's receipt because it rests on the same dpkg
+    /// probe `apply_apt` uses: `HostReconciler::prepare` confirmed the package
+    /// absent before the batch and present after, the exact
+    /// absent-before/present-after check a per-unit `apply_apt` runs to decide it
+    /// changed the host. On that confirmed truth the bracket carries the real
     /// [`Inverse::RemoveAptPackage`] (from [`inverse_of`]) and `changed = true`,
     /// exactly the receipt a per-unit `apply_apt` would have captured had it done
     /// the install itself. Only the first unit to reach the package claims it

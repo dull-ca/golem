@@ -381,6 +381,18 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         }
     }
 
+    /// Batch-install every apt `Install` name in one pre-pass, then report which
+    /// packages the batch actually put on the host (ADR 0034 §2). The `batch_install`
+    /// error is logged, not control flow: `prepare` always returns `Ok`, and the
+    /// `batch_installed` set is derived from a fresh dpkg probe, not from the
+    /// install's exit status. A name goes in the set only if it was absent before
+    /// the batch (`absent_before`) and `apt_installed` finds it present after — the
+    /// same absent-before/present-after truth `apply_apt` uses. So a batch that
+    /// partially failed still reports every package that did land, and its receipt
+    /// (claimed by the first declaring unit, `Foreman::enact_claimed`) is dpkg
+    /// truth rather than a guess: a still-unresolved package is simply absent from
+    /// the set, and its later per-unit `apply_apt` classifies the failure and
+    /// retries the ordinary way.
     fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         let names = apt_install_names(ops);
         if names.is_empty() {
