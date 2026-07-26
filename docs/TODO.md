@@ -326,5 +326,33 @@ standalone project.
   client poll for the report — replacing the hold-open request and
   prerequisite-shaped for parallel apply.
 
+- **`run_reconcile_guarded`'s outer panic branch has no direct test.**
+  `run_reconcile_guarded` (`foreman.rs`) wraps `run_reconcile` in its own
+  `catch_unwind` for a panic anywhere in that call *besides* the reconciler
+  (`PanicCatching` already catches a reconciler panic at the port, per its own
+  doc comment). `a_panic_in_the_reconcile_is_contained_and_the_daemon_keeps_serving`
+  (`tests/async_apply.rs`) only exercises the inner, `PanicCatching`-caught
+  path; the outer guard's own recovery (the `Err(_)` arm — event push, then
+  `recover()`) has no test that panics somewhere else in `run_reconcile` (e.g.
+  `settle`) to trip it directly.
+
+- **Rebuilt-report `FailPhase` should derive from `WalAction`, not a hardcoded
+  `Enact`.** `projection.rs`'s cache-miss report rebuild (folding a settled
+  attempt's WAL rows back into a `ReconcileReport`) always sets
+  `GlyphFailure::phase` to `FailPhase::Enact`, regardless of the failing step's
+  actual `WalAction` (`Apply`/`Reverse`/`Restart`). `FailPhase` also has
+  `Reverse` and `Recovery` variants that a rebuilt report can never produce
+  today. Deriving `phase` from the step's `action` would make a
+  restart-recovery attempt's cache-miss report match the one served live from
+  memory.
+
+- **`reverse`/`diagnose` don't stream command output.** Only the apply path
+  (`Reconciler::apply_streaming`) forwards host command output line by line to
+  the progress ring (ADR 0033 §2); `reverse` and `diagnose` still run their
+  `apt remove`/`systemctl status`/`journalctl` commands unstreamed, so a
+  rollback shows lifecycle events but no live command lines, and forensics
+  land only once captured in full. A `reverse_streaming` seam mirroring
+  `apply_streaming` is the natural follow-up.
+
 - **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
   is published.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed 2026-07-26.
+Accepted 2026-07-26 (implemented; live-verified). Proposed 2026-07-26.
 
 Supersedes **in part** ADR 0029 (best-effort reconcile and structured failure
 reporting): the `ReconcileReport` shape, the tree-of-units structure, and the
@@ -127,7 +127,7 @@ both render a settled tree and stream log lines exactly as golemd produces them:
 GET /reconciles/42?after=17
   → 200 {
       "reconcile_id": 42,
-      "phase": "enacting",              // planning | enacting | settling | settled
+      "phase": "enacting",              // planning | enacting | settled
                                         //   | rolled_back  (from reconcile_attempt.phase)
       "units": [
         { "unit_path": ["scaly", "fishnet-a"],
@@ -154,9 +154,9 @@ GET /reconciles/42?after=17
 ```
 
 - **`phase`** projects from `reconcile_attempt.phase` (ADR 0020 §2): `planning`
-  and `enacting` while in flight, `settling` during config propagation + commit,
-  `settled` for a committed attempt, `rolled_back` for a whole-attempt recovery
-  rollback.
+  and `enacting` while in flight, `settled` for a committed attempt (commit goes
+  straight from `enacting` to `settled` — there is no separate settling phase in
+  between), `rolled_back` for a whole-attempt recovery rollback.
 - **Per-glyph `state`** folds the glyph's `wal_step` rows the same way the
   applied-set view does, with two projection-only states the terminal report does
   not carry: an op with **no row yet** is `pending`; an `Intended` row with no
@@ -418,13 +418,14 @@ slug to the same name would share a file; unit paths in practice are already
 slug-safe, so this is recorded as a known, tolerated edge, not guarded against.
 
 Each line is **plain text, one event per line**, carrying `timestamp`, `level`,
-**`kind`**, `glyph_key`, and the message — the same fields the projection's `events`
-records carry (§2), now with the `kind` column so lifecycle and command lines are
-distinguishable when the two interleave. `all.log` **interleaves both kinds in poll
-order** and carries the `kind` column so a `grep cmd` / `grep lifecycle` (or an
-`awk` on the column) separates them after the fact — **decided: one more column, not
-two files.** A single ordered transcript with a filter column beats splitting
-`all.log` into `all.lifecycle.log`/`all.cmd.log`, which would lose the interleaved
+**`kind`**, `unit_path`, `glyph_key`, and the message — the same fields the
+projection's `events` records carry (§2), now with the `kind` column so lifecycle
+and command lines are distinguishable when the two interleave. `all.log`
+**interleaves both kinds in poll order** and carries the `kind` column so a
+`grep cmd` / `grep lifecycle` (or an `awk` on the column) separates them after
+the fact — **decided: one more column, not two files.** A single ordered
+transcript with a filter column beats splitting `all.log` into
+`all.lifecycle.log`/`all.cmd.log`, which would lose the interleaved
 ordering that shows *which command output preceded which verdict*. Formatted for
 `grep`, e.g.:
 
@@ -775,3 +776,16 @@ coexist.
   what it does when none is present (the HTTP-fallback report path, or a hard error) —
   is unsettled. This also decides whether the Python `_render_report` and
   `golemd_client.apply_manifest` stay as an HTTP fallback or are removed outright.
+- **The `ingest`→`set_attempt_phase` orphan window.** `ingest` (§1) opens the
+  attempt and marks it `Enacting` under its own `write` lock acquisition, then
+  releases that lock before `run_reconcile` takes its own separate one (the gap
+  `ingest`'s doc comment calls out explicitly). `run_reconcile` holds `write` for
+  its entire run, so a concurrent `POST /manifest` ordinarily just blocks on that
+  lock and succeeds once the first attempt settles — it does not see a live 409.
+  The 409 only fires for an attempt left `Enacting`/`RollingBack` **without** the
+  lock held — the shape a crashed or force-killed golemd process leaves in the
+  WAL. Until this daemon restarts (recovery re-drives the WAL and settles the
+  orphaned attempt, ADR 0020 §3), every `POST /manifest` 409s, with no live path
+  to clear it. Whether that is the intended failure mode, or whether ingest should
+  detect and roll back a plainly-abandoned attempt itself (a liveness timeout on
+  `Enacting`, say) rather than waiting on an operator restart, is unresolved.
