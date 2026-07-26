@@ -534,13 +534,10 @@ keeps exactly what it owns today and nothing more:
   **renders the tree and prints the report itself**. The per-host apply body in
   `cli.py` (the `apply_manifest` call, the status-code branch, and the
   `_render_report` call, `cli.py:416`–`438`) is **replaced by a golemctl exec**.
-- **The Python `_render_report` is retired from the apply path**, kept only as the
-  fallback report printer for an HTTP path where golemctl is unavailable (a host
-  reachable over the forwarded port but no golemctl binary to hand it). golemctl
-  prints the report on the normal path; `_render_report` stops being the apply
-  renderer and becomes a fallback-only function (or is removed if the fallback is
-  dropped — see Open questions). The point recorded: **the TUI is not duplicated in
-  Python.**
+- **The Python `_render_report` is removed outright** (resolved at phase close:
+  the HTTP fallback was dropped — `resolve_golemctl` hard-errors when no binary is
+  found, and the dead renderers were deleted with their tests). The point recorded:
+  **the TUI is not duplicated in Python.**
 - **Non-TTY fleet runs pass `--json` through to golemctl**, which emits plain lines
   and JSON (§3) — fleet does not re-render those either.
 
@@ -579,7 +576,7 @@ updated in the **same change**.
   render the iocraft tree, and print the final `report` on settle.
 - **fleet** stops speaking the protocol at all on the apply path — it **execs
   golemctl** (§5). `golemd_client.apply_manifest` and its unbounded `_APPLY_TIMEOUT`
-  are removed from the apply path (kept only if the HTTP fallback of §5 is kept).
+  were removed outright at phase close (the §5 HTTP fallback was dropped).
 
 **The stopgap is explicitly transitional and is removed when this lands.** The
 just-landed unbounded read timeout (`read=None` in `golemd_client._APPLY_TIMEOUT`,
@@ -774,8 +771,7 @@ coexist.
   must find one. Whether it takes the devenv-provided script on `PATH`, the cargo
   `target/…/golemctl` from a workspace build, or an explicit configured path — and
   what it does when none is present (the HTTP-fallback report path, or a hard error) —
-  is unsettled. This also decides whether the Python `_render_report` and
-  `golemd_client.apply_manifest` stay as an HTTP fallback or are removed outright.
+  is unsettled. Resolved at phase close: both were removed outright; there is no HTTP fallback.
 - **The `ingest`→`set_attempt_phase` orphan window.** `ingest` (§1) opens the
   attempt and marks it `Enacting` under its own `write` lock acquisition, then
   releases that lock before `run_reconcile` takes its own separate one (the gap
