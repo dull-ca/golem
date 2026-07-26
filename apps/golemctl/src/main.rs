@@ -3,8 +3,6 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-mod poll;
-
 #[derive(Parser, Debug)]
 #[command(version, about = "golem CLI", infer_subcommands = true)]
 struct Cli {
@@ -14,10 +12,24 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    Apply { source: PathBuf, addr: String },
-    State { addr: String },
-    History { addr: String },
-    Show { addr: String, id: u64 },
+    Apply {
+        source: PathBuf,
+        addr: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        reattach: bool,
+    },
+    State {
+        addr: String,
+    },
+    History {
+        addr: String,
+    },
+    Show {
+        addr: String,
+        id: u64,
+    },
 }
 
 #[tokio::main]
@@ -25,24 +37,23 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Apply { source, addr } => apply(&source, &addr).await,
+        Cmd::Apply {
+            source,
+            addr,
+            json,
+            reattach,
+        } => {
+            let bytes = if reattach {
+                Vec::new()
+            } else {
+                manifest_bytes(&source).await?
+            };
+            golemctl::apply::run(bytes, &addr, json, reattach).await
+        }
         Cmd::State { addr } => fetch_and_print(&addr, "state").await,
         Cmd::History { addr } => fetch_and_print(&addr, "revisions").await,
         Cmd::Show { addr, id } => fetch_and_print(&addr, &format!("revisions/{id}")).await,
     }
-}
-
-async fn apply(source: &Path, addr: &str) -> Result<()> {
-    let bytes = manifest_bytes(source).await?;
-    let url = format!("{}/manifest", addr.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("content-type", "application/octet-stream")
-        .body(bytes)
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
-    print_response(resp).await
 }
 
 async fn manifest_bytes(source: &Path) -> Result<Vec<u8>> {
