@@ -294,6 +294,26 @@ fn lifecycle_log_region_is_unaffected_by_cmd_tails() {
 }
 
 #[test]
+fn resolve_terminal_size_floors_degenerate_dimensions() {
+    assert_eq!(
+        view::resolve_terminal_size(0, 0),
+        (view::DEFAULT_COLS, view::DEFAULT_ROWS),
+        "a sizeless pty falls back to 80x24"
+    );
+    assert_eq!(
+        view::resolve_terminal_size(0, 40),
+        (view::DEFAULT_COLS, 40),
+        "each axis floors independently"
+    );
+    assert_eq!(view::resolve_terminal_size(120, 0), (120, view::DEFAULT_ROWS));
+    assert_eq!(
+        view::resolve_terminal_size(120, 40),
+        (120, 40),
+        "a real size is left untouched"
+    );
+}
+
+#[test]
 fn height_zero_is_unbounded() {
     let mut units = Vec::new();
     for i in 0..30 {

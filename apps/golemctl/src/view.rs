@@ -24,6 +24,27 @@ use crate::model::{ApplyModel, GlyphRow};
 use crate::poll::GlyphState;
 use crate::tree::{build, BranchState, TreeNode};
 
+// The fallback terminal geometry when the pty reports a degenerate size — a
+// sizeless pty (a plain pipe promoted to a TTY, a detached session) reports 0×0,
+// which would collapse the tree to nothing or trip the viewport guard. 80×24 is
+// the conventional default terminal.
+pub const DEFAULT_COLS: u16 = 80;
+pub const DEFAULT_ROWS: u16 = 24;
+
+// Floor a reported terminal size: a zero (or absent) width or height falls back
+// to the conventional 80×24 so a sizeless pty renders sanely (ADR 0033 §3). Each
+// axis is floored independently — a terminal that reports a real width but no
+// height keeps its width.
+pub fn resolve_terminal_size(width: u16, height: u16) -> (u16, u16) {
+    let width = if width == 0 { DEFAULT_COLS } else { width };
+    let height = if height == 0 { DEFAULT_ROWS } else { height };
+    (width, height)
+}
+
+fn resolve_terminal_size_from((width, height): (u16, u16)) -> (u16, u16) {
+    resolve_terminal_size(width, height)
+}
+
 pub const CHECKMARK: &str = "✓";
 pub const XMARK: &str = "✗";
 pub const ROLLED_BACK: &str = "↩";
@@ -328,7 +349,7 @@ pub fn render_to_string_bounded(model: &ApplyModel, width: usize, height: usize)
 #[component]
 pub fn UnitTree(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let model = hooks.use_context::<Arc<Mutex<ApplyModel>>>();
-    let (width, height) = hooks.use_terminal_size();
+    let (width, height) = resolve_terminal_size_from(hooks.use_terminal_size());
 
     // Stay strictly under the reported viewport: a frame whose height equals the
     // terminal's trips iocraft's `Clear::All` guard, which the inline loop must
