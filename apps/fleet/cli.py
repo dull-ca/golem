@@ -280,6 +280,20 @@ def _tries(attempts: int) -> str:
     return "1 try" if attempts == 1 else f"{attempts} tries"
 
 
+def _first_line(message: str) -> str:
+    lines = message.splitlines()
+    remaining = list(lines)
+    first = ""
+    while remaining:
+        candidate = remaining.pop(0)
+        if candidate.strip():
+            first = candidate
+            break
+    if any(line.strip() for line in remaining):
+        return f"{first}…"
+    return first
+
+
 _DETAILS_MAX_LINES = 50
 
 
@@ -302,7 +316,7 @@ def _render_glyph_line(glyph: dict, classes: dict, details: dict) -> None:
         attempts = glyph.get("attempts", 0)
         message = glyph.get("message") or ""
         console.print(
-            f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {message}[/red]"
+            f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {_first_line(message)}[/red]"
         )
         _render_details_block(details.get(glyph.get("glyph_key")))
         return
@@ -316,7 +330,7 @@ def _render_failure_line(failure: dict) -> None:
     attempts = failure.get("attempts", 0)
     message = failure.get("message", "")
     console.print(
-        f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {message}[/red]"
+        f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {_first_line(message)}[/red]"
     )
     _render_details_block(failure.get("details"))
 

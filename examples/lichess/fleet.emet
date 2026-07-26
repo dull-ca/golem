@@ -20,7 +20,8 @@
 -- This fleet is an illustrative topology, not a deployable one: some image
 -- refs (leroyjenkins, lila-ip2proxy, lila:latest) are not publicly pullable,
 -- so hosts carrying them are not meant for live apply. scaly and talos, both
--- on the public `niklasf/fishnet` image, are the live-tested hosts.
+-- on the public `niklasf/fishnet` image, are the live-tested hosts; on talos,
+-- dns publishes on 5353 because systemd-resolved owns 53 on the guests.
 module Main exposing (..)
 
 import Lichess exposing
@@ -70,7 +71,7 @@ talos =
       , service "alertmanager" (dockerImage "prom/alertmanager" "latest") 9093
       , service "prometheus" (dockerImage "prom/prometheus" "latest") 9090
       , service "loki" (dockerImage "grafana/loki" "latest") 3100
-      , service "dns" (dockerImage "dockurr/dnsmasq" "latest") 53
+      , service "dns" (dockerImage "dockurr/dnsmasq" "latest") 5353
       , service "ntpd" (dockerImage "cturra/ntp" "latest") 123
       , service "rsyslogd" (dockerImage "rsyslog/rsyslog" "latest") 514
       , ingress "monitor.lichess.ovh" "prometheus" 443

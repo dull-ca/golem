@@ -188,6 +188,68 @@ class RenderReportTests(unittest.TestCase):
         self.assertIn("line 49", out)
         self.assertNotIn("line 50", out)
 
+    def test_multiline_message_collapses_to_first_line_on_failure_row(self):
+        report = {
+            "revision": {"id": 2, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
+            "outcome": "rolled_back",
+            "units": [{
+                "unit_path": ["scaly"],
+                "outcome": "rolled_back",
+                "glyphs": [
+                    {
+                        "glyph_key": "systemd:fishnet.service",
+                        "action": "install",
+                        "outcome": "failed",
+                        "attempts": 5,
+                        "message": "unit not found\n=== systemctl status fishnet.service ===\nActive: failed (Result: exit-code)\nCommand=/usr/bin/podman run ... --label image=ghcr.io/example/fishnet:latest ...",
+                    },
+                ],
+                "failures": [{
+                    "glyph_key": "systemd:fishnet.service",
+                    "unit_path": ["scaly"],
+                    "phase": "enact",
+                    "class": "retries-exhausted",
+                    "attempts": 5,
+                    "message": "unit not found\n=== systemctl status fishnet.service ===\nActive: failed (Result: exit-code)\nCommand=/usr/bin/podman run ... --label image=ghcr.io/example/fishnet:latest ...",
+                    "rolled_back": True,
+                    "details": "=== systemctl status fishnet.service ===\nActive: failed (Result: exit-code)\nCommand=/usr/bin/podman run ... --label image=ghcr.io/example/fishnet:latest ...",
+                }],
+            }],
+        }
+        out = self._render(report)
+        lines = out.splitlines()
+        star_line = next(ln for ln in lines if "✗ systemd fishnet.service" in ln)
+        self.assertIn("unit not found", star_line)
+        self.assertNotIn("systemctl status", star_line)
+        self.assertTrue(star_line.rstrip().endswith("…"))
+        self.assertIn("systemctl status fishnet.service", out)
+        self.assertIn("Active: failed (Result: exit-code)", out)
+
+    def test_multiline_message_collapses_to_first_line_without_glyphs(self):
+        report = {
+            "revision": {"id": 4, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
+            "outcome": "rolled_back",
+            "units": [{
+                "unit_path": ["host", "app"],
+                "outcome": "rolled_back",
+                "failures": [{
+                    "glyph_key": "apt:nginx",
+                    "unit_path": ["host", "app"],
+                    "phase": "enact",
+                    "class": "retries-exhausted",
+                    "attempts": 5,
+                    "message": "mirror down\n=== apt-get output ===\nE: Unable to fetch some archives",
+                    "rolled_back": True,
+                }],
+            }],
+        }
+        out = self._render(report)
+        lines = out.splitlines()
+        star_line = next(ln for ln in lines if "✗ apt nginx" in ln)
+        self.assertIn("mirror down", star_line)
+        self.assertNotIn("apt-get output", star_line)
+        self.assertTrue(star_line.rstrip().endswith("…"))
+
     def test_all_unchanged_reports_already_up_to_date(self):
         report = {
             "revision": {"id": 3, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
