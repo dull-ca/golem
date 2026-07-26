@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -361,6 +362,15 @@ def _render_apply_error(name: str, status: int, body: dict) -> None:
     console.print(f"  [red]{name}: {kind} (HTTP {status})[/red]\n  {message}")
 
 
+def _render_apply_transport_error(name: str, error: Exception) -> None:
+    console.print(
+        f"  [red]{name}: lost the connection waiting on the reconcile ({error}).\n"
+        f"  golemd keeps reconciling server-side — it does not stop because the\n"
+        f"  client gave up. Watch it with `fleet logs {name} -f`, then re-run\n"
+        f"  `fleet apply` once it settles to get the report.[/red]"
+    )
+
+
 def _render_revision(name: str, revision: dict, units: Optional[list] = None) -> None:
     scroll = _cid_short(_cid_hex(revision.get("scroll_content_id")))
     console.print(
@@ -405,7 +415,11 @@ def apply(
     _render_manifest_context(scroll_names, [record.name for record in records])
     for record in records:
         console.print(f"[bold]Applying to {record.name}[/bold]…")
-        response = golemd_client.apply_manifest(record, manifest)
+        try:
+            response = golemd_client.apply_manifest(record, manifest)
+        except (httpx.TimeoutException, httpx.TransportError) as error:
+            _render_apply_transport_error(record.name, error)
+            continue
         # NOTE: a partial or rolled-back reconcile is HTTP 200 with its failures
         # in-band in the report (ADR 0029 §5); non-2xx is a transport/daemon
         # error carrying a typed {kind, message} body.

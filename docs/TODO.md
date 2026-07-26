@@ -321,5 +321,10 @@ standalone project.
   with within-host parallelism gated on that serialization work (Dr. Dub's
   constraints, 2026-07-25).
 
+- **Async apply.** `fleet apply` holds an HTTP request open for the whole
+  reconcile; golemd should instead return 202 + a reconcile id and let the
+  client poll for the report — replacing the hold-open request and
+  prerequisite-shaped for parallel apply.
+
 - **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
   is published.

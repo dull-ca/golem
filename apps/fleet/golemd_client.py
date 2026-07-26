@@ -39,10 +39,15 @@ def state(record: VmRecord, timeout: float = 5.0) -> dict[str, Any] | None:
         return None
 
 
-def apply_manifest(record: VmRecord, manifest: bytes, timeout: float = 300.0) -> httpx.Response:
+_APPLY_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=10.0)
+
+
+def apply_manifest(record: VmRecord, manifest: bytes, timeout: httpx.Timeout = _APPLY_TIMEOUT) -> httpx.Response:
     """POST a compiled manifest to `/manifest` as raw bytes. Returns the
     response unmapped so the caller reads the status code and revision body.
-    The long timeout covers a reconcile that installs packages on the guest."""
+    A reconcile can run tens of minutes on a cold host (apt update, package
+    installs, image pulls, canary retry rounds), so the read timeout is
+    unbounded; only connect/write/pool are bounded."""
     return httpx.post(
         _base_url(record) + "/manifest",
         content=manifest,
