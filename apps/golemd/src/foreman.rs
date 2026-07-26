@@ -330,7 +330,14 @@ impl Foreman {
                     .collect()
             })
             .collect();
-        let credited = dedup_plan(&unit_ops);
+        let shared = shared_pairs(&unit_ops);
+        // NOTE: the success set is attempt-scoped and shared across every unit: a
+        // shared `(key, cid)` pair enters it only once a real apply succeeds, so a
+        // later declarer credits only what a prior declarer actually put on the
+        // host (ADR 0034 §1). A Mutex, not a Cell, so the coming parallel executor
+        // (ADR 0034 §3) reads and writes it from concurrent unit threads.
+        let succeeded: Mutex<std::collections::HashSet<(String, ContentId)>> =
+            Mutex::new(std::collections::HashSet::new());
         for (idx, unit) in units.iter().enumerate() {
             let effective = resolve_retry(&self.retry, &unit.policy_chain);
             let result = self
@@ -338,7 +345,8 @@ impl Foreman {
                     reconcile_id,
                     &next_ord,
                     &unit_ops[idx],
-                    &credited[idx],
+                    &shared[idx],
+                    &succeeded,
                     &prior,
                     &unit.path,
                     &effective,
@@ -353,13 +361,14 @@ impl Foreman {
             .map_err(ForemanError::Internal)?
         {
             let effective = resolve_retry(&self.retry, &group.policy_chain);
-            let credited = vec![false; group.ops.len()];
+            let shared = vec![false; group.ops.len()];
             let result = self
                 .enact_unit(
                     reconcile_id,
                     &next_ord,
                     &group.ops,
-                    &credited,
+                    &shared,
+                    &succeeded,
                     &prior,
                     &group.unit_path,
                     &effective,
@@ -506,7 +515,8 @@ impl Foreman {
         reconcile_id: u64,
         next_ord: &AtomicU64,
         ops: &[GlyphOp],
-        credited: &[bool],
+        shared: &[bool],
+        succeeded: &Mutex<std::collections::HashSet<(String, ContentId)>>,
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
@@ -521,18 +531,16 @@ impl Foreman {
         let base_ord = next_ord.fetch_add(ops.len() as u64, Ordering::SeqCst);
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
         for (offset, op) in ops.iter().enumerate() {
-            let class = if credited[offset] {
-                self.enact_credited(reconcile_id, base_ord + offset as u64, op, unit_path)?
-            } else {
-                self.enact_one(
-                    reconcile_id,
-                    base_ord + offset as u64,
-                    op,
-                    prior,
-                    unit_path,
-                    1,
-                )?
-            };
+            let class = self.enact_or_credit(
+                reconcile_id,
+                base_ord + offset as u64,
+                op,
+                shared[offset],
+                succeeded,
+                prior,
+                unit_path,
+                1,
+            )?;
             classes.push(class);
         }
         let mut round = 1u32;
@@ -566,8 +574,16 @@ impl Foreman {
             for offset in remaining {
                 let op = &ops[offset as usize];
                 self.progress.clear_retry(reconcile_id, &op.key());
-                classes[offset as usize] =
-                    self.enact_one(reconcile_id, base_ord + offset, op, prior, unit_path, round)?;
+                classes[offset as usize] = self.enact_or_credit(
+                    reconcile_id,
+                    base_ord + offset,
+                    op,
+                    shared[offset as usize],
+                    succeeded,
+                    prior,
+                    unit_path,
+                    round,
+                )?;
             }
         }
         let mut failures = unit_failures(ops, &classes, unit_path, round);
@@ -610,14 +626,50 @@ impl Foreman {
         })
     }
 
-    /// Record a duplicate op's bracket without touching the host — the enacting
-    /// unit already ran the real `apply` for this `(key, cid)`. The bracket is
-    /// byte-identical to the idempotent re-observation it replaces: `Intended`
-    /// then `Done`, `changed = false`, `Inverse::Nothing`, under this unit's own
-    /// `step_ord` and `unit_path`, no reconciler call. So a unit-scoped rollback
-    /// of a crediting unit reverses `Inverse::Nothing` — zero host effect — and
-    /// the applied-set fold is unchanged: only the first-declaring unit holds the
-    /// real inverse and can undo the host change (ADR 0034 §1).
+    /// Enact one op, crediting it only when its shared `(key, cid)` pair has
+    /// already **succeeded** a real apply this attempt (ADR 0034 §1). A shared op
+    /// whose pair is in `succeeded` writes the credited bracket ([`enact_credited`],
+    /// no host effect); otherwise it runs the real [`enact_one`] and, on a `Ok`
+    /// class, records the pair so later declarers credit. A non-shared op is never
+    /// credited. This is what makes a failed first-declarer harmless: the pair
+    /// never enters the set, so the next declarer applies for real rather than
+    /// crediting a phantom the host lacks — pre-dedup semantics, safe by reconciler
+    /// idempotence. The `succeeded` mutex makes crediting first-success-wins under
+    /// the coming parallel executor (ADR 0034 §3); it only suppresses a *redundant*
+    /// apply after a success, never coordinates two racing real applies (idempotent
+    /// by construction).
+    #[allow(clippy::too_many_arguments)]
+    fn enact_or_credit(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        shared: bool,
+        succeeded: &Mutex<std::collections::HashSet<(String, ContentId)>>,
+        prior: &[Outcome],
+        unit_path: &[String],
+        round: u32,
+    ) -> Result<StepClass> {
+        let pair = (op.key(), enacted_cid_of(op));
+        if shared && succeeded.lock().unwrap().contains(&pair) {
+            return self.enact_credited(reconcile_id, ord, op, unit_path);
+        }
+        let class = self.enact_one(reconcile_id, ord, op, prior, unit_path, round)?;
+        if shared && matches!(class, StepClass::Ok) {
+            succeeded.lock().unwrap().insert(pair);
+        }
+        Ok(class)
+    }
+
+    /// Record a shared op's bracket without touching the host — another unit
+    /// already ran a real `apply` that succeeded for this `(key, cid)` this attempt
+    /// ([`enact_or_credit`] gates on the success set). The bracket is byte-identical
+    /// to the idempotent re-observation it replaces: `Intended` then `Done`,
+    /// `changed = false`, `Inverse::Nothing`, under this unit's own `step_ord` and
+    /// `unit_path`, no reconciler call. So a unit-scoped rollback of a crediting
+    /// unit reverses `Inverse::Nothing` — zero host effect — and the applied-set
+    /// fold is unchanged: only the enacting unit holds the real inverse and can undo
+    /// the host change (ADR 0034 §1).
     fn enact_credited(
         &self,
         reconcile_id: u64,
@@ -1387,25 +1439,35 @@ struct RemoveGroup<'a> {
     policy_chain: Vec<&'a scroll_format::Policy>,
 }
 
-/// A per-op mask over `unit_ops`, source order preserved: `true` marks an op an
-/// earlier op (in an earlier unit, or earlier in the same unit) already declared
-/// with the same `(key, cid)`. The first occurrence stays `false` and enacts for
-/// real; the duplicates are credited (`enact_credited`) instead of re-run. Only
-/// `(key, cid)` identity dedups — the same key with a divergent cid is NOT
-/// deduped and remains silent last-wins on the host (ADR 0034 §1, a recorded
-/// wart to surface, not resolve here).
-fn dedup_plan(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
-    let mut seen: std::collections::HashSet<(String, ContentId)> = std::collections::HashSet::new();
-    let mut credited = Vec::with_capacity(unit_ops.len());
+/// A per-op mask over `unit_ops`, source order preserved: `true` marks an op
+/// whose `(key, cid)` pair is declared by more than one op across the plan — a
+/// crediting *candidate*. It does not decide who enacts; that is settled at
+/// runtime against the attempt's success set (ADR 0034 §1). The first candidate
+/// to reach its op runs the real `apply` and, only on success, records the pair
+/// so later candidates for the same pair credit (`enact_credited`) instead of
+/// re-running. A candidate whose earlier sibling *failed* the real apply finds
+/// the pair absent and applies for real itself — pre-dedup retry semantics, safe
+/// by reconciler idempotence. A pair declared by exactly one op is never a
+/// candidate (mask `false`) and always enacts. Only `(key, cid)` identity is
+/// shared — the same key with a divergent cid is NOT shared and remains silent
+/// last-wins on the host (ADR 0034 §1, a recorded wart to surface, not resolve
+/// here).
+fn shared_pairs(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
+    let mut counts: std::collections::HashMap<(String, ContentId), u32> =
+        std::collections::HashMap::new();
     for ops in unit_ops {
-        let mut flags = Vec::with_capacity(ops.len());
         for op in ops {
-            let ident = (op.key(), enacted_cid_of(op));
-            flags.push(!seen.insert(ident));
+            *counts.entry((op.key(), enacted_cid_of(op))).or_insert(0) += 1;
         }
-        credited.push(flags);
     }
-    credited
+    unit_ops
+        .iter()
+        .map(|ops| {
+            ops.iter()
+                .map(|op| counts[&(op.key(), enacted_cid_of(op))] > 1)
+                .collect()
+        })
+        .collect()
 }
 
 fn enacted_cid_of(op: &GlyphOp) -> ContentId {
@@ -2982,6 +3044,95 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_first_declarer_lets_the_next_unit_really_apply_a_shared_glyph() {
+        struct FailFirstApply {
+            present: Mutex<BTreeMap<String, ContentId>>,
+            failed_keys: Mutex<Vec<String>>,
+        }
+        impl Reconciler for FailFirstApply {
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let key = glyph.key();
+                let mut failed = self.failed_keys.lock().unwrap();
+                if key == "apt:shared" && !failed.contains(&key) {
+                    failed.push(key);
+                    return Err(EnactError::Fatal("scripted first-apply failure".into()));
+                }
+                self.present.lock().unwrap().insert(key, cid);
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                self.present.lock().unwrap().remove(&outcome.op.key());
+                Ok(())
+            }
+        }
+        let rec = Arc::new(FailFirstApply {
+            present: Mutex::new(BTreeMap::new()),
+            failed_keys: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            on_exhaust: OnExhaustConfig::Keep,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("shared")]),
+                leaf_scroll("second", vec![apt("shared")]),
+            ],
+        );
+        let bytes = manifest(vec![scroll]);
+        f.apply_manifest(&bytes).unwrap();
+
+        assert!(
+            rec.present.lock().unwrap().contains_key("apt:shared"),
+            "the second unit really applies apt:shared after the first failed it"
+        );
+        let steps = f.planroom.wal_steps().unwrap();
+        let real_dones: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:shared"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(
+            real_dones.len(),
+            1,
+            "exactly one Done bracket for apt:shared — the second unit's real apply"
+        );
+        assert!(
+            !matches!(real_dones[0].inverse, Some(Inverse::Nothing) | None),
+            "the surviving Done carries a real inverse, not the phantom Inverse::Nothing"
+        );
+        let outcomes = f.applied_state().unwrap().unwrap().outcomes;
+        let shared: Vec<_> = outcomes
+            .iter()
+            .filter(|o| o.op.key() == "apt:shared")
+            .collect();
+        assert_eq!(shared.len(), 1);
+        assert!(
+            !matches!(shared[0].inverse, Inverse::Nothing),
+            "the fold credits apt:shared to the real applier, never a phantom"
+        );
+    }
+
+    #[test]
     fn a_shared_key_across_units_enacts_once_and_credits_the_rest() {
         let reconciler = ScriptedReconciler::new().ok_default();
         let foreman = foreman_with(reconciler);
@@ -3092,6 +3243,85 @@ mod tests {
         assert!(
             applied_keys(&foreman).contains(&"apt:shared".to_string()),
             "the shared glyph enacted by base stays applied; the canary kept its partial state"
+        );
+    }
+
+    #[test]
+    fn a_keep_canary_failing_a_shared_glyph_first_lets_the_sibling_apply_it() {
+        struct FailFirstShared {
+            present: Mutex<BTreeMap<String, ContentId>>,
+            failed_keys: Mutex<Vec<String>>,
+        }
+        impl Reconciler for FailFirstShared {
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let key = glyph.key();
+                let mut failed = self.failed_keys.lock().unwrap();
+                if key == "apt:shared" && !failed.contains(&key) {
+                    failed.push(key);
+                    return Err(EnactError::Fatal("scripted first-apply failure".into()));
+                }
+                self.present.lock().unwrap().insert(key, cid);
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                self.present.lock().unwrap().remove(&outcome.op.key());
+                Ok(())
+            }
+        }
+        let rec = Arc::new(FailFirstShared {
+            present: Mutex::new(BTreeMap::new()),
+            failed_keys: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            on_exhaust: OnExhaustConfig::Keep,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let canary = leaf_scroll("canary", vec![apt("shared")]);
+        let sibling = leaf_scroll("sibling", vec![apt("shared")]);
+        let report = f
+            .apply_manifest(&manifest(vec![branch_scroll(
+                "host",
+                vec![canary, sibling],
+            )]))
+            .unwrap();
+        let canary_u = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "canary")
+            .unwrap();
+        let sibling_u = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "sibling")
+            .unwrap();
+        assert_eq!(
+            canary_u.outcome,
+            UnitOutcome::Partial,
+            "the canary declares apt:shared first, fails it, and keeps its partial state"
+        );
+        assert_eq!(
+            sibling_u.outcome,
+            UnitOutcome::Settled,
+            "the sibling really applies apt:shared after the canary failed it"
+        );
+        assert!(
+            rec.present.lock().unwrap().contains_key("apt:shared"),
+            "apt:shared is present on the host — the sibling installed it for real"
         );
     }
 
