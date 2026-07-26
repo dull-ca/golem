@@ -37,6 +37,7 @@ reqwest      = { version = "0.12", default-features = false, features = ["json",
 axum         = "0.7"
 fastrand     = "2"
 base64       = "0.22"
+iocraft      = { version = "=0.8.2", features = ["unstable-output-streams"] }
 
 [profile.release]
 opt-level = "z"

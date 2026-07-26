@@ -13,3 +13,4 @@ tracing      = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap         = { workspace = true }
 reqwest      = { workspace = true }
+iocraft      = { workspace = true }

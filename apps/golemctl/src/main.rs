@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+mod poll;
+
 #[derive(Parser, Debug)]
 #[command(version, about = "golem CLI", infer_subcommands = true)]
 struct Cli {
