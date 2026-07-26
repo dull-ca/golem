@@ -104,6 +104,90 @@ class RenderReportTests(unittest.TestCase):
         self.assertIn("after 1 try", out)
         self.assertNotIn("after 1 tries", out)
 
+    def test_failure_details_render_under_the_glyph_line_when_glyphs_present(self):
+        report = {
+            "revision": {"id": 2, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
+            "outcome": "rolled_back",
+            "units": [{
+                "unit_path": ["scaly"],
+                "outcome": "rolled_back",
+                "glyphs": [
+                    {"glyph_key": "apt:podman", "action": "install", "outcome": "rolled_back", "attempts": 1, "message": None},
+                    {"glyph_key": "systemd:fishnet.service", "action": "install", "outcome": "failed", "attempts": 5, "message": "unit not found"},
+                ],
+                "failures": [{
+                    "glyph_key": "systemd:fishnet.service",
+                    "unit_path": ["scaly"],
+                    "phase": "enact",
+                    "class": "retries-exhausted",
+                    "attempts": 5,
+                    "message": "unit not found",
+                    "rolled_back": True,
+                    "details": "=== systemctl status fishnet.service ===\nActive: failed (Result: exit-code)\n=== journalctl -u fishnet.service ===\nfishnet.service: Failed with result 'exit-code'.",
+                }],
+            }],
+        }
+        out = self._render(report)
+        self.assertIn("✗ systemd fishnet.service", out)
+        self.assertIn("systemctl status fishnet.service", out)
+        self.assertIn("Active: failed (Result: exit-code)", out)
+        self.assertIn("journalctl -u fishnet.service", out)
+        lines = out.splitlines()
+        star = next(i for i, ln in enumerate(lines) if "✗ systemd fishnet.service" in ln)
+        detail = next(i for i, ln in enumerate(lines) if "Active: failed" in ln)
+        self.assertGreater(detail, star, "details render beneath the ✗ line")
+        self.assertTrue(
+            lines[detail].startswith("        "),
+            "details are indented under the glyph line",
+        )
+
+    def test_failure_details_absent_when_none(self):
+        report = {
+            "revision": {"id": 4, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
+            "outcome": "rolled_back",
+            "units": [{
+                "unit_path": ["host", "app"],
+                "outcome": "rolled_back",
+                "failures": [{
+                    "glyph_key": "apt:nginx",
+                    "unit_path": ["host", "app"],
+                    "phase": "enact",
+                    "class": "retries-exhausted",
+                    "attempts": 5,
+                    "message": "mirror down",
+                    "rolled_back": True,
+                }],
+            }],
+        }
+        out = self._render(report)
+        self.assertIn("apt nginx", out)
+        self.assertNotIn("===", out)
+
+    def test_details_block_is_capped_at_fifty_lines(self):
+        big = "\n".join(f"line {i}" for i in range(200))
+        report = {
+            "revision": {"id": 2, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
+            "outcome": "rolled_back",
+            "units": [{
+                "unit_path": ["scaly"],
+                "outcome": "rolled_back",
+                "failures": [{
+                    "glyph_key": "systemd:fishnet.service",
+                    "unit_path": ["scaly"],
+                    "phase": "enact",
+                    "class": "retries-exhausted",
+                    "attempts": 5,
+                    "message": "unit not found",
+                    "rolled_back": True,
+                    "details": big,
+                }],
+            }],
+        }
+        out = self._render(report)
+        self.assertIn("line 0", out)
+        self.assertIn("line 49", out)
+        self.assertNotIn("line 50", out)
+
     def test_all_unchanged_reports_already_up_to_date(self):
         report = {
             "revision": {"id": 3, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},

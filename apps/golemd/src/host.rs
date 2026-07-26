@@ -270,6 +270,24 @@ pub mod fake {
                     stdout: String::new(),
                     stderr: String::new(),
                 }),
+                // Best-effort forensics probes: model a failed unit so the
+                // diagnose path has status and journal text to combine.
+                ("systemctl", _) if args.first() == Some(&"status") => {
+                    let unit = args.get(1).copied().unwrap_or_default();
+                    Ok(CommandOutput {
+                        status: 3,
+                        stdout: format!("● {unit}\n     Active: failed (Result: exit-code)\n"),
+                        stderr: String::new(),
+                    })
+                }
+                ("journalctl", _) => {
+                    let unit = args.get(1).copied().unwrap_or_default();
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: format!("{unit}: Failed with result 'exit-code'.\n"),
+                        stderr: String::new(),
+                    })
+                }
                 _ => Err(EnactError::Fatal(format!(
                     "unexpected command: {program} {}",
                     args.join(" ")

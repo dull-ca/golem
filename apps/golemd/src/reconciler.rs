@@ -31,6 +31,13 @@ pub trait Reconciler: Send + Sync {
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
+    /// Best-effort host evidence about why a glyph could not settle, captured at
+    /// give-up time before any rollback removes the trace. `None` when a kind has
+    /// no diagnostics or the probe found nothing; never an error — a probe that
+    /// fails yields `None` or a partial. Travels in the report, never the journal.
+    fn diagnose(&self, _glyph: &Glyph) -> Option<String> {
+        None
+    }
 }
 
 impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
@@ -42,6 +49,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
+    }
+    fn diagnose(&self, glyph: &Glyph) -> Option<String> {
+        (**self).diagnose(glyph)
     }
 }
 

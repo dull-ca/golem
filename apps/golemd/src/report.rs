@@ -58,7 +58,9 @@ pub enum FailClassReport {
 /// One glyph a unit could not settle. `attempts` is the rounds it ran;
 /// `rolled_back` is `true` only when its unit's `on_exhaust = rollback` undid it.
 /// `message` is the reconciler's reason — glyph key and reason only, never
-/// contents or secrets.
+/// contents or secrets. `details` is the host forensics captured at give-up time
+/// before any rollback (systemctl/journalctl for a failed service); absent for
+/// kinds with no diagnostics and skipped on the wire when `None`.
 #[derive(Debug, Clone, Serialize)]
 pub struct GlyphFailure {
     pub glyph_key: String,
@@ -68,6 +70,8 @@ pub struct GlyphFailure {
     pub attempts: u32,
     pub message: String,
     pub rolled_back: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
 }
 
 /// Which `GlyphOp` the diff enacted for a line. Serialized `install` / `replace`
@@ -232,10 +236,40 @@ mod tests {
             attempts: 3,
             message: "mirror down".into(),
             rolled_back: false,
+            details: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["class"], "retries-exhausted");
         assert_eq!(json["phase"], "enact");
+    }
+
+    #[test]
+    fn glyph_failure_details_serialize_when_present_and_skip_when_none() {
+        let with_details = GlyphFailure {
+            glyph_key: "systemd:x.service".into(),
+            unit_path: vec!["h".into()],
+            phase: FailPhase::Enact,
+            class: FailClassReport::RetriesExhausted,
+            attempts: 5,
+            message: "unit not found".into(),
+            rolled_back: true,
+            details: Some("=== systemctl status x.service ===\nfailed".into()),
+        };
+        let json = serde_json::to_value(&with_details).unwrap();
+        assert_eq!(
+            json["details"],
+            "=== systemctl status x.service ===\nfailed"
+        );
+
+        let without = GlyphFailure {
+            details: None,
+            ..with_details
+        };
+        let json = serde_json::to_value(&without).unwrap();
+        assert!(
+            json.get("details").is_none(),
+            "a None details field is skipped, not serialized as null"
+        );
     }
 
     #[test]

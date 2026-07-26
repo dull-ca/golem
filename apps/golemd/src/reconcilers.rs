@@ -256,6 +256,44 @@ impl<R: CommandRunner> HostReconciler<R> {
         }
         Ok(())
     }
+
+    fn diagnose_systemd(&self, unit: &str) -> Option<String> {
+        let mut sections = Vec::new();
+        if let Some(section) = self.probe(
+            &format!("systemctl status {unit}"),
+            "systemctl",
+            &["status", unit, "--no-pager"],
+        ) {
+            sections.push(section);
+        }
+        if let Some(section) = self.probe(
+            &format!("journalctl -u {unit}"),
+            "journalctl",
+            &["-u", unit, "--no-pager", "-n", "50"],
+        ) {
+            sections.push(section);
+        }
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
+        }
+    }
+
+    fn probe(&self, label: &str, program: &str, args: &[&str]) -> Option<String> {
+        let output = self.runner.run(program, args).ok()?;
+        let mut body = output.stdout;
+        if !output.stderr.trim().is_empty() {
+            if !body.is_empty() && !body.ends_with('\n') {
+                body.push('\n');
+            }
+            body.push_str(&output.stderr);
+        }
+        if body.trim().is_empty() {
+            return None;
+        }
+        Some(format!("=== {label} ===\n{}", body.trim_end()))
+    }
 }
 
 impl<R: CommandRunner> Reconciler for HostReconciler<R> {
@@ -297,6 +335,13 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
 
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         self.try_restart(unit)
+    }
+
+    fn diagnose(&self, glyph: &Glyph) -> Option<String> {
+        match glyph {
+            Glyph::SystemdService { unit } => self.diagnose_systemd(unit),
+            _ => None,
+        }
     }
 }
 
@@ -783,6 +828,25 @@ mod tests {
             path: path.into(),
             line: line.into(),
         }
+    }
+
+    #[test]
+    fn diagnose_systemd_combines_status_and_journal_into_a_labeled_string() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let details = rec.diagnose(&systemd("fishnet.service")).unwrap();
+        assert!(details.contains("=== systemctl status fishnet.service ==="));
+        assert!(details.contains("Active: failed"));
+        assert!(details.contains("=== journalctl -u fishnet.service ==="));
+        assert!(details.contains("fishnet.service: Failed"));
+    }
+
+    #[test]
+    fn diagnose_is_none_for_non_service_glyphs() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        assert!(rec.diagnose(&apt("podman")).is_none());
+        assert!(rec
+            .diagnose(&file_glyph("/etc/x", "y", 0o644))
+            .is_none());
     }
 
     #[test]

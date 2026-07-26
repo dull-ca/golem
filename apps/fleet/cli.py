@@ -17,6 +17,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from . import config, golemd_client, vm
@@ -255,19 +256,23 @@ def _render_report(name: str, report: dict) -> None:
         ucolor = _UNIT_COLOR.get(outcome, "white")
         console.print(f"    [{ucolor}]{path}: {outcome}[/{ucolor}]")
         glyphs = unit.get("glyphs")
+        failures = unit.get("failures") or []
         if glyphs:
             # The glyphs list already shows every failure, so its per-glyph
-            # `class` (absent from a line) is looked up from `failures` by key.
-            classes = {
-                f.get("glyph_key"): f.get("class", "")
-                for f in unit.get("failures") or []
+            # `class` and `details` (absent from a line) are looked up from
+            # `failures` by key.
+            classes = {f.get("glyph_key"): f.get("class", "") for f in failures}
+            details = {
+                f.get("glyph_key"): f.get("details")
+                for f in failures
+                if f.get("details")
             }
             for glyph in glyphs:
-                _render_glyph_line(glyph, classes)
+                _render_glyph_line(glyph, classes, details)
         else:
             # NOTE: a golemd predating ADR 0029's per-glyph lines omits `glyphs`;
             # `failures` is the fallback and shows only what failed.
-            for failure in unit.get("failures") or []:
+            for failure in failures:
                 _render_failure_line(failure)
 
 
@@ -275,7 +280,17 @@ def _tries(attempts: int) -> str:
     return "1 try" if attempts == 1 else f"{attempts} tries"
 
 
-def _render_glyph_line(glyph: dict, classes: dict) -> None:
+_DETAILS_MAX_LINES = 50
+
+
+def _render_details_block(details: Optional[str]) -> None:
+    if not details:
+        return
+    for line in details.splitlines()[:_DETAILS_MAX_LINES]:
+        console.print(f"        [dim]{escape(line)}[/dim]")
+
+
+def _render_glyph_line(glyph: dict, classes: dict, details: dict) -> None:
     desc = _glyph_key_desc(glyph.get("glyph_key"))
     outcome = glyph.get("outcome", "")
     if outcome == "failed":
@@ -285,6 +300,7 @@ def _render_glyph_line(glyph: dict, classes: dict) -> None:
         console.print(
             f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {message}[/red]"
         )
+        _render_details_block(details.get(glyph.get("glyph_key")))
         return
     mark, style, label = _GLYPH_OUTCOME_STYLE.get(outcome, ("·", "white", outcome))
     console.print(f"      [{style}]{mark} {desc}  {label}[/{style}]")
@@ -298,6 +314,7 @@ def _render_failure_line(failure: dict) -> None:
     console.print(
         f"      [red]✗ {desc}  {cls} after {_tries(attempts)} — {message}[/red]"
     )
+    _render_details_block(failure.get("details"))
 
 
 def _render_manifest_context(scroll_names: list[str], applying: list[str]) -> None:

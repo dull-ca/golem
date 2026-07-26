@@ -96,6 +96,7 @@ pub(crate) struct UnitFailure {
     pub attempts: u32,
     pub message: String,
     pub rolled_back: bool,
+    pub details: Option<String>,
 }
 
 /// A leaf unit's fate: the failures it could not settle, whether its
@@ -385,9 +386,12 @@ impl Foreman {
     /// round; a unit that settles in round one leaves the clock untouched for a
     /// later unit (ADR 0029 §3, addendum). A `Failed` op never aborts the
     /// loop; its class is tracked in memory (the WAL records the bracket for crash
-    /// recovery, not the class). After the loop the unit's `on_exhaust` (`rollback`
-    /// | `keep`) settles its fate, scoped to this unit's `unit_path` so a sibling
-    /// unit is never touched (ADR 0029 §4, §2).
+    /// recovery, not the class). Once the loop gives up, each still-failing op is
+    /// diagnosed **once** — `Reconciler::diagnose` captures host forensics onto the
+    /// failure — before the unit's `on_exhaust` (`rollback` | `keep`) settles its
+    /// fate, scoped to this unit's `unit_path` so a sibling unit is never touched
+    /// and so the evidence is captured before a rollback removes it (ADR 0029 §4,
+    /// §2).
     fn enact_unit(
         &self,
         reconcile_id: u64,
@@ -441,8 +445,8 @@ impl Foreman {
                     self.enact_one(reconcile_id, base_ord + offset, op, prior, unit_path, round)?;
             }
         }
-        let failures = unit_failures(ops, &classes, unit_path, round);
-        for f in &failures {
+        let mut failures = unit_failures(ops, &classes, unit_path, round);
+        for f in &mut failures {
             error!(
                 glyph_key = %f.glyph_key,
                 round,
@@ -450,6 +454,9 @@ impl Foreman {
                 reason = %f.message,
                 "enact failed; giving up"
             );
+            if let Some(op) = ops.iter().find(|o| o.key() == f.glyph_key) {
+                f.details = self.reconciler.diagnose(op.glyph());
+            }
         }
         let has_failures = !failures.is_empty();
         let rolled_back = has_failures && retry.on_exhaust == OnExhaustConfig::Rollback;
@@ -1201,6 +1208,7 @@ fn unit_failures(
             attempts,
             message: message.clone(),
             rolled_back: false,
+            details: None,
         });
     }
     failures
@@ -1357,6 +1365,7 @@ fn unit_report_from(result: UnitResult) -> UnitReport {
             attempts: f.attempts,
             message: f.message,
             rolled_back: f.rolled_back,
+            details: f.details,
         })
         .collect();
     UnitReport {
@@ -1642,6 +1651,8 @@ mod tests {
         retryable_always: Mutex<Vec<String>>,
         fatal_reverse: Mutex<Vec<String>>,
         restarts: Mutex<Vec<String>>,
+        diagnosis: Mutex<Option<String>>,
+        events: Mutex<Vec<String>>,
     }
     impl ScriptedReconciler {
         fn new() -> Self {
@@ -1652,7 +1663,16 @@ mod tests {
                 retryable_always: Mutex::new(Vec::new()),
                 fatal_reverse: Mutex::new(Vec::new()),
                 restarts: Mutex::new(Vec::new()),
+                diagnosis: Mutex::new(None),
+                events: Mutex::new(Vec::new()),
             }
+        }
+        fn diagnosis(self, text: &str) -> Self {
+            *self.diagnosis.lock().unwrap() = Some(text.into());
+            self
+        }
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
         }
         fn fatal_reverse_on(self, key: &str) -> Self {
             self.fatal_reverse.lock().unwrap().push(key.into());
@@ -1724,6 +1744,7 @@ mod tests {
         }
         fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
             let key = outcome.op.key();
+            self.events.lock().unwrap().push(format!("reverse {key}"));
             if self.fatal_reverse.lock().unwrap().iter().any(|k| k == &key) {
                 return Err(EnactError::Fatal(format!(
                     "scripted fatal reverse for {key}"
@@ -1735,6 +1756,13 @@ mod tests {
         fn restart_unit(&self, unit: &str) -> EnactResult<()> {
             self.restarts.lock().unwrap().push(unit.to_string());
             Ok(())
+        }
+        fn diagnose(&self, glyph: &Glyph) -> Option<String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("diagnose {}", glyph.key()));
+            self.diagnosis.lock().unwrap().clone()
         }
     }
 
@@ -2245,6 +2273,62 @@ mod tests {
         assert_eq!(
             second.failures[0].attempts, 1,
             "the budget spent on the first unit leaves the second only its opening round"
+        );
+    }
+
+    #[test]
+    fn a_give_up_captures_forensics_before_rollback() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("systemd:fishnet.service")
+            .diagnosis("=== systemctl status fishnet.service ===\nActive: failed")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 2,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+            jitter_fraction: 0.0,
+            on_exhaust: OnExhaustConfig::Rollback,
+            ..Default::default()
+        });
+        let leaf = leaf_scroll(
+            "unit",
+            vec![
+                apt("podman"),
+                Glyph::SystemdService {
+                    unit: "fishnet.service".into(),
+                },
+            ],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        let unit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "unit")
+            .unwrap();
+        assert_eq!(unit.outcome, UnitOutcome::RolledBack);
+        let failure = unit
+            .failures
+            .iter()
+            .find(|f| f.glyph_key == "systemd:fishnet.service")
+            .unwrap();
+        assert_eq!(
+            failure.details.as_deref(),
+            Some("=== systemctl status fishnet.service ===\nActive: failed")
+        );
+        let events = foreman.rec.events();
+        let diagnosed = events
+            .iter()
+            .position(|e| e == "diagnose systemd:fishnet.service")
+            .expect("the failed service is diagnosed");
+        let reversed = events
+            .iter()
+            .position(|e| e == "reverse apt:podman")
+            .expect("the applied package is rolled back");
+        assert!(
+            diagnosed < reversed,
+            "forensics must be captured before any rollback reverses host state"
         );
     }
 
