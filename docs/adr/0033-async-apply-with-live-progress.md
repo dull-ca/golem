@@ -103,8 +103,9 @@ The `reconcile_id` is the attempt id `open_attempt` already mints
 client before enact begins, so the poll target exists the instant the 202 lands.
 
 **Decode and gate failures keep their current typed non-2xx** `{ kind, message }`
-body (ADR 0029 §5, `http.rs:118`): a `ManifestUndecodable` is a `400`-class typed
-error, an unreadable WAL or an unsettled-attempt conflict is returned
+body (ADR 0029 §5, `http.rs:118`): a `ManifestUndecodable` is a typed `500`-class
+error (as shipped — the decode failure is reported as a daemon fault, not a
+client `400`), an unreadable WAL or an unsettled-attempt conflict is returned
 synchronously — because these are reasons the reconcile *never started*, and the
 client must learn them on the request that tried to start it, not by polling an id
 that will never make progress. The unsettled-attempt gate becomes a **409-style

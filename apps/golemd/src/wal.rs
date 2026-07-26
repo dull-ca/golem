@@ -94,6 +94,25 @@ pub fn projected_revision(
         .find(|r| r.id == id)
 }
 
+/// The projected `Reconcile` revision a given committed attempt produced, or
+/// `None` when the attempt is not among the committed ones (it rolled back, or
+/// does not exist). The revision id is `2 +` the attempt's position among
+/// committed attempts in `reconcile_id` order — the same numbering
+/// [`projected_revisions`] assigns — so this resolves the one revision a
+/// reattaching poll needs without projecting and searching the whole history by
+/// content id.
+pub fn revision_for_attempt(
+    attempts: &[ReconcileAttempt],
+    steps: &[WalStep],
+    reconcile_id: u64,
+) -> Option<Revision> {
+    let position = attempts
+        .iter()
+        .filter(|a| a.phase == AttemptPhase::Committed)
+        .position(|a| a.reconcile_id == reconcile_id)?;
+    projected_revision(attempts, steps, 2 + position as u64)
+}
+
 /// The id of the newest projected revision: `1` (`Init`) plus the number of
 /// `Committed` attempts. Computed from the attempts alone — the steps are not
 /// needed to count revisions, only to fold their outcomes — so `settle` can read

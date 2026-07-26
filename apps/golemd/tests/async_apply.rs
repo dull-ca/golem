@@ -9,6 +9,14 @@ use golemd::planroom::MemoryPlanRoom;
 use golemd::reconciler::{inverse_of, EnactResult, Reconciler};
 use scroll_format::{ContentId, Contents, Glyph, Manifest, Scroll};
 
+fn quiet_retry() -> RetryConfig {
+    RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    }
+}
+
 struct Ok1;
 impl Reconciler for Ok1 {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
@@ -124,4 +132,33 @@ async fn latest_returns_the_most_recent_attempt() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("latest never settled");
+}
+
+#[test]
+fn a_settled_attempt_reports_after_the_in_memory_cache_is_lost() {
+    let room = Arc::new(MemoryPlanRoom::new());
+
+    let f1 = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(Ok1))
+        .with_retry_config(quiet_retry());
+    let (id, selected) = f1.ingest(&manifest_bytes()).unwrap();
+    let live = f1.progress_projection(id, 0).unwrap().unwrap();
+    assert_eq!(live.phase, golemd::projection::PhaseView::Enacting);
+    f1.run_reconcile(id, selected).unwrap();
+    drop(f1);
+
+    let f2 = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(Ok1))
+        .with_retry_config(quiet_retry());
+    let p = f2
+        .progress_projection(id, 0)
+        .unwrap()
+        .expect("the settled attempt is still projectable after restart");
+
+    assert_eq!(p.phase, golemd::projection::PhaseView::Settled);
+    let report = p
+        .report
+        .expect("a settled attempt always yields a report, rebuilt from the WAL on cache miss");
+    assert_eq!(report.outcome, golemd::report::TopOutcome::Settled);
+    assert_eq!(report.units.len(), 1);
+    assert_eq!(report.units[0].unit_path, vec!["h1".to_string()]);
+    assert_eq!(report.units[0].glyphs[0].glyph_key, "apt:nginx");
 }

@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -49,7 +50,7 @@ pub struct ProgressEvent {
 struct AttemptRing {
     next_seq: u64,
     events: VecDeque<ProgressEvent>,
-    retries: BTreeMap<String, u64>,
+    retries: BTreeMap<String, Instant>,
 }
 
 impl AttemptRing {
@@ -120,10 +121,11 @@ impl ProgressRegistry {
         }
     }
 
-    pub fn set_retry(&self, reconcile_id: u64, glyph_key: &str, ms: u64) {
+    pub fn set_retry(&self, reconcile_id: u64, glyph_key: &str, delay: Duration) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(ring) = inner.rings.get_mut(&reconcile_id) {
-            ring.retries.insert(glyph_key.to_string(), ms);
+            ring.retries
+                .insert(glyph_key.to_string(), Instant::now() + delay);
         }
     }
 
@@ -148,11 +150,22 @@ impl ProgressRegistry {
     }
 
     pub fn retries(&self, reconcile_id: u64) -> BTreeMap<String, u64> {
+        let now = Instant::now();
         let inner = self.inner.lock().unwrap();
         inner
             .rings
             .get(&reconcile_id)
-            .map(|r| r.retries.clone())
+            .map(|r| {
+                r.retries
+                    .iter()
+                    .map(|(key, deadline)| {
+                        (
+                            key.clone(),
+                            deadline.saturating_duration_since(now).as_millis() as u64,
+                        )
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -215,12 +228,28 @@ mod tests {
     }
 
     #[test]
-    fn retry_countdown_is_set_and_cleared_per_glyph() {
+    fn retry_countdown_counts_down_from_the_deadline_and_clears() {
         let reg = ProgressRegistry::new();
         reg.open(1);
-        reg.set_retry(1, "apt:x", 2000);
-        assert_eq!(reg.retries(1).get("apt:x").copied(), Some(2000));
+        reg.set_retry(1, "apt:x", Duration::from_millis(2000));
+        let remaining = reg.retries(1).get("apt:x").copied().unwrap();
+        assert!(
+            remaining > 1000 && remaining <= 2000,
+            "a fresh 2s deadline reads as close to 2000ms, not more: {remaining}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        let later = reg.retries(1).get("apt:x").copied().unwrap();
+        assert!(later < remaining, "the countdown decreases as time passes");
         reg.clear_retry(1, "apt:x");
-        assert!(reg.retries(1).get("apt:x").is_none());
+        assert!(!reg.retries(1).contains_key("apt:x"));
+    }
+
+    #[test]
+    fn an_elapsed_deadline_clamps_to_zero() {
+        let reg = ProgressRegistry::new();
+        reg.open(1);
+        reg.set_retry(1, "apt:x", Duration::from_millis(0));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(reg.retries(1).get("apt:x").copied(), Some(0));
     }
 }

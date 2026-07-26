@@ -479,11 +479,8 @@ impl Foreman {
             }
             let delay = round_delay(retry, round);
             for offset in &remaining {
-                self.progress.set_retry(
-                    reconcile_id,
-                    &ops[*offset as usize].key(),
-                    delay.as_millis() as u64,
-                );
+                self.progress
+                    .set_retry(reconcile_id, &ops[*offset as usize].key(), delay);
             }
             std::thread::sleep(delay);
             round += 1;
@@ -1165,13 +1162,43 @@ impl Foreman {
         let events = self.progress.events_after(reconcile_id, after);
         let retries = self.progress.retries(reconcile_id);
         let report = if attempt.phase.is_settled() {
-            self.reports.lock().unwrap().get(&reconcile_id).cloned()
+            let cached = self.reports.lock().unwrap().get(&reconcile_id).cloned();
+            match cached {
+                Some(report) => Some(report),
+                None => self.rebuild_report(&attempt)?,
+            }
         } else {
             None
         };
         let mut proj = crate::projection::project(&attempt, &steps, events, report, &retries);
         proj.cursor = proj.cursor.max(after);
         Ok(Some(proj))
+    }
+
+    /// Rebuild a settled attempt's report from durable state when the in-memory
+    /// cache has lost it — the reattach path after a daemon restart (ADR 0033 §2,
+    /// "report present once settled"). A committed attempt's report is folded from
+    /// its WAL rows plus the revision it projected (`revision_for_attempt`); the
+    /// degraded fields (empty failure messages, no forensics `details`,
+    /// WAL-derived round counts) are documented at `projection::rebuild_report`.
+    /// The rebuilt report is cached so a second poll hits the cache. A
+    /// `RolledBack` attempt (a whole-attempt recovery rollback) never produced a
+    /// report and projects no revision, so there is nothing durable to rebuild —
+    /// it degrades to `None`.
+    fn rebuild_report(&self, attempt: &ReconcileAttempt) -> Result<Option<ReconcileReport>> {
+        let attempts = self.planroom.attempts()?;
+        let steps = self.planroom.wal_steps()?;
+        let Some(revision) =
+            crate::wal::revision_for_attempt(&attempts, &steps, attempt.reconcile_id)
+        else {
+            return Ok(None);
+        };
+        let report = crate::projection::rebuild_report(attempt, &steps, revision);
+        self.reports
+            .lock()
+            .unwrap()
+            .insert(attempt.reconcile_id, report.clone());
+        Ok(Some(report))
     }
 }
 

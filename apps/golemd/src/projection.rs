@@ -10,9 +10,14 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::journal::{AttemptPhase, GlyphOp, ReconcileAttempt, WalAction, WalStep, WalStepState};
+use crate::journal::{
+    AttemptPhase, GlyphOp, ReconcileAttempt, Revision, WalAction, WalStep, WalStepState,
+};
 use crate::progress::ProgressEvent;
-use crate::report::ReconcileReport;
+use crate::report::{
+    FailClassReport, FailPhase, GlyphAction, GlyphFailure, GlyphLine, GlyphOutcome,
+    ReconcileReport, UnitOutcome, UnitReport,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,13 +147,16 @@ fn fold_state(rows: &[&WalStep]) -> (GlyphState, u32) {
     )
 }
 
-pub fn project(
-    attempt: &ReconcileAttempt,
-    steps: &[WalStep],
-    events: Vec<ProgressEvent>,
-    report: Option<ReconcileReport>,
-    retries: &BTreeMap<String, u64>,
-) -> ReconcileProgress {
+/// One unit's rows grouped for folding: its `unit_path` and, per glyph key in
+/// first-appearance order, that glyph's `wal_step` rows in seq order.
+type GroupedUnit<'a> = (Vec<String>, Vec<(String, Vec<&'a WalStep>)>);
+
+/// Group one attempt's non-`Restart` `wal_step` rows into ordered units, each an
+/// ordered list of `(glyph_key, its rows in seq order)`. First-appearance order
+/// is preserved for both units and keys so the projection and the rebuilt report
+/// present glyphs in enact order. Shared by [`project`] and [`rebuild_report`] so
+/// the live view and the reattach-rebuilt report fold the same rows the same way.
+fn group_units<'a>(attempt: &ReconcileAttempt, steps: &'a [WalStep]) -> Vec<GroupedUnit<'a>> {
     let mut order: Vec<Vec<String>> = Vec::new();
     let mut by_unit: BTreeMap<Vec<String>, Vec<String>> = BTreeMap::new();
     let mut rows_by_key: BTreeMap<(Vec<String>, String), Vec<&WalStep>> = BTreeMap::new();
@@ -172,11 +180,32 @@ pub fn project(
             .or_default()
             .push(step);
     }
+    order
+        .into_iter()
+        .map(|unit| {
+            let glyphs = by_unit[&unit]
+                .iter()
+                .map(|key| {
+                    let rows = rows_by_key[&(unit.clone(), key.clone())].clone();
+                    (key.clone(), rows)
+                })
+                .collect();
+            (unit, glyphs)
+        })
+        .collect()
+}
+
+pub fn project(
+    attempt: &ReconcileAttempt,
+    steps: &[WalStep],
+    events: Vec<ProgressEvent>,
+    report: Option<ReconcileReport>,
+    retries: &BTreeMap<String, u64>,
+) -> ReconcileProgress {
     let mut units = Vec::new();
-    for unit in &order {
+    for (unit, keyed) in group_units(attempt, steps) {
         let mut glyphs = Vec::new();
-        for key in &by_unit[unit] {
-            let rows = &rows_by_key[&(unit.clone(), key.clone())];
+        for (key, rows) in &keyed {
             let (state, rounds) = fold_state(rows);
             let action = rows
                 .last()
@@ -208,6 +237,102 @@ pub fn project(
         events,
         cursor,
         report,
+    }
+}
+
+/// Reconstruct a settled attempt's [`ReconcileReport`] from durable state alone —
+/// its `wal_step` rows folded per glyph, plus the `revision` the caller resolved
+/// (`wal::revision_for_attempt`). This is the reattach path (ADR 0033 §2): after a
+/// daemon restart the in-memory report cache is empty, but a poll of an
+/// already-settled id must still carry a report, so it is rebuilt here rather than
+/// omitted. What the WAL cannot reproduce is degraded honestly, not dropped: a
+/// failure's `message` is empty, its `details` forensics are `None`, and its
+/// `attempts` is the WAL-derived round count (the exact fatal-vs-exhausted class
+/// and the reconciler's reason string lived only in the lost in-memory round
+/// state). The per-glyph outcomes, unit paths, and the revision are exact.
+pub fn rebuild_report(
+    attempt: &ReconcileAttempt,
+    steps: &[WalStep],
+    revision: Revision,
+) -> ReconcileReport {
+    let mut units = Vec::new();
+    for (unit_path, keyed) in group_units(attempt, steps) {
+        let mut glyphs = Vec::new();
+        let mut failures = Vec::new();
+        for (key, rows) in &keyed {
+            let (state, rounds) = fold_state(rows);
+            let action = rows
+                .last()
+                .map(|s| glyph_action(&s.op))
+                .unwrap_or(GlyphAction::Install);
+            let (state, action) =
+                if matches!(action, GlyphAction::Noop) && matches!(state, GlyphState::Applied) {
+                    (GlyphState::Unchanged, action)
+                } else {
+                    (state, action)
+                };
+            let outcome = match state {
+                GlyphState::Applied | GlyphState::Pending | GlyphState::InProgress => {
+                    GlyphOutcome::Applied
+                }
+                GlyphState::Unchanged => GlyphOutcome::Unchanged,
+                GlyphState::Failed => GlyphOutcome::Failed,
+                GlyphState::RolledBack => GlyphOutcome::RolledBack,
+            };
+            let attempts = match outcome {
+                GlyphOutcome::Failed => rounds.max(1),
+                GlyphOutcome::Unchanged => 0,
+                _ => 1,
+            };
+            glyphs.push(GlyphLine {
+                glyph_key: key.clone(),
+                action,
+                outcome,
+                attempts,
+                message: None,
+            });
+            if matches!(state, GlyphState::Failed) {
+                failures.push(GlyphFailure {
+                    glyph_key: key.clone(),
+                    unit_path: unit_path.clone(),
+                    phase: FailPhase::Enact,
+                    class: FailClassReport::RetriesExhausted,
+                    attempts: rounds.max(1),
+                    message: String::new(),
+                    rolled_back: false,
+                    details: None,
+                });
+            }
+        }
+        let any_rolled_back = glyphs
+            .iter()
+            .any(|g| matches!(g.outcome, GlyphOutcome::RolledBack));
+        let outcome = if failures.is_empty() {
+            UnitOutcome::Settled
+        } else if any_rolled_back {
+            UnitOutcome::RolledBack
+        } else {
+            UnitOutcome::Partial
+        };
+        for f in &mut failures {
+            f.rolled_back = any_rolled_back;
+        }
+        units.push(UnitReport {
+            unit_path,
+            outcome,
+            glyphs,
+            failures,
+        });
+    }
+    ReconcileReport::roll_up(revision, units)
+}
+
+fn glyph_action(op: &GlyphOp) -> GlyphAction {
+    match op {
+        GlyphOp::Install { .. } => GlyphAction::Install,
+        GlyphOp::Replace { .. } => GlyphAction::Replace,
+        GlyphOp::Remove { .. } => GlyphAction::Remove,
+        GlyphOp::Noop { .. } => GlyphAction::Noop,
     }
 }
 
