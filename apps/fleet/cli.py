@@ -403,6 +403,7 @@ def apply(
     scroll_names = deploy_ops.manifest_scroll_names(p, source)
     _render_manifest_context(scroll_names, [record.name for record in records])
     golemctl = deploy_ops.resolve_golemctl(p)
+    any_failed = False
     for record in records:
         console.print(f"[bold]Applying to {record.name}[/bold]…")
         argv = [
@@ -415,10 +416,13 @@ def apply(
             argv.append("--json")
         result = subprocess.run(argv, cwd=str(p.root))
         if result.returncode != 0:
+            any_failed = True
             console.print(
                 f"  [red]{record.name}: golemctl apply exited {result.returncode}[/red]"
             )
             continue
+    if any_failed:
+        raise typer.Exit(1)
 
 
 @app.command()
