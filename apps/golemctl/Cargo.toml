@@ -14,3 +14,6 @@ tracing-subscriber = { workspace = true }
 clap         = { workspace = true }
 reqwest      = { workspace = true }
 iocraft      = { workspace = true }
+
+[dev-dependencies]
+tempfile     = { workspace = true }
