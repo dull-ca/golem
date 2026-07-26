@@ -20,6 +20,7 @@ module Main exposing (..)
 
 import Lichess exposing
   ( dockerImage
+  , ghcrImage
   , workload
   , service
   , ingress
@@ -27,15 +28,15 @@ import Lichess exposing
   )
 
 scaly : Scroll
-scaly = host "scaly" (workload "fishnet" (dockerImage "lichess-org/fishnet" "latest"))
+scaly = host "scaly" (workload "fishnet" (ghcrImage "lichess-org/fishnet" "latest"))
 
 manta : Scroll
 manta =
   host "manta"
     (List.concat
-      [ workload "leroyjenkins-lila" (dockerImage "lichess-org/leroyjenkins" "latest")
-      , workload "leroyjenkins-nginx" (dockerImage "lichess-org/leroyjenkins" "latest")
-      , service "lila" (dockerImage "lichess-org/lila" "latest") 9663
+      [ workload "leroyjenkins-lila" (ghcrImage "lichess-org/leroyjenkins" "latest")
+      , workload "leroyjenkins-nginx" (ghcrImage "lichess-org/leroyjenkins" "latest")
+      , service "lila" (ghcrImage "lichess-org/lila" "latest") 9663
       , service "redis-server" (dockerImage "redis" "7") 6379
       , ingress "lichess.org" "lila" 443
       , ingress "lichess1.org" "lila" 443
@@ -45,12 +46,12 @@ orbit : Scroll
 orbit =
   host "orbit"
     (List.concat
-      [ service "lila-http" (dockerImage "lichess-org/lila-http" "latest") 9080
-      , service "lila-engine" (dockerImage "lichess-org/lila-engine" "latest") 9666
-      , service "lila-gif" (dockerImage "lichess-org/lila-gif" "latest") 6175
-      , service "lila-fishnet" (dockerImage "lichess-org/lila-fishnet" "latest") 9665
-      , service "lila-ip2proxy" (dockerImage "lichess-org/lila-ip2proxy" "latest") 1929
-      , service "lila-push" (dockerImage "lichess-org/lila-push" "latest") 9054
+      [ service "lila-http" (ghcrImage "lichess-org/lila-http" "latest") 9080
+      , service "lila-engine" (ghcrImage "lichess-org/lila-engine" "latest") 9666
+      , service "lila-gif" (ghcrImage "lichess-org/lila-gif" "latest") 6175
+      , service "lila-fishnet" (ghcrImage "lichess-org/lila-fishnet" "latest") 9665
+      , service "lila-ip2proxy" (ghcrImage "lichess-org/lila-ip2proxy" "latest") 1929
+      , service "lila-push" (ghcrImage "lichess-org/lila-push" "latest") 9054
       , ingress "http.lichess.org" "lila-http" 443
       , ingress "engine.lichess.ovh" "lila-engine" 443
       ])
@@ -59,12 +60,12 @@ talos : Scroll
 talos =
   host "talos"
     (List.concat
-      [ workload "fishnet" (dockerImage "lichess-org/fishnet" "latest")
+      [ workload "fishnet" (ghcrImage "lichess-org/fishnet" "latest")
       , service "influxd" (dockerImage "influxdb" "2") 8086
       , service "alertmanager" (dockerImage "prom/alertmanager" "latest") 9093
       , service "prometheus" (dockerImage "prom/prometheus" "latest") 9090
       , service "loki" (dockerImage "grafana/loki" "latest") 3100
-      , service "dns" (dockerImage "lichess-org/dnsmasq" "latest") 53
+      , service "dns" (ghcrImage "lichess-org/dnsmasq" "latest") 53
       , service "ntpd" (dockerImage "cturra/ntp" "latest") 123
       , service "rsyslogd" (dockerImage "rsyslog/rsyslog" "latest") 514
       , ingress "monitor.lichess.ovh" "prometheus" 443

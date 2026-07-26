@@ -9,6 +9,7 @@
 -- `Workload` and does not go through the library (ADR 0023 §7).
 module Lichess exposing
   ( dockerImage
+  , ghcrImage
   , workload
   , service
   , ingress
@@ -28,6 +29,9 @@ import Quadlet exposing
 
 dockerImage : String -> String -> Image
 dockerImage name tag = image "docker.io" name tag
+
+ghcrImage : String -> String -> Image
+ghcrImage name tag = image "ghcr.io" name tag
 
 workload : String -> Image -> List Glyph
 workload name img =
