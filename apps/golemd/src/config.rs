@@ -88,9 +88,32 @@ impl Default for RetryConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnactConfig {
+    pub workers: usize,
+}
+
+impl Default for EnactConfig {
+    fn default() -> Self {
+        EnactConfig { workers: 4 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GolemdConfig {
+    pub retry: RetryConfig,
+    pub enact: EnactConfig,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct FileShape {
     retry: Option<RetryTable>,
+    enact: Option<EnactTable>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct EnactTable {
+    workers: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -127,37 +150,46 @@ impl std::error::Error for ConfigError {}
 /// Resolve the fleet-default `RetryConfig`. `None` (no `--config`) is the
 /// defaults; a path is read and its present `[retry]` fields override the
 /// defaults field by field, absent fields keeping them.
-pub fn load(path: Option<&Path>) -> Result<RetryConfig, ConfigError> {
+pub fn load(path: Option<&Path>) -> Result<GolemdConfig, ConfigError> {
     let Some(path) = path else {
-        return Ok(RetryConfig::default());
+        return Ok(GolemdConfig {
+            retry: RetryConfig::default(),
+            enact: EnactConfig::default(),
+        });
     };
     let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Read(e.to_string()))?;
     let shape: FileShape = toml::from_str(&text).map_err(|e| ConfigError::Parse(e.to_string()))?;
-    let mut cfg = RetryConfig::default();
+    let mut retry = RetryConfig::default();
     if let Some(t) = shape.retry {
         if let Some(v) = t.base_delay_ms {
-            cfg.base_delay_ms = v;
+            retry.base_delay_ms = v;
         }
         if let Some(v) = t.backoff_multiplier {
-            cfg.backoff_multiplier = v;
+            retry.backoff_multiplier = v;
         }
         if let Some(v) = t.max_delay_ms {
-            cfg.max_delay_ms = v;
+            retry.max_delay_ms = v;
         }
         if let Some(v) = t.jitter_fraction {
-            cfg.jitter_fraction = v;
+            retry.jitter_fraction = v;
         }
         if let Some(v) = t.max_attempts {
-            cfg.max_attempts = v;
+            retry.max_attempts = v;
         }
         if let Some(v) = t.max_elapsed_ms {
-            cfg.max_elapsed_ms = v;
+            retry.max_elapsed_ms = v;
         }
         if let Some(v) = t.on_exhaust {
-            cfg.on_exhaust = v;
+            retry.on_exhaust = v;
         }
     }
-    Ok(cfg)
+    let mut enact = EnactConfig::default();
+    if let Some(t) = shape.enact {
+        if let Some(w) = t.workers {
+            enact.workers = w;
+        }
+    }
+    Ok(GolemdConfig { retry, enact })
 }
 
 #[cfg(test)]
@@ -167,9 +199,25 @@ mod tests {
     #[test]
     fn none_path_gives_builtin_defaults() {
         let cfg = load(None).unwrap();
-        assert_eq!(cfg, RetryConfig::default());
-        assert_eq!(cfg.max_attempts, 5);
-        assert_eq!(cfg.on_exhaust, OnExhaustConfig::Rollback);
+        assert_eq!(cfg.retry, RetryConfig::default());
+        assert_eq!(cfg.retry.max_attempts, 5);
+        assert_eq!(cfg.retry.on_exhaust, OnExhaustConfig::Rollback);
+    }
+
+    #[test]
+    fn enact_workers_defaults_to_four_and_overrides() {
+        let cfg = load(None).unwrap();
+        assert_eq!(cfg.enact.workers, 4, "default worker count is 4");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("golemd.toml");
+        std::fs::write(&path, "[enact]\nworkers = 1\n").unwrap();
+        let cfg = load(Some(&path)).unwrap();
+        assert_eq!(cfg.enact.workers, 1, "workers = 1 is the serial fallback");
+        assert_eq!(
+            cfg.retry.max_attempts, 5,
+            "an [enact]-only file keeps retry defaults"
+        );
     }
 
     #[test]
@@ -178,10 +226,10 @@ mod tests {
         let path = dir.path().join("golemd.toml");
         std::fs::write(&path, "[retry]\nmax_attempts = 9\non_exhaust = \"keep\"\n").unwrap();
         let cfg = load(Some(&path)).unwrap();
-        assert_eq!(cfg.max_attempts, 9);
-        assert_eq!(cfg.on_exhaust, OnExhaustConfig::Keep);
-        assert_eq!(cfg.base_delay_ms, 200);
-        assert_eq!(cfg.backoff_multiplier, 2.0);
+        assert_eq!(cfg.retry.max_attempts, 9);
+        assert_eq!(cfg.retry.on_exhaust, OnExhaustConfig::Keep);
+        assert_eq!(cfg.retry.base_delay_ms, 200);
+        assert_eq!(cfg.retry.backoff_multiplier, 2.0);
     }
 
     #[test]

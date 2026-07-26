@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::config::{OnExhaustConfig, RetryConfig};
+use crate::config::{EnactConfig, OnExhaustConfig, RetryConfig};
 use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
     WalStep, WalStepState,
@@ -140,6 +140,7 @@ pub struct Foreman {
     /// Fleet default (from `golemd.toml`); the per-scroll `policy` cascade
     /// overrides it per unit via `resolve_retry`.
     retry: RetryConfig,
+    enact: EnactConfig,
     write: Mutex<()>,
     progress: ProgressRegistry,
     reports: Mutex<std::collections::BTreeMap<u64, ReconcileReport>>,
@@ -173,6 +174,7 @@ impl Foreman {
             planroom,
             reconciler,
             retry: RetryConfig::default(),
+            enact: EnactConfig::default(),
             write: Mutex::new(()),
             progress: ProgressRegistry::new(),
             reports: Mutex::new(std::collections::BTreeMap::new()),
@@ -185,6 +187,11 @@ impl Foreman {
 
     pub fn with_retry_config(mut self, cfg: RetryConfig) -> Self {
         self.retry = cfg;
+        self
+    }
+
+    pub fn with_enact_config(mut self, cfg: EnactConfig) -> Self {
+        self.enact = cfg;
         self
     }
 
@@ -2875,6 +2882,17 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(foreman.retry.max_attempts, 9);
+    }
+
+    #[test]
+    fn with_enact_config_is_stored() {
+        let foreman = Foreman::new(
+            "h".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(Recorder::default()),
+        )
+        .with_enact_config(EnactConfig { workers: 1 });
+        assert_eq!(foreman.enact.workers, 1);
     }
 
     #[test]

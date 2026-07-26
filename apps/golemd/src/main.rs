@@ -64,10 +64,12 @@ async fn main() -> Result<()> {
     // uncaught panic still models a crash for the recovery path (ADR 0020 §3).
     let reconciler: Box<dyn Reconciler> =
         Box::new(golemd::reconciler::PanicCatching::new(reconciler));
-    let retry =
+    let config =
         golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
     let foreman = Arc::new(
-        Foreman::new(cli.host.clone(), Box::new(planroom), reconciler).with_retry_config(retry),
+        Foreman::new(cli.host.clone(), Box::new(planroom), reconciler)
+            .with_retry_config(config.retry)
+            .with_enact_config(config.enact),
     );
 
     let app = http::router(http::AppState { foreman });
