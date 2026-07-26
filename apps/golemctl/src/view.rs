@@ -1,22 +1,28 @@
-//! The pure view over [`ApplyModel`] (ADR 0033 §3) — the unit tree a person
-//! watches while an apply runs. Each unit is a header row with its mark, then a
-//! row per glyph; the recent log lines of the *active* unit stream in beneath
-//! it, and any host-root events (those matching no leaf unit) collect in a
-//! top-level log region below the tree. [`render_to_string`] is the tested
-//! surface; [`MainView`] is the same tree mounted in the live render loop, with
-//! its marks animated by the self-driving [`Spinner`].
+//! The pure view over [`ApplyModel`] (ADR 0033 §3, §3b–§3c) — the nested unit
+//! tree a person watches while an apply runs. A `logs: <dir>` header sits above
+//! the tree from the first frame (§3b); beneath it the model's flat units are
+//! rebuilt into a real tree ([`crate::tree`]) whose branch nodes carry an
+//! aggregated spinner/mark and whose leaves carry their glyph rows. Each active
+//! leaf streams its recent log lines; host-root events collect below the tree.
+//!
+//! [`render_to_string`] is the tested surface; [`UnitTree`] is the same tree
+//! mounted in the live loop, its active marks animated by [`Spinner`]. Both draw
+//! from one flat [`Line`] list ([`lines`]) so the static and animated renders
+//! never drift, and both pass it through [`fit`] so a tall fleet stays inside the
+//! terminal viewport (settled subtrees collapse to their branch row, then
+//! settled leaf rows are trimmed before active ones).
 //!
 //! The marks:
-//! - `✓` settled (applied)   · `·` unchanged (a no-op)
-//! - `↩` rolled back         · `✗` failed
-//! - the spinner frame       — active (pending / in progress)
+//! - `✓` applied · `·` unchanged · `↩` rolled back · `✗` failed
+//! - the spinner frame — active (pending / in progress)
 
 use std::sync::{Arc, Mutex};
 
 use iocraft::prelude::*;
 
-use crate::model::{ApplyModel, GlyphRow, UnitNode, UnitState};
+use crate::model::{ApplyModel, GlyphRow};
 use crate::poll::GlyphState;
+use crate::tree::{build, BranchState, TreeNode};
 
 pub const CHECKMARK: &str = "✓";
 pub const XMARK: &str = "✗";
@@ -39,86 +45,207 @@ pub fn glyph_mark(state: GlyphState) -> &'static str {
     }
 }
 
-pub fn unit_mark(state: UnitState) -> &'static str {
+pub fn branch_mark(state: BranchState) -> &'static str {
     match state {
-        UnitState::Settled => CHECKMARK,
-        UnitState::Failed => XMARK,
-        UnitState::Active => SPINNER_FRAMES[0],
+        BranchState::Applied => CHECKMARK,
+        BranchState::Unchanged => UNCHANGED,
+        BranchState::RolledBack => ROLLED_BACK,
+        BranchState::Failed => XMARK,
+        BranchState::Active => SPINNER_FRAMES[0],
     }
 }
 
-fn glyph_row(g: &GlyphRow) -> AnyElement<'static> {
-    let mut line = format!("  {} {}", glyph_mark(g.state), g.glyph_key);
-    if let Some(ms) = g.next_retry_in_ms {
-        // Server-computed countdown from the projection's `next_retry_in_ms`;
-        // present only on an in-progress row awaiting its next round, never on a
-        // failed one — a `✗` glyph has no countdown.
-        line.push_str(&format!("  (retry in {ms}ms)"));
-    }
-    element!(Text(content: line)).into_any()
+// One rendered line of the tree, tagged with the facts both the static and the
+// animated render need: its indent depth, whether its mark should spin, and
+// whether it belongs to a settled subtree (so `fit` can trim it first).
+pub enum Line {
+    Branch {
+        depth: usize,
+        label: String,
+        active: bool,
+        mark: &'static str,
+        settled: bool,
+    },
+    Glyph {
+        depth: usize,
+        row: GlyphRow,
+        settled: bool,
+    },
+    Log {
+        depth: usize,
+        text: String,
+    },
+    Plain {
+        text: String,
+    },
 }
 
-fn animated_glyph_row(g: &GlyphRow) -> AnyElement<'static> {
-    let active = matches!(g.state, GlyphState::Pending | GlyphState::InProgress);
+fn indent(depth: usize) -> String {
+    "  ".repeat(depth)
+}
+
+fn glyph_suffix(g: &GlyphRow) -> String {
     let mut suffix = format!(" {}", g.glyph_key);
     if let Some(ms) = g.next_retry_in_ms {
         suffix.push_str(&format!("  (retry in {ms}ms)"));
     }
-    element! {
-        View(flex_direction: FlexDirection::Row) {
-            Text(content: "  ")
-            StatusIndicator(mark: glyph_mark(g.state), active: active)
-            Text(content: suffix)
+    suffix
+}
+
+// Walk the tree into a flat, depth-tagged line list. A branch renders its
+// aggregated mark and label; a leaf renders its glyph rows and, while active,
+// the tail of its log ring. Settled subtrees still emit their branch row (a
+// person sees the tree settle) — `fit` decides whether their interior survives
+// the viewport.
+fn push_node(lines: &mut Vec<Line>, node: &TreeNode, depth: usize) {
+    let settled = node.state.is_settled();
+    lines.push(Line::Branch {
+        depth,
+        label: node.path.join(" / "),
+        active: node.state.is_active(),
+        mark: branch_mark(node.state),
+        settled,
+    });
+    if let Some(unit) = node.leaf {
+        for g in &unit.glyphs {
+            lines.push(Line::Glyph {
+                depth: depth + 1,
+                row: g.clone(),
+                settled: !matches!(g.state, GlyphState::Pending | GlyphState::InProgress),
+            });
+        }
+        if node.state.is_active() {
+            let start = unit.logs.len().saturating_sub(ACTIVE_LOG_LINES);
+            for log in unit.logs.iter().skip(start) {
+                lines.push(Line::Log {
+                    depth: depth + 1,
+                    text: log.clone(),
+                });
+            }
         }
     }
-    .into_any()
-}
-
-fn unit_header(unit: &UnitNode) -> String {
-    format!("{} {}", unit_mark(unit.state), unit.unit_path.join(" / "))
-}
-
-fn active_log_rows(unit: &UnitNode) -> Vec<AnyElement<'static>> {
-    if unit.state != UnitState::Active {
-        return vec![];
+    for child in &node.children {
+        push_node(lines, child, depth + 1);
     }
-    let start = unit.logs.len().saturating_sub(ACTIVE_LOG_LINES);
-    unit.logs
-        .iter()
-        .skip(start)
-        .map(|log| element!(Text(content: format!("    {log}"))).into_any())
-        .collect()
 }
 
-fn root_log_rows(model: &ApplyModel) -> Vec<AnyElement<'static>> {
-    if model.root_logs.is_empty() {
-        return vec![];
+pub fn lines(model: &ApplyModel) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(dir) = &model.log_dir {
+        lines.push(Line::Plain {
+            text: format!("logs: {}/", dir.display()),
+        });
     }
-    let start = model.root_logs.len().saturating_sub(ROOT_LOG_LINES);
-    let mut rows = vec![element!(Text(content: "host")).into_any()];
-    rows.extend(
-        model
-            .root_logs
-            .iter()
-            .skip(start)
-            .map(|log| element!(Text(content: format!("    {log}"))).into_any()),
-    );
-    rows
+    let tree = build(&model.units);
+    for root in &tree {
+        push_node(&mut lines, root, 0);
+    }
+    if !model.root_logs.is_empty() {
+        lines.push(Line::Plain {
+            text: "host".into(),
+        });
+        let start = model.root_logs.len().saturating_sub(ROOT_LOG_LINES);
+        for log in model.root_logs.iter().skip(start) {
+            lines.push(Line::Log {
+                depth: 1,
+                text: log.clone(),
+            });
+        }
+    }
+    lines
+}
+
+// Keep the frame inside `height` rows so iocraft's height≥viewport `Clear::All`
+// guard never fires on a real fleet. First collapse settled subtrees to their
+// branch row (interior glyph/log lines of a settled branch drop, its row stays);
+// if still too tall, drop the interior of the remaining settled leaves before
+// touching any active row. `height == 0` means unbounded (the render_to_string
+// default and any terminal that reports no size).
+pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
+    if height == 0 || lines.len() <= height {
+        return lines;
+    }
+    lines.retain(|l| !is_settled_interior(l));
+    if lines.len() <= height {
+        return lines;
+    }
+    // Still too tall: drop settled branch rows (from the bottom up) before any
+    // active row — an active unit is what the operator is watching.
+    let mut over = lines.len().saturating_sub(height);
+    let mut kept: Vec<Line> = Vec::with_capacity(lines.len());
+    for l in lines.into_iter().rev() {
+        if over > 0 && matches!(l, Line::Branch { settled: true, .. }) {
+            over -= 1;
+        } else {
+            kept.push(l);
+        }
+    }
+    kept.reverse();
+    kept
+}
+
+fn is_settled_interior(l: &Line) -> bool {
+    match l {
+        Line::Glyph { settled, .. } => *settled,
+        Line::Log { .. } => true,
+        _ => false,
+    }
+}
+
+fn static_line(l: &Line) -> AnyElement<'static> {
+    match l {
+        Line::Branch {
+            depth, label, mark, ..
+        } => element!(Text(content: format!("{}{} {}", indent(*depth), mark, label))).into_any(),
+        Line::Glyph { depth, row, .. } => {
+            element!(Text(content: format!("{}{}{}", indent(*depth), glyph_mark(row.state), glyph_suffix(row)))).into_any()
+        }
+        Line::Log { depth, text } => {
+            element!(Text(content: format!("{}{}", indent(*depth + 1), text))).into_any()
+        }
+        Line::Plain { text } => element!(Text(content: text.clone())).into_any(),
+    }
+}
+
+fn animated_line(l: &Line) -> AnyElement<'static> {
+    match l {
+        Line::Branch {
+            depth,
+            label,
+            active,
+            mark,
+            ..
+        } => element! {
+            View(flex_direction: FlexDirection::Row) {
+                Text(content: indent(*depth))
+                StatusIndicator(mark: *mark, active: *active)
+                Text(content: format!(" {label}"))
+            }
+        }
+        .into_any(),
+        Line::Glyph { depth, row, .. } => {
+            let active = matches!(row.state, GlyphState::Pending | GlyphState::InProgress);
+            element! {
+                View(flex_direction: FlexDirection::Row) {
+                    Text(content: indent(*depth))
+                    StatusIndicator(mark: glyph_mark(row.state), active: active)
+                    Text(content: glyph_suffix(row))
+                }
+            }
+            .into_any()
+        }
+        Line::Log { depth, text } => {
+            element!(Text(content: format!("{}{}", indent(*depth + 1), text))).into_any()
+        }
+        Line::Plain { text } => element!(Text(content: text.clone())).into_any(),
+    }
 }
 
 // The static-mark view: the tested surface and the exact tree the live
-// `MainView` mirrors, with `glyph_mark`/`unit_mark` emitting the still spinner
+// `UnitTree` mirrors, with `glyph_mark`/`branch_mark` emitting the still spinner
 // frame the animated components replace at runtime.
 pub fn view(model: &ApplyModel) -> impl Into<AnyElement<'static>> {
-    let mut rows: Vec<AnyElement<'static>> = Vec::new();
-    for unit in &model.units {
-        rows.push(element!(Text(content: unit_header(unit))).into_any());
-        for g in &unit.glyphs {
-            rows.push(glyph_row(g));
-        }
-        rows.extend(active_log_rows(unit));
-    }
-    rows.extend(root_log_rows(model));
+    let rows: Vec<AnyElement<'static>> = lines(model).iter().map(static_line).collect();
     element! {
         View(flex_direction: FlexDirection::Column) {
             #(rows)
@@ -127,38 +254,38 @@ pub fn view(model: &ApplyModel) -> impl Into<AnyElement<'static>> {
 }
 
 pub fn render_to_string(model: &ApplyModel, width: usize) -> String {
-    let mut element: AnyElement<'static> = view(model).into();
+    render_to_string_bounded(model, width, 0)
+}
+
+pub fn render_to_string_bounded(model: &ApplyModel, width: usize, height: usize) -> String {
+    let rows: Vec<AnyElement<'static>> = fit(lines(model), height).iter().map(static_line).collect();
+    let mut element: AnyElement<'static> = element! {
+        View(flex_direction: FlexDirection::Column) {
+            #(rows)
+        }
+    }
+    .into();
     element.render(Some(width)).to_string()
 }
 
 // The live tree, mirroring `view` row-for-row but driving each active mark
 // through the self-animating `StatusIndicator`. Mounted by `apply::run_tui`
 // under a `render_loop`, it reads the shared model each frame and re-renders at
-// the width iocraft reports for the terminal.
+// the width and height iocraft reports for the terminal, so a tall fleet stays
+// inside the viewport (`fit`) and no frame trips the full-screen clear.
 #[component]
 pub fn UnitTree(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let model = hooks.use_context::<Arc<Mutex<ApplyModel>>>();
-    let (width, _) = hooks.use_terminal_size();
+    let (width, height) = hooks.use_terminal_size();
 
-    let mut rows: Vec<AnyElement<'static>> = Vec::new();
-    if let Ok(model) = model.lock() {
-        for unit in &model.units {
-            rows.push(
-                element! {
-                    View(flex_direction: FlexDirection::Row) {
-                        StatusIndicator(mark: unit_mark(unit.state), active: unit.state == UnitState::Active)
-                        Text(content: format!(" {}", unit.unit_path.join(" / ")))
-                    }
-                }
-                .into_any(),
-            );
-            for g in &unit.glyphs {
-                rows.push(animated_glyph_row(g));
-            }
-            rows.extend(active_log_rows(unit));
-        }
-        rows.extend(root_log_rows(&model));
-    }
+    // Stay strictly under the reported viewport: a frame whose height equals the
+    // terminal's trips iocraft's `Clear::All` guard, which the inline loop must
+    // never hit. One row of headroom keeps the diff-based repaint inline.
+    let budget = (height as usize).saturating_sub(1);
+    let rows: Vec<AnyElement<'static>> = match model.lock() {
+        Ok(model) => fit(lines(&model), budget).iter().map(animated_line).collect(),
+        Err(_) => Vec::new(),
+    };
 
     element! {
         View(width: width, flex_direction: FlexDirection::Column) {

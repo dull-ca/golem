@@ -11,6 +11,7 @@
 //! ring. Nodes are never removed; the projection only grows.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use crate::poll::{GlyphState, Phase, Progress};
 
@@ -50,6 +51,7 @@ pub struct ApplyModel {
     pub root_logs: VecDeque<String>,
     pub cursor: u64,
     pub report: Option<serde_json::Value>,
+    pub log_dir: Option<PathBuf>,
 }
 
 // A unit is Failed if any glyph failed, Settled only once every glyph reached a
@@ -79,6 +81,7 @@ impl ApplyModel {
             root_logs: VecDeque::new(),
             cursor: 0,
             report: None,
+            log_dir: None,
         }
     }
 

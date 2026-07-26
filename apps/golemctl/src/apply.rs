@@ -18,6 +18,7 @@ use anyhow::Result;
 use iocraft::prelude::*;
 use tokio::sync::Notify;
 
+use crate::logsink::Persistence;
 use crate::model::ApplyModel;
 use crate::poll::{get_latest, get_progress, post_manifest, Event, Progress};
 use crate::view::UnitTree;
@@ -71,10 +72,15 @@ pub async fn run(bytes: Vec<u8>, addr: &str, json: bool, reattach: bool) -> Resu
 }
 
 async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
+    let mut persistence = Persistence::open(id);
+    if let Some(dir) = persistence.dir() {
+        println!("logs: {}/", dir.display());
+    }
     let mut cursor = 0u64;
     loop {
         let p = get_progress(addr, id, cursor).await?;
         cursor = p.cursor;
+        persistence.persist(&p.events);
         for ev in &p.events {
             println!("{}", plain_line(ev));
         }
@@ -120,13 +126,23 @@ struct Live {
 // samples while a glyph is in flight); the fold, `render_to_string`,
 // `plain_line`, `should_stop`, and `exit_code` stay the unit-tested surface.
 async fn run_tui(addr: &str, id: u64) -> Result<i32> {
+    let mut model = ApplyModel::new();
+    let persistence = Persistence::open(id);
+    model.log_dir = persistence.dir().map(|d| d.to_path_buf());
+    let log_dir = model.log_dir.clone();
+
     let live = Live {
-        model: Arc::new(Mutex::new(ApplyModel::new())),
+        model: Arc::new(Mutex::new(model)),
         done: Arc::new(AtomicBool::new(false)),
         notify: Arc::new(Notify::new()),
     };
 
-    let poller = tokio::spawn(poll_into(live.clone(), addr.to_string(), id));
+    let poller = tokio::spawn(poll_into(
+        live.clone(),
+        addr.to_string(),
+        id,
+        Arc::new(Mutex::new(persistence)),
+    ));
 
     let mut element = element! {
         ContextProvider(value: Context::owned(live.clone())) {
@@ -140,10 +156,15 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
     if let Some(report) = &report {
         print_report(report);
     }
+    // Reprint the log path on stdout after the report so it survives the tree
+    // scrolling out of view in a long session (ADR 0033 §3b).
+    if let Some(dir) = &log_dir {
+        println!("logs: {}/", dir.display());
+    }
     Ok(exit_code(report.as_ref()))
 }
 
-async fn poll_into(live: Live, addr: String, id: u64) {
+async fn poll_into(live: Live, addr: String, id: u64, persistence: Arc<Mutex<Persistence>>) {
     let mut cursor = 0u64;
     loop {
         let Ok(p) = get_progress(&addr, id, cursor).await else {
@@ -153,6 +174,9 @@ async fn poll_into(live: Live, addr: String, id: u64) {
         };
         cursor = p.cursor;
         let terminal = should_stop(&p);
+        if let Ok(mut sink) = persistence.lock() {
+            sink.persist(&p.events);
+        }
         if let Ok(mut m) = live.model.lock() {
             m.apply_progress(p);
         }

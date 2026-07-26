@@ -1,0 +1,168 @@
+use std::path::PathBuf;
+
+use golemctl::model::ApplyModel;
+use golemctl::poll::{GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
+use golemctl::view;
+
+fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
+    GlyphProgress {
+        glyph_key: key.into(),
+        action: "install".into(),
+        state,
+        rounds: 1,
+        next_retry_in_ms: None,
+    }
+}
+
+fn unit(path: &[&str], glyphs: Vec<GlyphProgress>) -> UnitProgress {
+    UnitProgress {
+        unit_path: path.iter().map(|s| s.to_string()).collect(),
+        glyphs,
+    }
+}
+
+fn model(units: Vec<UnitProgress>) -> ApplyModel {
+    let mut m = ApplyModel::new();
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::Enacting,
+        units,
+        events: vec![],
+        cursor: 0,
+        report: None,
+    });
+    m
+}
+
+#[test]
+fn the_header_names_the_log_directory_above_the_tree() {
+    let mut m = model(vec![unit(
+        &["scaly", "a"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    )]);
+    m.log_dir = Some(PathBuf::from("/tmp/golemctl/apply-42"));
+    let out = view::render_to_string(&m, 100);
+    let header = out.lines().next().unwrap();
+    assert!(header.contains("logs: /tmp/golemctl/apply-42/"));
+}
+
+#[test]
+fn the_header_renders_before_any_unit_exists() {
+    let mut m = ApplyModel::new();
+    m.log_dir = Some(PathBuf::from("/tmp/golemctl/apply-7"));
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains("logs: /tmp/golemctl/apply-7/"));
+}
+
+#[test]
+fn a_branch_row_renders_above_its_indented_children() {
+    let m = model(vec![
+        unit(&["scaly", "base"], vec![glyph("apt:htop", GlyphState::Applied)]),
+        unit(
+            &["scaly", "fishnet-a"],
+            vec![glyph("apt:podman", GlyphState::InProgress)],
+        ),
+    ]);
+    let out = view::render_to_string(&m, 100);
+    let lines: Vec<&str> = out.lines().collect();
+    let branch = lines.iter().position(|l| l.trim() == "⠋ scaly").unwrap();
+    let base = lines
+        .iter()
+        .position(|l| l.contains("scaly / base"))
+        .unwrap();
+    assert!(branch < base);
+    assert!(lines[base].starts_with("  "));
+}
+
+#[test]
+fn a_mid_flight_branch_shows_the_spinner_frame() {
+    let m = model(vec![
+        unit(
+            &["scaly", "pod", "web"],
+            vec![glyph("systemd:web.service", GlyphState::InProgress)],
+        ),
+        unit(
+            &["scaly", "pod", "db"],
+            vec![glyph("systemd:db.service", GlyphState::Applied)],
+        ),
+    ]);
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains(view::SPINNER_FRAMES[0]));
+    assert!(out.contains(view::CHECKMARK));
+}
+
+#[test]
+fn a_failed_leaf_bubbles_the_x_to_its_branch() {
+    let m = {
+        let mut m = ApplyModel::new();
+        m.apply_progress(Progress {
+            reconcile_id: 1,
+            phase: Phase::RolledBack,
+            units: vec![unit(
+                &["scaly", "canary"],
+                vec![glyph("systemd:canary.service", GlyphState::Failed)],
+            )],
+            events: vec![],
+            cursor: 0,
+            report: None,
+        });
+        m
+    };
+    let out = view::render_to_string(&m, 100);
+    let branch = out.lines().find(|l| l.trim() == "✗ scaly").unwrap();
+    assert!(branch.contains(view::XMARK));
+}
+
+#[test]
+fn a_settled_branch_resolves_the_checkmark() {
+    let m = model(vec![
+        unit(&["scaly", "a"], vec![glyph("apt:podman", GlyphState::Applied)]),
+        unit(&["scaly", "b"], vec![glyph("apt:htop", GlyphState::Unchanged)]),
+    ]);
+    let out = view::render_to_string(&m, 100);
+    assert!(out.lines().any(|l| l.trim() == "✓ scaly"));
+}
+
+// A tall fleet must render inside the viewport so the inline loop's
+// height≥viewport `Clear::All` guard never fires (ADR 0033 §3c / the 21f218d
+// concern). Settled subtrees collapse to their branch row before active ones are
+// touched.
+#[test]
+fn a_tall_tree_collapses_settled_subtrees_to_fit_the_viewport() {
+    let mut units = Vec::new();
+    for i in 0..20 {
+        units.push(unit(
+            &["scaly", &format!("settled-{i}")],
+            vec![glyph("apt:pkg", GlyphState::Applied)],
+        ));
+    }
+    units.push(unit(
+        &["scaly", "running"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    ));
+    let m = model(units);
+
+    let bounded = view::render_to_string_bounded(&m, 100, 12);
+    let n = bounded.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(n <= 12, "bounded frame had {n} non-empty lines");
+    // The active leaf and its glyph survive the trim.
+    assert!(bounded.contains("scaly / running"));
+    assert!(bounded.contains("apt:podman"));
+    // A settled leaf keeps its branch row but drops its glyph interior.
+    let unbounded = view::render_to_string(&m, 100);
+    assert!(unbounded.contains("scaly / settled-0"));
+}
+
+#[test]
+fn height_zero_is_unbounded() {
+    let mut units = Vec::new();
+    for i in 0..30 {
+        units.push(unit(
+            &["scaly", &format!("u-{i}")],
+            vec![glyph("apt:pkg", GlyphState::Applied)],
+        ));
+    }
+    let m = model(units);
+    let out = view::render_to_string_bounded(&m, 100, 0);
+    assert!(out.lines().filter(|l| !l.trim().is_empty()).count() > 30);
+}
