@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed 2026-07-26.
+Accepted 2026-07-26 (implemented; live-verified — single-invocation apt batch,
+dedup credits, bounded parallel units on a real host). Proposed 2026-07-26.
 
 An executor-internal optimization of the enact spine. It changes **how** golemd
 runs a host's already-ordered work — deduping a glyph key declared by several
@@ -152,14 +153,13 @@ second-`apply_apt` re-observation produces — `Done`, `changed = false`, invers
   wrote). This is **silent last-wins across units today**, and it is a latent
   correctness wart, not a decision this ADR makes. Dedup keys on `(key, cid)`, so
   divergent cids are **not** deduped — they remain two distinct ops that still
-  race to last-wins. **Recorded as a known wart to surface, not silently
-  resolved:** golemd should **detect** two units declaring the same `key` with
-  divergent `cid` in one attempt and **report** it (a warning event on the
-  progress ring per ADR 0033 §2, and a note in the report) so an author sees the
-  conflict rather than debugging a mysteriously-overwritten file. Whether to
-  additionally make it a compile-time `emetc` error is left open (§ Open
-  questions) — the analyze-time model has no cross-unit conflict check today, and
-  adding one is a separate decision from this executor change.
+  race to last-wins. **Recorded as a known wart, not silently resolved and not
+  yet surfaced:** two units declaring the same `key` with divergent `cid` in one
+  attempt silently last-wins on the host today, with nothing telling the author.
+  Detecting it and reporting it — a warning event on the progress ring per ADR
+  0033 §2, and a note in the report, and/or a compile-time `emetc` rejection — is
+  a **follow-up**, not built by this ADR (§ Open questions). This ADR's dedup
+  keys on `(key, cid)` and so leaves the conflict exactly as found.
 
 ### 2. Batch apt installs into one invocation, with a per-glyph fallback
 
@@ -394,13 +394,13 @@ loop. Cross-unit removes run after, serially.
   renders a per-unit tree with independent spinners, so parallel spinners and
   out-of-order settling are the shape it was built for. No TUI change.
 
-- **The divergent-cid wart is surfaced, not silently decided.** Two units
-  declaring the same `key` with different `cid` in one attempt still resolve
-  **last-wins on the host today** (each unit diffs independently against `prior`);
-  dedup keys on `(key, cid)` and so does not touch that path. golemd will now
-  **warn** on the conflict (a progress event + report note) so an author sees it,
-  rather than debugging a file that one unit silently overwrites. Making it an
-  `emetc` compile error is left open.
+- **The divergent-cid wart is recorded, not fixed, and not yet surfaced.** Two
+  units declaring the same `key` with different `cid` in one attempt still
+  resolve **last-wins on the host today** (each unit diffs independently against
+  `prior`); dedup keys on `(key, cid)` and so does not touch that path. Nothing
+  today tells an author their file was silently overwritten. Making golemd warn
+  on the conflict (a progress event + report note) and/or making it an `emetc`
+  compile error is a **follow-up** (§ Open questions), not built here.
 
 - **New concurrency surface in the executor, contained.** `step_ord` allocation
   and the shared retry clock move from `&mut`/`Cell` to atomic/mutex-guarded; the
@@ -434,10 +434,12 @@ loop. Cross-unit removes run after, serially.
 
 ## Open questions
 
-- **Divergent-cid conflict: warn-only, or an `emetc` error too?** This ADR decides
-  golemd surfaces the runtime conflict (warn + report note). Whether `emetc` should
-  additionally reject two units declaring the same `key` with divergent `cid` at
-  compile time is a separate analyze-time decision — the model has no cross-unit
+- **Divergent-cid conflict: surface it how, and where?** This ADR records the
+  silent-last-wins wart but decides neither the runtime nor the compile-time
+  fix. Follow-up work should decide whether golemd surfaces the runtime conflict
+  (a warning event on the progress ring per ADR 0033 §2, plus a report note),
+  whether `emetc` should additionally reject two units declaring the same `key`
+  with divergent `cid` at compile time, or both — the model has no cross-unit
   conflict check today, and adding one touches the diff/analyze path, not this
   executor change.
 

@@ -354,5 +354,21 @@ standalone project.
   land only once captured in full. A `reverse_streaming` seam mirroring
   `apply_streaming` is the natural follow-up.
 
+- **Convergence test for racing real applies (ADR 0034).** ADR 0034's bounded
+  parallel-unit execution is live-verified on a real host, but there is no
+  automated test that races two real, concurrent applies against the same host
+  to confirm the per-kind locks (apt/dpkg, per-path `lineInFile`, the global
+  systemd `daemon-reload`) actually serialize the contended resources and the
+  WAL fold still converges. A follow-up, not covered by today's test suite.
+
+- **Divergent-cid surfacing (ADR 0034 §1, Open questions).** Two units
+  declaring the same `key` with different `cid` in one attempt silently
+  last-wins on the host today, with nothing telling the author. ADR 0034
+  records the wart but does not build the fix: a follow-up should make golemd
+  detect and report the conflict at runtime (a warning event on the progress
+  ring per ADR 0033 §2, plus a report note) and/or reject it at compile time in
+  `emetc` (a cross-unit conflict check the analyze-time model does not have
+  today).
+
 - **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
   is published.

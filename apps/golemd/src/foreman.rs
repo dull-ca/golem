@@ -500,7 +500,7 @@ impl Foreman {
                 self.progress.record(
                     reconcile_id,
                     EventLevel::Error,
-                    &[self.host.clone()],
+                    std::slice::from_ref(&self.host),
                     "",
                     "reconcile panicked; rolling back",
                 );
@@ -1297,7 +1297,7 @@ impl Foreman {
             let Some(target) = next_reversible(&steps) else {
                 break;
             };
-            self.reverse_target(reconcile_id, &target)?;
+            self.reverse_target(reconcile_id, target)?;
         }
         Ok(())
     }
