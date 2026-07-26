@@ -7,13 +7,13 @@
 
 use axum::{
     body::Bytes,
-    extract::{Path, State as AxState},
+    extract::{Path, Query, State as AxState},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::foreman::Foreman;
@@ -24,10 +24,13 @@ pub struct AppState {
     pub foreman: Arc<Foreman>,
 }
 
-/// Wire the five routes to the shared foreman state.
+/// Wire the routes to the shared foreman state. `/reconciles/latest` is
+/// registered before `/reconciles/:id` so `latest` is not captured as an id.
 pub fn router(app: AppState) -> Router {
     Router::new()
         .route("/manifest", post(apply_manifest))
+        .route("/reconciles/latest", get(reconcile_latest))
+        .route("/reconciles/:id", get(reconcile))
         .route("/state", get(state))
         .route("/revisions", get(revisions))
         .route("/revisions/:id", get(revision))
@@ -63,17 +66,60 @@ async fn status(AxState(s): AxState<AppState>) -> Result<impl IntoResponse, ApiE
     }))
 }
 
+#[derive(Serialize)]
+struct Accepted {
+    reconcile_id: u64,
+}
+
 async fn apply_manifest(
     AxState(s): AxState<AppState>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let bytes = body.to_vec();
     let foreman = s.foreman.clone();
-    let report = tokio::task::spawn_blocking(move || foreman.apply_manifest(&bytes))
+    let (reconcile_id, selected) = tokio::task::spawn_blocking(move || foreman.ingest(&bytes))
         .await
         .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
         .map_err(ApiError::from_foreman)?;
-    Ok(Json(report))
+    let foreman = s.foreman.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = foreman.run_reconcile(reconcile_id, selected) {
+            tracing::error!(reconcile_id, error = %e, "reconcile run failed");
+        }
+    });
+    Ok((StatusCode::ACCEPTED, Json(Accepted { reconcile_id })))
+}
+
+#[derive(Deserialize)]
+struct After {
+    after: Option<u64>,
+}
+
+async fn reconcile(
+    AxState(s): AxState<AppState>,
+    Path(id): Path<u64>,
+    Query(q): Query<After>,
+) -> Result<impl IntoResponse, ApiError> {
+    let after = q.after.unwrap_or(0);
+    match blocking(s.foreman.clone(), move |f| f.progress_projection(id, after)).await? {
+        Some(p) => Ok(Json(p)),
+        None => Err(ApiError::not_found(format!("no reconcile {id}"))),
+    }
+}
+
+async fn reconcile_latest(
+    AxState(s): AxState<AppState>,
+    Query(q): Query<After>,
+) -> Result<impl IntoResponse, ApiError> {
+    let after = q.after.unwrap_or(0);
+    let latest = blocking(s.foreman.clone(), |f| f.latest_reconcile_id()).await?;
+    let Some(id) = latest else {
+        return Err(ApiError::not_found("no reconcile attempts yet".into()));
+    };
+    match blocking(s.foreman.clone(), move |f| f.progress_projection(id, after)).await? {
+        Some(p) => Ok(Json(p)),
+        None => Err(ApiError::not_found(format!("no reconcile {id}"))),
+    }
 }
 
 #[derive(Serialize)]
@@ -121,20 +167,28 @@ struct ApiError {
     status: StatusCode,
     kind: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconcile_id: Option<u64>,
 }
 
 impl ApiError {
     fn from_foreman(e: crate::foreman::ForemanError) -> Self {
+        use crate::foreman::ForemanError::*;
+        let reconcile_id = match &e {
+            ReconcileInProgress { reconcile_id } => Some(*reconcile_id),
+            _ => None,
+        };
         let status = match e {
-            crate::foreman::ForemanError::WalUnreadable { .. }
-            | crate::foreman::ForemanError::ManifestUndecodable { .. }
-            | crate::foreman::ForemanError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            crate::foreman::ForemanError::ReconcileInProgress { .. } => StatusCode::CONFLICT,
+            WalUnreadable { .. } | ManifestUndecodable { .. } | Internal(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+            ReconcileInProgress { .. } => StatusCode::CONFLICT,
         };
         ApiError {
             status,
             kind: e.kind().to_string(),
             message: e.message(),
+            reconcile_id,
         }
     }
     fn internal(e: anyhow::Error) -> Self {
@@ -142,6 +196,7 @@ impl ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             kind: "internal".to_string(),
             message: format!("{e:#}"),
+            reconcile_id: None,
         }
     }
     fn not_found(message: String) -> Self {
@@ -149,6 +204,7 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             kind: "not-found".to_string(),
             message,
+            reconcile_id: None,
         }
     }
 }

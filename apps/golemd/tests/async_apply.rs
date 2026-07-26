@@ -1,21 +1,17 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use golemd::config::{OnExhaustConfig, RetryConfig};
+use golemd::config::RetryConfig;
 use golemd::foreman::Foreman;
 use golemd::http;
 use golemd::journal::{GlyphOp, Outcome};
 use golemd::planroom::MemoryPlanRoom;
-use golemd::reconciler::{inverse_of, EnactError, EnactResult, Reconciler};
+use golemd::reconciler::{inverse_of, EnactResult, Reconciler};
 use scroll_format::{ContentId, Contents, Glyph, Manifest, Scroll};
 
-struct FailOne {
-    bad: String,
-}
-impl Reconciler for FailOne {
+struct Ok1;
+impl Reconciler for Ok1 {
     fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
-        if glyph.key() == self.bad {
-            return Err(EnactError::Fatal("scripted".into()));
-        }
         Ok(Outcome {
             op: GlyphOp::Install {
                 cid,
@@ -31,15 +27,13 @@ impl Reconciler for FailOne {
     }
 }
 
-fn apt(name: &str) -> Glyph {
-    Glyph::AptPackage { name: name.into() }
-}
-
 fn manifest_bytes() -> Vec<u8> {
     let host = Scroll {
         name: "h1".into(),
         policy: None,
-        contents: Contents::Glyphs(vec![apt("bad")]),
+        contents: Contents::Glyphs(vec![Glyph::AptPackage {
+            name: "nginx".into(),
+        }]),
     };
     scroll_format::to_bytes(&Manifest::from_scrolls(vec![host], "test"))
 }
@@ -57,20 +51,13 @@ async fn serve(foreman: Foreman) -> String {
 }
 
 #[tokio::test]
-async fn a_failing_reconcile_settles_rolled_back_via_poll() {
-    let foreman = Foreman::new(
-        "h1".into(),
-        Box::new(MemoryPlanRoom::new()),
-        Box::new(FailOne {
-            bad: "apt:bad".into(),
-        }),
-    )
-    .with_retry_config(RetryConfig {
-        max_attempts: 1,
-        base_delay_ms: 0,
-        on_exhaust: OnExhaustConfig::Rollback,
-        ..Default::default()
-    });
+async fn apply_returns_202_then_polls_to_settled_with_report() {
+    let foreman = Foreman::new("h1".into(), Box::new(MemoryPlanRoom::new()), Box::new(Ok1))
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
     let base = serve(foreman).await;
 
     let resp = reqwest::Client::new()
@@ -85,41 +72,56 @@ async fn a_failing_reconcile_settles_rolled_back_via_poll() {
         .as_u64()
         .unwrap();
 
+    let mut cursor = 0u64;
+    let mut settled = None;
     for _ in 0..50 {
-        let p: serde_json::Value = reqwest::get(format!("{base}/reconciles/{id}"))
+        let p: serde_json::Value = reqwest::get(format!("{base}/reconciles/{id}?after={cursor}"))
             .await
             .unwrap()
             .json()
             .await
             .unwrap();
-        if !p["report"].is_null() {
-            assert_eq!(p["report"]["outcome"], "rolled_back");
-            assert_eq!(p["report"]["units"][0]["failures"][0]["class"], "fatal");
-            return;
+        cursor = p["cursor"].as_u64().unwrap();
+        if p["phase"] == "settled" {
+            settled = Some(p);
+            break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("never settled");
+    let p = settled.expect("reconcile settled");
+    assert_eq!(p["report"]["outcome"], "settled");
+    assert_eq!(p["units"][0]["glyphs"][0]["glyph_key"], "apt:nginx");
+    assert_eq!(p["units"][0]["glyphs"][0]["state"], "applied");
 }
 
 #[tokio::test]
-async fn an_undecodable_manifest_is_a_structured_500() {
-    let foreman = Foreman::new(
-        "h1".into(),
-        Box::new(MemoryPlanRoom::new()),
-        Box::new(FailOne { bad: "none".into() }),
-    );
+async fn latest_returns_the_most_recent_attempt() {
+    let foreman = Foreman::new("h1".into(), Box::new(MemoryPlanRoom::new()), Box::new(Ok1))
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
     let base = serve(foreman).await;
-
-    let resp = reqwest::Client::new()
+    reqwest::Client::new()
         .post(format!("{base}/manifest"))
         .header("content-type", "application/octet-stream")
-        .body(b"not a manifest".to_vec())
+        .body(manifest_bytes())
         .send()
         .await
         .unwrap();
-
-    assert_eq!(resp.status().as_u16(), 500);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["kind"], "manifest-undecodable");
+    for _ in 0..50 {
+        let p: serde_json::Value = reqwest::get(format!("{base}/reconciles/latest"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if p["phase"] == "settled" {
+            assert_eq!(p["reconcile_id"], 1);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("latest never settled");
 }

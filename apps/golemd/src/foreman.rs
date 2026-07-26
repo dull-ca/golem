@@ -142,6 +142,7 @@ pub struct Foreman {
     retry: RetryConfig,
     write: Mutex<()>,
     progress: ProgressRegistry,
+    reports: Mutex<std::collections::BTreeMap<u64, ReconcileReport>>,
 }
 
 #[derive(Debug)]
@@ -174,6 +175,7 @@ impl Foreman {
             retry: RetryConfig::default(),
             write: Mutex::new(()),
             progress: ProgressRegistry::new(),
+            reports: Mutex::new(std::collections::BTreeMap::new()),
         };
         if let Err(e) = foreman.recover() {
             warn!(?e, "startup recovery failed");
@@ -323,6 +325,10 @@ impl Foreman {
             .map_err(ForemanError::Internal)?;
         let report = ReconcileReport::roll_up(revision, unit_reports);
         log_settled(&report);
+        self.reports
+            .lock()
+            .unwrap()
+            .insert(reconcile_id, report.clone());
         Ok(report)
     }
 
@@ -1102,6 +1108,36 @@ impl Foreman {
 
     pub fn latest_revision_id(&self) -> Result<Option<u64>> {
         self.planroom.latest_revision_id()
+    }
+
+    pub fn latest_reconcile_id(&self) -> Result<Option<u64>> {
+        Ok(self.planroom.latest_attempt()?.map(|a| a.reconcile_id))
+    }
+
+    pub fn progress_projection(
+        &self,
+        reconcile_id: u64,
+        after: u64,
+    ) -> Result<Option<crate::projection::ReconcileProgress>> {
+        let Some(attempt) = self
+            .planroom
+            .attempts()?
+            .into_iter()
+            .find(|a| a.reconcile_id == reconcile_id)
+        else {
+            return Ok(None);
+        };
+        let steps = self.planroom.wal_steps_for(reconcile_id)?;
+        let events = self.progress.events_after(reconcile_id, after);
+        let retries = self.progress.retries(reconcile_id);
+        let report = if attempt.phase.is_settled() {
+            self.reports.lock().unwrap().get(&reconcile_id).cloned()
+        } else {
+            None
+        };
+        let mut proj = crate::projection::project(&attempt, &steps, events, report, &retries);
+        proj.cursor = proj.cursor.max(after);
+        Ok(Some(proj))
     }
 }
 
