@@ -324,6 +324,11 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
     /// systemd) through the streaming runner so their output reaches `sink` (ADR
     /// 0033 §2). The filesystem and `lineInFile` kinds run no command, so they
     /// never touch `sink` — command streaming cannot leak file contents.
+    ///
+    /// The systemd stream is only what `systemctl` itself prints. A unit's own
+    /// process logs to the journal, not to systemctl's stdout, so a started
+    /// service's output is invisible here — `diagnose` reads the journal after a
+    /// failure, but the live tail carries only the enable/start commands.
     fn apply_streaming(
         &self,
         glyph: &Glyph,

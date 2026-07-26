@@ -390,9 +390,16 @@ def apply(
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
     raw: bool = typer.Option(False, "--json", help="Print the raw revision JSON instead of a summary."),
 ) -> None:
-    """Compile a scroll and POST it to each target's golemd. `source` is an
+    """Compile a scroll and hand each target to `golemctl apply`. `source` is an
     `.emet` file (compiled to a manifest here) or a prebuilt `manifest.bin`; the
-    same bytes go to every host, and each prints the revision it recorded."""
+    same bytes go to every host.
+
+    fleet owns orchestration (which hosts, in what order); golemctl owns the
+    apply itself — the POST, the live-progress TUI, and the report (ADR 0033 §5,
+    one TUI, two surfaces). So fleet execs it per host with inherited stdio: the
+    TUI must own the terminal to draw its frames, which piping its output would
+    break. Exit is aggregated — any host's nonzero `golemctl` exit makes `apply`
+    exit 1, but every remaining host is still attempted first."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)

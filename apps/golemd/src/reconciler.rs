@@ -36,6 +36,11 @@ pub trait Reconciler: Send + Sync {
     /// overrides it to route apt/systemd commands through the streaming runner.
     /// The foreman builds `sink` with the op's `{reconcile_id, unit_path,
     /// glyph_key}` context, which the glyph-only `apply` signature does not carry.
+    ///
+    /// Only the apply path streams. `reverse` and `diagnose` still run their host
+    /// commands unstreamed, so a rollback's `apt remove` output does not reach the
+    /// tail. The natural follow-up is a `reverse_streaming` seam mirroring this
+    /// one; until then a reversal shows lifecycle events but no command lines.
     fn apply_streaming(
         &self,
         glyph: &Glyph,

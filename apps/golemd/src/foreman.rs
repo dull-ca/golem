@@ -695,6 +695,11 @@ impl Foreman {
             &op.key(),
             &format!("{} {}", action_tag_for(op), op.key()),
         );
+        // NOTE: enact_apply is the one place holding this op's full progress
+        // context (reconcile_id, unit_path, glyph key), so the cmd sink is built
+        // here and captures it — each line records against the exact glyph that
+        // produced it. Context rides the closure per call; the reconciler seam
+        // stays glyph-only, with no reconcile-scoped state threaded through it.
         let key = op.key();
         let mut sink = |level: EventLevel, line: &str| {
             self.progress.record_kind(
