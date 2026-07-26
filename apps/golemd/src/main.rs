@@ -58,6 +58,12 @@ async fn main() -> Result<()> {
         ReconcilerKind::Host => Box::new(HostReconciler::system()),
         ReconcilerKind::Fake => Box::new(FakeReconciler::new()),
     };
+    // Contain a host-adapter panic at the port so it never unwinds across the
+    // foreman's write lock and wedges the daemon (ADR 0033, panic-guard). Tests
+    // that simulate a *process crash* build the foreman without this wrap, so an
+    // uncaught panic still models a crash for the recovery path (ADR 0020 §3).
+    let reconciler: Box<dyn Reconciler> =
+        Box::new(golemd::reconciler::PanicCatching::new(reconciler));
     let retry =
         golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
     let foreman = Arc::new(

@@ -35,6 +35,31 @@ impl Reconciler for Ok1 {
     }
 }
 
+/// Applies every glyph like `Ok1`, except one key whose `apply` panics — the
+/// spawned reconcile's failure mode the panic guard must contain (ADR 0033 §1).
+struct PanicOn {
+    key: String,
+}
+impl Reconciler for PanicOn {
+    fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+        if glyph.key() == self.key {
+            panic!("simulated panic applying {}", self.key);
+        }
+        Ok(Outcome {
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
+            cid,
+            inverse: inverse_of(glyph),
+            changed: true,
+        })
+    }
+    fn reverse(&self, _o: &Outcome) -> EnactResult<()> {
+        Ok(())
+    }
+}
+
 fn manifest_bytes() -> Vec<u8> {
     let host = Scroll {
         name: "h1".into(),
@@ -161,4 +186,53 @@ fn a_settled_attempt_reports_after_the_in_memory_cache_is_lost() {
     assert_eq!(report.units.len(), 1);
     assert_eq!(report.units[0].unit_path, vec!["h1".to_string()]);
     assert_eq!(report.units[0].glyphs[0].glyph_key, "apt:nginx");
+}
+
+#[test]
+fn a_panic_in_the_reconcile_is_contained_and_the_daemon_keeps_serving() {
+    use golemd::planroom::PlanRoom;
+
+    let room = Arc::new(MemoryPlanRoom::new());
+    let reconciler = golemd::reconciler::PanicCatching::new(PanicOn {
+        key: "apt:nginx".into(),
+    });
+    let f = Foreman::new("h1".into(), Box::new(room.clone()), Box::new(reconciler))
+        .with_retry_config(quiet_retry());
+
+    let (id, selected) = f.ingest(&manifest_bytes()).unwrap();
+    f.run_reconcile_guarded(id, selected);
+
+    let attempt = room.latest_attempt().unwrap().unwrap();
+    assert!(
+        attempt.phase.is_settled(),
+        "a panicking reconcile ends the attempt terminally, not wedged unsettled: {:?}",
+        attempt.phase
+    );
+
+    let p = f
+        .progress_projection(id, 0)
+        .unwrap()
+        .expect("the panicked attempt is still projectable");
+    assert!(
+        matches!(
+            p.phase,
+            golemd::projection::PhaseView::Settled | golemd::projection::PhaseView::RolledBack
+        ),
+        "the poll shows a terminal phase: {:?}",
+        p.phase
+    );
+    let report = p.report.expect("a settled attempt always yields a report");
+    assert!(
+        matches!(
+            report.outcome,
+            golemd::report::TopOutcome::RolledBack | golemd::report::TopOutcome::Partial
+        ),
+        "the panicked glyph is reported as a fatal failure, its unit undone: {:?}",
+        report.outcome
+    );
+
+    let (next_id, _selected) = f
+        .ingest(&manifest_bytes())
+        .expect("a subsequent apply is accepted, not permanently 409'd by a poisoned lock");
+    assert_ne!(next_id, id, "the next apply opens a fresh attempt");
 }

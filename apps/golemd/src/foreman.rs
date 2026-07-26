@@ -196,6 +196,18 @@ impl Foreman {
         &self.progress
     }
 
+    /// Acquire the single write lock, recovering the guard if a prior holder
+    /// panicked and poisoned it. This is sound because the lock guards no
+    /// in-memory invariant — every durable fact lives in the WAL, bracketed
+    /// `Intended`→terminal (ADR 0020 §2). A panic mid-reconcile can only leave an
+    /// unsettled attempt in the log, which the next `recover` re-drives and rolls
+    /// back; there is no torn in-process structure a poisoned guard could expose.
+    /// So poison must not wedge the daemon: the next apply takes the guard, runs
+    /// its own recover-then-gate, and proceeds (ADR 0033, panic-guard).
+    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Ingest and reconcile in one synchronous call — the in-process path for
     /// tests that exercise a whole reconcile without the async HTTP surface. The
     /// HTTP surface itself is 202-then-poll (ADR 0033 §1) and calls [`ingest`]
@@ -225,7 +237,7 @@ impl Foreman {
             glyphs = selected.scroll.all_glyphs().len(),
             "manifest ingested"
         );
-        let _w = self.write.lock().unwrap();
+        let _w = self.write_guard();
         // NOTE: gate BEFORE recover, not after (a deliberate departure from a
         // recover-then-gate reading of ADR 0020 §3). recover_locked rolls back
         // any unsettled latest attempt, so recovering first would undo the very
@@ -289,7 +301,7 @@ impl Foreman {
         reconcile_id: u64,
         desired: SelectedScroll,
     ) -> Result<ReconcileReport, ForemanError> {
-        let _w = self.write.lock().unwrap();
+        let _w = self.write_guard();
         let steps = self
             .planroom
             .wal_steps()
@@ -352,6 +364,45 @@ impl Foreman {
             .unwrap()
             .insert(reconcile_id, report.clone());
         Ok(report)
+    }
+
+    /// The detached-run wrapper the async HTTP path spawns (ADR 0033 §1): run the
+    /// reconcile and contain any panic so it cannot wedge the daemon. Reconciler
+    /// panics are already caught at the port ([`PanicCatching`]) and never reach
+    /// here — this is the outer guard for a panic anywhere else on the run (a
+    /// `.expect` in settle, say) that would otherwise unwind while `run_reconcile`
+    /// holds the write lock. [`std::panic::catch_unwind`] catches it, an ERROR
+    /// event is pushed to the poll ring so a watching client sees the fault, and
+    /// [`Foreman::recover`] rolls the still-`Enacting` attempt back to its last
+    /// committed set exactly as crash recovery does (ADR 0020 §3), leaving the
+    /// attempt terminally `RolledBack` and the next apply free to proceed. The
+    /// write lock is poison-tolerant ([`Foreman::write_guard`]), so `recover`
+    /// takes it cleanly even after a panicking holder poisoned it.
+    ///
+    /// [`PanicCatching`]: crate::reconciler::PanicCatching
+    pub fn run_reconcile_guarded(&self, reconcile_id: u64, desired: SelectedScroll) {
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_reconcile(reconcile_id, desired)
+        }));
+        match run {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                error!(reconcile_id, error = %e, "reconcile run failed");
+            }
+            Err(_) => {
+                error!(reconcile_id, "reconcile run panicked; recovering");
+                self.progress.record(
+                    reconcile_id,
+                    EventLevel::Error,
+                    &[self.host.clone()],
+                    "",
+                    "reconcile panicked; rolling back",
+                );
+                if let Err(e) = self.recover() {
+                    error!(reconcile_id, error = %e, "recovery after panic failed");
+                }
+            }
+        }
     }
 
     /// The `Remove` ops for glyphs that belong to no present leaf unit — a unit
@@ -1002,7 +1053,7 @@ impl Foreman {
     /// startup (from [`Foreman::new`]) and again by [`Foreman::reconcile`] before
     /// each manifest, so recovery is always a precondition of ingest.
     pub fn recover(&self) -> Result<()> {
-        let _w = self.write.lock().unwrap();
+        let _w = self.write_guard();
         self.recover_locked()
     }
 

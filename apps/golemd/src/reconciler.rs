@@ -55,6 +55,73 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     }
 }
 
+impl<R: Reconciler + ?Sized> Reconciler for Box<R> {
+    fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+        (**self).apply(glyph, cid)
+    }
+    fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+        (**self).reverse(outcome)
+    }
+    fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+        (**self).restart_unit(unit)
+    }
+    fn diagnose(&self, glyph: &Glyph) -> Option<String> {
+        (**self).diagnose(glyph)
+    }
+}
+
+/// A [`Reconciler`] decorator that contains a panic in the wrapped host adapter,
+/// turning it into an [`EnactError::Fatal`] instead of letting it unwind (ADR
+/// 0033, panic-guard). The `apply`/`reverse`/`restart_unit` calls are the one
+/// place the reconcile spine runs arbitrary host-adapter code (apt, systemd,
+/// filesystem), so catching here means no reconciler panic ever crosses the
+/// foreman's write lock — the lock is never poisoned, and a panicked glyph is
+/// handled by the ordinary best-effort/rollback path as a fatal failure. The
+/// caught payload's message is preserved where it is a string, so the report and
+/// event ring carry a legible reason. `diagnose` is best-effort forensics and is
+/// left unwrapped: it is already fallible-to-`None` and runs off the enact path.
+pub struct PanicCatching<R> {
+    inner: R,
+}
+
+impl<R: Reconciler> PanicCatching<R> {
+    pub fn new(inner: R) -> Self {
+        Self { inner }
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "reconciler panicked".to_string()
+    }
+}
+
+impl<R: Reconciler> Reconciler for PanicCatching<R> {
+    fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.apply(glyph, cid)
+        }))
+        .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
+    }
+    fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.reverse(outcome)))
+            .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
+    }
+    fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.restart_unit(unit)
+        }))
+        .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
+    }
+    fn diagnose(&self, glyph: &Glyph) -> Option<String> {
+        self.inner.diagnose(glyph)
+    }
+}
+
 /// The default [`Inverse`] for a glyph when no prior host state was captured —
 /// the receipt the fake reconciler and the foreman's synthesized
 /// `prior_outcome` use. It assumes golem added the glyph, so reverse removes it;

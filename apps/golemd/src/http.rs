@@ -91,11 +91,7 @@ async fn apply_manifest(
         .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
         .map_err(ApiError::from_foreman)?;
     let foreman = s.foreman.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = foreman.run_reconcile(reconcile_id, selected) {
-            tracing::error!(reconcile_id, error = %e, "reconcile run failed");
-        }
-    });
+    tokio::task::spawn_blocking(move || foreman.run_reconcile_guarded(reconcile_id, selected));
     Ok((StatusCode::ACCEPTED, Json(Accepted { reconcile_id })))
 }
 
