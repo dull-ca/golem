@@ -1,9 +1,9 @@
 import io
+import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -319,72 +319,44 @@ class RenderReportTests(unittest.TestCase):
         self.assertIn("wal-unreadable", out)
 
 
-class ApplyTransportErrorTests(unittest.TestCase):
-    def test_render_apply_transport_error_names_host_and_hints_logs(self):
-        from fleet import cli
-        buf = io.StringIO()
-        console = Console(file=buf, force_terminal=False, no_color=True, width=200)
-        with mock.patch.object(cli, "console", console):
-            cli._render_apply_transport_error("vm-1", httpx.ReadTimeout("timed out"))
-        out = buf.getvalue()
-        self.assertIn("vm-1", out)
-        self.assertIn("fleet logs vm-1 -f", out)
-        self.assertIn("fleet apply", out)
-        self.assertIn("server-side", out)
-
-    def test_apply_command_survives_read_timeout_and_continues_to_next_host(self):
+class ApplyExecTests(unittest.TestCase):
+    def test_apply_execs_golemctl_per_host_and_continues_on_failure(self):
         from fleet import cli
         from fleet.state import VmRecord
 
         records = [
-            VmRecord(
-                name="vm-1",
-                ssh_port=2201,
-                golemd_port=8001,
-                pid=1,
-                disk="/dev/null",
-                pidfile="/dev/null",
-                console_log="/dev/null",
-            ),
-            VmRecord(
-                name="vm-2",
-                ssh_port=2202,
-                golemd_port=8002,
-                pid=2,
-                disk="/dev/null",
-                pidfile="/dev/null",
-                console_log="/dev/null",
-            ),
+            VmRecord(name="vm-1", ssh_port=2201, golemd_port=8001, pid=1,
+                     disk="/dev/null", pidfile="/dev/null", console_log="/dev/null"),
+            VmRecord(name="vm-2", ssh_port=2202, golemd_port=8002, pid=2,
+                     disk="/dev/null", pidfile="/dev/null", console_log="/dev/null"),
         ]
-
-        ok_response = mock.Mock()
-        ok_response.status_code = 200
-        ok_response.json.return_value = {
-            "revision": {"id": 1, "kind": "reconcile", "scroll_content_id": None, "outcomes": []},
-            "outcome": "settled",
-            "units": [],
-        }
-
-        def fake_apply_manifest(record, manifest):
-            if record.name == "vm-1":
-                raise httpx.ReadTimeout("timed out")
-            return ok_response
 
         manifest_path = Path("/tmp/fleet-test-manifest.bin")
         manifest_path.write_bytes(b"\x00")
         self.addCleanup(manifest_path.unlink, missing_ok=True)
 
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            rc = 1 if "8001" in " ".join(argv) else 0
+            return subprocess.CompletedProcess(argv, rc)
+
         with (
             mock.patch.object(cli, "_target_records", return_value=records),
             mock.patch.object(cli.deploy_ops, "compile_manifest", return_value=manifest_path),
             mock.patch.object(cli.deploy_ops, "manifest_scroll_names", return_value=[]),
-            mock.patch.object(cli.golemd_client, "apply_manifest", side_effect=fake_apply_manifest),
+            mock.patch.object(cli.deploy_ops, "resolve_golemctl", return_value=Path("/usr/bin/golemctl")),
+            mock.patch("fleet.cli.subprocess.run", side_effect=fake_run),
         ):
             runner = CliRunner()
             result = runner.invoke(cli.app, ["apply", str(manifest_path)])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertNotIn("Traceback", result.output)
+        self.assertEqual(len(calls), 2)
+        joined = [" ".join(str(a) for a in argv) for argv in calls]
+        self.assertTrue(any("127.0.0.1:8001" in j for j in joined))
+        self.assertTrue(any("127.0.0.1:8002" in j for j in joined))
+        self.assertTrue(all("golemctl" in j and "apply" in j for j in joined))
         self.assertIn("vm-1", result.output)
-        self.assertIn("fleet logs vm-1 -f", result.output)
-        self.assertIn("vm-2", result.output)

@@ -10,6 +10,8 @@ host before being POSTed to the guest's daemon.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -112,6 +114,24 @@ def manifest_scroll_names(paths: Paths, source: Path) -> list[str]:
         if isinstance(name, str):
             names.append(name)
     return names
+
+
+def resolve_golemctl(paths: Paths) -> Path:
+    """Locate the golemctl binary: `GOLEMCTL_BIN` env override, then the
+    workspace's `cargo build` output, then `PATH`. There is no HTTP fallback —
+    golemctl is the only apply path."""
+    override = os.environ.get("GOLEMCTL_BIN")
+    if override:
+        return Path(override)
+    built = paths.root / "target" / "debug" / "golemctl"
+    if built.exists():
+        return built
+    found = shutil.which("golemctl")
+    if found:
+        return Path(found)
+    raise FleetError(
+        "golemctl not found; run `build` (cargo build --workspace) or set GOLEMCTL_BIN"
+    )
 
 
 def service_unit(host: str) -> str:

@@ -7,7 +7,6 @@ without it they hit every VM in the state file.
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import sys
@@ -15,7 +14,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -362,15 +360,6 @@ def _render_apply_error(name: str, status: int, body: dict) -> None:
     console.print(f"  [red]{name}: {kind} (HTTP {status})[/red]\n  {message}")
 
 
-def _render_apply_transport_error(name: str, error: Exception) -> None:
-    console.print(
-        f"  [red]{name}: lost the connection waiting on the reconcile ({error}).\n"
-        f"  golemd keeps reconciling server-side — it does not stop because the\n"
-        f"  client gave up. Watch it with `fleet logs {name} -f`, then re-run\n"
-        f"  `fleet apply` once it settles to get the report.[/red]"
-    )
-
-
 def _render_revision(name: str, revision: dict, units: Optional[list] = None) -> None:
     scroll = _cid_short(_cid_hex(revision.get("scroll_content_id")))
     console.print(
@@ -413,29 +402,23 @@ def apply(
     console.print(f"  manifest: {manifest_path} ({len(manifest)} bytes)")
     scroll_names = deploy_ops.manifest_scroll_names(p, source)
     _render_manifest_context(scroll_names, [record.name for record in records])
+    golemctl = deploy_ops.resolve_golemctl(p)
     for record in records:
         console.print(f"[bold]Applying to {record.name}[/bold]…")
-        try:
-            response = golemd_client.apply_manifest(record, manifest)
-        except (httpx.TimeoutException, httpx.TransportError) as error:
-            _render_apply_transport_error(record.name, error)
-            continue
-        # NOTE: a partial or rolled-back reconcile is HTTP 200 with its failures
-        # in-band in the report (ADR 0029 §5); non-2xx is a transport/daemon
-        # error carrying a typed {kind, message} body.
-        if response.status_code != 200:
-            try:
-                body = response.json()
-            except ValueError:
-                body = {"kind": "error", "message": response.text}
-            _render_apply_error(record.name, response.status_code, body)
-            continue
-        report = response.json()
+        argv = [
+            str(golemctl),
+            "apply",
+            str(manifest_path),
+            f"http://127.0.0.1:{record.golemd_port}",
+        ]
         if raw:
-            console.print(f"  [green]{record.name}: revision {report.get('revision', {}).get('id')}[/green]")
-            console.print_json(json.dumps(report))
-        else:
-            _render_report(record.name, report)
+            argv.append("--json")
+        result = subprocess.run(argv, cwd=str(p.root))
+        if result.returncode != 0:
+            console.print(
+                f"  [red]{record.name}: golemctl apply exited {result.returncode}[/red]"
+            )
+            continue
 
 
 @app.command()
