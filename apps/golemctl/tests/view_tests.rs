@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use golemctl::model::ApplyModel;
-use golemctl::poll::{Event, GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
+use golemctl::poll::{Event, EventKind, GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
 use golemctl::view;
 
 fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
@@ -11,6 +11,29 @@ fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
         state,
         rounds: 1,
         next_retry_in_ms: None,
+    }
+}
+
+fn cmd_event(unit: &[&str], key: &str, msg: &str) -> Event {
+    Event {
+        seq: 1,
+        at: "2026-07-26T00:00:00Z".into(),
+        level: "info".into(),
+        kind: EventKind::Cmd,
+        unit_path: unit.iter().map(|s| s.to_string()).collect(),
+        glyph_key: key.into(),
+        message: msg.into(),
+    }
+}
+
+fn progress_with(units: Vec<UnitProgress>, events: Vec<Event>) -> Progress {
+    Progress {
+        reconcile_id: 1,
+        phase: Phase::Enacting,
+        units,
+        events,
+        cursor: 1,
+        report: None,
     }
 }
 
@@ -180,6 +203,7 @@ fn fit_keeps_the_active_units_log_tail_over_settled_rows() {
             seq: 1,
             at: "2026-07-26T00:00:00Z".into(),
             level: "info".into(),
+            kind: EventKind::Lifecycle,
             unit_path: vec!["scaly".into(), "running".into()],
             glyph_key: "apt:podman".into(),
             message: "unpacking podman".into(),
@@ -195,6 +219,78 @@ fn fit_keeps_the_active_units_log_tail_over_settled_rows() {
         bounded.contains("unpacking podman"),
         "active unit's log tail was trimmed before settled rows:\n{bounded}"
     );
+}
+
+#[test]
+fn an_active_glyph_renders_its_cmd_tail_under_the_row() {
+    let mut m = model(vec![unit(
+        &["scaly", "a"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    )]);
+    m.apply_progress(progress_with(
+        vec![],
+        vec![
+            cmd_event(&["scaly", "a"], "apt:podman", "Unpacking podman (4.3.1) ..."),
+            cmd_event(&["scaly", "a"], "apt:podman", "Setting up conmon ..."),
+        ],
+    ));
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains("Unpacking podman (4.3.1) ..."));
+    assert!(out.contains("Setting up conmon ..."));
+}
+
+#[test]
+fn the_cmd_tail_collapses_when_the_glyph_settles() {
+    let mut m = model(vec![unit(
+        &["scaly", "a"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    )]);
+    m.apply_progress(progress_with(
+        vec![],
+        vec![cmd_event(&["scaly", "a"], "apt:podman", "Unpacking podman ...")],
+    ));
+    assert!(view::render_to_string(&m, 100).contains("Unpacking podman ..."));
+
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::Settled,
+        units: vec![unit(&["scaly", "a"], vec![glyph("apt:podman", GlyphState::Applied)])],
+        events: vec![],
+        cursor: 2,
+        report: Some(serde_json::json!({ "outcome": "settled" })),
+    });
+    let out = view::render_to_string(&m, 100);
+    assert!(
+        !out.contains("Unpacking podman ..."),
+        "the tail disappears once the glyph settles:\n{out}"
+    );
+    assert!(out.contains(view::CHECKMARK));
+}
+
+#[test]
+fn lifecycle_log_region_is_unaffected_by_cmd_tails() {
+    let mut m = model(vec![unit(
+        &["scaly", "a"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    )]);
+    m.apply_progress(progress_with(
+        vec![],
+        vec![
+            Event {
+                seq: 1,
+                at: "t".into(),
+                level: "info".into(),
+                kind: EventKind::Lifecycle,
+                unit_path: vec!["scaly".into(), "a".into()],
+                glyph_key: "apt:podman".into(),
+                message: "install apt:podman".into(),
+            },
+            cmd_event(&["scaly", "a"], "apt:podman", "Unpacking podman ..."),
+        ],
+    ));
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains("install apt:podman"), "lifecycle line still renders");
+    assert!(out.contains("Unpacking podman ..."), "cmd tail renders too");
 }
 
 #[test]

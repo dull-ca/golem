@@ -73,6 +73,13 @@ pub enum Line {
         row: GlyphRow,
         settled: bool,
     },
+    // A buildkit-style tail line (ADR 0033 §3d): one of the last few `cmd`
+    // lines under an active glyph, rendered dim and indented under the glyph
+    // row. Dropped first by `fit` — it is texture, not the settled record.
+    CmdTail {
+        depth: usize,
+        text: String,
+    },
     Log {
         depth: usize,
         text: String,
@@ -115,11 +122,20 @@ fn push_node(lines: &mut Vec<Line>, node: &TreeNode, depth: usize) {
     });
     if let Some(unit) = node.leaf {
         for g in &unit.glyphs {
+            let active = matches!(g.state, GlyphState::Pending | GlyphState::InProgress);
             lines.push(Line::Glyph {
                 depth: depth + 1,
                 row: g.clone(),
-                settled: !matches!(g.state, GlyphState::Pending | GlyphState::InProgress),
+                settled: !active,
             });
+            if active {
+                for line in &g.cmd_tail {
+                    lines.push(Line::CmdTail {
+                        depth: depth + 2,
+                        text: line.clone(),
+                    });
+                }
+            }
         }
         if node.state.is_active() {
             let start = unit.logs.len().saturating_sub(ACTIVE_LOG_LINES);
@@ -184,6 +200,10 @@ pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
     if lines.len() <= height {
         return lines;
     }
+    lines = drop_from_bottom(lines, height, |l| matches!(l, Line::CmdTail { .. }));
+    if lines.len() <= height {
+        return lines;
+    }
     lines = drop_from_bottom(lines, height, |l| matches!(l, Line::Log { host: false, .. }));
     if lines.len() <= height {
         return lines;
@@ -224,6 +244,10 @@ fn static_line(l: &Line) -> AnyElement<'static> {
         Line::Glyph { depth, row, .. } => {
             element!(Text(content: format!("{}{}{}", indent(*depth), glyph_mark(row.state), glyph_suffix(row)))).into_any()
         }
+        Line::CmdTail { depth, text } => {
+            element!(Text(content: format!("{}{}", indent(*depth), text), color: Color::DarkGrey))
+                .into_any()
+        }
         Line::Log { depth, text, .. } => {
             element!(Text(content: format!("{}{}", indent(*depth + 1), text))).into_any()
         }
@@ -257,6 +281,10 @@ fn animated_line(l: &Line) -> AnyElement<'static> {
                 }
             }
             .into_any()
+        }
+        Line::CmdTail { depth, text } => {
+            element!(Text(content: format!("{}{}", indent(*depth), text), color: Color::DarkGrey))
+                .into_any()
         }
         Line::Log { depth, text, .. } => {
             element!(Text(content: format!("{}{}", indent(*depth + 1), text))).into_any()

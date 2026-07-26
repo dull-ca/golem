@@ -245,6 +245,7 @@ mod tests {
             seq: 1,
             at: "2026-07-26T00:00:00Z".into(),
             level: "warn".into(),
+            kind: crate::poll::EventKind::Lifecycle,
             unit_path: vec!["scaly".into(), "canary".into()],
             glyph_key: "systemd:canary.service".into(),
             message: "enact failed (round 1)".into(),

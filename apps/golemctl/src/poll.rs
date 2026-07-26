@@ -65,11 +65,23 @@ pub struct UnitProgress {
     pub glyphs: Vec<GlyphProgress>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    #[default]
+    Lifecycle,
+    Cmd,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Event {
     pub seq: u64,
     pub at: String,
     pub level: String,
+    // Additive (ADR 0033 §2): a record with no `kind` reads as `lifecycle`, so a
+    // pre-`kind` golemd's events still parse.
+    #[serde(default)]
+    pub kind: EventKind,
     pub unit_path: Vec<String>,
     pub glyph_key: String,
     pub message: String,
@@ -169,6 +181,23 @@ mod tests {
         assert!(matches!(p.units[0].glyphs[0].state, GlyphState::InProgress));
         assert_eq!(p.cursor, 18);
         assert!(p.report.is_none());
+    }
+
+    #[test]
+    fn an_event_without_kind_defaults_to_lifecycle_and_cmd_parses() {
+        let old = serde_json::json!({
+            "seq": 1, "at": "t", "level": "info",
+            "unit_path": ["h"], "glyph_key": "apt:x", "message": "install apt:x"
+        });
+        let ev: Event = serde_json::from_value(old).unwrap();
+        assert_eq!(ev.kind, EventKind::Lifecycle);
+
+        let cmd = serde_json::json!({
+            "seq": 2, "at": "t", "level": "info", "kind": "cmd",
+            "unit_path": ["h"], "glyph_key": "apt:x", "message": "Unpacking x ..."
+        });
+        let ev: Event = serde_json::from_value(cmd).unwrap();
+        assert_eq!(ev.kind, EventKind::Cmd);
     }
 
     #[test]

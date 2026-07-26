@@ -2,16 +2,25 @@ use std::fs;
 use std::sync::Mutex;
 
 use golemctl::logsink::{unit_file_name, LogSink, Persistence};
-use golemctl::poll::Event;
+use golemctl::poll::{Event, EventKind};
 
 // TMPDIR is process-global; tests that set it must not run concurrently.
 static TMPDIR_LOCK: Mutex<()> = Mutex::new(());
 
 fn event(unit: &[&str], key: &str, level: &str, msg: &str) -> Event {
+    tagged(unit, key, level, EventKind::Lifecycle, msg)
+}
+
+fn cmd_event(unit: &[&str], key: &str, level: &str, msg: &str) -> Event {
+    tagged(unit, key, level, EventKind::Cmd, msg)
+}
+
+fn tagged(unit: &[&str], key: &str, level: &str, kind: EventKind, msg: &str) -> Event {
     Event {
         seq: 1,
         at: "2026-07-26T14:03:11Z".into(),
         level: level.into(),
+        kind,
         unit_path: unit.iter().map(|s| s.to_string()).collect(),
         glyph_key: key.into(),
         message: msg.into(),
@@ -121,6 +130,39 @@ fn an_event_line_carries_timestamp_level_glyph_and_message() {
     assert!(line.contains("warn"));
     assert!(line.contains("apt:podman"));
     assert!(line.contains("enact failed (round 1)"));
+}
+
+#[test]
+fn both_kinds_interleave_in_the_unit_file_with_a_kind_column() {
+    let guard = TmpdirGuard::new();
+    let mut sink = LogSink::create(11).unwrap();
+    sink.write_event(&cmd_event(
+        &["scaly", "a"],
+        "apt:podman",
+        "info",
+        "Unpacking podman (4.3.1) ...",
+    ))
+    .unwrap();
+    sink.write_event(&event(
+        &["scaly", "a"],
+        "apt:podman",
+        "warn",
+        "enact failed (round 1): dpkg lock held; retrying in 2s",
+    ))
+    .unwrap();
+
+    let dir = guard.path().join("golemctl").join("apply-11");
+    let unit = fs::read_to_string(dir.join("scaly-a.log")).unwrap();
+    let unit_lines: Vec<&str> = unit.lines().collect();
+    assert_eq!(unit_lines.len(), 2, "both kinds land in the unit file");
+    assert!(unit_lines[0].contains("cmd"));
+    assert!(unit_lines[0].contains("Unpacking podman"));
+    assert!(unit_lines[1].contains("lifecycle"));
+    assert!(unit_lines[1].contains("enact failed"));
+
+    let all = fs::read_to_string(dir.join("all.log")).unwrap();
+    assert!(all.contains("  cmd  "), "all.log carries the kind column");
+    assert!(all.contains("  lifecycle  "));
 }
 
 #[test]

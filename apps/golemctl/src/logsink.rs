@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::poll::Event;
+use crate::poll::{Event, EventKind};
 
 // The greppable on-disk record of one apply (ADR 0033 §3a). Every event line is
 // appended to a combined `all.log` and to its unit_path's own slugged file, so a
@@ -45,11 +45,22 @@ fn is_slug_safe(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
 }
 
+fn kind_tag(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::Lifecycle => "lifecycle",
+        EventKind::Cmd => "cmd",
+    }
+}
+
 pub fn event_line(ev: &Event) -> String {
+    // The `kind` column (ADR 0033 §3a) so a `grep cmd`/`grep lifecycle` (or an
+    // awk on the column) separates the interleaved streams after the fact — one
+    // ordered transcript with a filter column, not two files.
     format!(
-        "{}  {}  {}  {}  {}",
+        "{}  {}  {}  {}  {}  {}",
         ev.at,
         ev.level,
+        kind_tag(ev.kind),
         ev.unit_path.join("/"),
         ev.glyph_key,
         ev.message

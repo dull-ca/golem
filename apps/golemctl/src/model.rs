@@ -13,11 +13,16 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use crate::poll::{GlyphState, Phase, Progress};
+use crate::poll::{EventKind, GlyphState, Phase, Progress};
 
 // Per-unit log lines retained; the view shows only the last few of an active
 // unit, so the ring bounds memory without touching what the user sees.
 pub const LOG_RING_CAP: usize = 200;
+
+// The buildkit-style tail (ADR 0033 §3d): the last few `kind:"cmd"` lines shown
+// dim and indented under an active glyph row, rolling as new lines arrive. Three
+// is the on-screen window, not the retention — the log files (§3a) keep them all.
+pub const CMD_TAIL_LINES: usize = 3;
 
 // NOTE: superseded by `tree::BranchState` (ADR 0033 §3c). The renderer builds a
 // real tree and aggregates branch state from the glyph rows directly, so it
@@ -38,6 +43,10 @@ pub struct GlyphRow {
     pub state: GlyphState,
     pub rounds: u32,
     pub next_retry_in_ms: Option<u64>,
+    // The rolling tail of this glyph's `kind:"cmd"` lines (ADR 0033 §3d), bounded
+    // at CMD_TAIL_LINES and cleared when the glyph settles so the tree stays
+    // compact.
+    pub cmd_tail: VecDeque<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +66,12 @@ pub struct ApplyModel {
     pub cursor: u64,
     pub report: Option<serde_json::Value>,
     pub log_dir: Option<PathBuf>,
+}
+
+// A glyph is terminal once it has settled to any non-in-flight state (ADR 0033
+// §3d) — the point its rolling cmd tail collapses.
+fn is_terminal(state: GlyphState) -> bool {
+    !matches!(state, GlyphState::Pending | GlyphState::InProgress)
 }
 
 // A unit is Failed if any glyph failed, Settled only once every glyph reached a
@@ -96,15 +111,30 @@ impl ApplyModel {
         self.cursor = p.cursor;
         self.report = p.report;
         for up in p.units {
+            let existing = self.units.iter().find(|u| u.unit_path == up.unit_path);
             let glyphs: Vec<GlyphRow> = up
                 .glyphs
                 .into_iter()
-                .map(|g| GlyphRow {
-                    glyph_key: g.glyph_key,
-                    action: g.action,
-                    state: g.state,
-                    rounds: g.rounds,
-                    next_retry_in_ms: g.next_retry_in_ms,
+                .map(|g| {
+                    // The projection is authoritative for state, but the cmd tail
+                    // (§3d) accrues client-side across polls, so carry it forward
+                    // by key — then drop it once the glyph settles.
+                    let cmd_tail = if is_terminal(g.state) {
+                        VecDeque::new()
+                    } else {
+                        existing
+                            .and_then(|n| n.glyphs.iter().find(|r| r.glyph_key == g.glyph_key))
+                            .map(|r| r.cmd_tail.clone())
+                            .unwrap_or_default()
+                    };
+                    GlyphRow {
+                        glyph_key: g.glyph_key,
+                        action: g.action,
+                        state: g.state,
+                        rounds: g.rounds,
+                        next_retry_in_ms: g.next_retry_in_ms,
+                        cmd_tail,
+                    }
                 })
                 .collect();
             let state = unit_state(&glyphs);
@@ -122,6 +152,22 @@ impl ApplyModel {
             }
         }
         for ev in p.events {
+            if ev.kind == EventKind::Cmd {
+                if let Some(row) = self
+                    .units
+                    .iter_mut()
+                    .find(|u| u.unit_path == ev.unit_path)
+                    .and_then(|n| n.glyphs.iter_mut().find(|r| r.glyph_key == ev.glyph_key))
+                {
+                    if !is_terminal(row.state) {
+                        row.cmd_tail.push_back(ev.message);
+                        while row.cmd_tail.len() > CMD_TAIL_LINES {
+                            row.cmd_tail.pop_front();
+                        }
+                    }
+                }
+                continue;
+            }
             let line = format!("{}: {}", ev.glyph_key, ev.message);
             match self.units.iter_mut().find(|u| u.unit_path == ev.unit_path) {
                 Some(node) => {
