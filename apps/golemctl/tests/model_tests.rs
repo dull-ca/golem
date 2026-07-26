@@ -1,5 +1,6 @@
 use golemctl::model::{ApplyModel, UnitState};
 use golemctl::poll::{Event, GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
+use golemctl::view;
 
 fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
     GlyphProgress {
@@ -59,4 +60,51 @@ fn applying_progress_builds_the_unit_tree_and_appends_logs() {
     assert_eq!(m.units[0].logs.len(), 2);
     assert!(m.is_settled());
     assert!(m.report.is_some());
+}
+
+#[test]
+fn the_view_renders_unit_paths_marks_and_active_logs() {
+    let mut m = ApplyModel::new();
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::Enacting,
+        units: vec![
+            UnitProgress {
+                unit_path: vec!["scaly".into(), "base".into()],
+                glyphs: vec![glyph("apt:htop", GlyphState::Applied)],
+            },
+            UnitProgress {
+                unit_path: vec!["scaly".into(), "fishnet-a".into()],
+                glyphs: vec![glyph("apt:podman", GlyphState::InProgress)],
+            },
+        ],
+        events: vec![event(1, &["scaly", "fishnet-a"], "apt:podman", "install apt:podman")],
+        cursor: 1,
+        report: None,
+    });
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains("scaly / base"));
+    assert!(out.contains("scaly / fishnet-a"));
+    assert!(out.contains("apt:htop"));
+    assert!(out.contains(view::CHECKMARK));
+    assert!(out.contains("install apt:podman"));
+}
+
+#[test]
+fn a_failed_glyph_shows_the_x_mark() {
+    let mut m = ApplyModel::new();
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::RolledBack,
+        units: vec![UnitProgress {
+            unit_path: vec!["scaly".into(), "canary".into()],
+            glyphs: vec![glyph("systemd:canary.service", GlyphState::Failed)],
+        }],
+        events: vec![],
+        cursor: 0,
+        report: Some(serde_json::json!({ "outcome": "partial" })),
+    });
+    let out = view::render_to_string(&m, 100);
+    assert!(out.contains(view::XMARK));
+    assert!(out.contains("scaly / canary"));
 }
