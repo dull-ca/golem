@@ -256,6 +256,17 @@ TUI with a clean split between a **model**, the **events** that mutate it, and a
   **does not take the alternate screen**, so scrollback is preserved — exactly the
   behaviour an apply wants.
 
+**Where golem diverges from devenv-tui.** devenv-tui keeps each node's log lines
+**in memory only** — an `Arc<VecDeque<String>>` per activity, capped at
+`max_log_lines_per_build` (default 1000, `app.rs`), split into
+`log_stdout_lines`/`log_stderr_lines` — and renders them under the active node. It
+**never writes those lines to a file and never advertises a log path**: when the
+process exits, the buffers are gone, and a person who wants to grep the run after
+the fact has nothing on disk. golem adopts the model/events/view shape but adds
+on-disk persistence and a header path (decisions 1–2 below), because an apply is a
+change to a real host that an operator will want to re-read and grep long after the
+spinner cleared.
+
 **golem's mapping.** The recursive scroll makes "a spinner per scroll" and "a spinner
 per unit" the *same statement*: each `unit_path` in the projection is one tree node.
 So the mapping is direct:
@@ -272,6 +283,98 @@ So the mapping is direct:
 - When `phase` reaches `settled`/`rolled_back`, golemctl stops polling and **prints
   the final `ReconcileReport` exactly as today** (its existing pretty-print) — the
   tree was the live view; the report is the settled record.
+
+#### 3a. Event-log persistence — every event line is written to a local tmp file
+
+golemctl writes **every `events` line it receives** to local tmp files as it polls,
+so the whole run is greppable on disk after the spinner clears. Two tiers of file,
+written together:
+
+- **One combined `all.log`** — every event, in poll order.
+- **One filtered file per unit** — the events tagged with a given `unit_path`,
+  including the `<removes>` group, so a run can be read one scroll/unit at a time.
+
+The layout under a per-apply directory:
+
+```
+$TMPDIR/golemctl/apply-<reconcile_id>/
+  all.log
+  <unit-file>.log          # one per distinct unit_path
+```
+
+`$TMPDIR` falls back to `/tmp` when unset. `<reconcile_id>` is the attempt id from
+the 202 (§1), so concurrent applies never collide.
+
+**Unit-path filename encoding.** A `unit_path` is a list of segments (ADR 0031 §6).
+It is encoded into **one flat filename** by joining segments with `-` and suffixing
+`.log`: `["scaly","fishnet-a"]` → `scaly-fishnet-a.log`. A flat file-per-unit (not a
+mirrored directory tree) keeps `ls` and `grep *.log` trivial and sidesteps having to
+recreate the scroll's nesting on disk. Segments are slugged for the filesystem — any
+character outside `[A-Za-z0-9._-]` is replaced with `_` — which resolves the
+`<removes>` group: `["<removes>"]` writes to **`_removes_.log`**, because `<` and `>`
+are filesystem-legal but shell-annoying (a bare `removes.log` glob or a `<` redirect
+in a `grep` line is a foot-gun). The encoding is lossy-but-stable — two paths that
+slug to the same name would share a file; unit paths in practice are already
+slug-safe, so this is recorded as a known, tolerated edge, not guarded against.
+
+Each line is **plain text, one event per line**, carrying `timestamp`, `level`,
+`glyph_key`, and the message — the same fields the projection's `events` records
+carry (§2) — formatted for `grep`, e.g.:
+
+```
+2026-07-26T14:03:11Z  warn  apt:podman  enact failed (round 1): dpkg lock held; retrying in 2s
+```
+
+The files **survive after the apply exits** — they are the after-the-fact record,
+the thing devenv-tui does not keep. There is **no rotation and no cleanup**: tmp is
+the lifecycle (the OS reclaims `$TMPDIR` on its own schedule), and an apply's log is
+small. Persistence runs on **both** paths — the TUI and the non-TTY/`--json` fallback
+write the identical files; the files are not a TTY feature.
+
+#### 3b. The log directory is advertised above the spinners
+
+The TUI renders a **header line above the tree**, present **from the first frame**
+(before any unit node exists), naming the directory the event logs are being written
+to:
+
+```
+logs: /tmp/golemctl/apply-42/
+```
+
+It sits above every spinner so a person can `cd`/`grep` there while the apply is still
+running, not only after it settles. The **plain / non-TTY path prints the same line
+once at start** — the first thing golemctl emits before the event lines — so a piped
+or CI run records where its logs went too.
+
+#### 3c. Nested spinners are first-class — the model is a real tree
+
+The renderer model is a **real tree that mirrors the recursive scroll**, not a flat
+list of unit rows. The flat unit-row rendering sketched above is **superseded** by
+this: each path prefix in the set of `unit_path`s is its own **branch node** with its
+own spinner/status row, and its children indent beneath it — the same shape
+devenv-tui's activity tree already renders, now keyed by `unit_path` prefix rather
+than a flat `units` array.
+
+- **Branch nodes are first-class.** A prefix like `["scaly"]` that no glyph attaches
+  to directly still renders as a node with a spinner and an aggregated status; its
+  child units nest under it. Leaf nodes (a `unit_path` that carries glyphs) render
+  their glyph rows as before.
+- **A branch's state AGGREGATES its subtree**, reusing the per-glyph/unit vocabulary
+  of §2 (`pending`/`in_progress`/`applied`/`unchanged`/`failed`/`rolled_back`) so the
+  tree speaks one status language top to bottom. The aggregation rule, in precedence
+  order:
+  - **active** (spinner) if **any** descendant is `pending`/`in_progress`;
+  - else **failed** if **any** descendant is `failed` terminally;
+  - else **rolled_back** if the subtree rolled back (any descendant `rolled_back`,
+    none still failing);
+  - else **settled** — resolved to `applied` when the subtree did work, `unchanged`
+    when every descendant was a `Noop` — once **all** descendants are settled.
+  A branch spins while anything under it is still moving and resolves to the
+  worst terminal state beneath it once everything has stopped.
+- **The `<removes>` group and single-leaf roots render naturally** as tree nodes: the
+  `<removes>` group is one branch (its removals nesting under it, logged to
+  `_removes_.log` per 3a), and a scroll with a single leaf unit is a one-node tree —
+  no special case, the tree degenerates cleanly.
 
 A **disconnected client re-polls the same id and loses nothing** durable — the WAL
 holds the whole state history; `golemctl apply --reattach` (or a `fleet status`) hits
@@ -420,6 +523,12 @@ coexist.
    the devenv workspace pins. Pattern adoption plus an `iocraft` dependency, not a
    `devenv-tui` dependency.
 
+7. **Keep log lines in memory only, as devenv-tui does.** Rejected: devenv-tui's
+   per-node buffers vanish when the process exits, leaving nothing to grep after an
+   apply. golem writes the event lines to tmp files (§3a) and advertises the path
+   (§3b) precisely to keep the after-the-fact record devenv drops. The extra cost is
+   a line-append per event.
+
 6. **Re-implement the live spinners in Python (rich `Live`) for fleet.** Rejected:
    two TUIs to build and keep in step for the same picture. golemctl is the product
    surface and already must run the fire-then-poll protocol; a Python renderer would
@@ -436,6 +545,15 @@ coexist.
   `events` log under each active unit; a client that drops its connection re-polls
   the id (or `latest`) from its cursor and loses nothing durable — the reconcile is
   no longer coupled to one TCP connection.
+- **Every apply leaves a greppable log on disk.** golemctl writes each event line to
+  `$TMPDIR/golemctl/apply-<id>/` — a combined `all.log` plus a per-unit file (§3a) —
+  and advertises that directory above the spinners (§3b). Trivial extra IO (a
+  line-append per event to two files) buys an after-the-fact record devenv-tui does
+  not keep; no rotation, tmp is the lifecycle.
+- **The renderer model is a real scroll tree, not a flat unit list.** Branch nodes
+  (path prefixes) get their own spinner and an aggregated subtree status (§3c),
+  superseding the flat per-unit fold; the `<removes>` group and single-leaf roots
+  fall out as ordinary tree nodes.
 - **Apply is a two-request, cursor-polled protocol.** `POST /manifest` →
   `202 { reconcile_id }`, then `GET /reconciles/<id>?after=<cursor>` until settled.
   Every client (golemctl directly, fleet via golemctl, any future one) follows the
