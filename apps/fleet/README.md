@@ -40,6 +40,11 @@ hosts. `deploy`, `apply`, and `logs` take `--hosts` to target a subset; without
 it they hit every VM. `apply` accepts either an `.emet` source (compiled here)
 or a prebuilt `manifest.bin`; relative paths anchor at the repo root.
 
+On a guest, `journalctl -u <unit>` works as the `golem` user without sudo — the
+cloud-init user data adds it to the `systemd-journal` group. Existing VMs booted
+before this change need a `fleet reset` (cloud-init runs once per instance) or a
+one-off `sudo usermod -aG systemd-journal golem` to pick up the membership.
+
 ## Port scheme
 
 Each VM claims a slot derived from its **name**, not its position in the boot

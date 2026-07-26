@@ -109,7 +109,9 @@ def _seed_user_data(name: str, pubkey: str) -> str:
     # The cloud-init contract for a guest: set the hostname, create a passwordless
     # `golem` sudoer whose only login is the injected fleet pubkey, and disable
     # ssh password auth and root login. Key-only access is what lets the harness
-    # ssh in unattended right after boot.
+    # ssh in unattended right after boot. `systemd-journal` membership lets the
+    # golem user read `journalctl -u <unit>` without sudo, which the reconciler's
+    # forensics and on-box debugging rely on.
     return "\n".join(
         [
             "#cloud-config",
@@ -121,6 +123,7 @@ def _seed_user_data(name: str, pubkey: str) -> str:
             f"  - name: {config.GUEST_USER}",
             "    sudo: ALL=(ALL) NOPASSWD:ALL",
             "    shell: /bin/bash",
+            "    groups: [systemd-journal]",
             "    lock_passwd: true",
             "    ssh_authorized_keys:",
             f"      - {pubkey}",
