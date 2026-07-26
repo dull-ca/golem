@@ -28,7 +28,7 @@ import Lichess exposing
   )
 
 scaly : Scroll
-scaly = host "scaly" (workload "fishnet" (ghcrImage "lichess-org/fishnet" "latest"))
+scaly = host "scaly" (workload "fishnet" (dockerImage "niklasf/fishnet" "latest"))
 
 manta : Scroll
 manta =
@@ -60,12 +60,12 @@ talos : Scroll
 talos =
   host "talos"
     (List.concat
-      [ workload "fishnet" (ghcrImage "lichess-org/fishnet" "latest")
+      [ workload "fishnet" (dockerImage "niklasf/fishnet" "latest")
       , service "influxd" (dockerImage "influxdb" "2") 8086
       , service "alertmanager" (dockerImage "prom/alertmanager" "latest") 9093
       , service "prometheus" (dockerImage "prom/prometheus" "latest") 9090
       , service "loki" (dockerImage "grafana/loki" "latest") 3100
-      , service "dns" (ghcrImage "lichess-org/dnsmasq" "latest") 53
+      , service "dns" (dockerImage "dockurr/dnsmasq" "latest") 53
       , service "ntpd" (dockerImage "cturra/ntp" "latest") 123
       , service "rsyslogd" (dockerImage "rsyslog/rsyslog" "latest") 514
       , ingress "monitor.lichess.ovh" "prometheus" 443
