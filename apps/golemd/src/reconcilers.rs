@@ -46,14 +46,14 @@ use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
 pub struct HostReconciler<R: CommandRunner> {
     runner: R,
     apt: std::sync::Mutex<()>,
+    daemon_reload: std::sync::Mutex<()>,
+    line_locks:
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
 }
 
 impl HostReconciler<SystemCommandRunner> {
     pub fn system() -> Self {
-        Self {
-            runner: SystemCommandRunner,
-            apt: std::sync::Mutex::new(()),
-        }
+        Self::with_runner(SystemCommandRunner)
     }
 }
 
@@ -62,6 +62,8 @@ impl<R: CommandRunner> HostReconciler<R> {
         Self {
             runner,
             apt: std::sync::Mutex::new(()),
+            daemon_reload: std::sync::Mutex::new(()),
+            line_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -108,6 +110,7 @@ impl<R: CommandRunner> HostReconciler<R> {
         glyph: &Glyph,
         sink: &mut CommandSink<'_>,
     ) -> EnactResult<Outcome> {
+        let _guard = self.apt.lock().unwrap_or_else(|p| p.into_inner());
         if self.apt_installed(name)? {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
         }
@@ -135,6 +138,31 @@ impl<R: CommandRunner> HostReconciler<R> {
             },
             true,
         ))
+    }
+
+    fn apply_line_in_file_locked(
+        &self,
+        path: &str,
+        line: &str,
+        cid: ContentId,
+        glyph: &Glyph,
+    ) -> EnactResult<Outcome> {
+        let lock = {
+            let mut map = self.line_locks.lock().unwrap_or_else(|p| p.into_inner());
+            map.entry(path.to_string())
+                .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        apply_line_in_file(path, line, cid, glyph)
+    }
+
+    #[cfg(test)]
+    fn line_lock_for(&self, path: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+        let mut map = self.line_locks.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(path.to_string())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+            .clone()
     }
 
     fn apt_installed(&self, name: &str) -> EnactResult<bool> {
@@ -175,9 +203,11 @@ impl<R: CommandRunner> HostReconciler<R> {
         if prior_enabled && prior_active {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
         }
-        let reloaded = self
-            .runner
-            .run_streaming("systemctl", &["daemon-reload"], sink)?;
+        let reloaded = {
+            let _guard = self.daemon_reload.lock().unwrap_or_else(|p| p.into_inner());
+            self.runner
+                .run_streaming("systemctl", &["daemon-reload"], sink)?
+        };
         if !reloaded.succeeded() {
             return Err(EnactError::Retryable(format!(
                 "systemctl daemon-reload: {}",
@@ -234,6 +264,7 @@ impl<R: CommandRunner> HostReconciler<R> {
     }
 
     fn reverse_apt(&self, name: &str) -> EnactResult<()> {
+        let _guard = self.apt.lock().unwrap_or_else(|p| p.into_inner());
         let removed = self.runner.run("apt-get", &["remove", "-y", name])?;
         if !removed.succeeded() {
             return Err(EnactError::Retryable(format!(
@@ -292,7 +323,10 @@ impl<R: CommandRunner> HostReconciler<R> {
 
 impl<R: CommandRunner> HostReconciler<R> {
     fn try_restart(&self, unit: &str) -> EnactResult<()> {
-        let reloaded = self.runner.run("systemctl", &["daemon-reload"])?;
+        let reloaded = {
+            let _guard = self.daemon_reload.lock().unwrap_or_else(|p| p.into_inner());
+            self.runner.run("systemctl", &["daemon-reload"])?
+        };
         if !reloaded.succeeded() {
             return Err(EnactError::Retryable(format!(
                 "systemctl daemon-reload: {}",
@@ -377,7 +411,9 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
                 Entry::Directory { perms } => apply_directory(path, perms, cid, glyph),
                 Entry::Symlink { target } => apply_symlink(path, target, cid, glyph),
             },
-            Glyph::LineInFile { path, line } => apply_line_in_file(path, line, cid, glyph),
+            Glyph::LineInFile { path, line } => {
+                self.apply_line_in_file_locked(path, line, cid, glyph)
+            }
         }
     }
 
@@ -1204,6 +1240,124 @@ mod tests {
             reload < enable,
             "daemon-reload must precede enable, log was {log:?}"
         );
+    }
+
+    struct ReloadCountingRunner {
+        inner: FakeCommandRunner,
+        in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        max_seen: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl ReloadCountingRunner {
+        fn new() -> Self {
+            Self {
+                inner: FakeCommandRunner::new(),
+                in_flight: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_seen: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
+    impl CommandRunner for ReloadCountingRunner {
+        fn run(&self, program: &str, args: &[&str]) -> EnactResult<crate::host::CommandOutput> {
+            if program == "systemctl" && args == ["daemon-reload"] {
+                let now = self
+                    .in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.max_seen
+                    .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                for _ in 0..2000 {
+                    std::hint::spin_loop();
+                }
+                self.in_flight
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.run(program, args)
+        }
+        fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _sink: &mut CommandSink<'_>,
+        ) -> EnactResult<crate::host::CommandOutput> {
+            self.run(program, args)
+        }
+    }
+
+    #[test]
+    fn concurrent_daemon_reloads_are_serialized() {
+        let runner = ReloadCountingRunner::new();
+        let max = runner.max_seen.clone();
+        let rec = std::sync::Arc::new(HostReconciler::with_runner(runner));
+        std::thread::scope(|s| {
+            for unit in ["a", "b", "c", "d"] {
+                let rec = rec.clone();
+                s.spawn(move || {
+                    let g = systemd(unit);
+                    let _ = rec.apply(&g, glyph_content_id(&g));
+                });
+            }
+        });
+        assert_eq!(
+            max.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no two daemon-reloads were ever in flight at once"
+        );
+    }
+
+    #[test]
+    fn line_in_file_serializes_one_path_and_overlaps_distinct_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let same = dir.path().join("same");
+        let same = same.to_str().unwrap().to_string();
+        let other = dir.path().join("other");
+        let other = other.to_str().unwrap().to_string();
+        let rec = std::sync::Arc::new(HostReconciler::with_runner(FakeCommandRunner::new()));
+
+        let held = rec.line_lock_for(&same);
+        let guard = held.lock().unwrap();
+
+        let overlap = {
+            let rec = rec.clone();
+            let other = other.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let g = line_glyph(&other, "distinct");
+                let _ = rec.apply(&g, glyph_content_id(&g));
+                let _ = tx.send(());
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+        };
+        assert!(
+            overlap.is_ok(),
+            "a writer to a distinct path is not blocked by another path's held lock"
+        );
+
+        let blocked = {
+            let rec = rec.clone();
+            let same = same.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let g = line_glyph(&same, "contended");
+                let _ = rec.apply(&g, glyph_content_id(&g));
+                let _ = tx.send(());
+            });
+            let stalled = rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err();
+            drop(guard);
+            let finished = rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+            (stalled, finished)
+        };
+        assert!(
+            blocked.0,
+            "a second writer to the same path blocks while the path lock is held"
+        );
+        assert!(
+            blocked.1,
+            "the blocked same-path writer proceeds once the lock is released"
+        );
+        assert_eq!(fs::read_to_string(&same).unwrap(), "contended\n");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "distinct\n");
     }
 
     #[test]

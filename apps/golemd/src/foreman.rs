@@ -378,24 +378,46 @@ impl Foreman {
         let batch_installed: Mutex<std::collections::HashSet<String>> = Mutex::new(batch_installed);
         let succeeded: Mutex<std::collections::HashSet<(String, ContentId)>> =
             Mutex::new(std::collections::HashSet::new());
-        for (idx, unit) in units.iter().enumerate() {
-            let effective = resolve_retry(&self.retry, &unit.policy_chain);
-            let result = self
-                .enact_unit(
-                    reconcile_id,
-                    &next_ord,
-                    &unit_ops[idx],
-                    &shared[idx],
-                    &succeeded,
-                    &batch_installed,
-                    &prior,
-                    &unit.path,
-                    &effective,
-                    &retry_clock,
-                )
-                .map_err(ForemanError::Internal)?;
-            unit_reports.push(unit_report_from(result));
+        let results: Mutex<Vec<Option<UnitReport>>> =
+            Mutex::new((0..units.len()).map(|_| None).collect());
+        let queue = AtomicU64::new(0);
+        let workers = self.enact.workers.max(1);
+        let enact_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let idx = queue.fetch_add(1, Ordering::SeqCst) as usize;
+                    if idx >= units.len() {
+                        break;
+                    }
+                    let unit = &units[idx];
+                    let effective = resolve_retry(&self.retry, &unit.policy_chain);
+                    match self.enact_unit(
+                        reconcile_id,
+                        &next_ord,
+                        &unit_ops[idx],
+                        &shared[idx],
+                        &succeeded,
+                        &batch_installed,
+                        &prior,
+                        &unit.path,
+                        &effective,
+                        &retry_clock,
+                    ) {
+                        Ok(result) => {
+                            results.lock().unwrap()[idx] = Some(unit_report_from(result));
+                        }
+                        Err(e) => {
+                            *enact_err.lock().unwrap() = Some(e);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = enact_err.into_inner().unwrap() {
+            return Err(ForemanError::Internal(e));
         }
+        unit_reports.extend(results.into_inner().unwrap().into_iter().flatten());
 
         for group in self
             .plan_vanished_removes(&prior, &desired.scroll, &units)
@@ -2338,6 +2360,10 @@ mod tests {
             self.foreman = self.foreman.with_retry_config(cfg);
             self
         }
+        fn with_enact_config(mut self, cfg: EnactConfig) -> Self {
+            self.foreman = self.foreman.with_enact_config(cfg);
+            self
+        }
         fn apply_scroll(&self, mut scroll: Scroll) -> Result<ReconcileReport, ForemanError> {
             scroll.name = self.foreman.host().to_string();
             let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
@@ -2844,15 +2870,17 @@ mod tests {
             .retryable_always("apt:one")
             .retryable_always("apt:two")
             .ok_default();
-        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
-            max_attempts: 5,
-            base_delay_ms: 5,
-            backoff_multiplier: 1.0,
-            max_delay_ms: 5,
-            jitter_fraction: 0.0,
-            max_elapsed_ms: 1,
-            on_exhaust: OnExhaustConfig::Keep,
-        });
+        let foreman = foreman_with(reconciler)
+            .with_retry_config(RetryConfig {
+                max_attempts: 5,
+                base_delay_ms: 5,
+                backoff_multiplier: 1.0,
+                max_delay_ms: 5,
+                jitter_fraction: 0.0,
+                max_elapsed_ms: 1,
+                on_exhaust: OnExhaustConfig::Keep,
+            })
+            .with_enact_config(EnactConfig { workers: 1 });
         let scroll = branch_scroll(
             "host",
             vec![
@@ -3014,6 +3042,282 @@ mod tests {
         )
         .with_enact_config(EnactConfig { workers: 1 });
         assert_eq!(foreman.enact.workers, 1);
+    }
+
+    struct OverlapReconciler {
+        gate: Arc<std::sync::Barrier>,
+        both_arrived: Arc<std::sync::atomic::AtomicBool>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl OverlapReconciler {
+        fn new() -> Self {
+            Self {
+                gate: Arc::new(std::sync::Barrier::new(2)),
+                both_arrived: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                present: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+    impl Reconciler for OverlapReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            if glyph.key().starts_with("apt:latch") {
+                self.gate.wait();
+                self.both_arrived
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.present.lock().unwrap().insert(glyph.key(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn two_independent_units_enact_concurrently() {
+        let rec = Arc::new(OverlapReconciler::new());
+        let arrived = rec.both_arrived.clone();
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 2 });
+        let scroll = {
+            let mut s = branch_scroll(
+                "host",
+                vec![
+                    leaf_scroll("a", vec![apt("latch-a")]),
+                    leaf_scroll("b", vec![apt("latch-b")]),
+                ],
+            );
+            s.name = "host".into();
+            s
+        };
+        let bytes = manifest(vec![scroll]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f.apply_manifest(&bytes).map(|_| ()));
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert!(
+            done.is_ok(),
+            "the reconcile completed (the two units met at the barrier)"
+        );
+        assert!(
+            arrived.load(std::sync::atomic::Ordering::SeqCst),
+            "both units were inside apply simultaneously — genuine overlap, not interleaving"
+        );
+    }
+
+    struct ConcurrencyWitnessReconciler {
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        max_seen: Arc<std::sync::atomic::AtomicUsize>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl ConcurrencyWitnessReconciler {
+        fn new() -> Self {
+            Self {
+                in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                present: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+    impl Reconciler for ConcurrencyWitnessReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            if glyph.key().starts_with("apt:latch") {
+                let now = self
+                    .in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.max_seen
+                    .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                for _ in 0..50_000 {
+                    std::hint::spin_loop();
+                }
+                self.in_flight
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.present.lock().unwrap().insert(glyph.key(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn workers_one_never_overlaps_units() {
+        let rec = Arc::new(ConcurrencyWitnessReconciler::new());
+        let max = rec.max_seen.clone();
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![apt("latch-a")]),
+                leaf_scroll("b", vec![apt("latch-b")]),
+                leaf_scroll("c", vec![apt("latch-c")]),
+            ],
+        );
+        let report = f.apply_manifest(&manifest(vec![scroll])).unwrap();
+        assert_eq!(report.units.len(), 3, "every unit still settles serially");
+        assert_eq!(
+            max.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "workers = 1 never runs two units' applies at once — today's serial behavior"
+        );
+    }
+
+    struct RollbackVsEnactReconciler {
+        release_slow: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        slow_recv: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        reversing_started: Arc<std::sync::atomic::AtomicBool>,
+        slow_in_apply: Arc<std::sync::atomic::AtomicBool>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl RollbackVsEnactReconciler {
+        fn new() -> Self {
+            let (tx, rx) = std::sync::mpsc::channel();
+            Self {
+                release_slow: Mutex::new(Some(tx)),
+                slow_recv: Mutex::new(Some(rx)),
+                reversing_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                slow_in_apply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                present: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+    impl Reconciler for RollbackVsEnactReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            if key == "apt:b-slow" {
+                self.slow_in_apply
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let rx = self.slow_recv.lock().unwrap().take();
+                if let Some(rx) = rx {
+                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                }
+            }
+            if key == "apt:a-bad" {
+                return Err(EnactError::Fatal("scripted fatal for apt:a-bad".into()));
+            }
+            self.present.lock().unwrap().insert(key, cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            self.reversing_started
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(tx) = self.release_slow.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            self.present.lock().unwrap().remove(&outcome.op.key());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_units_rollback_reverses_only_its_own_steps_while_a_sibling_is_mid_enact() {
+        let rec = Arc::new(RollbackVsEnactReconciler::new());
+        let slow_in_apply = rec.slow_in_apply.clone();
+        let reversing = rec.reversing_started.clone();
+        let witness = rec.clone();
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            on_exhaust: OnExhaustConfig::Rollback,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 2 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("bunit", vec![apt("b-slow")]),
+                leaf_scroll("aunit", vec![apt("a-good"), apt("a-bad")]),
+            ],
+        );
+        let bytes = manifest(vec![scroll]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f.apply_manifest(&bytes));
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(10));
+        let report = done
+            .expect("the reconcile completed (b-slow released by a-good's reverse)")
+            .unwrap();
+        assert!(
+            slow_in_apply.load(std::sync::atomic::Ordering::SeqCst),
+            "the sibling was genuinely inside its apply"
+        );
+        assert!(
+            reversing.load(std::sync::atomic::Ordering::SeqCst),
+            "the failing unit rolled back"
+        );
+        let keys: Vec<String> = witness.present.lock().unwrap().keys().cloned().collect();
+        assert!(
+            !keys.contains(&"apt:a-good".to_string()),
+            "the failing unit reversed its own applied glyph, got {keys:?}"
+        );
+        assert!(
+            keys.contains(&"apt:b-slow".to_string()),
+            "the concurrent sibling's applied glyph survived the other unit's rollback, got {keys:?}"
+        );
+        let aunit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "aunit")
+            .unwrap();
+        assert_eq!(aunit.outcome, UnitOutcome::RolledBack);
+        let bunit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "bunit")
+            .unwrap();
+        assert_eq!(bunit.outcome, UnitOutcome::Settled);
     }
 
     #[test]
@@ -3278,7 +3582,8 @@ mod tests {
             on_exhaust: OnExhaustConfig::Keep,
             base_delay_ms: 0,
             ..Default::default()
-        });
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
         let scroll = branch_scroll(
             "host",
             vec![
@@ -3326,7 +3631,7 @@ mod tests {
     #[test]
     fn a_shared_key_across_units_enacts_once_and_credits_the_rest() {
         let reconciler = ScriptedReconciler::new().ok_default();
-        let foreman = foreman_with(reconciler);
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
         let scroll = branch_scroll(
             "host",
             vec![
@@ -3368,7 +3673,7 @@ mod tests {
     #[test]
     fn only_the_enacting_unit_rollback_removes_a_shared_glyph() {
         let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
-        let foreman = foreman_with(reconciler);
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
         let scroll = branch_scroll(
             "host",
             vec![
@@ -3406,7 +3711,7 @@ mod tests {
     #[test]
     fn a_keep_unit_crediting_a_shared_glyph_stays_partial() {
         let reconciler = ScriptedReconciler::new().fatal_on("apt:down").ok_default();
-        let foreman = foreman_with(reconciler);
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
         let enacting = leaf_scroll("base", vec![apt("shared")]);
         let canary = leaf_scroll_with_policy(
             "canary",
@@ -3481,7 +3786,8 @@ mod tests {
             on_exhaust: OnExhaustConfig::Keep,
             base_delay_ms: 0,
             ..Default::default()
-        });
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
         let canary = leaf_scroll("canary", vec![apt("shared")]);
         let sibling = leaf_scroll("sibling", vec![apt("shared")]);
         let report = f
@@ -3519,7 +3825,7 @@ mod tests {
     #[test]
     fn a_noop_credited_by_a_sibling_does_not_shadow_the_real_inverse() {
         let reconciler = ScriptedReconciler::new().ok_default();
-        let foreman = foreman_with(reconciler);
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
 
         // Attempt 1: only "first" declares apt:shared — a real Install.
         let attempt1 = branch_scroll("host", vec![leaf_scroll("first", vec![apt("shared")])]);
@@ -3830,7 +4136,8 @@ mod tests {
             max_attempts: 1,
             base_delay_ms: 0,
             ..Default::default()
-        });
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
         let scroll = branch_scroll(
             "host",
             vec![
