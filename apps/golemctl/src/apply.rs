@@ -77,7 +77,12 @@ pub async fn run(bytes: Vec<u8>, addr: &str, json: bool, reattach: bool) -> Resu
 async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
     let mut persistence = Persistence::open(id);
     if let Some(dir) = persistence.dir() {
-        println!("logs: {}/", dir.display());
+        let line = format!("logs: {}/", dir.display());
+        if json {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
     }
     let mut cursor = 0u64;
     loop {
@@ -85,7 +90,12 @@ async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
         cursor = p.cursor;
         persistence.persist(&p.events);
         for ev in &p.events {
-            println!("{}", plain_line(ev));
+            let line = plain_line(ev);
+            if json {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
         }
         if should_stop(&p) {
             if let Some(report) = &p.report {
