@@ -98,6 +98,29 @@ impl Reconciler for StreamingOk {
     }
 }
 
+struct GatedOk {
+    entered_apply: std::sync::mpsc::Sender<()>,
+    release_apply: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl Reconciler for GatedOk {
+    fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+        let _ = self.entered_apply.send(());
+        let _ = self.release_apply.lock().unwrap().recv();
+        Ok(Outcome {
+            op: GlyphOp::Install {
+                cid,
+                glyph: glyph.clone(),
+            },
+            cid,
+            inverse: inverse_of(glyph),
+            changed: true,
+        })
+    }
+    fn reverse(&self, _o: &Outcome) -> EnactResult<()> {
+        Ok(())
+    }
+}
+
 fn manifest_bytes() -> Vec<u8> {
     let host = Scroll {
         name: "h1".into(),
@@ -163,6 +186,97 @@ async fn apply_returns_202_then_polls_to_settled_with_report() {
     assert_eq!(p["report"]["outcome"], "settled");
     assert_eq!(p["units"][0]["glyphs"][0]["glyph_key"], "apt:nginx");
     assert_eq!(p["units"][0]["glyphs"][0]["state"], "applied");
+}
+
+#[tokio::test]
+async fn a_concurrent_post_while_run_reconcile_holds_the_write_lock_blocks_rather_than_409s() {
+    let (entered_apply_tx, entered_apply_rx) = std::sync::mpsc::channel();
+    let (release_apply_tx, release_apply_rx) = std::sync::mpsc::channel();
+    let foreman = Foreman::new(
+        "h1".into(),
+        Box::new(MemoryPlanRoom::new()),
+        Box::new(GatedOk {
+            entered_apply: entered_apply_tx,
+            release_apply: std::sync::Mutex::new(release_apply_rx),
+        }),
+    )
+    .with_retry_config(RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    });
+    let base = serve(foreman).await;
+
+    let first = reqwest::Client::new()
+        .post(format!("{base}/manifest"))
+        .header("content-type", "application/octet-stream")
+        .body(manifest_bytes())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 202);
+
+    entered_apply_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the first reconcile's apply() to start");
+
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        release_apply_tx.send(()).unwrap();
+    });
+
+    let second = reqwest::Client::new()
+        .post(format!("{base}/manifest"))
+        .header("content-type", "application/octet-stream")
+        .body(manifest_bytes())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(second.status().as_u16(), 202);
+}
+
+#[tokio::test]
+async fn a_manifest_posted_against_an_unsettled_attempt_gets_a_real_http_409() {
+    let foreman = Arc::new(
+        Foreman::new("h1".into(), Box::new(MemoryPlanRoom::new()), Box::new(Ok1))
+            .with_retry_config(RetryConfig {
+                max_attempts: 1,
+                base_delay_ms: 0,
+                ..Default::default()
+            }),
+    );
+
+    let ingest_foreman = foreman.clone();
+    let (first_id, _selected) = tokio::task::spawn_blocking(move || {
+        ingest_foreman
+            .ingest(&manifest_bytes())
+            .expect("ingest opens the unsettled attempt")
+    })
+    .await
+    .unwrap();
+
+    let app = http::router(http::AppState {
+        foreman: foreman.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let second = reqwest::Client::new()
+        .post(format!("{base}/manifest"))
+        .header("content-type", "application/octet-stream")
+        .body(manifest_bytes())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status().as_u16(), 409);
+    let body: serde_json::Value = second.json().await.unwrap();
+    assert_eq!(body["kind"], "reconcile-in-progress");
+    assert_eq!(body["reconcile_id"], first_id);
 }
 
 #[test]
