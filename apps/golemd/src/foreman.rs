@@ -339,12 +339,26 @@ impl Foreman {
             .collect();
         let shared = shared_pairs(&unit_ops);
         let enacting_ops: Vec<GlyphOp> = unit_ops.iter().flatten().cloned().collect();
-        if let Err(e) = self.reconciler.prepare(&enacting_ops) {
-            warn!(
-                error = %format!("{e:?}"),
-                "prepare pre-pass reported a failure; per-unit enact will classify"
-            );
-        }
+        // NOTE: the claim set holds the apt package names the batch pre-pass
+        // ACTUALLY installed this attempt (absent before, install succeeded). The
+        // first unit declaring each such package claims the real
+        // `Inverse::RemoveAptPackage` its per-unit `apply_apt` can no longer
+        // observe — the batch already made the package present, so every per-unit
+        // apply sees `changed = false`/`Inverse::Nothing` (ADR 0034 §2). A Mutex,
+        // not a Cell, so the parallel executor reads and removes from it across
+        // concurrent unit threads. On a `prepare` failure the set stays empty and
+        // the per-unit applies classify the failure as before.
+        let batch_installed = match self.reconciler.prepare(&enacting_ops) {
+            Ok(outcome) => outcome.batch_installed,
+            Err(e) => {
+                warn!(
+                    error = %format!("{e:?}"),
+                    "prepare pre-pass reported a failure; per-unit enact will classify"
+                );
+                std::collections::HashSet::new()
+            }
+        };
+        let batch_installed: Mutex<std::collections::HashSet<String>> = Mutex::new(batch_installed);
         // NOTE: the success set is attempt-scoped and shared across every unit: a
         // shared `(key, cid)` pair enters it only once a real apply succeeds, so a
         // later declarer credits only what a prior declarer actually put on the
@@ -361,6 +375,7 @@ impl Foreman {
                     &unit_ops[idx],
                     &shared[idx],
                     &succeeded,
+                    &batch_installed,
                     &prior,
                     &unit.path,
                     &effective,
@@ -383,6 +398,7 @@ impl Foreman {
                     &group.ops,
                     &shared,
                     &succeeded,
+                    &batch_installed,
                     &prior,
                     &group.unit_path,
                     &effective,
@@ -531,6 +547,7 @@ impl Foreman {
         ops: &[GlyphOp],
         shared: &[bool],
         succeeded: &Mutex<std::collections::HashSet<(String, ContentId)>>,
+        batch_installed: &Mutex<std::collections::HashSet<String>>,
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
@@ -551,6 +568,7 @@ impl Foreman {
                 op,
                 shared[offset],
                 succeeded,
+                batch_installed,
                 prior,
                 unit_path,
                 1,
@@ -594,6 +612,7 @@ impl Foreman {
                     op,
                     shared[offset as usize],
                     succeeded,
+                    batch_installed,
                     prior,
                     unit_path,
                     round,
@@ -656,6 +675,20 @@ impl Foreman {
     /// itself: [`enact_one`]'s `Noop` arm writes no WAL step, and a phantom `Done`
     /// from crediting it would shadow the real prior inverse still on record for
     /// that key (ADR 0020 inverse-loss).
+    ///
+    /// An apt `Install` whose package the batch pre-pass already installed this
+    /// attempt takes a third path: the FIRST unit to reach it **claims** it
+    /// ([`enact_claimed`]) — removing the name from `batch_installed` under the
+    /// mutex so only one claimer wins — and records the real
+    /// `Inverse::RemoveAptPackage` bracket WITHOUT re-running apt, since the batch
+    /// already made the package present (its per-unit `apply_apt` would only
+    /// observe `changed = false`/`Inverse::Nothing`). The claimer ALSO inserts the
+    /// pair into `succeeded` when the op is shared, so sibling declarers of the
+    /// same package credit (`changed = false`) rather than redundantly running
+    /// `apply_apt` — the claim is the enacting bracket, the credits its no-op
+    /// mirrors, exactly as an ordinary real apply would seed the set. A later
+    /// observer whose name was already claimed (removed from the set) takes the
+    /// normal apply path and honestly observes the package installed.
     #[allow(clippy::too_many_arguments)]
     fn enact_or_credit(
         &self,
@@ -664,6 +697,7 @@ impl Foreman {
         op: &GlyphOp,
         shared: bool,
         succeeded: &Mutex<std::collections::HashSet<(String, ContentId)>>,
+        batch_installed: &Mutex<std::collections::HashSet<String>>,
         prior: &[Outcome],
         unit_path: &[String],
         round: u32,
@@ -674,6 +708,19 @@ impl Foreman {
         let pair = (op.key(), enacted_cid_of(op));
         if shared && succeeded.lock().unwrap().contains(&pair) {
             return self.enact_credited(reconcile_id, ord, op, unit_path);
+        }
+        if let GlyphOp::Install {
+            glyph: glyph @ Glyph::AptPackage { name },
+            ..
+        } = op
+        {
+            if batch_installed.lock().unwrap().remove(name) {
+                let class = self.enact_claimed(reconcile_id, ord, op, glyph, unit_path)?;
+                if shared && matches!(class, StepClass::Ok) {
+                    succeeded.lock().unwrap().insert(pair);
+                }
+                return Ok(class);
+            }
         }
         let class = self.enact_one(reconcile_id, ord, op, prior, unit_path, round)?;
         if shared && matches!(class, StepClass::Ok) {
@@ -718,6 +765,54 @@ impl Foreman {
             op,
             Some(&Inverse::Nothing),
             Some(false),
+            unit_path,
+        )?;
+        Ok(StepClass::Ok)
+    }
+
+    /// Record the bracket for an apt `Install` the batch pre-pass already
+    /// installed this attempt, without re-running apt (ADR 0034 §2). The observed
+    /// truth — the package was absent before the batch and the batch put it there
+    /// — is the claim, so the bracket carries the real
+    /// [`Inverse::RemoveAptPackage`] (from [`inverse_of`]) and `changed = true`,
+    /// exactly the receipt a per-unit `apply_apt` would have captured had it done
+    /// the install itself. Only the first unit to reach the package claims it
+    /// ([`enact_or_credit`] removes the name from `batch_installed` under the
+    /// mutex); the enacting bracket is what a unit-scoped rollback reverses to
+    /// remove the batch-installed package, closing the gap where a successful batch
+    /// left every per-unit apply observing `changed = false`/`Inverse::Nothing`
+    /// and no unit holding the real inverse.
+    ///
+    /// [`inverse_of`]: crate::reconciler::inverse_of
+    fn enact_claimed(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        glyph: &Glyph,
+        unit_path: &[String],
+    ) -> Result<StepClass> {
+        let inverse = crate::reconciler::inverse_of(glyph);
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Intended,
+            op,
+            Some(&inverse),
+            None,
+            unit_path,
+        )?;
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Done,
+            op,
+            Some(&inverse),
+            Some(true),
             unit_path,
         )?;
         Ok(StepClass::Ok)
@@ -2146,12 +2241,12 @@ mod tests {
                 changed: true,
             })
         }
-        fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+        fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
             self.events
                 .lock()
                 .unwrap()
                 .push(format!("prepare {}", ops.len()));
-            Ok(())
+            Ok(crate::reconciler::PrepareOutcome::default())
         }
         fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
             let key = outcome.op.key();
@@ -3557,5 +3652,327 @@ mod tests {
         assert_eq!(report.outcome, TopOutcome::RolledBack);
         assert_eq!(*rec.reversed.lock().unwrap(), vec!["apt:a".to_string()]);
         assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+    }
+
+    /// A fake host modelling the real apt/batch semantics: `prepare` batch-installs
+    /// every apt `Install` name absent from the host, reporting the freshly
+    /// installed ones in `batch_installed`; a later per-unit `apply` of an apt
+    /// glyph observes it already installed and returns `changed = false`/
+    /// `Inverse::Nothing` (the exact idempotence that opened the rollback gap).
+    /// Non-apt glyphs apply normally, with a scripted `Fatal` per key. `reverse`
+    /// records the call and removes the package/glyph from the host set, so a
+    /// rollback that removes a batch-installed package is observable.
+    struct BatchHost {
+        installed: Mutex<std::collections::BTreeSet<String>>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+        fatal: Mutex<Vec<String>>,
+        reversed: Mutex<Vec<(String, Inverse)>>,
+        applies: Mutex<Vec<String>>,
+    }
+    impl BatchHost {
+        fn new() -> Self {
+            Self {
+                installed: Mutex::new(std::collections::BTreeSet::new()),
+                present: Mutex::new(BTreeMap::new()),
+                fatal: Mutex::new(Vec::new()),
+                reversed: Mutex::new(Vec::new()),
+                applies: Mutex::new(Vec::new()),
+            }
+        }
+        fn fatal_on(self, key: &str) -> Self {
+            self.fatal.lock().unwrap().push(key.into());
+            self
+        }
+    }
+    impl Reconciler for BatchHost {
+        fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+            let mut installed = self.installed.lock().unwrap();
+            let mut batch_installed = std::collections::HashSet::new();
+            for op in ops {
+                if let GlyphOp::Install {
+                    glyph: Glyph::AptPackage { name },
+                    ..
+                } = op
+                {
+                    if installed.insert(name.clone()) {
+                        batch_installed.insert(name.clone());
+                    }
+                }
+            }
+            Ok(crate::reconciler::PrepareOutcome { batch_installed })
+        }
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            self.applies.lock().unwrap().push(key.clone());
+            if self.fatal.lock().unwrap().iter().any(|k| k == &key) {
+                return Err(EnactError::Fatal(format!("scripted fatal for {key}")));
+            }
+            if let Glyph::AptPackage { name } = glyph {
+                let mut installed = self.installed.lock().unwrap();
+                let already = installed.contains(name);
+                installed.insert(name.clone());
+                self.present.lock().unwrap().insert(key.clone(), cid);
+                return Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: if already {
+                        Inverse::Nothing
+                    } else {
+                        crate::reconciler::inverse_of(glyph)
+                    },
+                    changed: !already,
+                });
+            }
+            self.present.lock().unwrap().insert(key.clone(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            let key = outcome.op.key();
+            self.reversed
+                .lock()
+                .unwrap()
+                .push((key.clone(), outcome.inverse.clone()));
+            if let Inverse::RemoveAptPackage { name } = &outcome.inverse {
+                self.installed.lock().unwrap().remove(name);
+            }
+            self.present.lock().unwrap().remove(&key);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_units_rollback_removes_a_batch_installed_package() {
+        let host = Arc::new(BatchHost::new().fatal_on("systemd:doomed"));
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = scroll(
+            "host",
+            vec![
+                apt("podman"),
+                Glyph::SystemdService {
+                    unit: "doomed".into(),
+                },
+            ],
+        );
+        let report = f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert!(
+            host.reversed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, inv)| k == "apt:podman"
+                    && matches!(inv, Inverse::RemoveAptPackage { name } if name == "podman")),
+            "the on_exhaust rollback reverses apt:podman with the real RemoveAptPackage, \
+             removing the batch-installed package"
+        );
+        assert!(
+            !host.installed.lock().unwrap().contains("podman"),
+            "the batch-installed podman is removed from the host by the rollback"
+        );
+    }
+
+    #[test]
+    fn exactly_one_declarer_claims_a_batch_installed_package() {
+        let host = Arc::new(BatchHost::new());
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        let steps = f.planroom.wal_steps().unwrap();
+        let dones: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:podman"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(
+            dones.len(),
+            2,
+            "both units record their own apt:podman bracket"
+        );
+        let real: Vec<&&WalStep> = dones
+            .iter()
+            .filter(|s| {
+                s.changed == Some(true)
+                    && matches!(&s.inverse, Some(Inverse::RemoveAptPackage { name }) if name == "podman")
+            })
+            .collect();
+        assert_eq!(
+            real.len(),
+            1,
+            "exactly one bracket carries changed=true + the real RemoveAptPackage inverse (the claimer)"
+        );
+        let credited: Vec<&&WalStep> = dones
+            .iter()
+            .filter(|s| s.changed == Some(false) && matches!(s.inverse, Some(Inverse::Nothing)))
+            .collect();
+        assert_eq!(
+            credited.len(),
+            1,
+            "the other bracket credits: changed=false + Inverse::Nothing"
+        );
+        assert!(
+            host.applies
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|k| k != "apt:podman"),
+            "the claim reads the batch's install; apt:podman is never re-applied per-unit"
+        );
+    }
+
+    #[test]
+    fn a_batch_failed_package_is_claimed_by_its_own_real_apply_not_the_batch() {
+        // podman installs in the batch; nope is NOT installed by the batch, so it
+        // is absent from `batch_installed` and its per-unit apply records the real
+        // inverse the ordinary way (ADR 0034 §2, hardening 2) — no double-claim.
+        struct PartialBatchHost {
+            installed: Mutex<std::collections::BTreeSet<String>>,
+            applies: Mutex<Vec<String>>,
+        }
+        impl Reconciler for PartialBatchHost {
+            fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+                let mut installed = self.installed.lock().unwrap();
+                let mut batch_installed = std::collections::HashSet::new();
+                for op in ops {
+                    if let GlyphOp::Install {
+                        glyph: Glyph::AptPackage { name },
+                        ..
+                    } = op
+                    {
+                        if name == "nope" {
+                            continue;
+                        }
+                        if installed.insert(name.clone()) {
+                            batch_installed.insert(name.clone());
+                        }
+                    }
+                }
+                Ok(crate::reconciler::PrepareOutcome { batch_installed })
+            }
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let key = glyph.key();
+                self.applies.lock().unwrap().push(key.clone());
+                if let Glyph::AptPackage { name } = glyph {
+                    let mut installed = self.installed.lock().unwrap();
+                    let already = installed.contains(name);
+                    installed.insert(name.clone());
+                    return Ok(Outcome {
+                        op: GlyphOp::Install {
+                            cid,
+                            glyph: glyph.clone(),
+                        },
+                        cid,
+                        inverse: if already {
+                            Inverse::Nothing
+                        } else {
+                            crate::reconciler::inverse_of(glyph)
+                        },
+                        changed: !already,
+                    });
+                }
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+                Ok(())
+            }
+        }
+        let host = Arc::new(PartialBatchHost {
+            installed: Mutex::new(std::collections::BTreeSet::new()),
+            applies: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = scroll("host", vec![apt("podman"), apt("nope")]);
+        f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        assert!(
+            host.applies.lock().unwrap().iter().any(|k| k == "apt:nope"),
+            "the batch-failed nope is applied for real per-unit"
+        );
+        assert!(
+            host.applies
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|k| k != "apt:podman"),
+            "the batch-installed podman is claimed, never re-applied"
+        );
+        let steps = f.planroom.wal_steps().unwrap();
+        let nope_real = steps.iter().any(|s| {
+            s.glyph_key == "apt:nope"
+                && s.state == WalStepState::Done
+                && matches!(&s.inverse, Some(Inverse::RemoveAptPackage { name }) if name == "nope")
+        });
+        assert!(
+            nope_real,
+            "apt:nope's real per-unit apply records the RemoveAptPackage inverse"
+        );
+        let podman_claimed = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:podman"
+                    && s.state == WalStepState::Done
+                    && matches!(&s.inverse, Some(Inverse::RemoveAptPackage { name }) if name == "podman")
+            })
+            .count();
+        assert_eq!(
+            podman_claimed, 1,
+            "apt:podman is claimed exactly once — no double-claim"
+        );
     }
 }

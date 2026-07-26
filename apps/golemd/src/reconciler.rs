@@ -20,6 +20,21 @@ pub enum EnactError {
 
 pub type EnactResult<T> = Result<T, EnactError>;
 
+/// What a [`Reconciler::prepare`] pre-pass reports back to the foreman. Today it
+/// carries the apt package names the batch install (or its per-glyph fallback)
+/// **actually** installed this attempt — names that were absent on the host
+/// before the batch and whose install succeeded. The foreman seeds an
+/// attempt-scoped claim set from this so the first unit declaring each such
+/// package records the real `Inverse::RemoveAptPackage` its per-unit `apply_apt`
+/// can no longer observe (the batch already made the package present, so every
+/// per-unit apply sees `changed = false`/`Inverse::Nothing`). A name absent
+/// before but whose install *failed* is deliberately excluded: its later
+/// per-unit apply records the real inverse the ordinary way.
+#[derive(Debug, Default)]
+pub struct PrepareOutcome {
+    pub batch_installed: std::collections::HashSet<String>,
+}
+
 /// Enact one glyph and record how to reverse it. `apply` brings the host to
 /// `glyph` and returns the [`Outcome`] receipt — the content id, the captured
 /// [`Inverse`], and whether anything changed — that `reverse` later consumes to
@@ -49,8 +64,8 @@ pub trait Reconciler: Send + Sync {
     ) -> EnactResult<Outcome> {
         self.apply(glyph, cid)
     }
-    fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<()> {
-        Ok(())
+    fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
+        Ok(PrepareOutcome::default())
     }
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
@@ -79,7 +94,7 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     ) -> EnactResult<Outcome> {
         (**self).apply_streaming(glyph, cid, sink)
     }
-    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         (**self).prepare(ops)
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
@@ -105,7 +120,7 @@ impl<R: Reconciler + ?Sized> Reconciler for Box<R> {
     ) -> EnactResult<Outcome> {
         (**self).apply_streaming(glyph, cid, sink)
     }
-    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         (**self).prepare(ops)
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
@@ -164,7 +179,7 @@ impl<R: Reconciler> Reconciler for PanicCatching<R> {
         }))
         .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
     }
-    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.prepare(ops)))
             .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
     }

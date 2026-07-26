@@ -37,7 +37,7 @@ use scroll_format::{ContentId, Entry, Glyph, Perms};
 
 use crate::host::{CommandRunner, CommandSink, SystemCommandRunner};
 use crate::journal::{GlyphOp, Inverse, Outcome};
-use crate::reconciler::{EnactError, EnactResult, Reconciler};
+use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
 
 /// Enacts the four glyph kinds on a real host, driving apt and systemd through a
 /// [`CommandRunner`] `R` (the `system()` constructor uses the real one; tests
@@ -64,6 +64,10 @@ impl<R: CommandRunner> HostReconciler<R> {
         }
     }
 
+    /// Install `names` in one `apt-get install` invocation, falling back to a
+    /// per-package install if the batch fails to resolve (ADR 0034 §2). Returns
+    /// `Ok(())`: a fallback package that still will not install is `Retryable`,
+    /// so the round loop retries that glyph individually.
     fn batch_install(&self, names: &[String]) -> EnactResult<()> {
         let _guard = self.apt.lock().unwrap_or_else(|p| p.into_inner());
         let mut args: Vec<&str> = vec!["install", "-y"];
@@ -376,12 +380,24 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         }
     }
 
-    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<()> {
+    fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         let names = apt_install_names(ops);
         if names.is_empty() {
-            return Ok(());
+            return Ok(PrepareOutcome::default());
         }
-        self.batch_install(&names)
+        let absent_before: Vec<String> = names
+            .iter()
+            .filter(|n| !self.apt_installed(n).unwrap_or(false))
+            .cloned()
+            .collect();
+        let batch = self.batch_install(&names);
+        let mut batch_installed = std::collections::HashSet::new();
+        for name in absent_before {
+            if self.apt_installed(&name).unwrap_or(false) {
+                batch_installed.insert(name);
+            }
+        }
+        batch.map(|()| PrepareOutcome { batch_installed })
     }
 
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {

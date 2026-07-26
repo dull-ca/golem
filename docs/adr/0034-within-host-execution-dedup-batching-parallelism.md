@@ -176,19 +176,34 @@ fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> { … }
   the same reconcile-scoped pre-pass slot ADR 0030 §3 defines for its index
   refresh. `HostReconciler::prepare` gathers the distinct apt package names from
   the `Install` ops and runs one `apt-get install -y pkg1 pkg2 …`; the non-apt and
-  fake reconcilers implement it as a no-op (default trait method). ADR 0030's
-  `apt-get update` index refresh, when built, runs in this **same** `prepare`
-  hook, before the batched install — one pre-pass, two responsibilities.
+  fake reconcilers implement it as a no-op (default trait method). `prepare`
+  returns a `PrepareOutcome { batch_installed }` — the names that were **absent on
+  the host before** the batch and whose install (batch or per-glyph fallback)
+  **succeeded** — the receipt the foreman needs to attribute the batch's host
+  effect per unit (see the next bullet). ADR 0030's `apt-get update` index refresh,
+  when built, runs in this **same** `prepare` hook, before the batched install —
+  one pre-pass, two responsibilities.
 
-- **Per-unit brackets are recorded from the batch result.** The batch is a host
-  effect that happened before any unit's bracket; each apt `Install` op then
-  enacts through the normal per-unit path, where `apply_apt` observes the package
-  **already installed** (`apt_installed` true) and records the idempotent bracket
-  (`changed = false` for the crediting units; the enacting unit's bracket carries
-  the `RemoveAptPackage` inverse). The batch front-loads the host work; the
-  brackets attribute it per unit exactly as dedup (§1) already does. The reverse
-  inverse is still per-package `RemoveAptPackage`, so **rollback stays per-unit and
-  per-package** — the batch install does not create a batched, unsplittable undo.
+- **Per-unit brackets are recorded from the batch result, via a foreman claim.**
+  The batch is a host effect that happened before any unit's bracket, so a per-unit
+  `apply_apt` can no longer tell "golem batch-installed this package this attempt"
+  from "it pre-existed": it observes the package **already installed**
+  (`apt_installed` true) and truthfully records `changed = false` /
+  `Inverse::Nothing` — for **every** declarer, leaving no unit holding the real
+  `RemoveAptPackage`. The foreman closes that gap without teaching the stateless
+  `apply_apt` any attempt state: it seeds an attempt-scoped **claim set** from
+  `PrepareOutcome.batch_installed`, and the **first** unit to reach each such
+  package **claims** it — recording the `RemoveAptPackage` bracket
+  (`changed = true`) **without re-running apt**, since the observation (absent
+  before, present now, by the batch) is the claim. Later declarers of a shared
+  package credit (`changed = false` / `Inverse::Nothing`) exactly as dedup (§1)
+  does, because the claim also enters them in the success set. So the reverse
+  inverse is still per-package `RemoveAptPackage` held by exactly one unit, and
+  **rollback stays per-unit and per-package** — an `on_exhaust = rollback` of the
+  claiming unit removes the batch-installed package, and the batch install does not
+  create a batched, unsplittable undo. A package absent-before whose install
+  **failed** is deliberately not in `batch_installed`, so its later per-unit apply
+  records the real inverse the ordinary way — no double-claim.
 
 - **Failure attribution and the correctness-preserving fallback.** `apt-get
   install pkg1 pkg2` fails the **whole** invocation if any one package is
