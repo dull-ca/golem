@@ -637,7 +637,11 @@ impl Foreman {
     /// idempotence. The `succeeded` mutex makes crediting first-success-wins under
     /// the coming parallel executor (ADR 0034 §3); it only suppresses a *redundant*
     /// apply after a success, never coordinates two racing real applies (idempotent
-    /// by construction).
+    /// by construction). A `Noop` never participates in crediting — it takes neither
+    /// branch, so it can neither be credited by a sibling nor enter `succeeded`
+    /// itself: [`enact_one`]'s `Noop` arm writes no WAL step, and a phantom `Done`
+    /// from crediting it would shadow the real prior inverse still on record for
+    /// that key (ADR 0020 inverse-loss).
     #[allow(clippy::too_many_arguments)]
     fn enact_or_credit(
         &self,
@@ -650,6 +654,9 @@ impl Foreman {
         unit_path: &[String],
         round: u32,
     ) -> Result<StepClass> {
+        if matches!(op, GlyphOp::Noop { .. }) {
+            return self.enact_one(reconcile_id, ord, op, prior, unit_path, round);
+        }
         let pair = (op.key(), enacted_cid_of(op));
         if shared && succeeded.lock().unwrap().contains(&pair) {
             return self.enact_credited(reconcile_id, ord, op, unit_path);
@@ -1441,17 +1448,20 @@ struct RemoveGroup<'a> {
 
 /// A per-op mask over `unit_ops`, source order preserved: `true` marks an op
 /// whose `(key, cid)` pair is declared by more than one op across the plan — a
-/// crediting *candidate*. It does not decide who enacts; that is settled at
-/// runtime against the attempt's success set (ADR 0034 §1). The first candidate
-/// to reach its op runs the real `apply` and, only on success, records the pair
-/// so later candidates for the same pair credit (`enact_credited`) instead of
-/// re-running. A candidate whose earlier sibling *failed* the real apply finds
-/// the pair absent and applies for real itself — pre-dedup retry semantics, safe
-/// by reconciler idempotence. A pair declared by exactly one op is never a
-/// candidate (mask `false`) and always enacts. Only `(key, cid)` identity is
-/// shared — the same key with a divergent cid is NOT shared and remains silent
-/// last-wins on the host (ADR 0034 §1, a recorded wart to surface, not resolve
-/// here).
+/// crediting *candidate*, for `Install`/`Replace`/`Remove` ops. It does not
+/// decide who enacts; that is settled at runtime against the attempt's success
+/// set (ADR 0034 §1). The first candidate to reach its op runs the real `apply`
+/// and, only on success, records the pair so later candidates for the same pair
+/// credit (`enact_credited`) instead of re-running. A candidate whose earlier
+/// sibling *failed* the real apply finds the pair absent and applies for real
+/// itself — pre-dedup retry semantics, safe by reconciler idempotence. A pair
+/// declared by exactly one op is never a candidate (mask `false`) and always
+/// enacts. `Noop` pairs are counted here like any other but never read as
+/// candidates: `enact_or_credit` routes every `Noop` straight to `enact_one`
+/// before consulting this mask, so a duplicated `Noop` pair is `true` but inert.
+/// Only `(key, cid)` identity is shared — the same key with a divergent cid is
+/// NOT shared and remains silent last-wins on the host (ADR 0034 §1, a recorded
+/// wart to surface, not resolve here).
 fn shared_pairs(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
     let mut counts: std::collections::HashMap<(String, ContentId), u32> =
         std::collections::HashMap::new();
@@ -3322,6 +3332,98 @@ mod tests {
         assert!(
             rec.present.lock().unwrap().contains_key("apt:shared"),
             "apt:shared is present on the host — the sibling installed it for real"
+        );
+    }
+
+    #[test]
+    fn a_noop_credited_by_a_sibling_does_not_shadow_the_real_inverse() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+
+        // Attempt 1: only "first" declares apt:shared — a real Install.
+        let attempt1 = branch_scroll("host", vec![leaf_scroll("first", vec![apt("shared")])]);
+        foreman.apply_scroll(attempt1).unwrap();
+        let steps = foreman.foreman.planroom.wal_steps().unwrap();
+        let real_dones: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:shared"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(real_dones.len(), 1);
+        assert!(!matches!(
+            real_dones[0].inverse,
+            Some(Inverse::Nothing) | None
+        ));
+
+        // Attempt 2: both "first" and "second" declare apt:shared at the same
+        // cid — both plan a Noop against the fold from attempt 1.
+        let attempt2 = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("shared")]),
+                leaf_scroll("second", vec![apt("shared")]),
+            ],
+        );
+        foreman.apply_scroll(attempt2).unwrap();
+
+        let applies_after_attempt2 = foreman
+            .rec
+            .events()
+            .iter()
+            .filter(|e| e.as_str() == "apply apt:shared")
+            .count();
+        assert_eq!(
+            applies_after_attempt2, 1,
+            "apt:shared is never re-applied by either Noop declarer"
+        );
+
+        let steps = foreman.foreman.planroom.wal_steps().unwrap();
+        let dones_after_attempt2: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:shared"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(
+            dones_after_attempt2.len(),
+            1,
+            "a Noop writes no WAL step, on either side of the shared pair, so no new Done row for apt:shared appears"
+        );
+        let outcomes = foreman.foreman.applied_state().unwrap().unwrap().outcomes;
+        let shared = outcomes
+            .iter()
+            .find(|o| o.op.key() == "apt:shared")
+            .expect("apt:shared is still in the applied set after two Noops");
+        assert!(
+            !matches!(shared.inverse, Inverse::Nothing),
+            "the fold's latest inverse for apt:shared is still attempt 1's real inverse, \
+             not a credited Noop's Inverse::Nothing"
+        );
+
+        // Attempt 3: drop apt:shared everywhere — Remove folds the latest
+        // inverse and must reverse the real one, not Inverse::Nothing.
+        let attempt3 = branch_scroll(
+            "host",
+            vec![leaf_scroll("first", vec![]), leaf_scroll("second", vec![])],
+        );
+        foreman.apply_scroll(attempt3).unwrap();
+
+        assert!(
+            foreman
+                .rec
+                .events()
+                .iter()
+                .any(|e| e.as_str() == "reverse apt:shared"),
+            "the reconciler's real reverse was invoked for apt:shared, not skipped over Inverse::Nothing"
+        );
+        assert!(
+            !applied_keys(&foreman).contains(&"apt:shared".to_string()),
+            "dropping apt:shared actually removes it from the host — no inverse loss"
         );
     }
 
