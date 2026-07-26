@@ -99,13 +99,17 @@ async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
 }
 
 // The shared handle the mounted view and the poll task both hold: the folded
-// model behind a lock, a `done` flag the view watches to exit, and a `Notify`
-// the poll task rings after each fold to wake a fresh frame — devenv's
-// model-behind-a-lock + notify pattern (`devenv-tui::app`), minimally adapted.
+// model behind a lock, a `done` flag the view watches to exit, an `error` slot
+// the poll task fills on a transport failure (so `run_tui` can propagate it
+// after unmount instead of the loop silently reading as a clean settle), and a
+// `Notify` the poll task rings after each fold to wake a fresh frame —
+// devenv's model-behind-a-lock + notify pattern (`devenv-tui::app`), minimally
+// adapted.
 #[derive(Clone)]
 struct Live {
     model: Arc<Mutex<ApplyModel>>,
     done: Arc<AtomicBool>,
+    error: Arc<Mutex<Option<anyhow::Error>>>,
     notify: Arc<Notify>,
 }
 
@@ -134,6 +138,7 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
     let live = Live {
         model: Arc::new(Mutex::new(model)),
         done: Arc::new(AtomicBool::new(false)),
+        error: Arc::new(Mutex::new(None)),
         notify: Arc::new(Notify::new()),
     };
 
@@ -152,6 +157,10 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
     element.render_loop().output(Output::Stderr).await?;
     let _ = poller.await;
 
+    if let Some(err) = live.error.lock().ok().and_then(|mut e| e.take()) {
+        return Err(err);
+    }
+
     let report = live.model.lock().ok().and_then(|m| m.report.clone());
     if let Some(report) = &report {
         print_report(report);
@@ -167,10 +176,16 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
 async fn poll_into(live: Live, addr: String, id: u64, persistence: Arc<Mutex<Persistence>>) {
     let mut cursor = 0u64;
     loop {
-        let Ok(p) = get_progress(&addr, id, cursor).await else {
-            live.done.store(true, Ordering::Release);
-            live.notify.notify_waiters();
-            break;
+        let p = match get_progress(&addr, id, cursor).await {
+            Ok(p) => p,
+            Err(err) => {
+                if let Ok(mut slot) = live.error.lock() {
+                    *slot = Some(err);
+                }
+                live.done.store(true, Ordering::Release);
+                live.notify.notify_waiters();
+                break;
+            }
         };
         cursor = p.cursor;
         let terminal = should_stop(&p);
@@ -272,5 +287,27 @@ mod tests {
             exit_code(Some(&serde_json::json!({ "outcome": "rolled_back" }))),
             1
         );
+    }
+
+    // A transport failure (golemd crashing mid-apply, an unreachable port) must
+    // surface as an error on `live`, not read as a silent settle: `run_tui`
+    // reads this slot after unmount and turns it into the process's `Err`.
+    #[tokio::test]
+    async fn poll_into_carries_a_transport_error_instead_of_a_silent_done() {
+        let live = Live {
+            model: Arc::new(Mutex::new(ApplyModel::new())),
+            done: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            notify: Arc::new(Notify::new()),
+        };
+        // Port 0 refuses to connect immediately — a stand-in for golemd vanishing
+        // mid-poll, no live server required.
+        let persistence = Arc::new(Mutex::new(Persistence::open(0)));
+
+        poll_into(live.clone(), "http://127.0.0.1:0".to_string(), 1, persistence).await;
+
+        assert!(live.done.load(Ordering::Acquire));
+        let err = live.error.lock().unwrap().take();
+        assert!(err.is_some(), "expected a transport error, got a silent done");
     }
 }

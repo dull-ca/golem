@@ -18,6 +18,9 @@ enum Cmd {
         source: PathBuf,
         addr: String,
         /// Emit plain lines and the report as JSON, no TUI (also the non-TTY path).
+        /// stdout still opens with a `logs: <dir>` line and event lines before the
+        /// final report object; a strict-JSON consumer should read only the last
+        /// line, or skip lines that don't parse as JSON.
         #[arg(long)]
         json: bool,
         /// Skip the POST and resume the newest attempt via `/reconciles/latest`.

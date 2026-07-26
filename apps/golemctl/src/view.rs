@@ -56,8 +56,10 @@ pub fn branch_mark(state: BranchState) -> &'static str {
 }
 
 // One rendered line of the tree, tagged with the facts both the static and the
-// animated render need: its indent depth, whether its mark should spin, and
-// whether it belongs to a settled subtree (so `fit` can trim it first).
+// animated render need: its indent depth, whether its mark should spin,
+// whether it belongs to a settled subtree, and — for a `Log` line — whether it
+// is the host-root region rather than an active unit's tail (so `fit` can
+// order its trim passes correctly).
 pub enum Line {
     Branch {
         depth: usize,
@@ -74,6 +76,7 @@ pub enum Line {
     Log {
         depth: usize,
         text: String,
+        host: bool,
     },
     Plain {
         text: String,
@@ -124,6 +127,7 @@ fn push_node(lines: &mut Vec<Line>, node: &TreeNode, depth: usize) {
                 lines.push(Line::Log {
                     depth: depth + 1,
                     text: log.clone(),
+                    host: false,
                 });
             }
         }
@@ -153,6 +157,7 @@ pub fn lines(model: &ApplyModel) -> Vec<Line> {
             lines.push(Line::Log {
                 depth: 1,
                 text: log.clone(),
+                host: true,
             });
         }
     }
@@ -160,11 +165,13 @@ pub fn lines(model: &ApplyModel) -> Vec<Line> {
 }
 
 // Keep the frame inside `height` rows so iocraft's height≥viewport `Clear::All`
-// guard never fires on a real fleet. First collapse settled subtrees to their
-// branch row (interior glyph/log lines of a settled branch drop, its row stays);
-// if still too tall, drop the interior of the remaining settled leaves before
-// touching any active row. `height == 0` means unbounded (the render_to_string
-// default and any terminal that reports no size).
+// guard never fires on a real fleet, trimming in the order a person can afford
+// to lose rows: settled glyph interiors first (a settled leaf's outcome is
+// still named by its branch mark), then settled branch labels, and only then
+// the active unit's live log tail — the one thing an operator watching an
+// in-flight apply actually needs — with the host-root log region going last of
+// all. `height == 0` means unbounded (the render_to_string default and any
+// terminal that reports no size).
 pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
     if height == 0 || lines.len() <= height {
         return lines;
@@ -173,12 +180,29 @@ pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
     if lines.len() <= height {
         return lines;
     }
-    // Still too tall: drop settled branch rows (from the bottom up) before any
-    // active row — an active unit is what the operator is watching.
+    lines = drop_from_bottom(lines, height, |l| matches!(l, Line::Branch { settled: true, .. }));
+    if lines.len() <= height {
+        return lines;
+    }
+    lines = drop_from_bottom(lines, height, |l| matches!(l, Line::Log { host: false, .. }));
+    if lines.len() <= height {
+        return lines;
+    }
+    drop_from_bottom(lines, height, |l| matches!(l, Line::Log { host: true, .. }))
+}
+
+// Drop rows matching `is_droppable` from the bottom up until `lines` fits
+// `height` or no more matching rows remain, preserving the order of everything
+// kept.
+fn drop_from_bottom(
+    lines: Vec<Line>,
+    height: usize,
+    is_droppable: impl Fn(&Line) -> bool,
+) -> Vec<Line> {
     let mut over = lines.len().saturating_sub(height);
     let mut kept: Vec<Line> = Vec::with_capacity(lines.len());
     for l in lines.into_iter().rev() {
-        if over > 0 && matches!(l, Line::Branch { settled: true, .. }) {
+        if over > 0 && is_droppable(&l) {
             over -= 1;
         } else {
             kept.push(l);
@@ -189,11 +213,7 @@ pub fn fit(mut lines: Vec<Line>, height: usize) -> Vec<Line> {
 }
 
 fn is_settled_interior(l: &Line) -> bool {
-    match l {
-        Line::Glyph { settled, .. } => *settled,
-        Line::Log { .. } => true,
-        _ => false,
-    }
+    matches!(l, Line::Glyph { settled: true, .. })
 }
 
 fn static_line(l: &Line) -> AnyElement<'static> {
@@ -204,7 +224,7 @@ fn static_line(l: &Line) -> AnyElement<'static> {
         Line::Glyph { depth, row, .. } => {
             element!(Text(content: format!("{}{}{}", indent(*depth), glyph_mark(row.state), glyph_suffix(row)))).into_any()
         }
-        Line::Log { depth, text } => {
+        Line::Log { depth, text, .. } => {
             element!(Text(content: format!("{}{}", indent(*depth + 1), text))).into_any()
         }
         Line::Plain { text } => element!(Text(content: text.clone())).into_any(),
@@ -238,7 +258,7 @@ fn animated_line(l: &Line) -> AnyElement<'static> {
             }
             .into_any()
         }
-        Line::Log { depth, text } => {
+        Line::Log { depth, text, .. } => {
             element!(Text(content: format!("{}{}", indent(*depth + 1), text))).into_any()
         }
         Line::Plain { text } => element!(Text(content: text.clone())).into_any(),

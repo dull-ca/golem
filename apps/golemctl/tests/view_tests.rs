@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use golemctl::model::ApplyModel;
-use golemctl::poll::{GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
+use golemctl::poll::{Event, GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
 use golemctl::view;
 
 fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
@@ -151,6 +151,50 @@ fn a_tall_tree_collapses_settled_subtrees_to_fit_the_viewport() {
     // A settled leaf keeps its branch row but drops its glyph interior.
     let unbounded = view::render_to_string(&m, 100);
     assert!(unbounded.contains("scaly / settled-0"));
+}
+
+// The first trim pass (settled interiors) must not take the active unit's own
+// log tail with it: `fit`'s stated precedence is settled interiors, then
+// settled branch labels, and only then an active unit's live logs — never the
+// other way around, or an operator watching an in-flight apply loses the one
+// thing they're watching while distant settled rows survive.
+#[test]
+fn fit_keeps_the_active_units_log_tail_over_settled_rows() {
+    let mut units = Vec::new();
+    for i in 0..20 {
+        units.push(unit(
+            &["scaly", &format!("settled-{i}")],
+            vec![glyph("apt:pkg", GlyphState::Applied)],
+        ));
+    }
+    units.push(unit(
+        &["scaly", "running"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    ));
+    let mut m = model(units);
+    m.apply_progress(Progress {
+        reconcile_id: 1,
+        phase: Phase::Enacting,
+        units: vec![],
+        events: vec![Event {
+            seq: 1,
+            at: "2026-07-26T00:00:00Z".into(),
+            level: "info".into(),
+            unit_path: vec!["scaly".into(), "running".into()],
+            glyph_key: "apt:podman".into(),
+            message: "unpacking podman".into(),
+        }],
+        cursor: 1,
+        report: None,
+    });
+
+    let bounded = view::render_to_string_bounded(&m, 100, 12);
+    let n = bounded.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(n <= 12, "bounded frame had {n} non-empty lines");
+    assert!(
+        bounded.contains("unpacking podman"),
+        "active unit's log tail was trimmed before settled rows:\n{bounded}"
+    );
 }
 
 #[test]
