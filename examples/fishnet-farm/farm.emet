@@ -25,6 +25,11 @@
 -- compute a leaf scroll from an index, so the two client groups are
 -- library-computed rather than hand-listed — the group tree is data.
 --
+-- Every workload leaf pulls in `Quadlet`'s `aptPackage { name = "podman" }`,
+-- so all leaves under "scaly" deliberately share the `apt:podman` glyph key —
+-- the diff flattens by `Glyph::key()` (docs/adr/0031 §4), so sibling leaves
+-- declaring the same key is intentional, not duplication.
+--
 -- `Quadlet` is resolved from `lib/` via the repo-root `emet.json` (ADR 0024),
 -- so this entry directory needs no copy of the shared library.
 --
