@@ -212,10 +212,7 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&unchanged).unwrap()["action"], "noop");
         assert_eq!(serde_json::to_value(&failed).unwrap()["outcome"], "failed");
-        assert_eq!(
-            serde_json::to_value(&failed).unwrap()["action"],
-            "replace"
-        );
+        assert_eq!(serde_json::to_value(&failed).unwrap()["action"], "replace");
         assert_eq!(
             serde_json::to_value(&rolled_back).unwrap()["outcome"],
             "rolled_back"

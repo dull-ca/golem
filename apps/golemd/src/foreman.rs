@@ -256,10 +256,10 @@ impl Foreman {
         let attempt = self
             .planroom
             .open_attempt(Some(desired.content_id))
-            .map_err(|e| ForemanError::Internal(e.into()))?;
+            .map_err(ForemanError::Internal)?;
         self.planroom
             .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
-            .map_err(|e| ForemanError::Internal(e.into()))?;
+            .map_err(ForemanError::Internal)?;
 
         let retry_clock: Cell<Option<Instant>> = Cell::new(None);
         let units = desired.scroll.leaf_units();
@@ -305,10 +305,10 @@ impl Foreman {
         }
 
         self.propagate_config(attempt.reconcile_id)
-            .map_err(|e| ForemanError::Internal(e.into()))?;
+            .map_err(ForemanError::Internal)?;
         let revision = self
             .settle(attempt.reconcile_id, &desired)
-            .map_err(|e| ForemanError::Internal(e.into()))?;
+            .map_err(ForemanError::Internal)?;
         let report = ReconcileReport::roll_up(revision, unit_reports);
         log_settled(&report);
         Ok(report)
@@ -2067,10 +2067,17 @@ mod tests {
                 GlyphAction::Install
             ]
         );
-        let failed = unit.glyphs.iter().find(|g| g.outcome == GlyphOutcome::Failed).unwrap();
+        let failed = unit
+            .glyphs
+            .iter()
+            .find(|g| g.outcome == GlyphOutcome::Failed)
+            .unwrap();
         assert_eq!(failed.glyph_key, "systemd:fishnet.service");
         assert_eq!(failed.attempts, 5);
-        assert_eq!(failed.message.as_deref(), Some("scripted retryable for systemd:fishnet.service"));
+        assert_eq!(
+            failed.message.as_deref(),
+            Some("scripted retryable for systemd:fishnet.service")
+        );
     }
 
     #[test]
@@ -2084,8 +2091,7 @@ mod tests {
         assert_eq!(report.units.len(), 1);
         assert_eq!(report.units[0].outcome, UnitOutcome::Settled);
         assert!(!report.units[0].glyphs.is_empty());
-        assert!(report
-            .units[0]
+        assert!(report.units[0]
             .glyphs
             .iter()
             .all(|g| g.outcome == GlyphOutcome::Unchanged && g.attempts == 0));

@@ -844,9 +844,7 @@ mod tests {
     fn diagnose_is_none_for_non_service_glyphs() {
         let rec = HostReconciler::with_runner(FakeCommandRunner::new());
         assert!(rec.diagnose(&apt("podman")).is_none());
-        assert!(rec
-            .diagnose(&file_glyph("/etc/x", "y", 0o644))
-            .is_none());
+        assert!(rec.diagnose(&file_glyph("/etc/x", "y", 0o644)).is_none());
     }
 
     #[test]
