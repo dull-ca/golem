@@ -313,17 +313,24 @@ impl Foreman {
         let units = desired.scroll.leaf_units();
         let mut unit_reports = Vec::new();
         let next_ord = AtomicU64::new(0);
-        for unit in &units {
+        let unit_ops: Vec<Vec<GlyphOp>> = units
+            .iter()
+            .map(|unit| {
+                plan(&prior, &leaf_as_scroll(unit))
+                    .into_iter()
+                    .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
+                    .collect()
+            })
+            .collect();
+        let credited = dedup_plan(&unit_ops);
+        for (idx, unit) in units.iter().enumerate() {
             let effective = resolve_retry(&self.retry, &unit.policy_chain);
-            let ops: Vec<GlyphOp> = plan(&prior, &leaf_as_scroll(unit))
-                .into_iter()
-                .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
-                .collect();
             let result = self
                 .enact_unit(
                     reconcile_id,
                     &next_ord,
-                    &ops,
+                    &unit_ops[idx],
+                    &credited[idx],
                     &prior,
                     &unit.path,
                     &effective,
@@ -338,11 +345,13 @@ impl Foreman {
             .map_err(ForemanError::Internal)?
         {
             let effective = resolve_retry(&self.retry, &group.policy_chain);
+            let credited = vec![false; group.ops.len()];
             let result = self
                 .enact_unit(
                     reconcile_id,
                     &next_ord,
                     &group.ops,
+                    &credited,
                     &prior,
                     &group.unit_path,
                     &effective,
@@ -483,11 +492,13 @@ impl Foreman {
     /// fate, scoped to this unit's `unit_path` so a sibling unit is never touched
     /// and so the evidence is captured before a rollback removes it (ADR 0029 §4,
     /// §2).
+    #[allow(clippy::too_many_arguments)]
     fn enact_unit(
         &self,
         reconcile_id: u64,
         next_ord: &AtomicU64,
         ops: &[GlyphOp],
+        credited: &[bool],
         prior: &[Outcome],
         unit_path: &[String],
         retry: &RetryConfig,
@@ -500,14 +511,19 @@ impl Foreman {
         let base_ord = next_ord.fetch_add(ops.len() as u64, Ordering::SeqCst);
         let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
         for (offset, op) in ops.iter().enumerate() {
-            classes.push(self.enact_one(
-                reconcile_id,
-                base_ord + offset as u64,
-                op,
-                prior,
-                unit_path,
-                1,
-            )?);
+            let class = if credited[offset] {
+                self.enact_credited(reconcile_id, base_ord + offset as u64, op, unit_path)?
+            } else {
+                self.enact_one(
+                    reconcile_id,
+                    base_ord + offset as u64,
+                    op,
+                    prior,
+                    unit_path,
+                    1,
+                )?
+            };
+            classes.push(class);
         }
         let mut round = 1u32;
         loop {
@@ -582,6 +598,38 @@ impl Foreman {
                 .collect(),
             outcome,
         })
+    }
+
+    fn enact_credited(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        unit_path: &[String],
+    ) -> Result<StepClass> {
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Intended,
+            op,
+            Some(&Inverse::Nothing),
+            None,
+            unit_path,
+        )?;
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Done,
+            op,
+            Some(&Inverse::Nothing),
+            Some(false),
+            unit_path,
+        )?;
+        Ok(StepClass::Ok)
     }
 
     /// Enact one op once and return its classified [`StepClass`]. `Noop` touches
@@ -1325,6 +1373,29 @@ struct RemoveGroup<'a> {
 /// against the whole prior applied set. The diff naturally yields Installs and
 /// Replaces for this unit's glyphs; the caller filters out Removes (which the
 /// whole-scroll vanished-removes pass owns — Resolution 1).
+fn dedup_plan(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
+    let mut seen: std::collections::HashSet<(String, ContentId)> = std::collections::HashSet::new();
+    let mut credited = Vec::with_capacity(unit_ops.len());
+    for ops in unit_ops {
+        let mut flags = Vec::with_capacity(ops.len());
+        for op in ops {
+            let ident = (op.key(), enacted_cid_of(op));
+            flags.push(!seen.insert(ident));
+        }
+        credited.push(flags);
+    }
+    credited
+}
+
+fn enacted_cid_of(op: &GlyphOp) -> ContentId {
+    match op {
+        GlyphOp::Install { cid, .. } | GlyphOp::Noop { cid, .. } | GlyphOp::Remove { cid, .. } => {
+            *cid
+        }
+        GlyphOp::Replace { new_cid, .. } => *new_cid,
+    }
+}
+
 fn leaf_as_scroll(unit: &LeafUnit<'_>) -> Scroll {
     Scroll {
         name: unit.path.last().cloned().unwrap_or_default(),
@@ -1927,6 +1998,7 @@ mod tests {
     impl Reconciler for ScriptedReconciler {
         fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
             let key = glyph.key();
+            self.events.lock().unwrap().push(format!("apply {key}"));
             if self.fatal.lock().unwrap().iter().any(|k| k == &key) {
                 return Err(EnactError::Fatal(format!("scripted fatal for {key}")));
             }
@@ -2882,6 +2954,120 @@ mod tests {
         assert_eq!(b, 3);
         assert_eq!(next.load(Ordering::SeqCst), 5);
         assert!(b >= a + 3, "the second block never overlaps the first");
+    }
+
+    #[test]
+    fn a_shared_key_across_units_enacts_once_and_credits_the_rest() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman"), apt("only-first")]),
+                leaf_scroll("second", vec![apt("podman"), apt("only-second")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let applies = foreman
+            .rec
+            .events()
+            .iter()
+            .filter(|e| e.as_str() == "apply apt:podman")
+            .count();
+        assert_eq!(
+            applies, 1,
+            "the shared apt:podman glyph is enacted exactly once across the two units"
+        );
+        assert!(applied_keys(&foreman).contains(&"apt:podman".to_string()));
+        assert!(applied_keys(&foreman).contains(&"apt:only-first".to_string()));
+        assert!(applied_keys(&foreman).contains(&"apt:only-second".to_string()));
+        let first = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "first")
+            .unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        assert!(first.glyphs.iter().any(|g| g.glyph_key == "apt:podman"));
+        assert!(
+            second.glyphs.iter().any(|g| g.glyph_key == "apt:podman"),
+            "the second unit still reports its own apt:podman bracket"
+        );
+    }
+
+    #[test]
+    fn only_the_enacting_unit_rollback_removes_a_shared_glyph() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("second", vec![apt("shared"), apt("bad")]),
+                leaf_scroll("later", vec![apt("shared")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let later = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "later")
+            .unwrap();
+        assert_eq!(
+            second.outcome,
+            UnitOutcome::RolledBack,
+            "the enacting unit fails on apt:bad and rolls its own glyphs back, removing apt:shared"
+        );
+        assert_eq!(
+            later.outcome,
+            UnitOutcome::Settled,
+            "the crediting unit settles: its credited bracket is a no-op it need not undo"
+        );
+        assert!(
+            !applied_keys(&foreman).contains(&"apt:shared".to_string()),
+            "the enacting unit's rollback removed the shared glyph exactly once"
+        );
+    }
+
+    #[test]
+    fn a_keep_unit_crediting_a_shared_glyph_stays_partial() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:down").ok_default();
+        let foreman = foreman_with(reconciler);
+        let enacting = leaf_scroll("base", vec![apt("shared")]);
+        let canary = leaf_scroll_with_policy(
+            "canary",
+            Policy {
+                on_exhaust: Some(OnExhaust::Keep),
+                ..Default::default()
+            },
+            vec![apt("shared"), apt("down")],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![enacting, canary]))
+            .unwrap();
+        let base = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "base")
+            .unwrap();
+        let canary_u = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "canary")
+            .unwrap();
+        assert_eq!(base.outcome, UnitOutcome::Settled);
+        assert_eq!(canary_u.outcome, UnitOutcome::Partial);
+        assert!(
+            applied_keys(&foreman).contains(&"apt:shared".to_string()),
+            "the shared glyph enacted by base stays applied; the canary kept its partial state"
+        );
     }
 
     #[test]
