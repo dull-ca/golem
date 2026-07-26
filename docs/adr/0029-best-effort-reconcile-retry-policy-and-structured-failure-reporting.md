@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted 2026-07-25 (implemented). Proposed 2026-07-24. Revised 2026-07-25 to scope best-effort, retry, and
+Accepted 2026-07-25 (implemented). Proposed 2026-07-24. **Superseded in part by
+[ADR 0033](0033-async-apply-with-live-progress.md)** (2026-07-26): §5's synchronous
+"HTTP 200 with the `ReconcileReport` body on the enacting request" transport is
+replaced by an async `202 { reconcile_id }` + `GET /reconciles/<id>` poll. The
+`ReconcileReport` shape, its tree-of-units structure, and the in-band-failure
+philosophy stand unchanged — only the transport that delivers them moves. Revised
+2026-07-25 to scope best-effort, retry, and
 `on_exhaust` to the **leaf-unit scroll** of
 [ADR 0031](0031-recursive-scroll-grouping-and-failure-isolation.md) rather than
 the whole host scroll, and to make the report tree-shaped. 0031 makes `Scroll`
