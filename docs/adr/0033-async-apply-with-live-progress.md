@@ -208,6 +208,74 @@ a client passes back the `cursor` it last saw and receives only newer events, so
 poll that drops and reconnects re-requests from its cursor and misses nothing the
 buffer still holds (and nothing at all, for the WAL-derived events).
 
+#### The `kind` split — lifecycle vs. command output
+
+Events carry an additive **`kind`** field. `"lifecycle"` is everything §2 already
+describes — the manifest-ingested, install/replace/remove, enact-failed-round-N,
+giving-up, rollback, forensics, and revision-recorded lines that mark *what golemd
+decided*. `"cmd"` is the new tier: the **raw stdout/stderr lines of the host
+commands golemd runs** — `apt-get update`, `apt-get install`, `systemctl
+daemon-reload`/`enable`/`start`, and the reverse and diagnose commands — forwarded
+line by line *while the command runs*, so the TUI shows the real build/install
+output, not just the glyph verdict. A record with no `kind` reads as `"lifecycle"`
+(the field is additive; old readers and pre-`kind` rows keep their meaning):
+
+```
+{ "seq": 24, "kind": "cmd", "level": "info",
+  "unit_path": ["scaly","fishnet-a"], "glyph_key": "apt:podman",
+  "message": "Get:1 http://deb.debian.org/debian bookworm/main podman amd64 4.3.1" }
+```
+
+Both kinds land in the **same per-attempt ring** (`progress.rs`, §2), share the
+one `seq` cursor, and are the **same best-effort tier** — held in memory, **never
+in the WAL**, lost on daemon restart. A reattaching client's states are
+reconstructed from the WAL in full (ADR 0020 §3); the pre-crash `cmd` lines simply
+do not survive, exactly as the round-delay/reason lines do not. Command output is
+progress texture, not a durable record — the WAL brackets remain the settled truth.
+
+**The port shape — a default streaming method, opt-in.** The `CommandRunner` port
+(`host.rs`) gains a **streaming variant with a default implementation** that falls
+back to the existing `run()` and forwards nothing mid-command:
+
+```
+fn run_streaming(&self, program, args, sink: &mut dyn FnMut(EventLevel, &str))
+    -> EnactResult<CommandOutput>
+{ let out = self.run(program, args)?; Ok(out) }   // default: no streaming
+```
+
+- The **`SystemCommandRunner`** overrides it: it spawns with piped stdout/stderr,
+  reads each stream line by line, calls `sink(level, line)` as lines arrive
+  (stdout→`info`, stderr→`warn`), and still returns the captured `CommandOutput`
+  for the reconciler's existing success/stderr checks. The reconciler's `sink`
+  closure `record`s each line into the ring tagged `{unit_path, glyph_key,
+  kind:"cmd"}`.
+- The **`FakeCommandRunner`** and every existing test **inherit the default** and
+  are untouched — they emit no `cmd` events unless a test opts in by overriding
+  `run_streaming`. The port change is additive: no existing `run()` call site
+  changes, and the streaming path is taken only by the reconciler adapters that
+  choose to pass a sink (apt/systemd apply, reverse, diagnose).
+
+**The honest boundary — only golem-invoked commands stream.** golemd streams only
+the output of the commands **it** spawns. Output produced **inside** systemd — a
+Podman quadlet's image pull under `systemctl start`, a unit's own logs — stays
+invisible to the `cmd` tier, because golemd sees only that command's stdout/stderr,
+not the child processes systemd owns (the same §4 granularity boundary: golemd's
+unit of observation is the reconciler call). A `systemctl start` that blocks on a
+multi-minute pull shows its own sparse output plus the glyph's elapsed time, not
+the pull's progress. **Forensics still cover the failure**: `diagnose` (§ ADR 0029)
+already captures `systemctl status`/`journalctl` on a failed unit, so the pull's
+error surfaces in the report even though its live output did not stream.
+
+**ADR 0020 logging discipline holds for `cmd` events.** Command output may echo
+package names, versions, and unit names — those are already in the glyph keys and
+are fine to stream (ADR 0029 §2: keys and reasons are loggable). What must **never**
+stream is **file contents**: the `file`/`lineInFile` reconcilers do real filesystem
+I/O and run **no output-producing command** — they never call the runner, so they
+produce **no `cmd` events at all**, and the "never log file contents or secrets"
+rule (ADR 0029 §2, the ADR 0020 discipline) is preserved structurally rather than
+by filtering. Only the apt/systemd command adapters stream, and package/unit output
+is not secret material.
+
 **`GET /reconciles/latest`** returns the same shape for the most recent attempt —
 the reattach convenience for a client that lost its id (a crash, a new terminal).
 
@@ -284,11 +352,43 @@ So the mapping is direct:
   the final `ReconcileReport` exactly as today** (its existing pretty-print) — the
   tree was the live view; the report is the settled record.
 
+#### 3d. Buildkit-style glyph tails — the last 3 command lines under the active glyph
+
+Under each **active** (`in_progress`) glyph row, the TUI renders the **last 3
+`kind:"cmd"` lines** for that glyph — dim, indented one level under the glyph,
+rolling as new lines arrive — the way buildkit shows the tail of a running step's
+output beneath the step. So `apt:podman` mid-install reads:
+
+```
+  ⠹ apt:podman  install
+      Unpacking podman (4.3.1) ...
+      Setting up conmon (2.1.6) ...
+      Processing triggers for man-db ...
+```
+
+- **The tail is per-glyph and scoped to `kind:"cmd"`.** `kind:"lifecycle"` lines
+  keep their existing homes — the per-unit/host event regions of §3 (the node's
+  streamed log buffer and the failure/retry text on the glyph row). The `cmd` tail
+  is a *separate*, glyph-local rolling window, not the same buffer.
+- **It collapses on glyph completion.** When the glyph settles (`applied`/
+  `unchanged`/`failed`/`rolled_back`) the three-line tail disappears and the row
+  resolves to its status glyph, keeping the settled tree compact — the command
+  transcript is not lost, it lives on in the §3a tmp files. A **failed** glyph is
+  the one case worth surfacing the tail's residue: the failure **reason** (a
+  lifecycle event) already renders on the row per §3; the raw `cmd` lines that led
+  to it are in `<unit>.log`.
+- **Three is the on-screen window, not the retention.** The ring (§2) and the tmp
+  files (§3a) hold the full command output; the TUI shows only the freshest three
+  per active glyph so N concurrent glyphs stay readable on one screen.
+
 #### 3a. Event-log persistence — every event line is written to a local tmp file
 
-golemctl writes **every `events` line it receives** to local tmp files as it polls,
-so the whole run is greppable on disk after the spinner clears. Two tiers of file,
-written together:
+golemctl writes **every `events` line it receives** — **both `kind`s** — to local
+tmp files as it polls, so the whole run is greppable on disk after the spinner
+clears. With `cmd` events landing here too, `<unit>.log` becomes the **full command
+transcript** of that unit's apt/systemd work, not just its lifecycle verdicts — the
+buildkit tail (§3d) shows the freshest three on screen; the file keeps them all,
+strengthening the §3a grep story. Two tiers of file, written together:
 
 - **One combined `all.log`** — every event, in poll order.
 - **One filtered file per unit** — the events tagged with a given `unit_path`,
@@ -318,11 +418,19 @@ slug to the same name would share a file; unit paths in practice are already
 slug-safe, so this is recorded as a known, tolerated edge, not guarded against.
 
 Each line is **plain text, one event per line**, carrying `timestamp`, `level`,
-`glyph_key`, and the message — the same fields the projection's `events` records
-carry (§2) — formatted for `grep`, e.g.:
+**`kind`**, `glyph_key`, and the message — the same fields the projection's `events`
+records carry (§2), now with the `kind` column so lifecycle and command lines are
+distinguishable when the two interleave. `all.log` **interleaves both kinds in poll
+order** and carries the `kind` column so a `grep cmd` / `grep lifecycle` (or an
+`awk` on the column) separates them after the fact — **decided: one more column, not
+two files.** A single ordered transcript with a filter column beats splitting
+`all.log` into `all.lifecycle.log`/`all.cmd.log`, which would lose the interleaved
+ordering that shows *which command output preceded which verdict*. Formatted for
+`grep`, e.g.:
 
 ```
-2026-07-26T14:03:11Z  warn  apt:podman  enact failed (round 1): dpkg lock held; retrying in 2s
+2026-07-26T14:03:10Z  info  cmd        apt:podman  Unpacking podman (4.3.1) ...
+2026-07-26T14:03:11Z  warn  lifecycle  apt:podman  enact failed (round 1): dpkg lock held; retrying in 2s
 ```
 
 The files **survive after the apply exits** — they are the after-the-fact record,
@@ -585,7 +693,32 @@ coexist.
   per-glyph **states** are reconstructed in full by recovery (ADR 0020 §3), but the
   transient round-delay/reason *lines* for pre-crash rounds do not survive. Recorded
   as an accepted asymmetry, not a defect — a reattaching client always gets correct
-  states and resumes the stream from the recovered attempt's WAL-derived events.
+  states and resumes the stream from the recovered attempt's WAL-derived events. The
+  new `cmd` lines (§2 `kind` split, §3d) join this best-effort tier — durable states,
+  ephemeral command output.
+- **Command output streams live, but volume rises sharply.** A single `apt install`
+  can emit **hundreds** of `cmd` lines (unpacking, setup, triggers). Both kinds share
+  one ring (§2), so a chatty install can push the ring past its bound and **evict
+  earlier `lifecycle` events before a slow client reads them** — losing the very
+  install/failed/giving-up lines the tree needs. **Mitigation, decided: per-kind ring
+  bounds, not one shared cap.** The ring keeps a **separate bound per `kind`** — the
+  small lifecycle stream (a handful of events per glyph) gets a modest cap it will
+  never exhaust, and the high-volume `cmd` stream gets its own larger cap and evicts
+  only *itself* when it overflows. Lifecycle events can no longer be crowded out by
+  command chatter; a `cmd` flood drops old `cmd` lines (still on disk in §3a) and
+  leaves lifecycle intact. This supersedes the single-`EVENT_RING_CAP`/shared-cursor
+  shape of the shipped §2 ring (`progress.rs`), which must gain the per-kind split;
+  the shared monotone `seq` cursor is kept (one ordered stream to the client), only
+  the **eviction bound** becomes per-kind.
+- **The `CommandRunner` port grows a streaming method, default off.** `run_streaming`
+  lands with a default that delegates to `run()` and emits nothing (§2), so the
+  `FakeCommandRunner` and every existing reconciler test compile and pass unchanged —
+  the change is additive. Only `SystemCommandRunner` overrides it (piped spawn,
+  line-forwarding sink) and only the apt/systemd apply/reverse/diagnose adapters pass
+  a sink; the `file`/`lineInFile` reconcilers never call the runner, so they stream
+  nothing and cannot leak file contents (ADR 0029 §2 / ADR 0020 discipline, upheld
+  structurally). A test that wants to assert on `cmd` events opts in by overriding the
+  method on its fake.
 - **One in-memory seam in the projection.** `next_retry_in_ms` is read from the
   live round loop, not the WAL (the WAL never records a scheduled retry, ADR 0029
   §1). If golemd restarts mid-reconcile, that field is simply absent on the recovered
