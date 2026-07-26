@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use golemctl::model::ApplyModel;
 use golemctl::poll::{Event, EventKind, GlyphProgress, GlyphState, Phase, Progress, UnitProgress};
 use golemctl::view;
+use golemctl::view::{Emphasis, Line};
 
 fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
     GlyphProgress {
@@ -351,4 +352,145 @@ fn height_zero_is_unbounded() {
     let m = model(units);
     let out = view::render_to_string_bounded(&m, 100, 0);
     assert!(out.lines().filter(|l| !l.trim().is_empty()).count() > 30);
+}
+
+fn branch_emphasis(lines: &[Line], label: &str) -> Option<Emphasis> {
+    lines.iter().find_map(|l| match l {
+        Line::Branch {
+            label: l, emphasis, ..
+        } if l == label => Some(*emphasis),
+        _ => None,
+    })
+}
+
+fn glyph_emphasis(lines: &[Line], glyph_key: &str) -> Option<Emphasis> {
+    lines.iter().find_map(|l| match l {
+        Line::Glyph { row, emphasis, .. } if row.glyph_key == glyph_key => Some(*emphasis),
+        _ => None,
+    })
+}
+
+// Dr. Dub's ask: only the leaf actually doing work carries the fully bright
+// spinner treatment; every branch above it — including the leaf unit's own
+// branch row — is "folded" context, not work. A 3-level tree mid-flight
+// (`scaly / pod / web` in progress, `scaly / pod / db` settled) proves the
+// whole ancestor chain (`scaly`, `scaly / pod`, `scaly / pod / web`) folds
+// while the one in-progress glyph row stays primary.
+#[test]
+fn a_three_level_mid_flight_tree_folds_the_ancestor_chain_and_keeps_the_leaf_glyph_primary() {
+    let m = model(vec![
+        unit(
+            &["scaly", "pod", "web"],
+            vec![glyph("systemd:web.service", GlyphState::InProgress)],
+        ),
+        unit(
+            &["scaly", "pod", "db"],
+            vec![glyph("systemd:db.service", GlyphState::Applied)],
+        ),
+    ]);
+    let lines = view::lines(&m);
+
+    assert_eq!(branch_emphasis(&lines, "scaly"), Some(Emphasis::Folded));
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / pod"),
+        Some(Emphasis::Folded)
+    );
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / pod / web"),
+        Some(Emphasis::Folded),
+        "the working leaf's own branch row folds too — the glyph row is the sole primary"
+    );
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:web.service"),
+        Some(Emphasis::Primary)
+    );
+
+    // The settled sibling never spins, so its emphasis is moot, but it must
+    // not accidentally read as Folded — settled rows use the default.
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / pod / db"),
+        Some(Emphasis::Primary)
+    );
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:db.service"),
+        Some(Emphasis::Primary)
+    );
+}
+
+// Once the working leaf settles and a sibling starts, the one Primary glyph
+// row must move with it — the emphasis is a function of who is working now,
+// not a sticky mark on whoever worked first.
+#[test]
+fn emphasis_moves_from_a_settled_leaf_to_the_next_leaf_that_starts() {
+    let mut m = model(vec![
+        unit(
+            &["scaly", "pod", "web"],
+            vec![glyph("systemd:web.service", GlyphState::InProgress)],
+        ),
+        unit(
+            &["scaly", "pod", "db"],
+            vec![glyph("systemd:db.service", GlyphState::Pending)],
+        ),
+    ]);
+    assert_eq!(
+        glyph_emphasis(&view::lines(&m), "systemd:web.service"),
+        Some(Emphasis::Primary)
+    );
+
+    m.apply_progress(progress_with(
+        vec![
+            unit(
+                &["scaly", "pod", "web"],
+                vec![glyph("systemd:web.service", GlyphState::Applied)],
+            ),
+            unit(
+                &["scaly", "pod", "db"],
+                vec![glyph("systemd:db.service", GlyphState::InProgress)],
+            ),
+        ],
+        vec![],
+    ));
+    let lines = view::lines(&m);
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:db.service"),
+        Some(Emphasis::Primary),
+        "the newly active leaf becomes the primary spinner"
+    );
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / pod"),
+        Some(Emphasis::Folded),
+        "the shared ancestor keeps folding while any descendant works"
+    );
+}
+
+// Two leaves genuinely working in parallel each keep their own bright
+// spinner — parallelism must stay visible. It is only the ancestor chain
+// that dims, never a sibling doing real work.
+#[test]
+fn two_leaves_working_in_parallel_both_stay_primary_while_their_shared_ancestor_folds() {
+    let m = model(vec![
+        unit(
+            &["scaly", "pod", "web"],
+            vec![glyph("systemd:web.service", GlyphState::InProgress)],
+        ),
+        unit(
+            &["scaly", "pod", "db"],
+            vec![glyph("systemd:db.service", GlyphState::InProgress)],
+        ),
+    ]);
+    let lines = view::lines(&m);
+
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:web.service"),
+        Some(Emphasis::Primary)
+    );
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:db.service"),
+        Some(Emphasis::Primary)
+    );
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / pod"),
+        Some(Emphasis::Folded)
+    );
+    assert_eq!(branch_emphasis(&lines, "scaly"), Some(Emphasis::Folded));
 }
