@@ -83,13 +83,14 @@ pub fn branch_mark(state: BranchState) -> &'static str {
 // because a descendant is working, never because it is doing the work itself.
 // Two leaves genuinely running in parallel each carry their own `Primary`
 // glyph row; it is always the ancestor chain that dims, never a sibling.
-// Settled rows carry `Primary` too — the field only discriminates spinner
-// brightness, and a settled mark isn't a spinner — so it is inert there.
+// A settled row is `Done`: its label dims like a folded row, but its mark
+// keeps full brightness, so a long settled fleet still scans by mark alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Emphasis {
     #[default]
     Primary,
     Folded,
+    Done,
 }
 
 // One rendered line of the tree, tagged with the facts both the static and the
@@ -136,11 +137,30 @@ fn indent(depth: usize) -> String {
 // A `Folded` row (an ancestor spinning only because a descendant works) dims
 // to grey; a `Primary` row keeps the terminal's default foreground and
 // weight, so exactly one spinner per working leaf reads as the fully active
-// one.
+// one. A `Done` row's label dims the same as a folded one — the label is
+// never where a settled row's attention should land.
 fn folded_style(emphasis: Emphasis) -> (Option<Color>, Weight) {
     match emphasis {
         Emphasis::Primary => (None, Weight::Normal),
-        Emphasis::Folded => (Some(Color::DarkGrey), Weight::Light),
+        Emphasis::Folded | Emphasis::Done => (Some(Color::DarkGrey), Weight::Light),
+    }
+}
+
+// A `Done` row's mark stays at full brightness even though its label dims:
+// the settled outcome — applied, rolled back, or failed — is the one thing
+// worth a person's eye on an otherwise quiet row. `·` (unchanged) is the one
+// mark that carries no news, so it stays dim like the label. Active and
+// folded rows keep the mark and label in lockstep — there is no separate
+// mark to highlight while a row is still moving.
+fn mark_style(emphasis: Emphasis, mark: &str) -> (Option<Color>, Weight) {
+    match emphasis {
+        Emphasis::Done => match mark {
+            CHECKMARK => (Some(Color::Green), Weight::Normal),
+            XMARK => (Some(Color::Red), Weight::Normal),
+            ROLLED_BACK => (Some(Color::Yellow), Weight::Normal),
+            _ => folded_style(emphasis),
+        },
+        Emphasis::Primary | Emphasis::Folded => folded_style(emphasis),
     }
 }
 
@@ -183,7 +203,7 @@ fn push_node(lines: &mut Vec<Line>, node: &TreeNode, depth: usize) {
         emphasis: if active {
             Emphasis::Folded
         } else {
-            Emphasis::Primary
+            Emphasis::Done
         },
     });
     if let Some(unit) = node.leaf {
@@ -193,7 +213,11 @@ fn push_node(lines: &mut Vec<Line>, node: &TreeNode, depth: usize) {
                 depth: depth + 1,
                 row: g.clone(),
                 settled: !active,
-                emphasis: Emphasis::Primary,
+                emphasis: if active {
+                    Emphasis::Primary
+                } else {
+                    Emphasis::Done
+                },
             });
             if active {
                 for line in &g.cmd_tail {
@@ -316,9 +340,15 @@ fn static_line(l: &Line) -> AnyElement<'static> {
             emphasis,
             ..
         } => {
-            let (color, weight) = folded_style(*emphasis);
-            element!(Text(content: format!("{}{} {}", indent(*depth), mark, label), color: color, weight: weight))
-                .into_any()
+            let (mark_color, mark_weight) = mark_style(*emphasis, mark);
+            let (label_color, label_weight) = folded_style(*emphasis);
+            element! {
+                View(flex_direction: FlexDirection::Row) {
+                    Text(content: format!("{}{}", indent(*depth), mark), color: mark_color, weight: mark_weight)
+                    Text(content: format!(" {label}"), color: label_color, weight: label_weight)
+                }
+            }
+            .into_any()
         }
         Line::Glyph {
             depth,
@@ -326,9 +356,16 @@ fn static_line(l: &Line) -> AnyElement<'static> {
             emphasis,
             ..
         } => {
-            let (color, weight) = folded_style(*emphasis);
-            element!(Text(content: format!("{}{}{}", indent(*depth), glyph_mark(row.state), glyph_suffix(row)), color: color, weight: weight))
-                .into_any()
+            let mark = glyph_mark(row.state);
+            let (mark_color, mark_weight) = mark_style(*emphasis, mark);
+            let (label_color, label_weight) = folded_style(*emphasis);
+            element! {
+                View(flex_direction: FlexDirection::Row) {
+                    Text(content: format!("{}{}", indent(*depth), mark), color: mark_color, weight: mark_weight)
+                    Text(content: glyph_suffix(row), color: label_color, weight: label_weight)
+                }
+            }
+            .into_any()
         }
         Line::CmdTail { depth, text } => {
             element!(Text(content: format!("{}{}", indent(*depth), text), color: LOG_COLOR, weight: LOG_WEIGHT))
@@ -487,6 +524,7 @@ pub fn StatusIndicator(
     if props.active {
         element!(Spinner(emphasis: props.emphasis)).into_any()
     } else {
-        element!(Text(content: props.mark)).into_any()
+        let (color, weight) = mark_style(props.emphasis, props.mark);
+        element!(Text(content: props.mark, color: color, weight: weight)).into_any()
     }
 }

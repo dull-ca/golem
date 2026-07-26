@@ -405,15 +405,15 @@ fn a_three_level_mid_flight_tree_folds_the_ancestor_chain_and_keeps_the_leaf_gly
         Some(Emphasis::Primary)
     );
 
-    // The settled sibling never spins, so its emphasis is moot, but it must
-    // not accidentally read as Folded — settled rows use the default.
+    // The settled sibling never spins, so it renders Done — dim label, bright
+    // mark — not Folded, which is reserved for ancestors of active work.
     assert_eq!(
         branch_emphasis(&lines, "scaly / pod / db"),
-        Some(Emphasis::Primary)
+        Some(Emphasis::Done)
     );
     assert_eq!(
         glyph_emphasis(&lines, "systemd:db.service"),
-        Some(Emphasis::Primary)
+        Some(Emphasis::Done)
     );
 }
 
@@ -493,4 +493,71 @@ fn two_leaves_working_in_parallel_both_stay_primary_while_their_shared_ancestor_
         Some(Emphasis::Folded)
     );
     assert_eq!(branch_emphasis(&lines, "scaly"), Some(Emphasis::Folded));
+}
+
+// A settled glyph row (applied, unchanged, rolled back, or failed) is Done —
+// its label dims but its mark keeps full brightness so the eye can scan a
+// long settled fleet for the marks that matter.
+#[test]
+fn a_settled_glyph_row_is_done() {
+    let m = model(vec![unit(
+        &["scaly", "a"],
+        vec![glyph("apt:podman", GlyphState::Applied)],
+    )]);
+    let lines = view::lines(&m);
+    assert_eq!(glyph_emphasis(&lines, "apt:podman"), Some(Emphasis::Done));
+}
+
+// A settled branch — its whole subtree resolved, whether collapsed by `fit`
+// or shown in full — is Done for the same reason: the label recedes, the
+// mark stays legible.
+#[test]
+fn a_settled_collapsed_branch_is_done() {
+    let mut units = Vec::new();
+    for i in 0..20 {
+        units.push(unit(
+            &["scaly", &format!("settled-{i}")],
+            vec![glyph("apt:pkg", GlyphState::Applied)],
+        ));
+    }
+    units.push(unit(
+        &["scaly", "running"],
+        vec![glyph("apt:podman", GlyphState::InProgress)],
+    ));
+    let m = model(units);
+    let lines = view::lines(&m);
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / settled-0"),
+        Some(Emphasis::Done)
+    );
+}
+
+// The mixed case that motivates the whole feature: in one frame, an active
+// leaf stays Primary (full brightness, spinner included) while its settled
+// sibling is Done (dim label, bright mark) — the two must not be conflated.
+#[test]
+fn an_active_leaf_is_primary_while_its_settled_sibling_is_done() {
+    let m = model(vec![
+        unit(
+            &["scaly", "pod", "web"],
+            vec![glyph("systemd:web.service", GlyphState::InProgress)],
+        ),
+        unit(
+            &["scaly", "pod", "db"],
+            vec![glyph("systemd:db.service", GlyphState::Applied)],
+        ),
+    ]);
+    let lines = view::lines(&m);
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:web.service"),
+        Some(Emphasis::Primary)
+    );
+    assert_eq!(
+        glyph_emphasis(&lines, "systemd:db.service"),
+        Some(Emphasis::Done)
+    );
+    assert_eq!(
+        branch_emphasis(&lines, "scaly / pod / db"),
+        Some(Emphasis::Done)
+    );
 }
