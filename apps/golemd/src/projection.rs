@@ -1,3 +1,11 @@
+//! The read model a poll returns (ADR 0033 §2): the attempt's per-glyph
+//! progress plus its event slice, assembled from two tiers of durability. The
+//! per-glyph `state` and `rounds` are folded from the attempt's `wal_step`
+//! rows, which survive a restart; `events` and `next_retry_in_ms` come from the
+//! in-memory ring (`progress.rs`), which does not. `project` is a pure function
+//! of what it is handed — the caller (`Foreman::progress_projection`) reads both
+//! tiers and passes them in.
+
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -16,6 +24,11 @@ pub enum PhaseView {
     RolledBack,
 }
 
+// NOTE: the client vocabulary collapses the storage phases: a committed attempt
+// reads as `settled`, and both the in-progress rollback and its terminal state
+// read as `rolled_back` (ADR 0033 §2). `Settling` exists in the view but is
+// never produced — there is no `AttemptPhase::Settling`; commit goes straight to
+// `Committed`.
 pub fn phase_view(phase: AttemptPhase) -> PhaseView {
     match phase {
         AttemptPhase::Planning => PhaseView::Planning,

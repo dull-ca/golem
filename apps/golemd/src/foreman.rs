@@ -196,11 +196,24 @@ impl Foreman {
         &self.progress
     }
 
+    /// Ingest and reconcile in one synchronous call — the in-process path for
+    /// tests that exercise a whole reconcile without the async HTTP surface. The
+    /// HTTP surface itself is 202-then-poll (ADR 0033 §1) and calls [`ingest`]
+    /// and [`run_reconcile`] separately; this shim keeps the single-call shape.
+    ///
+    /// [`ingest`]: Foreman::ingest
+    /// [`run_reconcile`]: Foreman::run_reconcile
     pub fn apply_manifest(&self, bytes: &[u8]) -> Result<ReconcileReport, ForemanError> {
         let (reconcile_id, selected) = self.ingest(bytes)?;
         self.run_reconcile(reconcile_id, selected)
     }
 
+    /// The cheap, synchronous half of an apply (ADR 0033 §1): decode the
+    /// manifest, select this host's scroll, gate on any in-flight attempt, then
+    /// open the attempt and mark it `Enacting`. Returns the `reconcile_id` the
+    /// client polls; [`run_reconcile`](Foreman::run_reconcile) does the enact
+    /// under the same lock discipline. Its failures are the reasons a reconcile
+    /// never started, so they surface synchronously on the `POST` (ADR 0033 §1).
     pub fn ingest(&self, bytes: &[u8]) -> Result<(u64, SelectedScroll), ForemanError> {
         let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
             detail: e.to_string(),
@@ -213,6 +226,15 @@ impl Foreman {
             "manifest ingested"
         );
         let _w = self.write.lock().unwrap();
+        // NOTE: gate BEFORE recover, not after (a deliberate departure from a
+        // recover-then-gate reading of ADR 0020 §3). recover_locked rolls back
+        // any unsettled latest attempt, so recovering first would undo the very
+        // in-flight attempt this gate exists to protect — its `run_reconcile`
+        // has released nothing yet, only handed us back the id between the two
+        // write-lock acquisitions — and the gate could never fire. Genuinely
+        // stale attempts (a crash before this daemon started) are already rolled
+        // back by the startup `recover()` in `Foreman::new`; anything unsettled
+        // seen here is a live reconcile.
         if let Some(attempt) =
             self.planroom
                 .latest_attempt()
@@ -720,6 +742,11 @@ impl Foreman {
         }
     }
 
+    // NOTE: the reason string a failed op carries lives only in memory (ADR 0029
+    // §1) — the WAL records that an op `Failed`, never why. This hands it to the
+    // poll's event ring, mapping the retry class to a level a client renders: a
+    // retryable failure is a `warn` (another round follows), a fatal one an
+    // `error` (ADR 0033 §2).
     fn record_failure(
         &self,
         reconcile_id: u64,
@@ -1114,6 +1141,13 @@ impl Foreman {
         Ok(self.planroom.latest_attempt()?.map(|a| a.reconcile_id))
     }
 
+    /// The read model for one poll (ADR 0033 §2). Assembles the projection from
+    /// the durable WAL rows (`wal_steps_for`) and the best-effort in-memory ring
+    /// (events + retry countdowns), attaching the cached `ReconcileReport` only
+    /// once the attempt has settled. Takes **no** write lock: every read here is
+    /// a `PlanRoom` query on its own short-lived connection mutex, so a poll
+    /// never blocks on — nor delays — the running reconcile, and observes each
+    /// WAL bracket as soon as it commits (ADR 0033 §2, concurrency stance).
     pub fn progress_projection(
         &self,
         reconcile_id: u64,

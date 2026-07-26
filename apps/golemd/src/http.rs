@@ -1,9 +1,12 @@
 //! The HTTP adapter over the foreman (ADR 0014 §5). `POST /manifest` ingests
-//! raw manifest bytes and reconciles; the read routes expose the current applied
-//! scroll (`GET /state`), the journal (`GET /revisions[/:id]`), and a liveness
-//! summary (`GET /status`). There is no decommission verb — a node's state is a
-//! whole scroll, so "remove everything" is applying an empty one. Foreman calls
-//! are blocking, so each runs on `spawn_blocking`.
+//! raw manifest bytes and starts a reconcile, returning `202 { reconcile_id }`;
+//! the client then polls `GET /reconciles/<id>|latest` until the projection
+//! settles (the two-request protocol, ADR 0033 §1–2). The remaining read routes
+//! expose the current applied scroll (`GET /state`), the journal
+//! (`GET /revisions[/:id]`), and a liveness summary (`GET /status`). There is no
+//! decommission verb — a node's state is a whole scroll, so "remove everything"
+//! is applying an empty one. Foreman calls are blocking, so each runs on
+//! `spawn_blocking`.
 
 use axum::{
     body::Bytes,
@@ -71,6 +74,12 @@ struct Accepted {
     reconcile_id: u64,
 }
 
+/// Ingest synchronously, then run the reconcile detached and return `202` at
+/// once (ADR 0033 §1). Ingest does the cheap work — decode, host-scroll select,
+/// the in-progress gate — so its failures come back on *this* request as typed
+/// non-2xx (`ApiError::from_foreman`); the reconcile that follows reports its
+/// own per-glyph outcomes only through the poll path. Only a reconcile that
+/// actually started yields a `reconcile_id` to poll.
 async fn apply_manifest(
     AxState(s): AxState<AppState>,
     body: Bytes,
@@ -172,6 +181,10 @@ struct ApiError {
 }
 
 impl ApiError {
+    /// Maps ingest failures — the reasons a reconcile never started — to their
+    /// synchronous status (ADR 0033 §1). `ReconcileInProgress` is a `409` that
+    /// carries the id of the attempt already running so the caller can poll
+    /// *it* instead of retrying; the rest are `500`-class daemon faults.
     fn from_foreman(e: crate::foreman::ForemanError) -> Self {
         use crate::foreman::ForemanError::*;
         let reconcile_id = match &e {

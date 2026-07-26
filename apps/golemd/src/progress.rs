@@ -1,3 +1,24 @@
+//! The in-memory half of the progress stream (ADR 0033 §2): the two facts the
+//! WAL cannot carry — a round's failure *reason*/*delay* line, and the live
+//! retry countdown — held per running attempt. The projection (`projection.rs`)
+//! folds the durable per-glyph *states* from the WAL and layers these on top.
+//!
+//! Everything here is **lost on daemon restart**, by design. Recovery re-drives
+//! the WAL and reconstructs the states in full, so a reattaching client always
+//! sees correct states and resumes the event stream from the recovered
+//! attempt's WAL-derived events — only the transient pre-crash round lines are
+//! gone (ADR 0033 §2, "states are durable, the finest log lines are
+//! best-effort").
+//!
+//! `seq` is a per-attempt monotone cursor: `record` stamps each event with the
+//! next `seq`, and `events_after(after)` returns the slice `> after`, so a
+//! client passes back the `cursor` it last saw and misses nothing the ring
+//! still holds. The ring is bounded at `EVENT_RING_CAP` events per attempt
+//! (oldest dropped past the cap, `seq` stays monotone across the drop) and only
+//! `ATTEMPT_LRU` attempts are kept live at once — a poll targets the current or
+//! just-finished attempt, so two is enough and a chatty rollback cannot bloat
+//! daemon memory unbounded.
+
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
