@@ -286,6 +286,10 @@ _DETAILS_MAX_LINES = 50
 def _render_details_block(details: Optional[str]) -> None:
     if not details:
         return
+    # NOTE: forensics are raw systemctl/journalctl output — untrusted for rich
+    # markup, so escape every line or a stray `[...]` would be parsed as a tag.
+    # golemd already caps the payload at 50 lines; slicing here just guards a
+    # future sender that doesn't.
     for line in details.splitlines()[:_DETAILS_MAX_LINES]:
         console.print(f"        [dim]{escape(line)}[/dim]")
 
