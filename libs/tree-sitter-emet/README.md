@@ -1,7 +1,7 @@
 # tree-sitter-emet
 
 A [tree-sitter](https://tree-sitter.github.io) grammar for the
-[Emet](../CLAUDE.md) configuration language, providing syntax highlighting
+[Emet](../../CLAUDE.md) configuration language, providing syntax highlighting
 in Neovim via [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter).
 
 It covers Emet's Elm-like surface syntax: line comments, string literals with
@@ -58,7 +58,7 @@ including this grammar's external scanner, when you install it).
    parser_config.emet = {
      install_info = {
        -- Absolute path to THIS directory, or a git url + optional subdirectory.
-       url = "/home/lakin/personal-repos/golem/emet/tree-sitter-emet",
+       url = "/home/lakin/personal-repos/golem/libs/tree-sitter-emet",
        files = { "src/parser.c", "src/scanner.c" },
        branch = "main",
      },
@@ -83,9 +83,9 @@ including this grammar's external scanner, when you install it).
 
    ```sh
    mkdir -p ~/.config/nvim/queries/emet
-   ln -s /home/lakin/personal-repos/golem/emet/tree-sitter-emet/queries/highlights.scm  ~/.config/nvim/queries/emet/highlights.scm
-   ln -s /home/lakin/personal-repos/golem/emet/tree-sitter-emet/queries/injections.scm  ~/.config/nvim/queries/emet/injections.scm
-   ln -s /home/lakin/personal-repos/golem/emet/tree-sitter-emet/queries/locals.scm      ~/.config/nvim/queries/emet/locals.scm
+   ln -s /home/lakin/personal-repos/golem/libs/tree-sitter-emet/queries/highlights.scm  ~/.config/nvim/queries/emet/highlights.scm
+   ln -s /home/lakin/personal-repos/golem/libs/tree-sitter-emet/queries/injections.scm  ~/.config/nvim/queries/emet/injections.scm
+   ln -s /home/lakin/personal-repos/golem/libs/tree-sitter-emet/queries/locals.scm      ~/.config/nvim/queries/emet/locals.scm
    ```
 
 4. Open any `.emet` file. If highlighting is not active, run
@@ -110,5 +110,5 @@ tree-sitter test              # run test/corpus
 tree-sitter parse FILE.emet   # inspect a parse tree
 
 # Parse every real example (expect zero ERROR nodes):
-for f in ../crates/emet/examples/*.emet; do tree-sitter parse "$f"; done
+for f in ../../apps/emet/examples/*.emet; do tree-sitter parse "$f"; done
 ```
