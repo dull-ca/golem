@@ -164,6 +164,22 @@ fn folded_style(emphasis: Emphasis) -> (Option<Color>, Weight) {
     }
 }
 
+// A row's label style: `folded_style`, except a `Done` row whose terminal
+// mark is the failure `✗` — Dr. Dub's "the failed log should dim red" — which
+// dims to `Color::DarkRed` instead of grey, so a failed row still reads as a
+// failure at a glance even with the eye on the label rather than the mark.
+// `DarkRed` is crossterm's dim counterpart to the mark's bright `Color::Red`
+// (ADR: same Red/DarkRed pairing `mark_style` already uses for the
+// Done/Folded contrast), so it stays clearly red-but-subdued next to the
+// bright `✗` in a 256-color terminal without competing with it. Every other
+// mark (`✓`, `↩`, `·`, `≡`) keeps the plain grey dim.
+fn label_style(emphasis: Emphasis, mark: &str) -> (Option<Color>, Weight) {
+    match (emphasis, mark) {
+        (Emphasis::Done, XMARK) => (Some(Color::DarkRed), Weight::Light),
+        _ => folded_style(emphasis),
+    }
+}
+
 // A `Done` row's mark stays at full brightness even though its label dims:
 // the settled outcome — applied, rolled back, or failed — is the one thing
 // worth a person's eye on an otherwise quiet row. `·` (unchanged) is the one
@@ -400,7 +416,7 @@ fn static_line(l: &Line) -> AnyElement<'static> {
             ..
         } => {
             let (mark_color, mark_weight) = mark_style(*emphasis, mark);
-            let (label_color, label_weight) = folded_style(*emphasis);
+            let (label_color, label_weight) = label_style(*emphasis, mark);
             element! {
                 View(flex_direction: FlexDirection::Row) {
                     Text(content: format!("{}{}", indent(*depth), mark), color: mark_color, weight: mark_weight)
@@ -417,7 +433,7 @@ fn static_line(l: &Line) -> AnyElement<'static> {
         } => {
             let mark = static_glyph_mark(row, *emphasis);
             let (mark_color, mark_weight) = mark_style(*emphasis, mark);
-            let (label_color, label_weight) = folded_style(*emphasis);
+            let (label_color, label_weight) = label_style(*emphasis, mark);
             element! {
                 View(flex_direction: FlexDirection::Row) {
                     Text(content: format!("{}{}", indent(*depth), mark), color: mark_color, weight: mark_weight)
@@ -448,7 +464,7 @@ fn animated_line(l: &Line) -> AnyElement<'static> {
             emphasis,
             ..
         } => {
-            let (color, weight) = folded_style(*emphasis);
+            let (color, weight) = label_style(*emphasis, mark);
             element! {
                 View(flex_direction: FlexDirection::Row) {
                     Text(content: indent(*depth))
@@ -465,11 +481,12 @@ fn animated_line(l: &Line) -> AnyElement<'static> {
             ..
         } => {
             let active = matches!(row.state, GlyphState::Pending | GlyphState::InProgress);
-            let (color, weight) = folded_style(*emphasis);
+            let mark = glyph_mark(row.state);
+            let (color, weight) = label_style(*emphasis, mark);
             element! {
                 View(flex_direction: FlexDirection::Row) {
                     Text(content: indent(*depth))
-                    StatusIndicator(mark: glyph_mark(row.state), active: active, emphasis: *emphasis)
+                    StatusIndicator(mark: mark, active: active, emphasis: *emphasis)
                     Text(content: glyph_suffix(row), color: color, weight: weight)
                 }
             }
@@ -597,5 +614,54 @@ pub fn StatusIndicator(
     } else {
         let (color, weight) = mark_style(props.emphasis, props.mark);
         element!(Text(content: props.mark, color: color, weight: weight)).into_any()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_done_failed_label_is_dim_red_not_dim_grey() {
+        assert_eq!(
+            label_style(Emphasis::Done, XMARK),
+            (Some(Color::DarkRed), Weight::Light)
+        );
+    }
+
+    #[test]
+    fn a_done_failed_label_style_differs_from_other_done_rows() {
+        assert_ne!(
+            label_style(Emphasis::Done, XMARK),
+            label_style(Emphasis::Done, CHECKMARK)
+        );
+        assert_ne!(
+            label_style(Emphasis::Done, XMARK),
+            label_style(Emphasis::Done, ROLLED_BACK)
+        );
+    }
+
+    #[test]
+    fn a_done_failed_label_style_differs_from_primary() {
+        assert_ne!(
+            label_style(Emphasis::Done, XMARK),
+            label_style(Emphasis::Primary, XMARK)
+        );
+    }
+
+    #[test]
+    fn a_rolled_back_done_label_stays_dim_grey() {
+        assert_eq!(
+            label_style(Emphasis::Done, ROLLED_BACK),
+            (Some(Color::DarkGrey), Weight::Light)
+        );
+    }
+
+    #[test]
+    fn the_failed_mark_stays_bright_red_regardless_of_the_dim_label() {
+        assert_eq!(
+            mark_style(Emphasis::Done, XMARK),
+            (Some(Color::Red), Weight::Normal)
+        );
     }
 }
