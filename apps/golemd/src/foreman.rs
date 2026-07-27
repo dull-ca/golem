@@ -68,6 +68,11 @@ pub(crate) enum RetryClass {
 #[derive(Debug, Clone)]
 pub(crate) enum StepClass {
     Ok,
+    /// A shared duplicate settled by [`Foreman::enact_credited`] — another unit's
+    /// success put its `(key, cid)` on the host, so this op did no real work. A
+    /// distinct terminal class so the report and projection can render it as
+    /// satisfied-by-sharing (`≡`) rather than real work (`✓`) (ADR 0034 §1).
+    Credited,
     Failed(RetryClass, String),
 }
 
@@ -371,6 +376,22 @@ impl Foreman {
         // 0034 §3) reads and mutates them across concurrent unit threads; the Mutex
         // makes claim-once and credit-after-success both first-writer-wins.
         let shared = shared_pairs(&unit_ops);
+        let unit_paths: Vec<&[String]> = units.iter().map(|u| u.path.as_slice()).collect();
+        for (unit_idx, op_owners) in shared_owners(&unit_ops, &unit_paths)
+            .into_iter()
+            .enumerate()
+        {
+            for (op_idx, owner) in op_owners.into_iter().enumerate() {
+                if let Some(owner) = owner {
+                    self.progress.mark_shared(
+                        reconcile_id,
+                        unit_paths[unit_idx],
+                        &unit_ops[unit_idx][op_idx].key(),
+                        &owner,
+                    );
+                }
+            }
+        }
         let enacting_ops: Vec<GlyphOp> = unit_ops.iter().flatten().cloned().collect();
         // NOTE: the first unit declaring a batch-installed package claims the real
         // `Inverse::RemoveAptPackage` its per-unit `apply_apt` can no longer observe
@@ -768,7 +789,10 @@ impl Foreman {
         }
         let pair = (op.key(), enacted_cid_of(op));
         if shared && succeeded.lock().unwrap().contains(&pair) {
-            return self.enact_credited(reconcile_id, ord, op, unit_path);
+            let class = self.enact_credited(reconcile_id, ord, op, unit_path)?;
+            self.progress
+                .mark_credited(reconcile_id, unit_path, &op.key());
+            return Ok(class);
         }
         if let GlyphOp::Install {
             glyph: glyph @ Glyph::AptPackage { name },
@@ -828,7 +852,7 @@ impl Foreman {
             Some(false),
             unit_path,
         )?;
-        Ok(StepClass::Ok)
+        Ok(StepClass::Credited)
     }
 
     /// Record the bracket for an apt `Install` the batch pre-pass already
@@ -1115,7 +1139,7 @@ impl Foreman {
         let (level, reason) = match class {
             StepClass::Failed(RetryClass::Retryable, m) => (EventLevel::Warn, m.clone()),
             StepClass::Failed(RetryClass::Fatal, m) => (EventLevel::Error, m.clone()),
-            StepClass::Ok => (EventLevel::Info, String::new()),
+            StepClass::Ok | StepClass::Credited => (EventLevel::Info, String::new()),
         };
         self.progress
             .record(reconcile_id, level, unit_path, glyph_key, &reason);
@@ -1528,6 +1552,7 @@ impl Foreman {
         let steps = self.planroom.wal_steps_for(reconcile_id)?;
         let events = self.progress.events_after(reconcile_id, after);
         let retries = self.progress.retries(reconcile_id);
+        let credit = self.progress.credit(reconcile_id);
         let report = if attempt.phase.is_settled() {
             let cached = self.reports.lock().unwrap().get(&reconcile_id).cloned();
             match cached {
@@ -1537,7 +1562,8 @@ impl Foreman {
         } else {
             None
         };
-        let mut proj = crate::projection::project(&attempt, &steps, events, report, &retries);
+        let mut proj =
+            crate::projection::project(&attempt, &steps, events, report, &retries, &credit);
         proj.cursor = proj.cursor.max(after);
         Ok(Some(proj))
     }
@@ -1654,6 +1680,42 @@ fn shared_pairs(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
         .map(|ops| {
             ops.iter()
                 .map(|op| counts[&(op.key(), enacted_cid_of(op))] > 1)
+                .collect()
+        })
+        .collect()
+}
+
+/// Per-op, source order preserved: `Some(owner_path)` when this op is a shared
+/// *duplicate* — its `(key, cid)` is declared by an earlier op in the plan and
+/// this op is NOT that first declarer — carrying the first declarer's `unit_path`
+/// as `owner`; `None` for a first declarer or a singleton. This is the projection
+/// view of dedup (ADR 0034 §1): the first declarer renders as real work, later
+/// declarers as shared context crediting it. It complements [`shared_pairs`]
+/// (which marks every candidate, first declarer included, for the crediting
+/// decision) — here only the followers are named, and by whom. Ops are visited in
+/// the same source order [`shared_pairs`] counts them, so "first" is the first
+/// `(unit_idx, op_idx)` to reach a pair.
+fn shared_owners(
+    unit_ops: &[Vec<GlyphOp>],
+    unit_paths: &[&[String]],
+) -> Vec<Vec<Option<Vec<String>>>> {
+    let mut first: std::collections::HashMap<(String, ContentId), Vec<String>> =
+        std::collections::HashMap::new();
+    unit_ops
+        .iter()
+        .enumerate()
+        .map(|(unit_idx, ops)| {
+            ops.iter()
+                .map(|op| {
+                    let pair = (op.key(), enacted_cid_of(op));
+                    match first.get(&pair) {
+                        Some(owner) => Some(owner.clone()),
+                        None => {
+                            first.insert(pair, unit_paths[unit_idx].to_vec());
+                            None
+                        }
+                    }
+                })
                 .collect()
         })
         .collect()
@@ -1821,6 +1883,8 @@ fn glyph_lines(
                 (StepClass::Ok, GlyphAction::Noop) => (GlyphOutcome::Unchanged, 0, None),
                 (StepClass::Ok, _) if rolled_back => (GlyphOutcome::RolledBack, 1, None),
                 (StepClass::Ok, _) => (GlyphOutcome::Applied, 1, None),
+                (StepClass::Credited, _) if rolled_back => (GlyphOutcome::RolledBack, 1, None),
+                (StepClass::Credited, _) => (GlyphOutcome::Credited, 1, None),
             };
             GlyphLine {
                 glyph_key: op.key(),
@@ -1876,7 +1940,7 @@ fn log_step_failure(glyph_key: &str, round: u32, class: &StepClass) {
         StepClass::Failed(RetryClass::Fatal, msg) => {
             error!(glyph_key, round, class = "fatal", reason = %msg, "enact failed; not retryable");
         }
-        StepClass::Ok => {}
+        StepClass::Ok | StepClass::Credited => {}
     }
 }
 
@@ -3696,6 +3760,115 @@ mod tests {
         assert!(
             second.glyphs.iter().any(|g| g.glyph_key == "apt:podman"),
             "the second unit still reports its own apt:podman bracket"
+        );
+    }
+
+    #[test]
+    fn the_projection_marks_a_shared_duplicate_and_names_its_owner() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        foreman.apply_scroll(scroll).unwrap();
+        let id = foreman.foreman.latest_reconcile_id().unwrap().unwrap();
+        let proj = foreman.foreman.progress_projection(id, 0).unwrap().unwrap();
+        let first = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "first")
+            .unwrap();
+        let second = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let first_podman = first
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        let second_podman = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        assert!(
+            !first_podman.shared,
+            "the first declarer does the real work, so it is not a shared duplicate"
+        );
+        assert!(
+            second_podman.shared,
+            "the second declarer of the same (key, cid) is a shared duplicate"
+        );
+        assert_eq!(
+            second_podman.owner,
+            Some(vec!["host".to_string(), "first".to_string()]),
+            "the duplicate names the first declarer's unit_path as owner"
+        );
+    }
+
+    #[test]
+    fn a_credited_duplicate_projects_the_credited_state() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        foreman.apply_scroll(scroll).unwrap();
+        let id = foreman.foreman.latest_reconcile_id().unwrap().unwrap();
+        let proj = foreman.foreman.progress_projection(id, 0).unwrap().unwrap();
+        let second = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let second_podman = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        assert!(
+            matches!(second_podman.state, crate::projection::GlyphState::Credited),
+            "the crediting unit's terminal is Credited, not Applied: {:?}",
+            second_podman.state
+        );
+    }
+
+    #[test]
+    fn a_credited_duplicate_reports_the_credited_outcome() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let line = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        assert_eq!(
+            line.outcome,
+            GlyphOutcome::Credited,
+            "the crediting unit's GlyphLine reports Credited, not Applied"
         );
     }
 

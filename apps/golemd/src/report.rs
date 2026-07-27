@@ -97,6 +97,7 @@ pub enum GlyphOutcome {
     Unchanged,
     Failed,
     RolledBack,
+    Credited,
 }
 
 /// One op's fate in a unit's `glyphs` list. `attempts` is exact only for

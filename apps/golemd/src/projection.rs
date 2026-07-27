@@ -53,6 +53,24 @@ pub enum GlyphState {
     Unchanged,
     Failed,
     RolledBack,
+    Credited,
+}
+
+/// The dedup facts a poll layers onto a glyph's WAL-folded state (ADR 0034 §1).
+/// They cannot be folded from the WAL: a credited op's bracket is byte-identical
+/// to an idempotent re-observation, so `enact_credited` is indistinguishable at
+/// rest. The foreman tracks them in memory per attempt and hands them to the
+/// projection, exactly as it does the retry countdown.
+#[derive(Debug, Clone, Default)]
+pub struct CreditFacts {
+    /// This op's `(key, cid)` is declared by more than one unit and this unit is
+    /// not the source-order first declarer — the row renders as a shared duplicate.
+    pub shared: bool,
+    /// The first declarer's `unit_path`, so the row can name whose work it shares.
+    pub owner: Option<Vec<String>>,
+    /// This op's terminal came from `enact_credited` — a shared duplicate settled
+    /// by another unit's success, not by real work of its own.
+    pub credited: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +80,10 @@ pub struct GlyphProgress {
     pub state: GlyphState,
     pub rounds: u32,
     pub next_retry_in_ms: Option<u64>,
+    #[serde(default)]
+    pub shared: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,6 +223,7 @@ pub fn project(
     events: Vec<ProgressEvent>,
     report: Option<ReconcileReport>,
     retries: &BTreeMap<String, u64>,
+    credit: &BTreeMap<(Vec<String>, String), CreditFacts>,
 ) -> ReconcileProgress {
     let mut units = Vec::new();
     for (unit, keyed) in group_units(attempt, steps) {
@@ -216,12 +239,24 @@ pub fn project(
             } else {
                 state
             };
+            let facts = credit.get(&(unit.clone(), key.clone())).cloned();
+            // A credited terminal is byte-identical to an idempotent re-observe in
+            // the WAL, so the fold reads `Applied`; the in-memory credit fact is
+            // what distinguishes it, promoting the settled state to `Credited`.
+            let state = match &facts {
+                Some(f) if f.credited && matches!(state, GlyphState::Applied) => {
+                    GlyphState::Credited
+                }
+                _ => state,
+            };
             glyphs.push(GlyphProgress {
                 glyph_key: key.clone(),
                 action,
                 state,
                 rounds,
                 next_retry_in_ms: retries.get(key).copied(),
+                shared: facts.as_ref().map(|f| f.shared).unwrap_or(false),
+                owner: facts.and_then(|f| f.owner),
             });
         }
         units.push(UnitProgress {
@@ -278,6 +313,9 @@ pub fn rebuild_report(
                 GlyphState::Unchanged => GlyphOutcome::Unchanged,
                 GlyphState::Failed => GlyphOutcome::Failed,
                 GlyphState::RolledBack => GlyphOutcome::RolledBack,
+                // The reattach fold has no in-memory credit facts, so a credited
+                // op reads as `Applied` here; `Credited` never reaches this arm.
+                GlyphState::Credited => GlyphOutcome::Credited,
             };
             let attempts = match outcome {
                 GlyphOutcome::Failed => rounds.max(1),
@@ -391,6 +429,7 @@ mod tests {
             vec![],
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         assert!(matches!(p.phase, PhaseView::Enacting));
         assert_eq!(p.units.len(), 1);
@@ -429,6 +468,7 @@ mod tests {
             &steps,
             vec![],
             None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let g = &p.units[0].glyphs[0];

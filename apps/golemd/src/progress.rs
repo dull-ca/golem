@@ -80,6 +80,7 @@ struct AttemptRing {
     next_seq: u64,
     events: VecDeque<ProgressEvent>,
     retries: BTreeMap<String, Instant>,
+    credit: BTreeMap<(Vec<String>, String), crate::projection::CreditFacts>,
 }
 
 impl AttemptRing {
@@ -88,6 +89,7 @@ impl AttemptRing {
             next_seq: 1,
             events: VecDeque::new(),
             retries: BTreeMap::new(),
+            credit: BTreeMap::new(),
         }
     }
 
@@ -177,6 +179,53 @@ impl ProgressRegistry {
             });
             ring.evict(kind);
         }
+    }
+
+    /// Record that a glyph row is a shared duplicate (ADR 0034 §1): its
+    /// `(key, cid)` is declared by an earlier unit, so it renders as context, not
+    /// work. `owner` is the first declarer's `unit_path`. Set once at plan time,
+    /// before enact; the credited flag is layered on later by `mark_credited`.
+    pub fn mark_shared(
+        &self,
+        reconcile_id: u64,
+        unit_path: &[String],
+        glyph_key: &str,
+        owner: &[String],
+    ) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(ring) = inner.rings.get_mut(&reconcile_id) {
+            let facts = ring
+                .credit
+                .entry((unit_path.to_vec(), glyph_key.to_string()))
+                .or_default();
+            facts.shared = true;
+            facts.owner = Some(owner.to_vec());
+        }
+    }
+
+    /// Record that a shared duplicate settled by crediting another unit's success
+    /// rather than by real work — the fact the WAL cannot carry, since the
+    /// credited bracket is byte-identical to an idempotent re-observe (ADR 0034 §1).
+    pub fn mark_credited(&self, reconcile_id: u64, unit_path: &[String], glyph_key: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(ring) = inner.rings.get_mut(&reconcile_id) {
+            ring.credit
+                .entry((unit_path.to_vec(), glyph_key.to_string()))
+                .or_default()
+                .credited = true;
+        }
+    }
+
+    pub fn credit(
+        &self,
+        reconcile_id: u64,
+    ) -> BTreeMap<(Vec<String>, String), crate::projection::CreditFacts> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .rings
+            .get(&reconcile_id)
+            .map(|r| r.credit.clone())
+            .unwrap_or_default()
     }
 
     pub fn set_retry(&self, reconcile_id: u64, glyph_key: &str, delay: Duration) {
