@@ -9,6 +9,8 @@ fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
         state,
         rounds: 1,
         next_retry_in_ms: None,
+        shared: false,
+        owner: None,
     }
 }
 

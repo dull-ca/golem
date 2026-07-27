@@ -43,6 +43,12 @@ pub struct GlyphRow {
     pub state: GlyphState,
     pub rounds: u32,
     pub next_retry_in_ms: Option<u64>,
+    // A shared duplicate (ADR 0034 §1): an earlier unit enacts this `(key, cid)`,
+    // so the row is context, not work — a slow dim spinner while waiting, then the
+    // `≡` credit mark. `owner` is the first declarer's unit_path, named in the
+    // row's suffix.
+    pub shared: bool,
+    pub owner: Option<Vec<String>>,
     // The rolling tail of this glyph's `kind:"cmd"` lines (ADR 0033 §3d), bounded
     // at CMD_TAIL_LINES and cleared when the glyph settles so the tree stays
     // compact.
@@ -83,7 +89,10 @@ fn unit_state(glyphs: &[GlyphRow]) -> UnitState {
     } else if glyphs.iter().all(|g| {
         matches!(
             g.state,
-            GlyphState::Applied | GlyphState::Unchanged | GlyphState::RolledBack
+            GlyphState::Applied
+                | GlyphState::Unchanged
+                | GlyphState::RolledBack
+                | GlyphState::Credited
         )
     }) {
         UnitState::Settled
@@ -133,6 +142,8 @@ impl ApplyModel {
                         state: g.state,
                         rounds: g.rounds,
                         next_retry_in_ms: g.next_retry_in_ms,
+                        shared: g.shared,
+                        owner: g.owner,
                         cmd_tail,
                     }
                 })

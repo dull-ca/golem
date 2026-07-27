@@ -12,6 +12,8 @@ fn glyph(key: &str, state: GlyphState) -> GlyphProgress {
         state,
         rounds: 1,
         next_retry_in_ms: None,
+        shared: false,
+        owner: None,
     }
 }
 
@@ -559,5 +561,137 @@ fn an_active_leaf_is_primary_while_its_settled_sibling_is_done() {
     assert_eq!(
         branch_emphasis(&lines, "scaly / pod / db"),
         Some(Emphasis::Done)
+    );
+}
+
+fn shared_glyph(key: &str, state: GlyphState, owner: &[&str]) -> GlyphProgress {
+    GlyphProgress {
+        glyph_key: key.into(),
+        action: "install".into(),
+        state,
+        rounds: 1,
+        next_retry_in_ms: None,
+        shared: true,
+        owner: Some(owner.iter().map(|s| s.to_string()).collect()),
+    }
+}
+
+// A shared duplicate still waiting for its owner reads as context: the row folds
+// to the WaitingShared emphasis, names the owner's last path segment in a
+// suffix, and shows no log tail of its own — the owner does the work.
+#[test]
+fn a_waiting_shared_row_folds_and_names_its_owner_with_no_logs() {
+    let mut m = model(vec![unit(
+        &["scaly", "second"],
+        vec![shared_glyph(
+            "apt:podman",
+            GlyphState::InProgress,
+            &["scaly", "first"],
+        )],
+    )]);
+    m.apply_progress(progress_with(
+        vec![],
+        vec![cmd_event(
+            &["scaly", "second"],
+            "apt:podman",
+            "Unpacking podman ...",
+        )],
+    ));
+    let lines = view::lines(&m);
+    assert_eq!(
+        glyph_emphasis(&lines, "apt:podman"),
+        Some(Emphasis::WaitingShared),
+        "a waiting shared duplicate folds to WaitingShared, never Primary"
+    );
+    let out = view::render_to_string(&m, 100);
+    assert!(
+        out.contains("(shared — first)"),
+        "the waiting row names the owner's last path segment:\n{out}"
+    );
+    assert!(
+        !out.contains("Unpacking podman ..."),
+        "a shared waiting row shows no log tail of its own:\n{out}"
+    );
+}
+
+// Once credited, the row settles to the `≡` mark and drops its suffix — it is
+// satisfied by sharing, distinct from the bright ✓ of real work.
+#[test]
+fn a_credited_row_settles_to_the_equiv_mark_and_drops_the_suffix() {
+    let m = model(vec![unit(
+        &["scaly", "second"],
+        vec![shared_glyph(
+            "apt:podman",
+            GlyphState::Credited,
+            &["scaly", "first"],
+        )],
+    )]);
+    let lines = view::lines(&m);
+    assert_eq!(
+        glyph_emphasis(&lines, "apt:podman"),
+        Some(Emphasis::Done),
+        "a credited row is Done — settled, not spinning"
+    );
+    let out = view::render_to_string(&m, 100);
+    assert!(
+        out.contains(view::CREDITED),
+        "a credited row renders the ≡ mark:\n{out}"
+    );
+    assert!(
+        !out.contains("(shared"),
+        "the shared suffix drops once the row is credited:\n{out}"
+    );
+    assert!(
+        !out.contains(view::CHECKMARK),
+        "a credited row is never a bright ✓ — that is reserved for real work:\n{out}"
+    );
+}
+
+// The motivating mixed frame: the owner does the real work (Primary, braille
+// spinner) while its shared duplicate waits (WaitingShared, the slow spinner).
+#[test]
+fn the_owner_spins_primary_while_its_shared_duplicate_waits() {
+    let m = model(vec![
+        unit(
+            &["scaly", "first"],
+            vec![glyph("apt:podman", GlyphState::InProgress)],
+        ),
+        unit(
+            &["scaly", "second"],
+            vec![shared_glyph(
+                "apt:podman",
+                GlyphState::InProgress,
+                &["scaly", "first"],
+            )],
+        ),
+    ]);
+    let lines = view::lines(&m);
+    let owner = lines
+        .iter()
+        .find_map(|l| match l {
+            Line::Glyph { row, emphasis, .. } if row.glyph_key == "apt:podman" && !row.shared => {
+                Some(*emphasis)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let duplicate = lines
+        .iter()
+        .find_map(|l| match l {
+            Line::Glyph { row, emphasis, .. } if row.glyph_key == "apt:podman" && row.shared => {
+                Some(*emphasis)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        owner,
+        Emphasis::Primary,
+        "the first declarer does the real work"
+    );
+    assert_eq!(
+        duplicate,
+        Emphasis::WaitingShared,
+        "the duplicate waits on the owner"
     );
 }

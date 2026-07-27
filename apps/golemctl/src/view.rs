@@ -49,7 +49,17 @@ pub const CHECKMARK: &str = "✓";
 pub const XMARK: &str = "✗";
 pub const ROLLED_BACK: &str = "↩";
 pub const UNCHANGED: &str = "·";
+// A shared duplicate satisfied by another unit's success (ADR 0034 §1): settled
+// by sharing, not by real work, so it earns `≡` — a notch brighter than its dim
+// label but never the bright ✓ that means this row did the work.
+pub const CREDITED: &str = "≡";
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// The slow pulsing-dot spinner for a shared duplicate waiting on its owner. A
+// distinct shape and a slower cadence (SLOW_SPINNER_INTERVAL_MS) than the
+// worker's braille, so a waiting-shared row never reads as active work.
+pub const SLOW_SPINNER_FRAMES: &[&str] = &["○", "◔", "◑", "◕", "●"];
+pub const SLOW_SPINNER_INTERVAL_MS: u64 = 400;
+pub const SPINNER_INTERVAL_MS: u64 = 80;
 // Log lines shown under the active unit — the tail of its ring, matching
 // devenv-tui's "recent lines under the active node" rule.
 const ACTIVE_LOG_LINES: usize = 5;
@@ -62,6 +72,7 @@ pub fn glyph_mark(state: GlyphState) -> &'static str {
         GlyphState::Unchanged => UNCHANGED,
         GlyphState::RolledBack => ROLLED_BACK,
         GlyphState::Failed => XMARK,
+        GlyphState::Credited => CREDITED,
         GlyphState::Pending | GlyphState::InProgress => SPINNER_FRAMES[0],
     }
 }
@@ -85,12 +96,17 @@ pub fn branch_mark(state: BranchState) -> &'static str {
 // glyph row; it is always the ancestor chain that dims, never a sibling.
 // A settled row is `Done`: its label dims like a folded row, but its mark
 // keeps full brightness, so a long settled fleet still scans by mark alone.
+// A `WaitingShared` row is a shared duplicate waiting on its owner (ADR 0034
+// §1): it never did work, so it folds like context, but with its own slow dim
+// spinner rather than the worker's braille — a person can see at a glance it is
+// riding another unit's install, not running one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Emphasis {
     #[default]
     Primary,
     Folded,
     Done,
+    WaitingShared,
 }
 
 // One rendered line of the tree, tagged with the facts both the static and the
@@ -142,7 +158,9 @@ fn indent(depth: usize) -> String {
 fn folded_style(emphasis: Emphasis) -> (Option<Color>, Weight) {
     match emphasis {
         Emphasis::Primary => (None, Weight::Normal),
-        Emphasis::Folded | Emphasis::Done => (Some(Color::DarkGrey), Weight::Light),
+        Emphasis::Folded | Emphasis::Done | Emphasis::WaitingShared => {
+            (Some(Color::DarkGrey), Weight::Light)
+        }
     }
 }
 
@@ -158,9 +176,13 @@ fn mark_style(emphasis: Emphasis, mark: &str) -> (Option<Color>, Weight) {
             CHECKMARK => (Some(Color::Green), Weight::Normal),
             XMARK => (Some(Color::Red), Weight::Normal),
             ROLLED_BACK => (Some(Color::Yellow), Weight::Normal),
+            // `≡` sits one notch above the dim label — neutral grey at normal
+            // weight, not the bright green of a ✓ — so the eye reads it as
+            // "satisfied by sharing", not "this row did the work".
+            CREDITED => (Some(Color::Grey), Weight::Normal),
             _ => folded_style(emphasis),
         },
-        Emphasis::Primary | Emphasis::Folded => folded_style(emphasis),
+        Emphasis::Primary | Emphasis::Folded | Emphasis::WaitingShared => folded_style(emphasis),
     }
 }
 
@@ -170,6 +192,13 @@ fn mark_style(emphasis: Emphasis, mark: &str) -> (Option<Color>, Weight) {
 const LOG_COLOR: Color = Color::White;
 const LOG_WEIGHT: Weight = Weight::Light;
 
+// True while a shared duplicate is still waiting on its owner (ADR 0034 §1) —
+// the window the slow spinner and the owner suffix belong to. It drops the
+// moment the row credits (`Credited`) or the owner fails and it applies for real.
+fn is_waiting_shared(g: &GlyphRow) -> bool {
+    g.shared && matches!(g.state, GlyphState::Pending | GlyphState::InProgress)
+}
+
 fn glyph_suffix(g: &GlyphRow) -> String {
     let mut suffix = format!(" {}", g.glyph_key);
     // The countdown is the projection's server-computed `next_retry_in_ms` — the
@@ -178,6 +207,14 @@ fn glyph_suffix(g: &GlyphRow) -> String {
     // terminal ✗.
     if let Some(ms) = g.next_retry_in_ms {
         suffix.push_str(&format!("  (retry in {ms}ms)"));
+    }
+    // A waiting shared duplicate names the owner it rides — its last path segment,
+    // enough to place the work without repeating the whole tree path. The suffix
+    // drops once the row credits, since a settled `≡` says the same thing.
+    if is_waiting_shared(g) {
+        if let Some(owner) = g.owner.as_ref().and_then(|o| o.last()) {
+            suffix.push_str(&format!("  (shared — {owner})"));
+        }
     }
     suffix
 }
@@ -209,17 +246,27 @@ fn push_node(lines: &mut Vec<Line>, node: &TreeNode, depth: usize) {
     if let Some(unit) = node.leaf {
         for g in &unit.glyphs {
             let active = matches!(g.state, GlyphState::Pending | GlyphState::InProgress);
+            let waiting_shared = is_waiting_shared(g);
+            // A waiting shared duplicate folds to its own emphasis; a real
+            // in-flight glyph is the Primary locus of work; anything settled is
+            // Done. A shared row is context whether waiting or credited, so it is
+            // trimmable — `settled` is set even while it waits.
+            let emphasis = if waiting_shared {
+                Emphasis::WaitingShared
+            } else if active {
+                Emphasis::Primary
+            } else {
+                Emphasis::Done
+            };
             lines.push(Line::Glyph {
                 depth: depth + 1,
                 row: g.clone(),
-                settled: !active,
-                emphasis: if active {
-                    Emphasis::Primary
-                } else {
-                    Emphasis::Done
-                },
+                settled: !active || waiting_shared,
+                emphasis,
             });
-            if active {
+            // A waiting shared row shows no log tail — the owner streams the real
+            // work; this row is only context.
+            if active && !waiting_shared {
                 for line in &g.cmd_tail {
                     lines.push(Line::CmdTail {
                         depth: depth + 2,
@@ -331,6 +378,18 @@ fn is_settled_interior(l: &Line) -> bool {
     matches!(l, Line::Glyph { settled: true, .. })
 }
 
+// The still-frame mark a glyph shows in the static render — the tested surface
+// and the frame the animated spinner replaces at runtime. A waiting-shared row
+// shows the slow spinner's first frame, so it is visibly the pulsing dot even in
+// a captured frame; every other row shows `glyph_mark`.
+fn static_glyph_mark(row: &GlyphRow, emphasis: Emphasis) -> &'static str {
+    if emphasis == Emphasis::WaitingShared {
+        SLOW_SPINNER_FRAMES[0]
+    } else {
+        glyph_mark(row.state)
+    }
+}
+
 fn static_line(l: &Line) -> AnyElement<'static> {
     match l {
         Line::Branch {
@@ -356,7 +415,7 @@ fn static_line(l: &Line) -> AnyElement<'static> {
             emphasis,
             ..
         } => {
-            let mark = glyph_mark(row.state);
+            let mark = static_glyph_mark(row, *emphasis);
             let (mark_color, mark_weight) = mark_style(*emphasis, mark);
             let (label_color, label_weight) = folded_style(*emphasis);
             element! {
@@ -490,23 +549,35 @@ pub struct SpinnerProps {
     pub emphasis: Emphasis,
 }
 
-/// Self-animating spinner: advances its own frame on an ~80ms timer, so the
-/// mark spins between the ~1s polls that refresh the model. A `Folded`
-/// spinner (an ancestor row spinning only because a descendant is working)
-/// renders dim and grey, obviously subordinate to the one `Primary` spinner
-/// at the working leaf.
+// A `WaitingShared` row spins the slow pulsing-dot set; every other spinning row
+// spins the worker's braille. Bundling frames with their cadence keeps the two
+// spinners impossible to cross-wire.
+fn spinner_frames(emphasis: Emphasis) -> (&'static [&'static str], u64) {
+    match emphasis {
+        Emphasis::WaitingShared => (SLOW_SPINNER_FRAMES, SLOW_SPINNER_INTERVAL_MS),
+        _ => (SPINNER_FRAMES, SPINNER_INTERVAL_MS),
+    }
+}
+
+/// Self-animating spinner: advances its own frame on its cadence, so the mark
+/// spins between the ~1s polls that refresh the model. A `Folded` spinner (an
+/// ancestor row spinning only because a descendant is working) renders dim and
+/// grey, obviously subordinate to the one `Primary` spinner at the working leaf.
+/// A `WaitingShared` spinner runs the slow pulsing-dot frames at a distinctly
+/// slower cadence, so a shared duplicate never reads as active work.
 #[component]
 pub fn Spinner(mut hooks: Hooks, props: &SpinnerProps) -> impl Into<AnyElement<'static>> {
+    let (frames, interval) = spinner_frames(props.emphasis);
     let mut frame = hooks.use_state(|| 0usize);
     hooks.use_future(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
             let Some(v) = frame.try_get() else { break };
-            frame.set((v + 1) % SPINNER_FRAMES.len());
+            frame.set((v + 1) % frames.len());
         }
     });
     let (color, weight) = folded_style(props.emphasis);
-    element!(Text(content: SPINNER_FRAMES[frame.get()], color: color, weight: weight))
+    element!(Text(content: frames[frame.get()], color: color, weight: weight))
 }
 
 #[derive(Default, Props)]

@@ -85,7 +85,9 @@ fn aggregate(node: &TreeNode) -> BranchState {
                 GlyphState::Failed => any_failed = true,
                 GlyphState::RolledBack => any_rolled_back = true,
                 GlyphState::Applied => any_applied = true,
-                GlyphState::Unchanged => {}
+                // A credited duplicate did no work of its own — it carries no news
+                // to a branch, exactly like a Noop (`Unchanged`).
+                GlyphState::Unchanged | GlyphState::Credited => {}
             }
         }
     }

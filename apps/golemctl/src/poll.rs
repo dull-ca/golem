@@ -29,6 +29,9 @@ pub enum GlyphState {
     Unchanged,
     Failed,
     RolledBack,
+    // A shared duplicate settled by crediting another unit's success rather than
+    // by real work (ADR 0034 §1) — rendered with the `≡` mark, never a bright ✓.
+    Credited,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -57,6 +60,13 @@ pub struct GlyphProgress {
     // the WAL never records a scheduled retry (ADR 0033 §2). Present only while
     // a retry is pending; absent on a recovered attempt after a daemon restart.
     pub next_retry_in_ms: Option<u64>,
+    // Additive dedup facts (ADR 0034 §1): `shared` marks a duplicate an earlier
+    // unit already enacts, `owner` names that first declarer's unit_path. A
+    // pre-dedup golemd omits both, so they default tolerantly.
+    #[serde(default)]
+    pub shared: bool,
+    #[serde(default)]
+    pub owner: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,6 +211,33 @@ mod tests {
         });
         let ev: Event = serde_json::from_value(cmd).unwrap();
         assert_eq!(ev.kind, EventKind::Cmd);
+    }
+
+    #[test]
+    fn a_glyph_without_dedup_fields_defaults_to_not_shared() {
+        let old = serde_json::json!({
+            "glyph_key": "apt:podman", "action": "install",
+            "state": "applied", "rounds": 1, "next_retry_in_ms": null
+        });
+        let g: GlyphProgress = serde_json::from_value(old).unwrap();
+        assert!(!g.shared);
+        assert!(g.owner.is_none());
+    }
+
+    #[test]
+    fn a_shared_glyph_carries_its_owner_and_credited_state() {
+        let shared = serde_json::json!({
+            "glyph_key": "apt:podman", "action": "install",
+            "state": "credited", "rounds": 1, "next_retry_in_ms": null,
+            "shared": true, "owner": ["scaly", "first"]
+        });
+        let g: GlyphProgress = serde_json::from_value(shared).unwrap();
+        assert!(g.shared);
+        assert_eq!(
+            g.owner,
+            Some(vec!["scaly".to_string(), "first".to_string()])
+        );
+        assert_eq!(g.state, GlyphState::Credited);
     }
 
     #[test]
