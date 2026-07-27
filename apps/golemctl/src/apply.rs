@@ -37,6 +37,18 @@ pub fn should_stop(p: &Progress) -> bool {
     p.phase.is_terminal()
 }
 
+fn first_line_of(message: &str) -> String {
+    let mut lines = message.lines().filter(|line| !line.trim().is_empty());
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    if lines.next().is_some() {
+        format!("{first}…")
+    } else {
+        first.to_string()
+    }
+}
+
 pub fn summarize_report(report: &serde_json::Value) -> Vec<String> {
     let outcome = report
         .get("outcome")
@@ -102,6 +114,7 @@ pub fn summarize_report(report: &serde_json::Value) -> Vec<String> {
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("");
+            let message = first_line_of(message);
             let class = failure.get("class").and_then(|c| c.as_str());
             let mut line = format!("  {unit_path} / {glyph_key}: {message}");
             if let Some(class) = class {
@@ -502,6 +515,39 @@ mod tests {
         assert!(lines[1].contains("systemd:canary.service"));
         assert!(lines[1].contains("unit not found"));
         assert!(lines[1].contains("retries-exhausted"));
+    }
+
+    #[test]
+    fn summarize_report_collapses_a_multi_line_failure_message_to_one_line() {
+        let report = serde_json::json!({
+            "outcome": "partial",
+            "revision": { "id": 7 },
+            "units": [
+                {
+                    "unit_path": ["scaly", "canary"],
+                    "outcome": "partial",
+                    "glyphs": [],
+                    "failures": [
+                        {
+                            "glyph_key": "systemd:fishnet-canary.service",
+                            "unit_path": ["scaly", "canary"],
+                            "phase": "enact",
+                            "class": "retries-exhausted",
+                            "attempts": 5,
+                            "message": "systemctl start fishnet-canary.service: Job for fishnet-canary.service failed because the control process exited with error code.\nSee \"systemctl status fishnet-canary.service\" and \"journalctl -xeu fishnet-canary.service\" for details.\n",
+                            "rolled_back": false
+                        }
+                    ]
+                }
+            ]
+        });
+        let lines = summarize_report(&report);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1].lines().count(), 1);
+        assert_eq!(
+            lines[1],
+            "  scaly / canary / systemd:fishnet-canary.service: systemctl start fishnet-canary.service: Job for fishnet-canary.service failed because the control process exited with error code.… (retries-exhausted)"
+        );
     }
 
     // A transport failure (golemd crashing mid-apply, an unreachable port) must
