@@ -789,9 +789,13 @@ impl Foreman {
         }
         let pair = (op.key(), enacted_cid_of(op));
         if shared && succeeded.lock().unwrap().contains(&pair) {
-            let class = self.enact_credited(reconcile_id, ord, op, unit_path)?;
+            // NOTE: marked before the WAL write, not after. `enact_credited`'s
+            // `Done` row folds as plain `Applied` until this fact exists, so a
+            // poll landing between the two durable writes would misread a
+            // credited op as real work (ADR 0034 §1).
             self.progress
                 .mark_credited(reconcile_id, unit_path, &op.key());
+            let class = self.enact_credited(reconcile_id, ord, op, unit_path)?;
             return Ok(class);
         }
         if let GlyphOp::Install {
@@ -3840,6 +3844,171 @@ mod tests {
             matches!(second_podman.state, crate::projection::GlyphState::Credited),
             "the crediting unit's terminal is Credited, not Applied: {:?}",
             second_podman.state
+        );
+    }
+
+    struct GatedPlanRoom {
+        inner: MemoryPlanRoom,
+        gate_on: (&'static str, &'static str, WalStepState),
+        armed: std::sync::atomic::AtomicBool,
+        parked: Arc<std::sync::atomic::AtomicBool>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl GatedPlanRoom {
+        fn new(
+            gate_on: (&'static str, &'static str, WalStepState),
+        ) -> (
+            Self,
+            Arc<std::sync::atomic::AtomicBool>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let parked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = std::sync::mpsc::channel();
+            let gated = Self {
+                inner: MemoryPlanRoom::new(),
+                gate_on,
+                armed: std::sync::atomic::AtomicBool::new(true),
+                parked: parked.clone(),
+                release: Mutex::new(Some(rx)),
+            };
+            (gated, parked, tx)
+        }
+    }
+    impl PlanRoom for GatedPlanRoom {
+        fn applied_state(&self) -> Result<Option<AppliedState>> {
+            self.inner.applied_state()
+        }
+        fn put_applied_state(&self, state: &AppliedState) -> Result<()> {
+            self.inner.put_applied_state(state)
+        }
+        fn revisions(&self) -> Result<Vec<Revision>> {
+            self.inner.revisions()
+        }
+        fn revision(&self, id: u64) -> Result<Option<Revision>> {
+            self.inner.revision(id)
+        }
+        fn latest_revision_id(&self) -> Result<Option<u64>> {
+            self.inner.latest_revision_id()
+        }
+        fn open_attempt(&self, scroll_content_id: Option<ContentId>) -> Result<ReconcileAttempt> {
+            self.inner.open_attempt(scroll_content_id)
+        }
+        fn set_attempt_phase(&self, reconcile_id: u64, phase: AttemptPhase) -> Result<()> {
+            self.inner.set_attempt_phase(reconcile_id, phase)
+        }
+        fn latest_attempt(&self) -> Result<Option<ReconcileAttempt>> {
+            self.inner.latest_attempt()
+        }
+        fn attempts(&self) -> Result<Vec<ReconcileAttempt>> {
+            self.inner.attempts()
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn append_wal_step(
+            &self,
+            reconcile_id: u64,
+            step_ord: u64,
+            glyph_key: &str,
+            action: WalAction,
+            state: WalStepState,
+            op: &GlyphOp,
+            inverse: Option<&Inverse>,
+            changed: Option<bool>,
+            unit_path: &[String],
+        ) -> Result<WalStep> {
+            let step = self.inner.append_wal_step(
+                reconcile_id,
+                step_ord,
+                glyph_key,
+                action,
+                state,
+                op,
+                inverse,
+                changed,
+                unit_path,
+            )?;
+            let unit = unit_path.last().map(String::as_str).unwrap_or("");
+            if self.gate_on == (unit, glyph_key, state)
+                && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(rx) = self.release.lock().unwrap().take() {
+                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                }
+            }
+            Ok(step)
+        }
+        fn wal_steps(&self) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps()
+        }
+        fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps_for(reconcile_id)
+        }
+    }
+
+    #[test]
+    fn a_poll_between_the_credited_wal_write_and_the_credit_fact_still_reads_credited() {
+        let (planroom, parked, release) =
+            GatedPlanRoom::new(("second", "apt:podman", WalStepState::Done));
+        let reconciler = Arc::new(ScriptedReconciler::new().ok_default());
+        let foreman = Arc::new(
+            Foreman::new("host".into(), Box::new(planroom), Box::new(reconciler))
+                .with_retry_config(RetryConfig {
+                    max_attempts: 3,
+                    base_delay_ms: 0,
+                    ..Default::default()
+                })
+                .with_enact_config(EnactConfig { workers: 1 }),
+        );
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        let bytes = manifest(vec![scroll]);
+        let f = foreman.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f.apply_manifest(&bytes));
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !parked.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the crediting write never parked at the gate"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let id = foreman
+            .latest_reconcile_id()
+            .unwrap()
+            .expect("an attempt is open");
+        let proj = foreman
+            .progress_projection(id, 0)
+            .unwrap()
+            .expect("the attempt projects");
+        let second = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let second_podman = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        let observed_state = second_podman.state;
+
+        let _ = release.send(());
+        let done = rx.recv_timeout(std::time::Duration::from_secs(5));
+        done.expect("the reconcile completed").unwrap();
+
+        assert!(
+            matches!(observed_state, crate::projection::GlyphState::Credited),
+            "a poll racing the credited WAL commit read {observed_state:?}, not Credited"
         );
     }
 
