@@ -37,11 +37,88 @@ pub fn should_stop(p: &Progress) -> bool {
     p.phase.is_terminal()
 }
 
-pub fn print_report(report: &serde_json::Value) {
-    match serde_json::to_string_pretty(report) {
-        Ok(s) => println!("{s}"),
-        Err(_) => println!("{report}"),
+pub fn summarize_report(report: &serde_json::Value) -> Vec<String> {
+    let outcome = report
+        .get("outcome")
+        .and_then(|o| o.as_str())
+        .unwrap_or("unknown");
+    let revision = report
+        .get("revision")
+        .and_then(|r| r.get("id"))
+        .and_then(|id| id.as_u64());
+
+    let mut headline = match revision {
+        Some(id) => format!("apply {outcome} — revision {id}"),
+        None => format!("apply {outcome}"),
+    };
+
+    let units = report
+        .get("units")
+        .and_then(|u| u.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut unit_segments = Vec::new();
+    let mut detail_lines = Vec::new();
+    for unit in &units {
+        let failures = unit
+            .get("failures")
+            .and_then(|f| f.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if failures.is_empty() {
+            continue;
+        }
+        let unit_path = unit
+            .get("unit_path")
+            .and_then(|p| p.as_array())
+            .map(|segs| {
+                segs.iter()
+                    .filter_map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            })
+            .unwrap_or_default();
+        let disposition = match unit.get("outcome").and_then(|o| o.as_str()) {
+            Some("rolled_back") => "rolled back",
+            _ => "kept",
+        };
+        let noun = if failures.len() == 1 {
+            "glyph"
+        } else {
+            "glyphs"
+        };
+        unit_segments.push(format!(
+            "{unit_path}: {} {noun} failed ({disposition})",
+            failures.len()
+        ));
+
+        for failure in &failures {
+            let glyph_key = failure
+                .get("glyph_key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("?");
+            let message = failure
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            let class = failure.get("class").and_then(|c| c.as_str());
+            let mut line = format!("  {unit_path} / {glyph_key}: {message}");
+            if let Some(class) = class {
+                line.push_str(&format!(" ({class})"));
+            }
+            detail_lines.push(line);
+        }
     }
+
+    if !unit_segments.is_empty() {
+        headline.push_str(" — ");
+        headline.push_str(&unit_segments.join("; "));
+    }
+
+    let mut lines = vec![headline];
+    lines.extend(detail_lines);
+    lines
 }
 
 // `settled` and a settle with no report both exit 0; every other terminal
@@ -102,7 +179,9 @@ async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
                 if json {
                     println!("{report}");
                 } else {
-                    print_report(report);
+                    for line in summarize_report(report) {
+                        println!("{line}");
+                    }
                 }
             }
             return Ok(exit_code(p.report.as_ref()));
@@ -176,7 +255,9 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
 
     let report = live.model.lock().ok().and_then(|m| m.report.clone());
     if let Some(report) = &report {
-        print_report(report);
+        for line in summarize_report(report) {
+            println!("{line}");
+        }
     }
     // Reprint the log path on stdout after the report so it survives the tree
     // scrolling out of view in a long session (ADR 0033 §3b).
@@ -307,6 +388,120 @@ mod tests {
             exit_code(Some(&serde_json::json!({ "outcome": "rolled_back" }))),
             1
         );
+    }
+
+    #[test]
+    fn summarize_report_names_outcome_and_revision_when_settled() {
+        let report = serde_json::json!({
+            "outcome": "settled",
+            "revision": { "id": 3 },
+            "units": []
+        });
+        let lines = summarize_report(&report);
+        assert_eq!(lines, vec!["apply settled — revision 3"]);
+    }
+
+    #[test]
+    fn summarize_report_names_the_kept_unit_and_glyph_count_when_partial() {
+        let report = serde_json::json!({
+            "outcome": "partial",
+            "revision": { "id": 2 },
+            "units": [
+                {
+                    "unit_path": ["scaly", "canary"],
+                    "outcome": "partial",
+                    "glyphs": [],
+                    "failures": [
+                        {
+                            "glyph_key": "systemd:canary.service",
+                            "unit_path": ["scaly", "canary"],
+                            "phase": "enact",
+                            "class": "retries-exhausted",
+                            "attempts": 5,
+                            "message": "unit not found",
+                            "rolled_back": false
+                        }
+                    ]
+                }
+            ]
+        });
+        let lines = summarize_report(&report);
+        assert_eq!(
+            lines[0],
+            "apply partial — revision 2 — scaly / canary: 1 glyph failed (kept)"
+        );
+    }
+
+    #[test]
+    fn summarize_report_names_the_rolled_back_unit_when_rolled_back() {
+        let report = serde_json::json!({
+            "outcome": "rolled_back",
+            "revision": { "id": 5 },
+            "units": [
+                {
+                    "unit_path": ["scaly", "canary"],
+                    "outcome": "rolled_back",
+                    "glyphs": [],
+                    "failures": [
+                        {
+                            "glyph_key": "apt:podman",
+                            "unit_path": ["scaly", "canary"],
+                            "phase": "enact",
+                            "class": "fatal",
+                            "attempts": 1,
+                            "message": "mirror down",
+                            "rolled_back": true
+                        },
+                        {
+                            "glyph_key": "systemd:x.service",
+                            "unit_path": ["scaly", "canary"],
+                            "phase": "enact",
+                            "class": "retries-exhausted",
+                            "attempts": 5,
+                            "message": "unit not found",
+                            "rolled_back": true
+                        }
+                    ]
+                }
+            ]
+        });
+        let lines = summarize_report(&report);
+        assert_eq!(
+            lines[0],
+            "apply rolled_back — revision 5 — scaly / canary: 2 glyphs failed (rolled back)"
+        );
+    }
+
+    #[test]
+    fn summarize_report_appends_a_failure_detail_line_with_unit_path_and_class() {
+        let report = serde_json::json!({
+            "outcome": "partial",
+            "revision": { "id": 2 },
+            "units": [
+                {
+                    "unit_path": ["scaly", "canary"],
+                    "outcome": "partial",
+                    "glyphs": [],
+                    "failures": [
+                        {
+                            "glyph_key": "systemd:canary.service",
+                            "unit_path": ["scaly", "canary"],
+                            "phase": "enact",
+                            "class": "retries-exhausted",
+                            "attempts": 5,
+                            "message": "unit not found",
+                            "rolled_back": false
+                        }
+                    ]
+                }
+            ]
+        });
+        let lines = summarize_report(&report);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("scaly / canary"));
+        assert!(lines[1].contains("systemd:canary.service"));
+        assert!(lines[1].contains("unit not found"));
+        assert!(lines[1].contains("retries-exhausted"));
     }
 
     // A transport failure (golemd crashing mid-apply, an unreachable port) must
