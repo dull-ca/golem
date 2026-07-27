@@ -1,5 +1,5 @@
 {
-  description = "golem build outputs: golem agent + CLI, emet compiler, LSP, and tree-sitter grammar";
+  description = "golem build outputs: golem agent + CLI, emet compiler, and LSP";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -76,12 +76,6 @@
           cargoTestFlags = [ "-p" "emet-lsp" ];
         };
 
-        tree-sitter-emet = pkgs.tree-sitter.buildGrammar {
-          language = "emet";
-          version = "0.1.0";
-          src = ./libs/tree-sitter-emet;
-        };
-
         # Package a pre-built Starlight `dist/` into a Caddy image (see
         # sites/website/Caddyfile). The site is built bun-first, then packaged
         # here, rather than built purely in Nix: Astro/Starlight pulls ~137
@@ -127,7 +121,7 @@
       in
       {
         packages = {
-          inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp tree-sitter-emet website-container;
+          inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp website-container;
           default = emetc;
         };
 

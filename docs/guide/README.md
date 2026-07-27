@@ -17,5 +17,6 @@ Every program shown compiles. Run one:
 cargo run -- examples/single-host.emet
 ```
 
-Editor support lives in `tree-sitter-emet` (highlighting) and `emet-lsp`
-(inference, diagnostics).
+Editor support lives in [`emet.nvim`](https://codeberg.org/dull/emet.nvim)
+(tree-sitter highlighting + Neovim plugin) and `emet-lsp` (inference,
+diagnostics).

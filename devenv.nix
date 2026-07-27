@@ -11,7 +11,6 @@
   packages = [
     pkgs.bun
     pkgs.nodejs_20
-    pkgs.tree-sitter
     # The fleet harness (apps/fleet). qemu boots the Debian VMs;
     # cloud-utils/xorriso/cdrkit build the cloud-init seed ISO; openssh and curl
     # reach and provision the guests; the static musl golemd comes from the
@@ -32,7 +31,6 @@
   scripts.build-site.exec = "cd sites/website && bun run build";
   scripts.build-all.exec = ''
     cargo build --workspace
-    (cd libs/tree-sitter-emet && tree-sitter generate)
     (cd sites/website && bun run build)
   '';
   # `fleet` runs the harness from the repo root with apps/ on PYTHONPATH: the cd

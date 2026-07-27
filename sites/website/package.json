@@ -4,11 +4,8 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "generate-grammar": "node scripts/generate-emet-grammar.mjs",
-    "predev": "node scripts/generate-emet-grammar.mjs",
     "dev": "astro dev",
     "start": "astro dev",
-    "prebuild": "node scripts/generate-emet-grammar.mjs",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"

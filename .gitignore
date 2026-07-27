@@ -38,8 +38,6 @@ sites/website/node_modules
 sites/website/dist
 sites/website/.astro
 sites/website/bun.lockb
-# Generated at build time from libs/tree-sitter-emet by scripts/generate-emet-grammar.mjs
-sites/website/src/grammars/emet.tmLanguage.json
 
 # fleet test-harness runtime dir (ephemeral VMs, images, keys)
 /.fleet/

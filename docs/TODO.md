@@ -292,7 +292,7 @@ standalone project.
 
 - **golem crates as flake outputs — DONE.** `flake.nix` exposes
   `golemd`/`golemctl` (plus static-musl `golemd-static`/`golemctl-static`),
-  `emetc`, `emet-lsp`, `tree-sitter-emet`, and `website-container`; the
+  `emetc`, `emet-lsp`, and `website-container`; the
   static-build specifics are worked out (`pkgsStatic`) and CI (`.woodpecker.yml`)
   builds them.
 
