@@ -372,3 +372,13 @@ standalone project.
 
 - **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
   is published.
+
+- **Dedup display semantics — OPEN DECISION (2026-07-27).** Under the parallel
+  executor, shared-glyph duplicates usually race past the credit check and record
+  honest idempotent observes, so they render `✓` rather than `≡` (only stragglers
+  credit). Dr. Dub's options: (1) render by ownership (projection's shared/owner
+  fields; cheap, but the displayed owner may not hold the real inverse), (2) status
+  quo, (3) waiting-based dedup — non-first-declarers block on the owner's outcome
+  (credit on success, real-apply on failure); deterministic credits, makes the
+  waiting-dots UI real, un-pins the workers=1 count tests; requires an ADR 0034 §1
+  revision (racing → waiting). Controller recommendation: (3).
