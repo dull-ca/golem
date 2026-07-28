@@ -1,0 +1,27 @@
+[package]
+name    = "golemd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scroll-format = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+anyhow       = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono       = { workspace = true }
+rusqlite     = { workspace = true }
+clap         = { workspace = true }
+axum         = { workspace = true }
+blake3       = { workspace = true }
+postcard     = { workspace = true }
+tempfile     = { workspace = true }
+nix          = { workspace = true }
+toml         = { workspace = true }
+fastrand     = { workspace = true }
+
+[dev-dependencies]
+reqwest      = { workspace = true }

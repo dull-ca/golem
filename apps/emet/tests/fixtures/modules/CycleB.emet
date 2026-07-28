@@ -1,0 +1,6 @@
+module CycleB exposing (pkg)
+
+import CycleA
+
+pkg : AptPackage
+pkg = aptPackage { name = "b" }

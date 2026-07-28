@@ -1,0 +1,165 @@
+---
+title: A maintenance page
+description: A parameterized Emet function built from the lowest glyphs — file and lineInFile — that flips a domain to a static maintenance page.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+A "down for maintenance" page is a good excuse to work at the lowest level:
+just `aptPackage`, `systemdService`, `file`, and `lineInFile` — no container,
+no service abstraction. The point is the shape: **a parameterized Emet
+function is the API surface you build for your fleet.** Once you have
+`siteDownGlyphs`, flipping a domain to maintenance is one call.
+
+## The template
+
+```emet
+htmlPath : String -> String
+htmlPath id = "/var/www/maintenance/${id}/index.html"
+
+sitePath : String -> String
+sitePath host = "/etc/nginx/sites-enabled/${host}.conf"
+
+pageHtml : { host : String, reason : String, date : String } -> String
+pageHtml cfg =
+  String.join "\n"
+    [ "<!DOCTYPE html>"
+    , "<html lang=\"en\"><head><meta charset=\"UTF-8\">"
+    , "<title>${cfg.host} — down for maintenance</title></head>"
+    , "<body>"
+    , "  <h1>We'll be back soon</h1>"
+    , "  <p><strong>${cfg.host}</strong> is temporarily unavailable.</p>"
+    , "  <p>${cfg.reason}</p>"
+    , "  <p>Expected back: <strong>${cfg.date}</strong></p>"
+    , "</body></html>"
+    ]
+
+siteConf : { host : String, id : String } -> String
+siteConf cfg =
+  String.join "\n"
+    [ "server {"
+    , "  listen 443 ssl http2;"
+    , "  server_name ${cfg.host};"
+    , "  ssl_certificate     /etc/letsencrypt/live/${cfg.host}/fullchain.pem;"
+    , "  ssl_certificate_key /etc/letsencrypt/live/${cfg.host}/privkey.pem;"
+    , "  root  /var/www/maintenance/${cfg.id};"
+    , "  location / { return 503; }"
+    , "  error_page 503 /index.html;"
+    , "}"
+    ]
+
+siteDownGlyphs : { host : String, reason : String, date : String, id : String } -> List Glyph
+siteDownGlyphs cfg =
+  [ aptPackage { name = "nginx" }
+  , systemdService { unit = "nginx.service" }
+  , file
+      { path = htmlPath cfg.id
+      , contents = pageHtml { host = cfg.host, reason = cfg.reason, date = cfg.date }
+      , mode = "0644"
+      }
+  , file
+      { path = sitePath cfg.host
+      , contents = siteConf { host = cfg.host, id = cfg.id }
+      , mode = "0644"
+      }
+  ]
+```
+
+Four glyphs, one function. Everything below the surface is `String.join` and
+`${…}` — the language renders the HTML and the nginx config; the glyphs carry
+the final bytes.
+
+## Two files, composed
+
+The heart of the pattern is that **an nginx site config is just a file.** You
+do not need a dedicated helper to write one — produce the content with string
+interpolation and drop it where nginx expects it. The `id` flows through the
+file paths, so two maintenance pages on the same host never collide:
+
+```
+/var/www/maintenance/litour-down-2026/index.html
+                     ^^^^^^^^^^^^^^^^^
+                     cfg.id
+```
+
+## Using it
+
+```emet
+main : List Scroll
+main =
+  [ scroll
+      { name = "edge-01"
+      , glyphs =
+          siteDownGlyphs
+            { host   = "lichess.example.com"
+            , reason = "Cleaning out the cobwebs"
+            , date   = "May 22nd, 2026"
+            , id     = "litour-down-2026"
+            }
+      }
+  ]
+```
+
+Compile, and `emetc build … --text` shows the four glyphs. Apply, and the
+agent ensures nginx is installed and running, the HTML page is written, and
+the site config is in place.
+
+## Adding one line to a shared file with `lineInFile`
+
+The three `file`-and-package glyphs each own a whole resource. Sometimes you
+only want to ensure **one line** is present in a file someone else owns —
+that is `lineInFile`. Say the maintenance page's server block must be
+`include`d from a shared nginx entrypoint:
+
+```emet
+includeLine : String -> Glyph
+includeLine host =
+  lineInFile
+    { path = "/etc/nginx/conf.d/maintenance.conf"
+    , line = "include /etc/nginx/sites-enabled/${host}.conf;"
+    }
+```
+
+Add `includeLine cfg.host` to `siteDownGlyphs` and the agent appends that one
+line if it is missing. On reverse it removes **exactly that line, and only if
+golem added it** — a hand-added line, or another host's include, is left
+untouched.
+
+<Aside type="caution" title="file and lineInFile on the same path">
+  If a `file` glyph rewrites a path that a `lineInFile` also edits, order
+  matters. Glyphs apply in list order and reverse in the exact reverse order.
+  See [The four glyphs](/reference/primitives/) and
+  [Reversible reconcile](/explanation/reversible-reconcile/).
+</Aside>
+
+## Taking it back
+
+Delete the `siteDownGlyphs { … }` call from your scroll and re-apply. The
+agent turns each glyph into a `Remove`:
+
+- The maintenance HTML and the site config file are deleted (they were
+  `Absent` before golem wrote them).
+- The `include` line is removed — only because golem added it.
+- `nginx` is removed **only if** golem installed it. If your real ingress was
+  already using nginx, that other glyph still keeps it installed, and the
+  reverse leaves it.
+
+Removal restores what was there before, because the reversal receipt was
+captured at apply time. See
+[Reversible reconcile](/explanation/reversible-reconcile/).
+
+## Why the lowest glyphs matter
+
+You could build this on top of a `service` or `ingress` abstraction and it
+would be shorter. But those abstractions are *also* just `file`, `aptPackage`,
+`systemdService`, and `lineInFile` underneath — the magic stops the moment you
+write your own. Four glyphs are the floor; everything else is composition
+above it.
+
+## See also
+
+- [The config](/getting-started/the-config/) — the Emet authoring surface.
+- [A service abstraction](/guides/app-and-db/) — the container-workload
+  pattern.
+- [A tour of the lichess fleet](/guides/litour/) — abstractions at fleet
+  scale.

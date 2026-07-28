@@ -1,0 +1,176 @@
+---
+title: A service abstraction
+description: Write a thin fleet helper on golem's shipped Quadlet library — a Workload with a port that lowers to a podman package, a quadlet file, a systemd unit, and a firewall fragment.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+golem ships a strongly-typed container library — [`Quadlet`](/reference/workloads/)
+— so you almost never hand-write a quadlet string. What you *do* write is a thin
+helper that pins the fields your fleet always sets the same way, and calls
+`workloadGlyphs`. That is layer (c): your Emet on top of the shipped library,
+which sits on top of [the four glyphs](/reference/primitives/). This is exactly
+what the real [lichess fleet](/guides/litour/) does in `Lichess.emet`; it
+compiles.
+
+## A `Workload`, filled in
+
+A container is a `Workload` record. `image` takes a registry, a name, and a tag;
+`tcp host container` is a published port; `expose` derives the firewall from
+those ports. An app listening on 9663, reachable from the internal network:
+
+```emet
+import Quadlet exposing
+  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+lila : Workload
+lila =
+  Workload
+    { name = "lila"
+    , image = image "docker.io" "lichess-org/lila" "latest"
+    , env = []
+    , ports = [ tcp 9663 9663 ]
+    , volumes = []
+    , restart = Always
+    , expose = Internal
+    }
+```
+
+`workloadGlyphs lila` is a `List Glyph` — nothing golem-special, just data the
+agent already understands. Every field is checked: a `String` where a `Port`
+belongs, or `Restart=alwyas`, is a compile error.
+
+## Wrap the common shape in a helper
+
+Most services on a fleet share a shape: a docker.io image, one port, always
+restart, internally exposed. Name that shape once and the call sites shrink to
+the two things that vary:
+
+```emet
+service : String -> String -> String -> Int -> List Glyph
+service name repo tag port =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = image "docker.io" repo tag
+      , env = []
+      , ports = [ tcp port port ]
+      , volumes = []
+      , restart = Always
+      , expose = Internal
+      })
+```
+
+`service "lila" "lichess-org/lila" "latest" 9663` is now your fleet's word for
+"an internally-reachable container service." The library carries the types; your
+helper carries the convention.
+
+<Aside type="note" title="This is layer (c), not the library">
+  `service` here is a shortcut *you* own, built on `Quadlet.Workload`. The
+  shipped library is `Quadlet` (layer b); the four glyphs are the engine (layer
+  a). Different fleets grow different helpers over the same library — lichess
+  ships `dockerImage` / `workload` / `service` / `ingress` in its `Lichess.emet`.
+</Aside>
+
+## Use it in a fleet
+
+```emet
+main : List Scroll
+main =
+  [ scroll
+      { name = "app-01"
+      , glyphs = service "lila" "lichess-org/lila" "latest" 9663
+      }
+  ]
+```
+
+## What it lowers to
+
+`service "lila" … 9663` produces four glyphs — check with
+`cargo run -q -p emet -- build … --text`:
+
+| Glyph | Key | Comes from |
+| --- | --- | --- |
+| `aptPackage { name = "podman" }` | `apt:podman` | the runtime |
+| `file /etc/containers/systemd/lila.container` | `file:/etc/containers/systemd/lila.container` | the `.container` quadlet |
+| `systemdService { unit = "lila.service" }` | `systemd:lila.service` | the generated unit |
+| `file /etc/nftables.d/lila-9663.nft` | `file:/etc/nftables.d/lila-9663.nft` | `expose = Internal`, derived from the port |
+
+The quadlet body and the nftables rule are rendered by the library at compile
+time; the agent sees only the final text. The firewall `file` opens exactly the
+port the container publishes — `Expose` is computed from `ports`, so the two
+cannot drift.
+
+<Aside type="note" title="The agent never learned the word 'service'">
+  `golemd` reconciles four glyphs. "Service," "workload," and "firewall opening"
+  are vocabulary in your source and the library — they vanish at the manifest
+  boundary. That is why the agent stays small: no new resource kind, ever.
+</Aside>
+
+## Add a volume, and a second glyph appears
+
+Give the workload a named volume and the lowering grows a `.volume` quadlet.
+This is the registry (`examples/registry/registry.emet`):
+
+```emet
+import Quadlet exposing
+  ( image, tcp, Restart(..), Access(..), Relabel(..)
+  , fromVolume, Expose(..), Workload(..), workloadGlyphs )
+
+registry : Workload
+registry =
+  Workload
+    { name = "registry"
+    , image = image "docker.io/library" "registry" "2"
+    , env = []
+    , ports = [ tcp 5000 5000 ]
+    , volumes =
+        [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private ]
+    , restart = Always
+    , expose = Internal
+    }
+```
+
+Now five glyphs, the extra one being the named volume's `.volume` unit:
+
+```
+planned scrolls (1):
+  scroll `registry` (5 glyphs):
+    * ensure apt package `podman` installed
+    * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
+    * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
+    * enable + start systemd unit `registry.service`
+    * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
+```
+
+A `fromHost` mount would instead emit a `directory` glyph for its bind-mount
+source — see the [Quadlet reference](/reference/workloads/) for the full mount
+story.
+
+## Same abstraction, many services
+
+Because `service` is a function, a whole host is a `List.concat` of calls:
+
+```emet
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , glyphs =
+        List.concat
+          [ service "lila-http" "lichess-org/lila-http" "latest" 9080
+          , service "lila-gif"  "lichess-org/lila-gif"  "latest" 6175
+          ]
+    }
+```
+
+Change the image tag, recompile, re-apply — only the changed glyphs get new
+content ids and are replaced. See [Applying changes](/getting-started/applying/).
+
+## Where to next
+
+- Every `Quadlet` type and its lowering: **[The Quadlet library](/reference/workloads/)**
+- The full multi-host version, with a hand-rolled ingress too:
+  **[A tour of the lichess fleet](/guides/litour/)**
+- The lowest level — a pattern built from just `file` and `lineInFile`:
+  **[A maintenance page](/guides/maintenance-page/)**

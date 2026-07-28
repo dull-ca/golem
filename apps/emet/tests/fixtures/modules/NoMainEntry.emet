@@ -1,0 +1,6 @@
+module Main exposing (..)
+
+import Pkgs
+
+other : AptPackage
+other = Pkgs.web

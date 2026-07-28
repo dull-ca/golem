@@ -1,0 +1,118 @@
+---
+title: Architecture
+description: Emet source to emetc to a binary manifest to golemd to reversible reconcilers — and the scroll-format crate that keeps the two ends in agreement.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Golem is a straight pipeline. Source flows one way; nothing loops back.
+
+```
+Emet source
+   │  emetc build
+   ▼
+binary manifest  ◀── scroll-format (shared model) ──▶  golemd
+   │  golemctl apply (POST /manifest)                    │
+   ▼                                                     ▼
+golemd selects this host's scroll ───▶ diff ───▶ reversible reconcilers ───▶ the box
+```
+
+Two programs, one shared contract. The compiler is the *writer*; the agent
+is the *reader*; the `scroll-format` crate is the model they both depend on.
+
+## `emetc` — the compiler (writer)
+
+Emet is a typed, Elm-modeled language (`apps/emet/`). A program is a
+set of top-level declarations with Hindley-Milner inference; `main : List
+Scroll` is the fleet. The compiler's stages:
+
+```
+lexer  → layout → parser → infer (Algorithm W) → eval → manifest
+```
+
+`eval` produces `Vec<Scroll>` — one scroll per host, each a list of the
+four glyphs. `emetc build` then content-addresses each scroll and assembles
+a `Manifest`. Its default output is the **binary manifest**; `--text` is a
+readable plan and `--json` a debug view (see [CLI](/reference/cli/)).
+
+Everything a config computes — a rendered nginx site, a firewall rule, a
+container quadlet — is fully evaluated at this stage. The glyphs that reach
+the manifest carry only concrete strings. There is no templating layer
+downstream.
+
+## `scroll-format` — the shared contract
+
+`libs/scroll-format/` owns the wire model and nothing else: `Glyph`,
+`Scroll`, `AddressedScroll`, `Manifest`, `ContentId`, and the pure
+functions that turn scrolls into manifest bytes and back. It names no I/O,
+no filesystem, no network — pure data and pure functions.
+
+Both `emet` and `golemd` depend on it; it depends on neither. Dependencies
+point *toward* this small, stable centre, so there is exactly one
+definition of the manifest bytes and the two ends cannot drift. The
+compiler re-exports the model through `emet::ir`. See
+[Manifest format](/reference/bundle-format/) for the schema and the
+determinism guarantees.
+
+## `golemctl` — the operator CLI
+
+`golemctl apply <source> <addr>`:
+
+1. If `<source>` ends in `.emet`, shell out to `emetc build` and capture
+   the binary manifest from stdout. Otherwise read the file as prebuilt
+   manifest bytes.
+2. `POST` the bytes to the agent's `/manifest`.
+
+`golemctl state`, `history`, and `show` read back the agent's applied
+scroll and journal. That is the whole CLI — see [CLI](/reference/cli/).
+
+## `golemd` — the agent (reader)
+
+`golemd` runs on each box (`apps/golemd/`). On a manifest:
+
+1. **Ingest.** `scroll_format::from_bytes` decodes the manifest and checks
+   `format_version`.
+2. **Select.** Pick the `AddressedScroll` whose `scroll.name` matches this
+   agent's `--host`. A node enacts only its own scroll.
+3. **Diff (pure).** Compare the desired scroll's glyphs against the
+   last-applied outcomes in the journal, keyed by glyph key and versioned
+   by content id, producing an ordered list of `GlyphOp`s:
+   `Install` / `Remove` / `Replace` / `Noop`. This is a pure fold — desired
+   state in, an ordered plan out, no side effects.
+4. **Enact.** Run each op through the **`Reconciler`** port. Apply captures
+   the prior host state into an `Inverse` receipt; the port speaks glyph
+   vocabulary, never `apt-get`.
+5. **Journal.** Append a `Reconcile` revision embedding the content id, the
+   ordered ops, and the reversal receipts.
+
+The core (steps 3–5) is pure and testable with a **fake in-memory
+reconciler** — zero host I/O. The real host effects live in adapters. See
+[Reversible reconcile](/explanation/reversible-reconcile/) for the reconciler
+contract and the four concrete reconcilers.
+
+## Why split it this way
+
+| Concern | Lives in | Changes | Failure mode |
+| --- | --- | --- | --- |
+| What runs on the fleet | Emet source | Daily | Compile error, before shipping |
+| How a shape lowers to glyphs | Emet library functions | As you build abstractions | Compile error |
+| The wire bytes | `scroll-format` | Rarely (a `format_version` bump) | Typed decode error on read |
+| What lands on a box | `golemd` reconcilers | Almost never | Reversible; rollback on partial failure |
+
+The agent is the part that can change a real box, so it is deliberately the
+smallest: four reconcilers over four glyphs, each capturing enough to undo
+itself.
+
+## Where to look in the source
+
+| Component | Path |
+| --- | --- |
+| Emet compiler | `apps/emet/` |
+| Shared wire model | `libs/scroll-format/` |
+| Operator CLI | `apps/golemctl/` |
+| Agent | `apps/golemd/` |
+| Reconciler port | `apps/golemd/src/reconciler.rs` |
+| Host reconcilers | `apps/golemd/src/reconcilers.rs` |
+| Fake reconciler (tests) | `apps/golemd/src/fake_reconciler.rs` |
+| Journal / store | `apps/golemd/src/journal.rs`, `planroom.rs` |
+| Lichess fleet (real Emet) | `examples/lichess/` |

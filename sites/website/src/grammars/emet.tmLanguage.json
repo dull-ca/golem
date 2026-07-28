@@ -1,0 +1,138 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Emet",
+  "scopeName": "source.emet",
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#number"
+    },
+    {
+      "include": "#type-signature"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#builtin"
+    },
+    {
+      "include": "#qualified"
+    },
+    {
+      "include": "#constructor"
+    },
+    {
+      "include": "#operator"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "match": "--.*$",
+      "name": "comment.line.double-dash.emet"
+    },
+    "number": {
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+      "name": "constant.numeric.emet"
+    },
+    "string": {
+      "name": "string.quoted.double.emet",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.emet"
+        }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.emet"
+        }
+      },
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.emet"
+        },
+        {
+          "name": "meta.embedded.line.emet",
+          "begin": "\\$\\{",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.begin.emet"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.end.emet"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#string"
+            },
+            {
+              "include": "#number"
+            },
+            {
+              "include": "#qualified"
+            },
+            {
+              "include": "#constructor"
+            },
+            {
+              "include": "#operator"
+            }
+          ]
+        }
+      ]
+    },
+    "keyword": {
+      "match": "\\b(then|else|case|let|in|if|of)\\b",
+      "name": "keyword.control.emet"
+    },
+    "builtin": {
+      "match": "\\b(systemdService|aptPackage|lineInFile|scroll|file)\\b",
+      "name": "support.function.builtin.emet"
+    },
+    "type-signature": {
+      "match": "^\\s*([a-z][a-zA-Z0-9_]*)\\s*(:)(?!:)",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.emet"
+        },
+        "2": {
+          "name": "keyword.operator.type.emet"
+        }
+      }
+    },
+    "qualified": {
+      "match": "\\b(String|Maybe|List)(\\.)([a-z][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "support.class.emet"
+        },
+        "2": {
+          "name": "punctuation.accessor.emet"
+        },
+        "3": {
+          "name": "support.function.prelude.emet"
+        }
+      }
+    },
+    "constructor": {
+      "match": "\\b[A-Z][a-zA-Z0-9_]*\\b",
+      "name": "entity.name.type.emet"
+    },
+    "operator": {
+      "match": "(//|\\+\\+|==|/=|<=|>=|&&|\\|\\||->|\\^|\\*|/|\\+|-|<|>|=|:|\\||\\\\)",
+      "name": "keyword.operator.emet"
+    }
+  }
+}

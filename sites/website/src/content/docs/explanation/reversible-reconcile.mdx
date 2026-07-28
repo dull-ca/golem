@@ -1,0 +1,121 @@
+---
+title: Reversible reconcile
+description: How golemd enacts glyphs so every edit has a complete inverse — driving upgrade, removal, and rollback from one recorded receipt.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+`golemd`'s job is to bring a box to its scroll and to be able to **undo
+exactly what it did**. Every glyph it applies records what it changed, so a
+later change or a decommission can reverse it precisely. That one property —
+`reverse(apply(x))` returns the host to its pre-apply state — is what makes
+upgrade, removal, and crash-rollback all fall out of the same mechanism.
+
+## The Reconciler contract
+
+Each glyph is enacted through a reconciler pair where **apply returns the
+receipt needed to reverse it**:
+
+```
+Outcome {
+  op       : GlyphOp,       // Install / Remove / Replace / Noop
+  cid      : ContentId,     // the glyph's content id (the version axis)
+  inverse  : Inverse,       // the captured prior state to restore on reverse
+  changed  : bool,          // false ⇒ host already matched (a no-op)
+}
+
+apply(glyph, cid) -> Outcome    // bring the host to `glyph`; capture prior state
+reverse(outcome)  -> ()         // restore the prior state exactly
+```
+
+Reversibility is not a property of a glyph alone — it is a property of the
+`(glyph, prior-host-state)` pair captured at apply time. "Install nginx"
+cannot be inverted without knowing whether nginx pre-existed. So apply
+observes the host first and records the answer in `Inverse`.
+
+## Content-addressed diff
+
+The desired scroll's glyphs are compared against the last-applied outcomes
+in the journal. The **diff is keyed by glyph key** (`apt:<name>`,
+`file:<path>`, …) — "which resource" — and the **version is the content
+id** — "which version of it":
+
+| Situation | Op | Action |
+| --- | --- | --- |
+| key in both, **same cid** | `Noop` | nothing |
+| key in both, **different cid** | `Replace` | reverse the old outcome, then apply the new glyph |
+| key only in desired | `Install` | apply |
+| key only in last-applied | `Remove` | reverse the old outcome, apply nothing |
+
+`Replace` is ordered **reverse-then-apply** so the host is never left with
+two versions half-present. Removal is exactly the old version's
+uninstaller. This is why a one-line change to one file re-applies only that
+glyph: its content id changed, every other glyph's did not.
+
+## The four reconcilers
+
+Each captures just enough prior state to reverse itself:
+
+- **`aptPackage`** — apply queries `dpkg-query`; if absent, install and
+  record `InstalledByUs`; if present, no-op and record `WasPresent`.
+  Reverse removes only if `InstalledByUs`.
+- **`systemdService`** — apply records the prior enabled/active state, then
+  `enable --now`. Reverse restores that prior state.
+- **`file`** — apply reads the prior `(contents, mode)` or notes `Absent`,
+  then writes the desired contents atomically. Reverse restores the prior
+  bytes+mode, or deletes the file if it was `Absent`.
+- **`lineInFile`** — apply appends the line if missing (recording
+  `LineAddedByUs`) or no-ops if present (`LinePresent`). Reverse removes the
+  line only if golem added it.
+
+<Aside type="note" title="Golem only reverses what it recorded">
+  Every `Inverse` bounds what golem will undo. It never removes a package,
+  line, or file it did not add. That makes it safe to run on a box you also
+  manage by hand — hand-installed packages and hand-written files it did not
+  touch are left alone on reverse.
+</Aside>
+
+## The journal is golem's memory of its own edits
+
+The `Inverse` for each applied glyph is captured at apply time and stored in
+the journal revision, not read back from the host at reverse time. The host
+cannot answer "did golem install this, or was it already here?" — the very
+distinction reversal needs. The journal is the only reliable record of
+golem's own edits, and it makes reversal a pure function of recorded intent
+plus a small enact step, replay-safe across restarts.
+
+The journal lives in SQLite (`planroom.db`). Revisions are append-only;
+`RevisionKind` is `Init` or `Reconcile` — a decommission is just reconciling
+toward an empty scroll.
+
+## Ordering and rollback
+
+- **Idempotency.** Every apply observes the host first; re-running a scroll
+  at the same content id changes nothing (`changed = false` throughout).
+- **LIFO ordering.** A scroll's glyphs apply in list order; any reversal —
+  a `Replace`, a `Remove`, or a rollback — runs in the exact reverse order,
+  a LIFO undo stack recorded as the ordered `Outcome` list. That is what
+  makes composite reversal (a `file` plus a `lineInFile` on the same path)
+  exact.
+- **All-or-nothing per reconcile.** If a glyph op fails fatally mid-scroll,
+  golem reverses the outcomes already applied *this reconcile* and journals
+  nothing — the node stays at its last good scroll.
+
+## Upgrade and removal, from one mechanism
+
+- **Upgrade** = a `Replace`: reverse the old content id, apply the new one.
+  Edit your Emet, recompile, `golemctl apply`. The changed glyphs get new
+  content ids and are replaced; the unchanged ones are no-ops.
+- **Removal** = reconcile toward a scroll without that glyph — a `Remove`,
+  which is exactly the recorded uninstaller. Delete the abstraction from
+  your Emet and re-apply; the glyphs it produced are reversed.
+
+## Where to look in the source
+
+| Concern | Path |
+| --- | --- |
+| Reconciler port + Outcome/Inverse | `apps/golemd/src/reconciler.rs` |
+| The four host reconcilers | `apps/golemd/src/reconcilers.rs` |
+| Fake reconciler (for tests) | `apps/golemd/src/fake_reconciler.rs` |
+| Diff / enact / rollback spine | `apps/golemd/src/foreman.rs` |
+| Journal types (GlyphOp, Revision) | `apps/golemd/src/journal.rs` |

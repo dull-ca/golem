@@ -1,0 +1,23 @@
+-- A helper that reads fields off a record parameter, mapped over a list of
+-- host records. Row-polymorphic inference fixes h.name and h.port at the call.
+host : { name : String, port : Int } -> Scroll
+host h =
+  scroll
+    { name = h.name
+    , glyphs =
+        [ aptPackage { name = "app" }
+        , file
+            { path = "/etc/app/port.conf"
+            , contents = "listen = ${String.fromInt h.port}"
+            , mode = "0644"
+            }
+        , systemdService { unit = "app.service" }
+        ]
+    }
+
+main : List Scroll
+main =
+  List.map host
+    [ { name = "web-1", port = 8080 }
+    , { name = "web-2", port = 9090 }
+    ]

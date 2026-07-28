@@ -1,0 +1,6 @@
+module Main exposing (..)
+
+import Pkgs as P
+
+main : List Scroll
+main = [ scroll { name = "web", glyphs = [ P.web ] } ]

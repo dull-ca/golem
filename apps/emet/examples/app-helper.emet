@@ -1,0 +1,23 @@
+-- A reusable "app" recipe: one helper bundles a package, an interpolated config
+-- file, and a service for a host. Apply it once per host to build the fleet.
+appScroll : String -> Int -> Scroll
+appScroll host port =
+  scroll
+    { name = host
+    , glyphs =
+        [ aptPackage { name = "myapp" }
+        , file
+            { path = "/etc/myapp/port.conf"
+            , contents = "port = ${String.fromInt port}"
+            , mode = "0644"
+            }
+        , systemdService { unit = "myapp.service" }
+        ]
+    }
+
+main : List Scroll
+main =
+  [ appScroll "app-1" 8080
+  , appScroll "app-2" 8081
+  , appScroll "app-3" 8082
+  ]

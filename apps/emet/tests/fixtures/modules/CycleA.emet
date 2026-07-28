@@ -1,0 +1,6 @@
+module CycleA exposing (..)
+
+import CycleB
+
+main : List Scroll
+main = [ scroll { name = "a", glyphs = [ CycleB.pkg ] } ]

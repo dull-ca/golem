@@ -1,0 +1,98 @@
+---
+title: Applying changes
+description: Compile Emet to a binary manifest, ship it with golemctl, and let golemd reconcile the box — reversibly.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Applying is two steps: compile your Emet to a manifest, then ship it to the
+agent. `golemctl apply` does both.
+
+```bash
+golemctl apply fleet.emet http://127.0.0.1:7474
+```
+
+## What `golemctl apply` does
+
+<Steps>
+1. **Compiles (if given `.emet`).** For a `.emet` source, `golemctl` shells
+   out to `emetc build` and captures the **binary manifest** — a
+   content-addressed artifact carrying every host's scroll. Hand it a
+   prebuilt `.manifest` instead and it ships those bytes directly.
+
+2. **Posts it.** `POST /manifest` to the agent. The manifest is the whole
+   fleet; the agent picks out its own host.
+</Steps>
+
+You can also split the two steps — useful for inspecting the plan first:
+
+```bash
+emetc build fleet.emet -o fleet.manifest    # compile
+emetc build fleet.emet --text               # eyeball the plan
+golemctl apply fleet.manifest http://127.0.0.1:7474
+```
+
+## What the agent does on receipt
+
+`golemd` reconciles synchronously on `POST /manifest`:
+
+1. **Decode + check** `format_version`.
+2. **Select** the `AddressedScroll` whose `scroll.name` matches its
+   `--host`. Every other host's scroll is ignored.
+3. **Diff** the desired scroll's glyphs against its journal, by glyph key
+   and content id, into ordered ops: `Install`, `Remove`, `Replace`,
+   `Noop`.
+4. **Enact** each op through a reversible reconciler, capturing the prior
+   host state so the edit can be undone.
+5. **Journal** the ordered outcomes as a `Reconcile` revision.
+
+Because the diff is content-addressed, re-applying an unchanged fleet is all
+no-ops. See [Reversible reconcile](/explanation/reversible-reconcile/) for the
+mechanism.
+
+## Inspecting a node
+
+```bash
+# The applied scroll and its content id.
+golemctl state http://127.0.0.1:7474
+
+# The revision journal.
+golemctl history http://127.0.0.1:7474
+
+# One revision — its ops and reversal receipts.
+golemctl show http://127.0.0.1:7474 1
+```
+
+## Rolling forward
+
+Edit your Emet, re-apply. The changed glyphs get new content ids and are
+**replaced** (reverse the old version, apply the new); everything unchanged
+is a no-op. There is no version number to type — content ids are the version
+axis.
+
+```bash
+# Bump an image tag in your Emet, then:
+golemctl apply fleet.emet http://127.0.0.1:7474
+```
+
+## Taking it back
+
+Remove a glyph (or a whole abstraction) from your Emet and re-apply. The
+glyphs no longer in the scroll become **`Remove`** ops — each the exact
+recorded uninstaller. A package golem installed is removed; a package that
+was already on the box is left alone. "Remove everything" is applying a
+scroll with no glyphs.
+
+<Aside type="note" title="Golem undoes only what it did">
+  Removal restores what was there before golem touched the resource, because
+  the reversal receipt was captured at apply time. It never removes a
+  package, line, or file golem did not add. See
+  [Reversible reconcile](/explanation/reversible-reconcile/).
+</Aside>
+
+## Where to next
+
+- **A worked example:** [A first glyph](/guides/hello-agent/)
+- **The full CLI:** [CLI reference](/reference/cli/)
+- **The bytes the agent sees:** [Manifest format](/reference/bundle-format/)
+- **How reversal works:** [Reversible reconcile](/explanation/reversible-reconcile/)

@@ -1,0 +1,14 @@
+-- A recursive helper builds host records without List.range, then maps a
+-- record helper over them. Recursion is allowed; case need not appear.
+nodes : Int -> List { name : String }
+nodes n =
+  if n <= 0 then
+    []
+  else
+    List.append (nodes (n - 1)) [ { name = "node-${String.fromInt n}" } ]
+
+host : { name : String } -> Scroll
+host h = scroll { name = h.name, glyphs = [ aptPackage { name = "consul" } ] }
+
+main : List Scroll
+main = List.map host (nodes 3)

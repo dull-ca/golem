@@ -1,0 +1,22 @@
+module Main exposing (..)
+
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , glyphs =
+        [ aptPackage { name = "htop" }
+        , file
+            { path = "/etc/golem-smoke.conf"
+            , contents = "ok\n"
+            , mode = "0644"
+            }
+        , lineInFile
+            { path = "/etc/golem-smoke.conf"
+            , line = "managed"
+            }
+        ]
+    }
+
+main : List Scroll
+main = [ scaly ]

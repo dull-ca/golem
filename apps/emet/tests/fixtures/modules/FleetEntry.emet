@@ -1,0 +1,9 @@
+module Main exposing (..)
+
+import Fleet exposing (host)
+
+main : List Scroll
+main =
+  [ host "web" "nginx"
+  , host "db" "postgresql"
+  ]

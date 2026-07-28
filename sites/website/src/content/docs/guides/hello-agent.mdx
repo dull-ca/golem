@@ -1,0 +1,116 @@
+---
+title: A first glyph
+description: The smallest end-to-end run — one host, one package, one unit — from Emet source through a manifest to a reconciled box.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+The smallest useful fleet is one host with two glyphs: install a package and
+enable its unit. This guide takes it from Emet source to a reconciled box
+and back.
+
+## The whole thing
+
+```emet
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ aptPackage { name = "nginx" }
+          , systemdService { unit = "nginx.service" }
+          ]
+      }
+  ]
+```
+
+Save it as `web.emet`. That is the deploy: one scroll named `web`, two
+glyphs.
+
+## Compile it
+
+Look at the plan before shipping anything:
+
+```bash
+emetc build web.emet --text
+```
+
+```
+planned scrolls (1):
+  scroll `web` (2 glyphs):
+    * ensure apt package `nginx` installed
+    * ensure systemd unit `nginx.service` enabled and started
+```
+
+The binary manifest is the default output; `--text` is the readable view.
+
+## Apply it
+
+<Steps>
+1. Start the agent as host `web`. Use the `host` reconciler on a Debian box
+   for real effects, or `fake` to see the plan enacted in memory:
+
+   ```bash
+   golemd --host web --reconciler host --listen 127.0.0.1:7474
+   ```
+
+2. From your laptop, compile-and-ship in one command:
+
+   ```bash
+   golemctl apply web.emet http://127.0.0.1:7474
+   ```
+
+3. Inspect what the node applied:
+
+   ```bash
+   golemctl state http://127.0.0.1:7474
+   ```
+
+   You get the applied scroll and its content id.
+</Steps>
+
+## What golem did
+
+The agent selected the `web` scroll, diffed it against an empty journal, and
+enacted two `Install` ops:
+
+| Glyph | What the reconciler did | What it recorded to reverse |
+| --- | --- | --- |
+| `aptPackage { name = "nginx" }` | `apt-get install -y nginx` (if absent) | `InstalledByUs` — remove on reverse; or `WasPresent` — leave alone |
+| `systemdService { unit = "nginx.service" }` | records prior enabled/active state, then `enable --now` | the prior state, to restore on reverse |
+
+Each op's reversal receipt is journalled. That is what makes the next step
+exact.
+
+## Take it back
+
+Remove the glyphs from your Emet — an empty scroll:
+
+```emet
+main : List Scroll
+main =
+  [ scroll { name = "web", glyphs = [] } ]
+```
+
+Re-apply:
+
+```bash
+golemctl apply web.emet http://127.0.0.1:7474
+```
+
+The agent diffs the empty scroll against the journal, turns both glyphs into
+`Remove` ops, and runs each recorded uninstaller — `nginx` is removed
+**only because** golem installed it and captured `InstalledByUs`. If nginx
+had been on the box already, the reverse leaves it. The unit is disabled and
+its prior state restored.
+
+That is the property worth having: removing a glyph and re-applying restores
+the box to what it was before golem touched that resource. See
+[Reversible reconcile](/explanation/reversible-reconcile/).
+
+## Where to next
+
+- Build a real abstraction that lowers to glyphs:
+  **[A service abstraction](/guides/app-and-db/)**
+- The capstone — a real multi-host lichess deploy:
+  **[A tour of the lichess fleet](/guides/litour/)**

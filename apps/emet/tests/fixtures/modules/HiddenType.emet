@@ -1,0 +1,6 @@
+module HiddenType exposing (defaultRole)
+
+type Role = Web | Db
+
+defaultRole : Role
+defaultRole = Web

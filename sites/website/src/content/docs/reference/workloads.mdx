@@ -1,0 +1,224 @@
+---
+title: The Quadlet library
+description: Quadlet — golem's shipped, strongly-typed model of Podman quadlets. Image, Port, EnvVar, Mount, Workload, and the lowering to the four glyphs.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Running a container on a golem box means writing a Podman **quadlet** — a
+`.container` unit systemd turns into a service, plus any `.volume` units it
+mounts. `Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path named
+by the repo-root `emet.json`) models those units as typed Emet
+values so you fill in a record instead of hand-joining `Image=` and
+`PublishPort=` strings. It is Debian + systemd + Podman specific, and it lowers
+entirely to [the four glyphs](/reference/primitives/) — it adds no engine kind.
+
+This is the middle of three layers: the four glyphs underneath, this shipped
+library, and your own fleet's helpers on top of it (see the
+[service abstraction guide](/guides/app-and-db/)).
+
+```emet
+import Quadlet exposing
+  ( image, tcp, Restart(..), Access(..), Relabel(..)
+  , fromVolume, Expose(..), Workload(..), workloadGlyphs )
+```
+
+## `Image` — a typed image reference
+
+An image is a registry, a name, and a tag *xor* a digest — never both. `image`
+and `imageAt` take the three parts explicitly; `imageRef` parses one Docker
+reference string:
+
+```emet
+image "docker.io/library" "registry" "2"      -- registry/library, :2 tag
+imageAt "docker.io" "app" "sha256:abc…"        -- digest-pinned
+imageRef "ghcr.io/dull/golem:v1"               -- parsed from one string
+```
+
+| Constructor | Signature | Builds |
+| --- | --- | --- |
+| `image` | `String -> String -> String -> Image` | a tagged image (`registry name tag`) |
+| `imageAt` | `String -> String -> String -> Image` | a digest-pinned image (`registry name digest`) |
+| `imageRef` | `String -> Image` | an `Image` parsed from a Docker reference string |
+
+`Ref` is the tag-or-digest sum (`Tag String` / `Digest String`). Because the tag
+and digest are different constructors, `registry:2@sha256:…` is unwritable.
+Internally, `imageLine` renders an `Image` back to its `Image=` line —
+`registry/name:tag` or `registry/name@digest`.
+
+### `imageRef` — parsing a reference string
+
+`imageRef` splits a reference structurally, without network access, and always
+succeeds — an input that fits no rule falls back to the defaults rather than
+failing:
+
+- a digest is the text after the first `@`;
+- the leading `/`-segment is the registry only if it contains `.` or `:`, or
+  equals `localhost`; otherwise there is no explicit registry and the registry
+  defaults to `docker.io`;
+- a `:` after the last `/` is the tag; with none, the tag defaults to `latest`.
+
+```emet
+imageRef "registry"                 -- docker.io/registry:latest
+imageRef "library/registry:2"       -- docker.io/library/registry:2
+imageRef "ghcr.io/dull/golem:v1"    -- ghcr.io/dull/golem:v1
+imageRef "10.0.2.2:5000/website:latest"   -- 10.0.2.2:5000/website:latest
+imageRef "alpine@sha256:abc123"     -- docker.io/alpine@sha256:abc123
+```
+
+The reference is not validated against a registry and the digest grammar is not
+checked; parsing is purely structural.
+
+## `Port` and `Proto` — published ports
+
+```emet
+tcp 5000 5000      -- PublishPort=5000:5000/tcp
+udp 53 53          -- PublishPort=53:53/udp
+```
+
+| Constructor | Signature | Builds |
+| --- | --- | --- |
+| `tcp` | `Int -> Int -> Port` | a TCP `Port { host, container }` |
+| `udp` | `Int -> Int -> Port` | a UDP `Port` |
+
+`Proto` is the closed enum `TCP | UDP`, so `…/tpc` is a type error, not a
+silently-broken unit. Firewall exposure is *derived* from these ports (see
+`Expose` below), so a published port and the port you open cannot drift apart.
+
+## `EnvVar` — environment, as a named record
+
+Emet has no tuples, so an environment pair is a record:
+
+```emet
+env "RUST_LOG" "info"      -- Environment=RUST_LOG=info
+```
+
+`env : String -> String -> EnvVar`. Each `EnvVar` lowers to one
+`Environment=NAME=VALUE` line.
+
+## `Restart` — the systemd restart policy
+
+```emet
+type Restart = Always | OnFailure | No
+```
+
+Lowers to `Restart=always` / `on-failure` / `no` in the `[Service]` section.
+`Restart=alwyas` is a type error.
+
+## `Mount` — a volume line, named or host-path
+
+A `.container` does not *have* volumes; it has mount *lines*, each referencing
+either a named volume or a host path. That difference is a sum, because the two
+lower differently:
+
+```emet
+fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private
+fromHost "/srv/site" "/usr/share/nginx/html" ReadOnly Shared
+```
+
+| Constructor | Signature | Lowers to |
+| --- | --- | --- |
+| `fromVolume` | `String -> String -> Access -> Relabel -> Mount` | a `Volume=<name>.volume:<at>` line **and a `VolumeUnit`** — no host directory |
+| `fromHost` | `String -> String -> Access -> Relabel -> Mount` | a `Volume=<source>:<at>` line **and a `directory` glyph** for the source — no `.volume` unit |
+
+`Access` is `ReadWrite | ReadOnly` (`` / `:ro`); `Relabel` is
+`NoRelabel | Shared | Private` (`` / `:z` / `:Z`). The `:ro`/`:z`/`:Z` suffixes
+are computed from these enums, so `Volume=…:Z:rw:garbage` cannot be written.
+
+<Aside type="note" title="Why a FromHost mount emits a directory">
+  Podman refuses to start a container whose bind-mount source is absent. A
+  `fromHost` mount therefore emits a `directory { path = source, mode = "0755" }`
+  [glyph](/reference/primitives/) so the source exists before the unit starts —
+  the first library consumer of the `directory` arm. A `fromVolume`
+  mount emits none; Podman owns the named volume's storage.
+</Aside>
+
+## `VolumeUnit` — the `.volume` quadlet
+
+A named volume is its own quadlet. `volumeUnit "name"` builds a
+`VolumeUnit { name, driver = "local" }`; `volumeUnitGlyphs` lowers it to one
+`/etc/containers/systemd/<name>.volume` `file`. You rarely build these by hand —
+`Workload` derives one per `fromVolume` mount (`derivedVolumeUnits`).
+
+## `Workload` — the ergonomic surface
+
+`Workload` is the record most fleets author. It carries the runtime shape and
+lowers, through `workloadGlyphs`, to a full quadlet plus its firewall openings:
+
+```emet
+type Workload = Workload
+  { name    : String
+  , image   : Image
+  , env     : List EnvVar
+  , ports   : List Port
+  , volumes : List Mount
+  , restart : Restart
+  , expose  : Expose
+  }
+```
+
+`Expose` answers one question — who may reach the ports this container
+publishes? — and is derived from `ports`, so you cannot open a port the
+container does not publish:
+
+| `Expose` | Firewall glyphs emitted |
+| --- | --- |
+| `Unexposed` | none |
+| `Internal` | one nftables `file` per port, opening it to `Fleet.internalNetwork` |
+| `Public` | one nftables `file` per port opening it to the world, plus one `lineInFile` on the shared ingress chain |
+
+<Aside type="note" title="The reverse proxy is a different container">
+  `Workload` does not carry TLS or a reverse-proxy site config. An nginx or
+  Caddy front door is *itself* a container (or hand-rolled glyphs), not a
+  property of the upstream workload — the lichess fleet keeps `ingress` as its
+  own thing. See the [lichess tour](/guides/litour/).
+</Aside>
+
+## Lowering — a `Workload` to the four glyphs
+
+`workloadGlyphs` produces, in order:
+
+1. `aptPackage { name = "podman" }` — the runtime.
+2. one `directory` glyph per `fromHost` mount source.
+3. one `.volume` quadlet `file` per derived `VolumeUnit`.
+4. the `.container` quadlet `file` at
+   `/etc/containers/systemd/<name>.container` — its `Image=`, one
+   `PublishPort=` per `Port`, one `Volume=` per `Mount`, one `Environment=` per
+   `EnvVar`, and `Restart=`.
+5. `systemdService { unit = "<name>.service" }` — the unit Podman's generator
+   produces from the `.container`.
+6. the firewall glyphs from `expose`.
+
+The registry `Workload` — one TCP port, one named volume, internally exposed —
+lowers to exactly five glyphs. From
+`cargo run -q -p emet -- build examples/registry/registry.emet --text`:
+
+```
+planned scrolls (1):
+  scroll `registry` (5 glyphs):
+    * ensure apt package `podman` installed
+    * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
+    * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
+    * enable + start systemd unit `registry.service`
+    * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
+```
+
+The named-volume `.volume` unit (glyph 2) and the internal firewall opening
+(glyph 5) both fall out of the typed spec — the hand-rolled registry quadlet
+this replaced had neither.
+
+## Derived vs. explicit volumes
+
+`Workload` derives one `VolumeUnit` per `fromVolume` mount, always with
+`driver = "local"`. When you need a non-default driver or options, drop to
+`ContainerUnit` — the faithful `.container` model `Workload` lowers through —
+and set `volumeUnits` explicitly. `ContainerUnit` also carries `exec` (a
+`Maybe String` for the `Exec=` line) and `wantedBy` (the install target),
+which `Workload` fills with defaults. Reach for it for the uncommon container;
+`Workload` covers the common one.
+
+## Where to next
+
+- The glyphs everything lands on: **[The four glyphs](/reference/primitives/)**
+- A thin helper built on this library: **[A service abstraction](/guides/app-and-db/)**
+- The whole thing at fleet scale: **[A tour of the lichess fleet](/guides/litour/)**

@@ -1,0 +1,10 @@
+-- Shared fleet facts (the internal CIDR, an `address:port` helper) every host
+-- reads, resolved from the library search path (ADR 0024) rather than copied per
+-- entry directory.
+module Fleet exposing (internalNetwork, endpoint)
+
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address port = "${address}:${String.fromInt port}"

@@ -1,0 +1,18 @@
+-- Users define their own vocabulary as ordinary functions.
+webserver : String -> SystemdService
+webserver unit = systemdService { unit = unit }
+
+package name =
+  let pkg = name
+  in aptPackage { name = pkg }
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "db"
+      , glyphs =
+          [ package "postgresql"
+          , webserver "postgresql.service"
+          ]
+      }
+  ]

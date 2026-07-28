@@ -1,0 +1,65 @@
+---
+title: Status
+description: What is implemented and tested today, and what is roadmap.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+An honest split between what the code does and what is still a design.
+
+## Implemented and tested
+
+- **Emet authoring language.** Hindley-Milner types with generics, records,
+  `case`/`if` with exhaustiveness checking, numbers with infix operators,
+  string interpolation, and a minimal Elm-modeled module system
+  (`module … exposing`, `import … [as …] [exposing …]`, file = module). A
+  program compiles a fleet: `main : List Scroll`.
+- **The four glyphs.** `aptPackage`, `systemdService`, `file`, `lineInFile`
+  — every field a concrete string. Higher-level shapes are Emet functions
+  that lower to these. See [The four glyphs](/reference/primitives/).
+- **The binary manifest.** `emetc build` emits a content-addressed
+  `Manifest` (postcard bytes, BLAKE3 per-scroll ids, `format_version`
+  guard), with `--text` and `--json` views. Determinism is enforced by
+  golden-byte and round-trip tests. See
+  [Manifest format](/reference/bundle-format/).
+- **`golemd` ingest + diff.** Decode a manifest, select this host's scroll,
+  and diff it against the journal into ordered `GlyphOp`s by glyph key and
+  content id.
+- **Reversible reconcilers.** Each glyph's `apply` captures an `Inverse`
+  receipt; `reverse` restores it exactly. Upgrade, removal, and rollback all
+  derive from this. See [Reversible reconcile](/explanation/reversible-reconcile/).
+- **`golemctl`.** `apply` (compile-and-ship or ship a prebuilt manifest),
+  `state`, `history`, `show`. HTTP: `POST /manifest`, `GET /state`,
+  `/revisions`, `/revisions/:id`, `/status`.
+- **The lichess fleet in Emet.** A real multi-host deploy authored against a
+  shared Emet library (`examples/lichess/`), compiling to scrolls of the
+  four glyphs. See [the tour](/guides/litour/).
+
+## Roadmap — not built
+
+<Aside type="caution" title="Do not rely on these">
+  The following are designs, not working features.
+</Aside>
+
+- **Signing and trust.** No manifest signature, no trusted-key check. The
+  apply path is unauthenticated; bind the listener to localhost or a tunnel.
+  See [Trust model](/explanation/trust/).
+- **Multi-node orchestration.** A manifest carries the whole fleet, but each
+  `golemd` acts only on its own scroll. There is no coordinator, no ordered
+  drain, no health-gated rollback across hosts.
+- **Resource kinds beyond the four glyphs.** Containers, ingress, DNS,
+  secrets — these are Emet abstractions (or future ones) that lower to the
+  four glyphs, not new agent primitives. There is no secrets primitive and
+  no DNS provider.
+- **The `host` reconciler on a real box, hardened.** The four reconcilers
+  exist and are tested against the fake in-memory reconciler and a Debian
+  box; treat production hardening (large-file inverse storage, edge cases)
+  as in progress.
+
+## What is gone
+
+The older model — Blueprints, Hosts, Workloads, Services, Ingress as engine
+resource kinds, refcounting ownership across blueprints, and the Nickel
+authoring surface — has been removed. State is now **per-scroll**: a node's
+desired state is one whole scroll, not a set of named blueprints that
+refcount shared resources.

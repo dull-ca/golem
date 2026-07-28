@@ -1,0 +1,22 @@
+-- Optionality with Maybe: a host may override the default port, or not.
+-- Maybe.withDefault supplies 8080 when the port is Nothing.
+hostScroll : String -> Maybe Int -> Scroll
+hostScroll name port =
+  scroll
+    { name = name
+    , glyphs =
+        [ aptPackage { name = "app" }
+        , file
+            { path = "/etc/app/port.conf"
+            , contents = "listen = ${String.fromInt (Maybe.withDefault 8080 port)}"
+            , mode = "0644"
+            }
+        , systemdService { unit = "app.service" }
+        ]
+    }
+
+main : List Scroll
+main =
+  [ hostScroll "app-1" (Just 9090)
+  , hostScroll "app-2" Nothing
+  ]

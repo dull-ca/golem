@@ -1,0 +1,128 @@
+---
+title: Golem
+description: Author a fleet in Emet, compile it to a content-addressed manifest, and let a per-host agent reconcile each box toward it — reversibly.
+template: splash
+hero:
+  tagline: |
+    Write your fleet in [Emet](/getting-started/the-config/), a typed
+    functional language. It compiles to a binary, content-addressed
+    manifest of four glyphs. A small agent reconciles each box toward its
+    scroll — and can reverse every edit it made.
+  actions:
+    - text: Get started
+      link: /getting-started/install/
+      icon: right-arrow
+      variant: primary
+    - text: See an example
+      link: /guides/hello-agent/
+      icon: open-book
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+## What it is
+
+Golem is a pipeline with two ends and one contract between them.
+
+- **Emet** — a typed, Elm-modeled configuration language. A program
+  evaluates to a **fleet**: `main : List Scroll`, one `Scroll` per host,
+  each a list of **glyphs**. There are exactly four glyph primitives —
+  `aptPackage`, `systemdService`, `file`, `lineInFile`. Every field is a
+  fully-evaluated concrete string; there is no templating layer.
+- **`golemd`** — a per-host agent. It ingests the compiled manifest,
+  selects its own host's scroll, and reconciles the box toward it. Each
+  glyph is enacted through a **reversible reconciler**: applying captures
+  the prior host state so the edit can be undone exactly.
+
+The contract between them is the **manifest**: `emetc` (the compiler)
+emits a binary, content-addressed artifact; `golemd` consumes it. Both
+ends compile against the same shared `scroll-format` crate, so they
+cannot drift.
+
+Higher-level shapes — a container workload, a service with a firewall, an
+ingress — are **not** engine primitives. You build them in Emet and they
+lower to the four glyphs. The agent never grows a fifth resource kind.
+
+## Why it's shaped this way
+
+<CardGrid>
+  <Card title="Abstractions live in the language" icon="puzzle">
+    A "workload" or a "service" is an ordinary Emet function that returns
+    a `List Glyph`. Read it, copy it, change it. The agent stays small
+    because every abstraction compiles down to the same four primitives.
+  </Card>
+  <Card title="Statically typed authoring" icon="approve-check">
+    Emet is Hindley-Milner typed with generics, records, `case`/`if`, and
+    exhaustiveness checking. A missing field or a type mismatch is a
+    compile error, before any bytes leave your laptop.
+  </Card>
+  <Card title="Content-addressed versioning" icon="seti:lock">
+    Every scroll is identified by a BLAKE3 hash of its deterministic
+    bytes. Same bytes, same id, no-op. A changed field is a new id, and
+    an upgrade. The manifest is versioned by `format_version`, not by
+    hand-typed numbers.
+  </Card>
+  <Card title="Reversible reconcile" icon="seti:default">
+    Applying a glyph captures what it changed. `golemd` only ever reverses
+    edits it recorded — it will not remove a package, line, or file it
+    did not add. That drives both upgrade (reverse old, apply new) and
+    removal (reverse toward an empty scroll).
+  </Card>
+</CardGrid>
+
+## The pipeline in one line
+
+```
+Emet source ──emetc build──▶ binary manifest ──golemctl apply──▶ golemd ──▶ reversible reconcilers ──▶ the box
+```
+
+See [Architecture](/explanation/architecture/) for each stage.
+
+## Start here
+
+- **[Install the toolchain](/getting-started/install/)** — build
+  `emetc`, `golemctl`, and `golemd`.
+- **[The config](/getting-started/the-config/)** — write your first Emet
+  program and watch it compile to glyphs.
+- **[Applying changes](/getting-started/applying/)** — compile to a
+  manifest and reconcile a box.
+
+## Guides
+
+- **[A first glyph](/guides/hello-agent/)** — the smallest fleet: one
+  host, one package, one unit.
+- **[A service abstraction](/guides/app-and-db/)** — a thin helper on the
+  shipped `Quadlet` library that lowers to a container quadlet, a unit, and
+  a firewall fragment.
+- **[A maintenance page](/guides/maintenance-page/)** — a parameterized
+  Emet function built from `file` and `lineInFile`.
+- **[A tour of the lichess fleet](/guides/litour/)** — the real
+  multi-host lichess deploy: the shipped library, a fleet's helpers on it,
+  and the four glyphs it lowers to.
+
+## Deploy a fleet
+
+Hands-on walkthroughs against ephemeral Debian VMs — golemd's real
+reconcilers, the way we ran them.
+
+- **[Deploy a fleet to VMs](/tutorials/the-vm-harness/)** — boot a VM,
+  deploy golemd, apply a scroll, read the journal, reverse it.
+- **[A registry on the fleet](/tutorials/registry-on-the-fleet/)** — run a
+  container registry on one VM; push and pull from others.
+- **[The website loop](/tutorials/website-loop/)** — golem building,
+  storing, and serving golem's own docs.
+
+## What is not built yet
+
+Golem is honest about its edges. The following are **roadmap**, not
+working today:
+
+- **Signing and trust.** There is no ed25519 signature on the manifest
+  and no trusted-key check on the agent. See [Trust model](/explanation/trust/).
+- **Multi-node orchestration.** A manifest carries the whole fleet, but
+  each `golemd` acts only on its own scroll. There is no coordinator,
+  no drain, no health-gated rollback.
+- **Any resource kind beyond the four glyphs.** Everything else is an
+  Emet abstraction that lowers to them.
+
+See [Status](/reference/status/) for the full breakdown.

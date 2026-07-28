@@ -1,0 +1,208 @@
+---
+title: Values and types
+description: Emet literals, operators with precedence, the number/comparable/appendable constraints, type annotations, and user-defined sum, parameterized, and record types.
+---
+
+The lexical and type surface of the Emet language. For the standard-library
+functions these types thread through, see the
+[prelude reference](/reference/language/prelude/). For the four glyph
+constructors, see [the four glyphs](/reference/primitives/).
+
+## Literals
+
+| Kind | Type | Examples |
+| --- | --- | --- |
+| Integer | `Int` | `0`, `42`, `-7` |
+| Float | `Float` | `3.14`, `0.0`, `-2.5` |
+| String | `String` | `"nginx"`, `"port ${String.fromInt n}"` |
+| Char | `Char` | `'c'`, `'\n'`, `'\u{1F600}'` |
+| Bool | `Bool` | `True`, `False` |
+
+### String interpolation
+
+`${expr}` inside a string embeds an expression. The embedded expression must
+have type `String`.
+
+```emet
+greeting : String -> String
+greeting name = "hello ${name}"
+```
+
+`\${` writes a literal `${`. Interpolation desugars to `String.concat` at
+compile time; the compiled value carries only the final string, never a
+placeholder.
+
+### Char
+
+A `Char` is exactly one Unicode scalar, written between single quotes. The
+escapes are `\n`, `\t`, `\\`, `\'`, and `\u{...}` (one to six hex digits).
+
+```emet
+newline : Char
+newline = '\n'
+
+smile : Char
+smile = '\u{1F600}'
+```
+
+`Char` is comparable and orderable by codepoint. It is authoring-time only and
+never appears in a glyph field.
+
+### String escapes
+
+Inside `"..."`: `\n`, `\t`, `\"`, `\\`, `\${`, and `\u{...}`.
+
+## Operators
+
+Every operator desugars to a prelude builtin (`a + b` becomes `add a b`).
+
+| Operator | Meaning | Precedence | Associativity |
+| --- | --- | --- | --- |
+| `^` | exponent | 7 | right |
+| `*` `/` `//` | multiply, float divide, integer divide | 7 | left |
+| `+` `-` | add, subtract | 6 | left |
+| `++` | append | 5 | right |
+| `::` | cons (prepend to list) | 5 | right |
+| `==` `/=` `<` `<=` `>` `>=` | equality and comparison | 4 | non-associative |
+| `&&` | logical and | 3 | right |
+| `\|\|` | logical or | 2 | right |
+
+`/` is float division; `//` is integer division. Division by zero returns `0`.
+
+Level-4 operators are non-associative: `a < b < c` is a compile error. Add
+parentheses.
+
+Unary minus negates: `-x` desugars to `negate x`.
+
+## Constraints
+
+Three built-in bounded type variables restrict which concrete types a
+polymorphic operator or function admits. They are not user-extensible; there
+are no user-defined typeclasses.
+
+| Constraint | Admits | Used by |
+| --- | --- | --- |
+| `number` | `Int`, `Float` | `+ - * / // ^` and integer literals |
+| `comparable` | `Int`, `Float`, `String`, `Char`, and tuples of comparables | `== /= < <= > >=` |
+| `appendable` | `String`, `List a` | `++` |
+
+An integer literal is a `number`, defaulting to `Int` if nothing forces it to
+`Float`. A float literal is always `Float`. `appendable` shares no admissible
+type with `number` or `comparable`, so those constraints never combine.
+
+## Type annotations
+
+A signature line binds a name to a type; it may immediately precede a
+declaration. A signature is optional — an unannotated declaration is inferred
+and generalized.
+
+```emet
+port : Int
+port = 8080
+
+endpoint : String -> Int -> String
+endpoint host p = "${host}:${String.fromInt p}"
+```
+
+Function types associate to the right: `A -> B -> C` is `A -> (B -> C)`.
+Signatures may name type variables (`a`, `b`), which range over all types:
+
+```emet
+identity : a -> a
+identity x = x
+```
+
+A signature more general than the inferred body is rejected.
+
+## Built-in types
+
+`Int`, `Float`, `String`, `Bool`, `Char`, `Order`, `Maybe a`, and `List a`.
+`Bool` (`True` / `False`), `Order` (`LT` / `EQ` / `GT`), and `Maybe`
+(`Just a` / `Nothing`) are sum types supplied by the prelude.
+
+The glyph and scroll types — `AptPackage`, `SystemdService`, `Filesystem`,
+`LineInFile`, their sum `Glyph`, the filesystem `Entry` sum, and `Scroll` —
+are documented in [the four glyphs](/reference/primitives/).
+
+## User types
+
+### Sum types
+
+```emet
+type Role = Web | Db
+```
+
+Each variant is a value constructor. A variant may carry fields, written as
+type atoms after the constructor name:
+
+```emet
+type Shape = Circle Float | Rectangle Float Float
+```
+
+An applied constructor as a field must be parenthesized —
+`Node (Tree a) a` — because a bare applied head reads as separate fields.
+
+### Parameterized types
+
+A type constructor may take parameters, listed as lowercase names before `=`:
+
+```emet
+type Tree a = Leaf | Node (Tree a) a (Tree a)
+```
+
+The type constructor `Tree` has arity 1; each variant's result type is
+`Tree a`. Both nullary and parameterized user types cross module boundaries.
+
+### Records
+
+A record type lists its field types; a record literal lists field values.
+Records are structural — there is no named record declaration.
+
+```emet
+host : { name : String, port : Int } -> Scroll
+host h = scroll { name = h.name, glyphs = [] }
+```
+
+`h.field` accesses a field. Field access is **row-polymorphic**: `.name`
+constrains its argument to *some* record that has at least a `name` field of
+the right type, not one exact record shape. A function reading `h.name`
+accepts any record carrying a matching `name`. A record *literal* has a closed
+row — exactly the fields written, no more.
+
+### Tuples and unit
+
+A tuple groups a fixed number of values positionally. Emet allows tuples of
+**two or three elements**; a tuple of four or more is a compile error — use a
+record with named fields instead.
+
+```emet
+point : (Int, Int)
+point = (1, 2)
+
+labelled : (String, Int, Bool)
+labelled = ("web", 8080, True)
+```
+
+The type `(A, B)` / `(A, B, C)` mirrors the value. The parenthesized forms read
+by element count: `(e)` is grouping (Emet has no one-tuple), `(a, b)` and
+`(a, b, c)` are tuples, and `()` is **unit** — the zero-element tuple, its own
+type and value.
+
+```emet
+nothingUseful : ()
+nothingUseful = ()
+```
+
+Tuples are `comparable` when their elements are, compared lexicographically —
+element by element, left to right — so `<`, `==`, `compare`, `min`, and `max`
+all work on them. Unit is vacuously comparable and compares equal to itself.
+Like `Char`, tuples are authoring-time only and never appear in a glyph field.
+The [`Tuple` module](/reference/language/prelude/#tuple) builds
+and transforms pairs.
+
+## See also
+
+- [Functions](/reference/language/functions/) — declarations, `let`, `if`.
+- [Pattern matching](/reference/language/pattern-matching/) — `case` and patterns.
+- [Modules](/reference/language/modules/) — `module`, `import`, the search path.
+- [Prelude](/reference/language/prelude/) — the standard-library functions.

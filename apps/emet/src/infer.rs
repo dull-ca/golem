@@ -1,0 +1,2591 @@
+//! Hindley-Milner type inference (Algorithm W). Runs to completion before
+//! evaluation; a module that type-checks cannot fail at runtime with a type
+//! error, and — crucially for a total language — a `case` that type-checks is
+//! exhaustive, so evaluation never hits a no-match.
+//!
+//! The core (`prune`/`apply`/`unify`/`occurs`/`ftv`/`generalize`/`instantiate`)
+//! is textbook Algorithm W over a substitution, with these additions:
+//!
+//!   * **Constrained variables** (ADR 0007). A `Var` carries a `Constraint`
+//!     bound (`number`/`comparable`). `bind` enforces it: binding to an
+//!     inadmissible concrete type is an error (`constraint_admits`), and two
+//!     bounded vars merge to the stronger bound (`merge_constraints`). This is
+//!     the one departure from pure HM.
+//!   * **Directed glyph widening** (ADR 0002/0017). A concrete glyph type
+//!     (`AptPackage`, …) widens *into* `Glyph`, one-way — never `Glyph` back
+//!     into a concrete subtype (`glyph_widens_into`, applied as a `unify` arm;
+//!     `widen_glyph_subtype`, applied at the joins that build a scroll's glyph
+//!     list). Replacing ADR 0002's symmetric injection with this directed rule
+//!     is what makes matching a `Glyph` sound: a `Glyph`-typed hole is never
+//!     silently satisfied by a concrete subtype, so a `case` on a glyph always
+//!     knows it holds the sum, not an un-pinned-down variant (ADR 0017 retires
+//!     the ADR 0008 deferral).
+//!   * **Signatures with type variables** (ADR 0003). A signature's `Rigid`
+//!     vars are instantiated to fresh unification vars, then unified with the
+//!     inferred body — the same machinery that already makes `id` polymorphic.
+//!     A second pass then rejects a signature *more general* than the body
+//!     (`check_signature_generality`, ADR 0021): the same signature is also
+//!     skolemized and unified, and a signature the instantiate pass accepts but
+//!     the skolemize pass rejects is over-general. This closes the
+//!     soundness-of-rejection gap ADR 0003 left open.
+//!   * **Exhaustiveness + redundancy** (ADR 0005). `check_exhaustive` runs
+//!     Maranget's usefulness algorithm over each `case`, guaranteeing totality
+//!     of the elimination form.
+//!   * **`Int` defaulting** (ADR 0007). An unresolved `number` at a top-level
+//!     decl defaults to `Int` (`default_number_vars`).
+//!   * **Row-polymorphic records** (ADR 0010). Records carry a `Row` tail, and
+//!     `.field` unifies against an open record instead of demanding a concrete
+//!     one, so `\h -> h.name` type-checks. Row variables live in their own id
+//!     space with a separate substitution (`row_subst`) and their own occurs
+//!     check — see `unify_records`, `bind_row`, `row_occurs`, and the
+//!     `Expr::Field` rule.
+//!   * **SCC-grouped recursive binding** (ADR 0011). Declarations are not
+//!     inferred left-to-right: `infer_decls` partitions them into dependency
+//!     strongly-connected components (`depgraph`) and infers each group
+//!     together — every member bound to a fresh monomorphic var before any
+//!     body, generalized only once the group is solved. This is what makes both
+//!     self- and mutual recursion type-check; source order no longer matters for
+//!     forward references. See `infer_group`.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::ast::*;
+use crate::query::{DefSite, QueryIndex, ScopeId};
+
+pub struct TypeError {
+    pub msg: String,
+    pub span: Span,
+    pub note: Option<String>,
+}
+impl TypeError {
+    fn new(msg: impl Into<String>, span: Span) -> Self {
+        TypeError {
+            msg: msg.into(),
+            span,
+            note: None,
+        }
+    }
+    fn note(mut self, n: impl Into<String>) -> Self {
+        self.note = Some(n.into());
+        self
+    }
+}
+
+#[derive(Default)]
+struct Infer {
+    next: u32,
+    subst: HashMap<u32, Type>,
+    // Resolves row variables, parallel to `subst` for ordinary type variables
+    // (ADR 0010). A bound row var maps to the fields it was found to carry plus
+    // its own remaining tail, so a chain of bindings can be followed to a
+    // record's full field set — see `prune_record`. Kept separate from `subst`
+    // because row vars and type vars share neither a domain nor an occurs check.
+    row_subst: HashMap<u32, (BTreeMap<String, Type>, Row)>,
+    // The user `type` decls, indexed for lookup during inference and populated
+    // once by `register_type_decls` before any value decl is inferred.
+    // `user_ctor_schemes`: each variant's value-constructor scheme, keyed by
+    // constructor name (`Just` → `∀a. a -> Maybe a`). `user_sum_ctors`: each
+    // type's full variant set (name + arity), keyed by type-constructor name,
+    // for the exhaustiveness checker. Both are consulted ahead of the prelude —
+    // see `constructor_scheme` / `sum_type_constructors`.
+    user_ctor_schemes: HashMap<String, Scheme>,
+    user_sum_ctors: HashMap<String, Vec<(String, usize)>>,
+    // Present only on the LSP path (`analyze_module`); `None` on the compile
+    // path, so `compile`/`emetc` do no recording work. When present, inference
+    // logs per-span types, scopes, and name uses into it as it runs.
+    recorder: Option<Recorder>,
+}
+
+/// Accumulates the position index while inference runs (ADR 0018). Types are
+/// staged in `type_spans` with their vars still unresolved and finalized only
+/// after the whole module solves — see `analyze_module`. `def_frames` is a scope
+/// stack: as inference enters and leaves `let`/lambda/`case`-arm bodies, the
+/// binders each introduces are pushed and popped, so `record_use` resolves a
+/// name to the definition in innermost scope at that point.
+#[derive(Default)]
+struct Recorder {
+    index: QueryIndex,
+    next_scope: ScopeId,
+    def_frames: Vec<HashMap<String, DefSite>>,
+    type_spans: Vec<(Span, Type)>,
+}
+
+impl Recorder {
+    fn open_scope(
+        &mut self,
+        region: Span,
+        env: &TyEnv,
+        added: HashMap<String, DefSite>,
+    ) -> ScopeId {
+        let id = self.next_scope;
+        self.next_scope += 1;
+        let names: Vec<(String, Scheme)> =
+            env.entries().map(|(n, s)| (n.clone(), s.clone())).collect();
+        self.index.scope_table.insert(id, names);
+        self.index.scopes.push((region, id));
+        self.def_frames.push(added);
+        id
+    }
+
+    fn close_scope(&mut self) {
+        self.def_frames.pop();
+    }
+
+    fn resolve_def(&self, name: &str) -> Option<DefSite> {
+        for frame in self.def_frames.iter().rev() {
+            if let Some(site) = frame.get(name) {
+                return Some(site.clone());
+            }
+        }
+        None
+    }
+
+    fn record_use(&mut self, span: Span, name: &str) {
+        if let Some(site) = self.resolve_def(name) {
+            self.index.defs.push((span, site));
+        }
+    }
+
+    fn record_type(&mut self, span: Span, ty: Type) {
+        self.type_spans.push((span, ty));
+    }
+}
+
+impl Infer {
+    /// The scheme of a value constructor. User-declared constructors (populated
+    /// by `register_type_decls`) shadow the prelude's built-ins, though
+    /// `register_type_decls` also rejects a user constructor that collides with
+    /// a built-in, so in practice the two sets are disjoint.
+    fn constructor_scheme(&self, name: &str) -> Option<Scheme> {
+        self.user_ctor_schemes
+            .get(name)
+            .cloned()
+            .or_else(|| crate::prelude::constructor_scheme(name))
+    }
+
+    /// The complete constructor set of a sum type — every variant's name and
+    /// arity, which the exhaustiveness checker needs. User `type` decls first,
+    /// then the prelude's built-in sums (`Maybe`/`Bool`/`Order`).
+    fn sum_type_constructors(&self, type_name: &str) -> Option<Vec<(String, usize)>> {
+        self.user_sum_ctors
+            .get(type_name)
+            .cloned()
+            .or_else(|| crate::prelude::sum_type_constructors(type_name))
+    }
+
+    /// Seed the constructor scope with the open-exposed constructors this module
+    /// imports, before its own `type` decls register. They land in the same
+    /// `user_ctor_schemes` / `user_sum_ctors` tables the local decls use, so
+    /// `constructor_scheme` and `sum_type_constructors` resolve imported and
+    /// local constructors uniformly.
+    fn seed_imported_constructors(&mut self, imported: &ImportedConstructors) {
+        for (name, scheme) in &imported.ctor_schemes {
+            self.user_ctor_schemes.insert(name.clone(), scheme.clone());
+        }
+        for (name, members) in &imported.sum_ctors {
+            self.user_sum_ctors.insert(name.clone(), members.clone());
+        }
+    }
+}
+
+impl Infer {
+    fn recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    fn rec_type(&mut self, span: &Span, ty: &Type) {
+        if let Some(r) = &mut self.recorder {
+            r.record_type(span.clone(), ty.clone());
+        }
+    }
+
+    fn rec_use(&mut self, span: &Span, name: &str) {
+        if let Some(r) = &mut self.recorder {
+            r.record_use(span.clone(), name);
+        }
+    }
+
+    fn rec_open_scope(&mut self, region: Span, env: &TyEnv, added: HashMap<String, DefSite>) {
+        if let Some(r) = &mut self.recorder {
+            r.open_scope(region, env, added);
+        }
+    }
+
+    fn rec_close_scope(&mut self) {
+        if let Some(r) = &mut self.recorder {
+            r.close_scope();
+        }
+    }
+
+    fn fresh(&mut self) -> Type {
+        self.fresh_constrained(Constraint::None)
+    }
+
+    fn fresh_constrained(&mut self, c: Constraint) -> Type {
+        let v = self.next;
+        self.next += 1;
+        Type::Var(v, c)
+    }
+
+    /// A fresh open row tail. Draws from the same `next` counter as `fresh`,
+    /// so a row-var id can never collide with a type-var id even though the two
+    /// resolve through different substitutions.
+    fn fresh_row(&mut self) -> Row {
+        let r = self.next;
+        self.next += 1;
+        Row::Open(r)
+    }
+
+    /// Resolve a record's tail: follow bound row variables through `row_subst`,
+    /// splicing in the fields each one carries, until the tail is closed or an
+    /// unbound row var. Known fields win over spliced ones (`or_insert`), so a
+    /// field already unified on this record is never overwritten. This is the
+    /// row-level analogue of `prune` for records.
+    fn prune_record(
+        &self,
+        fields: &BTreeMap<String, Type>,
+        row: &Row,
+    ) -> (BTreeMap<String, Type>, Row) {
+        let mut all = fields.clone();
+        let mut tail = row.clone();
+        while let Row::Open(r) = tail {
+            match self.row_subst.get(&r) {
+                Some((more, next_tail)) => {
+                    for (k, v) in more {
+                        all.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                    tail = next_tail.clone();
+                }
+                None => break,
+            }
+        }
+        (all, tail)
+    }
+
+    // GROUP: the Type walkers below each carry a `Tuple` arm parallel to their
+    // `Record` arm, recursing into the element vector — `apply`, `occurs`,
+    // `row_occurs`, `ftv`, `frv`, `instantiate_rigids`, `skolemize`,
+    // `mentions_skolem`, `instantiate`'s inner `go`, `type_with_param_vars`,
+    // `validate_type_refs_inner`, and `collect_rigids`. A tuple is structural, so
+    // every analysis must descend into its elements; omitting one arm would
+    // silently drop tuples from that pass (e.g. a skipped `ftv` arm would fail to
+    // generalize a tuple-typed decl). The exception is `prune` just below: a
+    // tuple has no row to splice, so it falls through the `_ => t.clone()`
+    // catch-all and is treated like `Con` — the deep, element-wise work is
+    // `apply`'s (ADR 0027 §3).
+
+    /// Follow the substitution to a representative type (shallow).
+    fn prune(&self, t: &Type) -> Type {
+        match t {
+            Type::Var(v, _) => {
+                if let Some(inner) = self.subst.get(v) {
+                    self.prune(inner)
+                } else {
+                    t.clone()
+                }
+            }
+            Type::Record(fields, row) => {
+                let (fields, row) = self.prune_record(fields, row);
+                Type::Record(fields, row)
+            }
+            _ => t.clone(),
+        }
+    }
+
+    /// Fully apply the substitution (deep).
+    fn apply(&self, t: &Type) -> Type {
+        match self.prune(t) {
+            Type::Con(name, args) => Type::Con(name, args.iter().map(|a| self.apply(a)).collect()),
+            Type::Fun(a, b) => Type::Fun(Box::new(self.apply(&a)), Box::new(self.apply(&b))),
+            Type::Record(fs, row) => Type::Record(
+                fs.iter().map(|(k, v)| (k.clone(), self.apply(v))).collect(),
+                row,
+            ),
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.apply(e)).collect()),
+            other => other,
+        }
+    }
+
+    fn occurs(&self, v: u32, t: &Type) -> bool {
+        match self.prune(t) {
+            Type::Var(w, _) => v == w,
+            Type::Con(_, args) => args.iter().any(|a| self.occurs(v, a)),
+            Type::Fun(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
+            Type::Record(fs, _) => fs.values().any(|ty| self.occurs(v, ty)),
+            Type::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
+            _ => false,
+        }
+    }
+
+    /// Occurs check for row variables: does row var `r` appear anywhere in `t`,
+    /// whether inside a field's type or as a record's own tail? Prevents
+    /// `bind_row` from tying a row var into a record it already tails, which
+    /// would be an infinite record. The row-level counterpart of `occurs`.
+    fn row_occurs(&self, r: u32, t: &Type) -> bool {
+        match self.prune(t) {
+            Type::Con(_, args) => args.iter().any(|a| self.row_occurs(r, a)),
+            Type::Fun(a, b) => self.row_occurs(r, &a) || self.row_occurs(r, &b),
+            Type::Record(fs, row) => {
+                fs.values().any(|ty| self.row_occurs(r, ty)) || row == Row::Open(r)
+            }
+            Type::Tuple(elems) => elems.iter().any(|e| self.row_occurs(r, e)),
+            _ => false,
+        }
+    }
+
+    /// Bind unification variable `v` (carrying bound `c`) to `t`, enforcing the
+    /// bound. Binding to another var merges their bounds to the stronger one;
+    /// binding to a concrete type rejects it unless the bound admits it, and
+    /// rejects an infinite type via the occurs check.
+    fn bind(&mut self, v: u32, c: Constraint, t: &Type, span: &Span) -> Result<(), TypeError> {
+        let t = self.prune(t);
+        if let Type::Var(w, cw) = &t {
+            if *w == v {
+                return Ok(());
+            }
+            let merged = merge_constraints(c, *cw).ok_or_else(|| {
+                TypeError::new(
+                    format!(
+                        "no type satisfies both `{}` and `{}`",
+                        constraint_name(c),
+                        constraint_name(*cw)
+                    ),
+                    span.clone(),
+                )
+            })?;
+            if merged == *cw {
+                self.subst.insert(v, Type::Var(*w, merged));
+            } else {
+                let rep = self.fresh_constrained(merged);
+                self.subst.insert(v, rep.clone());
+                self.subst.insert(*w, rep);
+            }
+            return Ok(());
+        }
+        if self.occurs(v, &t) {
+            return Err(TypeError::new(
+                format!(
+                    "infinite type: `{}` occurs in itself",
+                    render_type(&self.apply(&t))
+                ),
+                span.clone(),
+            ));
+        }
+        if !constraint_admits(c, &t) {
+            // Plain-language constraint mismatch (ADR 0032 §1): name the admissible
+            // types outright instead of leaking `does not satisfy 'number'`. Each
+            // arm's list mirrors what `constraint_admits` accepts — Comparable
+            // includes `Char` because `constraint_admits` admits it (ADR 0025);
+            // keep the two in step or the message will name a type it then rejects.
+            let rendered = render_type(&self.apply(&t));
+            let msg = match c {
+                Constraint::Number => {
+                    format!("this needs to be a number (Int or Float), but it's a `{rendered}`")
+                }
+                Constraint::Comparable => format!(
+                    "this needs to be comparable (Int, Float, String, or Char), but it's a `{rendered}`"
+                ),
+                Constraint::Appendable => {
+                    format!("this needs to be appendable (String or List), but it's a `{rendered}`")
+                }
+                Constraint::None => format!("type `{rendered}` is not allowed here"),
+            };
+            return Err(TypeError::new(msg, span.clone()));
+        }
+        self.subst.insert(v, t);
+        Ok(())
+    }
+
+    fn unify(&mut self, a: &Type, b: &Type, span: &Span) -> Result<(), TypeError> {
+        let a = self.prune(a);
+        let b = self.prune(b);
+        match (&a, &b) {
+            (Type::Var(v, c), _) => self.bind(*v, *c, &b, span),
+            (_, Type::Var(v, c)) => self.bind(*v, *c, &a, span),
+            (Type::Rigid(x), Type::Rigid(y)) if x == y => Ok(()),
+            (Type::Con(n1, a1), Type::Con(n2, a2)) if glyph_widens_into(n2, a2, n1, a1) => Ok(()),
+            (Type::Con(n1, a1), Type::Con(n2, a2)) => {
+                if n1 != n2 || a1.len() != a2.len() {
+                    return Err(mismatch(&self.apply(&a), &self.apply(&b), span));
+                }
+                for (x, y) in a1.iter().zip(a2.iter()) {
+                    self.unify(x, y, span)?;
+                }
+                Ok(())
+            }
+            (Type::Fun(a1, a2), Type::Fun(b1, b2)) => {
+                self.unify(a1, b1, span)?;
+                self.unify(a2, b2, span)
+            }
+            (Type::Record(fa, ra), Type::Record(fb, rb)) => {
+                self.unify_records(fa, ra, fb, rb, &a, &b, span)
+            }
+            // `unify_records` with the row cases deleted (ADR 0027 §3): position
+            // replaces field name, arity must match exactly. Unequal arity falls
+            // through to the mismatch arm below, so `(a, b)` never unifies with
+            // `(a, b, c)` or with unit.
+            (Type::Tuple(as_), Type::Tuple(bs)) if as_.len() == bs.len() => {
+                for (x, y) in as_.iter().zip(bs.iter()) {
+                    self.unify(x, y, span)?;
+                }
+                Ok(())
+            }
+            _ => Err(mismatch(&self.apply(&a), &self.apply(&b), span)),
+        }
+    }
+
+    /// Bind row var `r` to the record fragment "`fields`, then `tail`", the row
+    /// analogue of `bind`. Rejects the infinite cases: binding `r` to a tail
+    /// that is still `r` with extra fields, or to fields that themselves mention
+    /// `r` (`row_occurs`). `r` tailing exactly `r` with no extra fields is the
+    /// identity binding, so it is simply dropped.
+    fn bind_row(
+        &mut self,
+        r: u32,
+        fields: BTreeMap<String, Type>,
+        tail: Row,
+        span: &Span,
+    ) -> Result<(), TypeError> {
+        if tail == Row::Open(r) {
+            if fields.is_empty() {
+                return Ok(());
+            }
+            return Err(TypeError::new("infinite record row", span.clone()));
+        }
+        for ty in fields.values() {
+            if self.row_occurs(r, ty) {
+                return Err(TypeError::new("infinite record row", span.clone()));
+            }
+        }
+        self.row_subst.insert(r, (fields, tail));
+        Ok(())
+    }
+
+    /// Unify two records (ADR 0010). Shared fields must unify pointwise; then
+    /// the two `Row` tails decide what to do with the fields each side has and
+    /// the other lacks (`only_a`, `only_b`):
+    ///
+    ///   * closed ~ closed — the field sets must match exactly.
+    ///   * open ~ closed — the open side must be a subset; its row var binds to
+    ///     the closed side's surplus fields, closing it off.
+    ///   * open ~ open (same var) — the extra fields must be empty (the two are
+    ///     already the same record).
+    ///   * open ~ open (distinct vars) — each side is missing what the other
+    ///     has, so both row vars bind through one shared fresh tail, unifying
+    ///     the records while leaving room for still-unknown fields.
+    #[allow(clippy::too_many_arguments)]
+    fn unify_records(
+        &mut self,
+        fa: &BTreeMap<String, Type>,
+        ra: &Row,
+        fb: &BTreeMap<String, Type>,
+        rb: &Row,
+        a: &Type,
+        b: &Type,
+        span: &Span,
+    ) -> Result<(), TypeError> {
+        for (k, va) in fa {
+            if let Some(vb) = fb.get(k) {
+                self.unify(va, vb, span)?;
+            }
+        }
+        let only_a: BTreeMap<String, Type> = fa
+            .iter()
+            .filter(|(k, _)| !fb.contains_key(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let only_b: BTreeMap<String, Type> = fb
+            .iter()
+            .filter(|(k, _)| !fa.contains_key(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let mismatch = || {
+            let rendered = render_types_shared(&[&self.apply(a), &self.apply(b)]);
+            TypeError::new(
+                format!(
+                    "record types differ: `{}` vs `{}`",
+                    rendered[0], rendered[1]
+                ),
+                span.clone(),
+            )
+        };
+
+        match (ra, rb) {
+            (Row::Closed, Row::Closed) => {
+                if only_a.is_empty() && only_b.is_empty() {
+                    Ok(())
+                } else {
+                    Err(mismatch())
+                }
+            }
+            (Row::Open(r), Row::Closed) => {
+                if !only_a.is_empty() {
+                    return Err(mismatch());
+                }
+                self.bind_row(*r, only_b, Row::Closed, span)
+            }
+            (Row::Closed, Row::Open(r)) => {
+                if !only_b.is_empty() {
+                    return Err(mismatch());
+                }
+                self.bind_row(*r, only_a, Row::Closed, span)
+            }
+            (Row::Open(r1), Row::Open(r2)) if r1 == r2 => {
+                if only_a.is_empty() && only_b.is_empty() {
+                    Ok(())
+                } else {
+                    Err(mismatch())
+                }
+            }
+            (Row::Open(r1), Row::Open(r2)) => {
+                let rest = self.fresh_row();
+                self.bind_row(*r1, only_b, rest.clone(), span)?;
+                self.bind_row(*r2, only_a, rest, span)
+            }
+        }
+    }
+
+    /// Free type variables of a type under the current substitution.
+    fn ftv(&self, t: &Type, acc: &mut HashMap<u32, Constraint>) {
+        match self.prune(t) {
+            Type::Var(v, c) => {
+                acc.insert(v, c);
+            }
+            Type::Con(_, args) => {
+                for a in &args {
+                    self.ftv(a, acc);
+                }
+            }
+            Type::Fun(a, b) => {
+                self.ftv(&a, acc);
+                self.ftv(&b, acc);
+            }
+            Type::Record(fs, _) => {
+                for v in fs.values() {
+                    self.ftv(v, acc);
+                }
+            }
+            Type::Tuple(elems) => {
+                for e in &elems {
+                    self.ftv(e, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Free row variables of a type — the row analogue of `ftv`, collecting
+    /// open record tails rather than type vars. Drives which row vars
+    /// `generalize` may quantify.
+    fn frv(&self, t: &Type, acc: &mut HashSet<u32>) {
+        match self.prune(t) {
+            Type::Con(_, args) => {
+                for a in &args {
+                    self.frv(a, acc);
+                }
+            }
+            Type::Fun(a, b) => {
+                self.frv(&a, acc);
+                self.frv(&b, acc);
+            }
+            Type::Record(fs, row) => {
+                for v in fs.values() {
+                    self.frv(v, acc);
+                }
+                if let Row::Open(r) = row {
+                    acc.insert(r);
+                }
+            }
+            Type::Tuple(elems) => {
+                for e in &elems {
+                    self.frv(e, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn ftv_env(&self, env: &TyEnv, acc: &mut HashSet<u32>) {
+        for scheme in env.0.values() {
+            let mut inner = HashMap::new();
+            self.ftv(&scheme.ty, &mut inner);
+            for (q, _) in &scheme.vars {
+                inner.remove(q);
+            }
+            acc.extend(inner.keys().copied());
+        }
+    }
+
+    /// Row variables free in the environment: a scheme's own quantified
+    /// `row_vars` are bound, so they are excluded. `generalize` must not
+    /// quantify a row var still free here, exactly as with `ftv_env` for type
+    /// vars.
+    fn frv_env(&self, env: &TyEnv, acc: &mut HashSet<u32>) {
+        for scheme in env.0.values() {
+            let mut inner = HashSet::new();
+            self.frv(&scheme.ty, &mut inner);
+            for q in &scheme.row_vars {
+                inner.remove(q);
+            }
+            acc.extend(inner.iter().copied());
+        }
+    }
+
+    /// Generalize a type into a scheme, quantifying over both type variables
+    /// and row variables that are free in `t` but not in `env`. Quantifying the
+    /// row vars is what makes a record-polymorphic binding reusable at several
+    /// record shapes (ADR 0010).
+    fn generalize(&self, env: &TyEnv, t: &Type) -> Scheme {
+        let mut tvs = HashMap::new();
+        self.ftv(t, &mut tvs);
+        let mut env_tvs = HashSet::new();
+        self.ftv_env(env, &mut env_tvs);
+        let vars: Vec<(u32, Constraint)> = tvs
+            .into_iter()
+            .filter(|(v, _)| !env_tvs.contains(v))
+            .collect();
+        let mut rvs = HashSet::new();
+        self.frv(t, &mut rvs);
+        let mut env_rvs = HashSet::new();
+        self.frv_env(env, &mut env_rvs);
+        let row_vars: Vec<u32> = rvs.into_iter().filter(|r| !env_rvs.contains(r)).collect();
+        Scheme {
+            vars,
+            row_vars,
+            ty: self.apply(t),
+        }
+    }
+
+    /// Replace a signature's `Rigid` type variables with fresh unification
+    /// vars (all occurrences of one name share a var), so the annotation can be
+    /// unified against the inferred body and then generalized (ADR 0003).
+    fn instantiate_signature(&mut self, sig: &Type) -> Type {
+        let mut mapping: HashMap<String, Type> = HashMap::new();
+        self.instantiate_rigids(sig, &mut mapping)
+    }
+
+    fn instantiate_rigids(&mut self, t: &Type, mapping: &mut HashMap<String, Type>) -> Type {
+        match t {
+            Type::Rigid(name) => mapping
+                .entry(name.clone())
+                .or_insert_with(|| {
+                    let v = self.next;
+                    self.next += 1;
+                    Type::Var(v, Constraint::None)
+                })
+                .clone(),
+            Type::Con(name, args) => Type::Con(
+                name.clone(),
+                args.iter()
+                    .map(|a| self.instantiate_rigids(a, mapping))
+                    .collect(),
+            ),
+            Type::Fun(a, b) => Type::Fun(
+                Box::new(self.instantiate_rigids(a, mapping)),
+                Box::new(self.instantiate_rigids(b, mapping)),
+            ),
+            Type::Record(fs, row) => Type::Record(
+                fs.iter()
+                    .map(|(k, v)| (k.clone(), self.instantiate_rigids(v, mapping)))
+                    .collect(),
+                row.clone(),
+            ),
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.instantiate_rigids(e, mapping))
+                    .collect(),
+            ),
+            Type::Var(v, c) => Type::Var(*v, *c),
+        }
+    }
+
+    /// Reject a signature more general than the body it annotates (ADR 0021 —
+    /// the soundness-of-*rejection* gap ADR 0003 left open). A signature is
+    /// over-general iff two passes disagree: instantiate-and-unify accepts it but
+    /// skolemize-and-unify rejects it. `f : a -> a` over `\x -> x + 1` is the
+    /// canonical case — `a` unifies happily with a fresh variable, but forcing
+    /// the skolem `a` stands for to `Int` is a mismatch.
+    ///
+    /// Both passes run on a throwaway copy of the state: `subst`, `row_subst`,
+    /// and `next` are snapshotted up front and restored before returning, so
+    /// neither trial binding survives. The real signature unification and
+    /// generalization in `infer_group` run afterward against untouched state —
+    /// this check only decides whether to raise the error, never what type the
+    /// decl gets.
+    ///
+    /// `outer_free` is captured *before* either pass: the type variables free in
+    /// the surrounding env at entry. A skolem surfacing in one of those means it
+    /// escaped its signature's scope, which the skolemize pass also treats as
+    /// rejection (`skolems_escape_into`). The group's own recursion vars are not
+    /// in `outer_free` — they are bound monomorphically in the body env, not the
+    /// outer env — so polymorphic recursion is not falsely flagged.
+    fn check_signature_generality(
+        &mut self,
+        inferred: &Type,
+        sig: &Type,
+        env: &TyEnv,
+        span: &Span,
+    ) -> Result<(), TypeError> {
+        let subst_snapshot = self.subst.clone();
+        let row_snapshot = self.row_subst.clone();
+        let next_snapshot = self.next;
+
+        let mut outer_free = HashSet::new();
+        self.ftv_env(env, &mut outer_free);
+
+        let instantiated = self.instantiate_signature(sig);
+        let instantiate_accepts = self.unify(inferred, &instantiated, span).is_ok();
+        self.subst = subst_snapshot.clone();
+        self.row_subst = row_snapshot.clone();
+
+        let mut mapping: HashMap<String, String> = HashMap::new();
+        let skolemized = self.skolemize(sig, &mut mapping);
+        let skolems: HashSet<String> = mapping.values().cloned().collect();
+        let skolemize_accepts = self.unify(inferred, &skolemized, span).is_ok()
+            && !self.skolems_escape_into(&skolems, &outer_free);
+        self.subst = subst_snapshot;
+        self.row_subst = row_snapshot;
+        self.next = next_snapshot;
+
+        if instantiate_accepts && !skolemize_accepts {
+            return Err(TypeError::new("signature is too general", span.clone())
+                .note("the body forces a signature type variable to a more specific type"));
+        }
+        Ok(())
+    }
+
+    /// Turn a signature's type variables into rigid constants for the strict
+    /// pass. Each distinct `Rigid` name becomes a fresh, globally unique
+    /// `skolem$n` (all occurrences of one name share it, via `mapping`), so
+    /// unification can no longer bind it away: forcing a skolem to a concrete
+    /// type, or unifying two distinct skolems, is a plain type mismatch and
+    /// fails — which is exactly how over-generality is caught.
+    ///
+    /// The three reserved bounded names (`number`/`comparable`/`appendable`) are
+    /// the exception: they skolemize to a fresh *constrained* `Var`, not a rigid.
+    /// They are not universally quantifiable — they already carry a bound the
+    /// body may legitimately satisfy at a concrete type — so treating them as
+    /// rigid would reject correct programs (`double : number -> number` over
+    /// `\x -> x + x`).
+    fn skolemize(&mut self, t: &Type, mapping: &mut HashMap<String, String>) -> Type {
+        match t {
+            Type::Rigid(name) => match bounded_variable_constraint(name) {
+                Some(c) => self.fresh_constrained(c),
+                None => Type::Rigid(
+                    mapping
+                        .entry(name.clone())
+                        .or_insert_with(|| {
+                            let id = self.next;
+                            self.next += 1;
+                            format!("skolem${id}")
+                        })
+                        .clone(),
+                ),
+            },
+            Type::Con(name, args) => Type::Con(
+                name.clone(),
+                args.iter().map(|a| self.skolemize(a, mapping)).collect(),
+            ),
+            Type::Fun(a, b) => Type::Fun(
+                Box::new(self.skolemize(a, mapping)),
+                Box::new(self.skolemize(b, mapping)),
+            ),
+            Type::Record(fs, row) => Type::Record(
+                fs.iter()
+                    .map(|(k, v)| (k.clone(), self.skolemize(v, mapping)))
+                    .collect(),
+                row.clone(),
+            ),
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| self.skolemize(e, mapping)).collect())
+            }
+            Type::Var(v, c) => Type::Var(*v, *c),
+        }
+    }
+
+    /// Did any skolem leak into the outer environment? After the strict unify,
+    /// a skolem reachable from a variable that was free in the outer env before
+    /// the check escaped its signature's scope, which is over-general just as a
+    /// forced skolem is. The scope is deliberately the *pre-existing* outer free
+    /// vars only (`outer_free`, captured before unifying) — not the group's own
+    /// recursion vars, so a self- or mutually-recursive decl calling itself at
+    /// its own type is not mistaken for an escape.
+    fn skolems_escape_into(&self, skolems: &HashSet<String>, outer_free: &HashSet<u32>) -> bool {
+        outer_free
+            .iter()
+            .any(|v| self.mentions_skolem(skolems, &Type::Var(*v, Constraint::None)))
+    }
+
+    fn mentions_skolem(&self, skolems: &HashSet<String>, t: &Type) -> bool {
+        match self.prune(t) {
+            Type::Rigid(name) => skolems.contains(&name),
+            Type::Con(_, args) => args.iter().any(|a| self.mentions_skolem(skolems, a)),
+            Type::Fun(a, b) => {
+                self.mentions_skolem(skolems, &a) || self.mentions_skolem(skolems, &b)
+            }
+            Type::Record(fs, _) => fs.values().any(|v| self.mentions_skolem(skolems, v)),
+            Type::Tuple(elems) => elems.iter().any(|e| self.mentions_skolem(skolems, e)),
+            Type::Var(_, _) => false,
+        }
+    }
+
+    /// Elm's number defaulting: any still-unresolved `number` variable in `t`
+    /// is pinned to `Int` (ADR 0007). Applied at top-level generalization so a
+    /// literal like `3` used at no other type becomes `Int`.
+    fn default_number_vars(&mut self, t: &Type) {
+        let mut acc = HashMap::new();
+        self.ftv(t, &mut acc);
+        for (v, c) in acc {
+            if c == Constraint::Number {
+                self.subst.insert(v, con("Int"));
+            }
+        }
+    }
+
+    /// Instantiate a scheme with fresh variables. Type vars and row vars are
+    /// refreshed through separate mappings, so each use of a record-polymorphic
+    /// binding gets its own row tail and can unify at a different record shape
+    /// (ADR 0010).
+    fn instantiate(&mut self, s: &Scheme) -> Type {
+        let mut mapping = HashMap::new();
+        for (v, c) in &s.vars {
+            let f = self.fresh_constrained(*c);
+            mapping.insert(*v, f);
+        }
+        let mut row_mapping = HashMap::new();
+        for r in &s.row_vars {
+            let f = self.fresh_row();
+            row_mapping.insert(*r, f);
+        }
+        fn go(t: &Type, m: &HashMap<u32, Type>, rm: &HashMap<u32, Row>) -> Type {
+            match t {
+                Type::Var(v, c) => m.get(v).cloned().unwrap_or(Type::Var(*v, *c)),
+                Type::Con(name, args) => {
+                    Type::Con(name.clone(), args.iter().map(|a| go(a, m, rm)).collect())
+                }
+                Type::Fun(a, b) => Type::Fun(Box::new(go(a, m, rm)), Box::new(go(b, m, rm))),
+                Type::Record(fs, row) => {
+                    let fields = fs.iter().map(|(k, v)| (k.clone(), go(v, m, rm))).collect();
+                    let row = match row {
+                        Row::Open(r) => rm.get(r).cloned().unwrap_or(Row::Open(*r)),
+                        Row::Closed => Row::Closed,
+                    };
+                    Type::Record(fields, row)
+                }
+                Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| go(e, m, rm)).collect()),
+                other => other.clone(),
+            }
+        }
+        go(&s.ty, &mapping, &row_mapping)
+    }
+}
+
+/// The stronger of two bounds when two constrained vars unify, or `None` when
+/// no type can satisfy both. `Constraint::None` is the identity; `Number ⊂
+/// Comparable`, so `Number ∧ Comparable = Number`. `Appendable` (`String`/`List
+/// a`) shares no admissible type with `Number` or `Comparable`, so merging it
+/// with either is unsatisfiable and rejected.
+fn merge_constraints(a: Constraint, b: Constraint) -> Option<Constraint> {
+    match (a, b) {
+        (Constraint::None, other) | (other, Constraint::None) => Some(other),
+        (Constraint::Number, Constraint::Number) => Some(Constraint::Number),
+        (Constraint::Comparable, Constraint::Comparable) => Some(Constraint::Comparable),
+        (Constraint::Appendable, Constraint::Appendable) => Some(Constraint::Appendable),
+        (Constraint::Number, Constraint::Comparable)
+        | (Constraint::Comparable, Constraint::Number) => Some(Constraint::Number),
+        _ => None,
+    }
+}
+
+/// Whether a concrete type satisfies a bound: `number` admits `Int`/`Float`,
+/// `comparable` also admits `String`, `appendable` admits `String`/`List a`. A
+/// non-`Con` type (var, function, record) is only admissible under `None`.
+fn constraint_admits(c: Constraint, t: &Type) -> bool {
+    // Structural comparability (ADR 0027 §3): a tuple admits `comparable` iff
+    // every element does, recursing through nested tuples. Unit (empty `all`) is
+    // vacuously comparable, matching Elm. A tuple is never `number` or
+    // `appendable` — those admit only the scalar/list heads below, never a
+    // product.
+    if let Type::Tuple(elems) = t {
+        return match c {
+            Constraint::None => true,
+            Constraint::Comparable => elems.iter().all(|e| comparable_element(e)),
+            Constraint::Number | Constraint::Appendable => false,
+        };
+    }
+    let head = match t {
+        Type::Con(name, _) => name.as_str(),
+        _ => return c == Constraint::None,
+    };
+    match c {
+        Constraint::None => true,
+        Constraint::Number => matches!(head, "Int" | "Float"),
+        // `Char` joins Int/Float/String here to stay Elm-faithful — Elm's
+        // `Char` is comparable, ordered by codepoint (ADR 0025).
+        Constraint::Comparable => matches!(head, "Int" | "Float" | "String" | "Char"),
+        Constraint::Appendable => matches!(head, "String" | "List"),
+    }
+}
+
+/// Whether one tuple element admits `comparable`. A concrete or nested-tuple
+/// element defers to `constraint_admits`. A *var* element is admitted only if it
+/// already carries a `Comparable` or `Number` bound — both sit inside comparable
+/// (`number ⊂ comparable`), so an integer-literal element (a `number` var) makes
+/// its tuple comparable, and the bound is carried forward soundly. A fully
+/// unbound var is NOT admitted: it could later resolve to a function or record,
+/// so admitting it here would be unsound (ADR 0027 §3).
+fn comparable_element(t: &Type) -> bool {
+    match t {
+        Type::Var(_, c) => matches!(c, Constraint::Comparable | Constraint::Number),
+        _ => constraint_admits(Constraint::Comparable, t),
+    }
+}
+
+fn constraint_name(c: Constraint) -> &'static str {
+    match c {
+        Constraint::None => "unconstrained",
+        Constraint::Number => "number",
+        Constraint::Comparable => "comparable",
+        Constraint::Appendable => "appendable",
+    }
+}
+
+/// Levenshtein edit distance, two-row (O(min·max) space) — the metric behind
+/// the did-you-mean suggestions (ADR 0032 §2e).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// The nearest candidate to `target` within a length-scaled edit-distance
+/// threshold, or `None` when nothing is close enough. The threshold is 1 for a
+/// target of 4 chars or fewer, else 2 — a short name has little room to differ
+/// before it is a different word, so a looser bound would suggest noise. An
+/// exact match (distance 0) never suggests; ties keep the first-seen candidate.
+///
+/// The caller supplies the candidate pool, one per site (names in scope,
+/// uppercase-initial env keys for constructors, `type_arities` keys for type
+/// constructors, …). Reserved constructor words (`keep`, `file`, `scroll`, …)
+/// are parser-level `Tok::Ident`s never bound into `env`/`ty_env`
+/// (`prelude.rs`), so no pool that draws from those environments can surface a
+/// reserved word as a suggestion.
+fn did_you_mean(target: &str, candidates: impl Iterator<Item = String>) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for cand in candidates {
+        let d = edit_distance(target, &cand);
+        let threshold = if target.len() <= 4 { 1 } else { 2 };
+        if d == 0 || d > threshold {
+            continue;
+        }
+        if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+            best = Some((d, cand));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Render a type for a user-facing diagnostic. Internal unification-variable
+/// ids (`t9`, `t31`) are an implementation detail no reader should see (ADR
+/// 0032 §1), so each free `Var` prints as a friendly letter — `a`, `b`, `c`, …
+/// in first-seen order. A single name map spans a whole message: every occurrence
+/// of the same variable renders the same letter, and distinct variables never
+/// reuse a letter, across all the types composed into one message. For a lone
+/// type that map is this call; a message with several operands renders them
+/// together through `render_types_shared`. The numbering restarts on the next
+/// message.
+pub(crate) fn render_type(t: &Type) -> String {
+    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut next: u32 = 0;
+    let mut out = String::new();
+    render_into(t, &mut names, &mut next, &mut out, false);
+    out
+}
+
+/// Render several types through one shared name map, so the letters agree across
+/// a message's operands: the same internal variable is one letter in every
+/// operand, and two distinct variables never collide on a letter. Rendering each
+/// side with its own `render_type` would restart at `a` per side, implying a
+/// shared variable between unrelated types (`expected (a, b), found a -> b`);
+/// this keeps them independent.
+pub(crate) fn render_types_shared(types: &[&Type]) -> Vec<String> {
+    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut next: u32 = 0;
+    types
+        .iter()
+        .map(|t| {
+            let mut out = String::new();
+            render_into(t, &mut names, &mut next, &mut out, false);
+            out
+        })
+        .collect()
+}
+
+fn mismatch(expected: &Type, found: &Type, span: &Span) -> TypeError {
+    let rendered = render_types_shared(&[expected, found]);
+    TypeError::new(
+        format!(
+            "type mismatch: expected `{}`, found `{}`",
+            rendered[0], rendered[1]
+        ),
+        span.clone(),
+    )
+}
+
+/// The `n`th friendly variable name: `a`..`z`, then `a1`, `b1`, … once past 26.
+fn var_letter(n: u32) -> String {
+    let letter = (b'a' + (n % 26) as u8) as char;
+    let cycle = n / 26;
+    if cycle == 0 {
+        letter.to_string()
+    } else {
+        format!("{letter}{cycle}")
+    }
+}
+
+/// Append `t`'s friendly form to `out`, minting variable letters through
+/// `names`/`next` (see `render_type`). Parentheses are added only where they
+/// change meaning: a constructor argument that is itself an applied constructor
+/// or a function, and a function's left side when it is another function (`->`
+/// is right-associative). `paren_fun` is the caller's request to wrap this type
+/// if it turns out to be a function — carried for nested positions where an
+/// unparenthesized arrow would rebind.
+fn render_into(
+    t: &Type,
+    names: &mut HashMap<u32, String>,
+    next: &mut u32,
+    out: &mut String,
+    paren_fun: bool,
+) {
+    match t {
+        Type::Var(n, _) => {
+            let name = names.entry(*n).or_insert_with(|| {
+                let s = var_letter(*next);
+                *next += 1;
+                s
+            });
+            out.push_str(name);
+        }
+        Type::Rigid(name) => out.push_str(name),
+        Type::Con(name, args) if args.is_empty() => out.push_str(name),
+        Type::Con(name, args) => {
+            out.push_str(name);
+            for arg in args {
+                out.push(' ');
+                let wrap = matches!(arg, Type::Con(_, inner) if !inner.is_empty())
+                    || matches!(arg, Type::Fun(_, _));
+                if wrap {
+                    out.push('(');
+                    render_into(arg, names, next, out, false);
+                    out.push(')');
+                } else {
+                    render_into(arg, names, next, out, false);
+                }
+            }
+        }
+        Type::Fun(a, b) => {
+            let wrap_a = matches!(**a, Type::Fun(_, _));
+            if paren_fun {
+                out.push('(');
+            }
+            if wrap_a {
+                out.push('(');
+                render_into(a, names, next, out, false);
+                out.push(')');
+            } else {
+                render_into(a, names, next, out, false);
+            }
+            out.push_str(" -> ");
+            render_into(b, names, next, out, false);
+            if paren_fun {
+                out.push(')');
+            }
+        }
+        Type::Record(fields, row) => {
+            out.push_str("{ ");
+            for (i, (k, v)) in fields.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(k);
+                out.push_str(" : ");
+                render_into(v, names, next, out, false);
+            }
+            if let Row::Open(_) = row {
+                out.push_str(" | ..");
+            }
+            out.push_str(" }");
+        }
+        Type::Tuple(elems) => {
+            out.push('(');
+            for (i, elem) in elems.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                render_into(elem, names, next, out, false);
+            }
+            out.push(')');
+        }
+    }
+}
+
+/// The constraint class a reserved bounded-variable name denotes, or `None` for
+/// an ordinary type variable. `number`/`comparable`/`appendable` are not free
+/// type variables but Elm's bounded ones (ADR 0007), so `skolemize` maps them to
+/// a constrained `Var` rather than a rigid skolem — the bounded-name exemption
+/// in the signature-generality check.
+fn bounded_variable_constraint(name: &str) -> Option<Constraint> {
+    match name {
+        "number" => Some(Constraint::Number),
+        "comparable" => Some(Constraint::Comparable),
+        "appendable" => Some(Constraint::Appendable),
+        _ => None,
+    }
+}
+
+/// Promote a concrete glyph subtype (`AptPackage`, …) to `Glyph` before it is
+/// unified against a list element or a sibling branch, so a mixed list of
+/// glyphs infers as `List Glyph` rather than failing to unify the two concrete
+/// subtypes with each other (each widens into `Glyph`, not into another
+/// subtype). Recurses through `List <concrete>` -> `List Glyph`, which is what
+/// lets `scroll { glyphs = … }` still type-check: a list of assorted concrete
+/// glyphs is widened element-wise before it meets the expected `List Glyph`.
+/// Applied at every join that forms a glyph list — list literals, `if`/`case`
+/// branches, and the scroll `glyphs` field.
+fn widen_glyph_subtype(inf: &Infer, t: &Type) -> Type {
+    match inf.prune(t) {
+        Type::Con(name, args) if args.is_empty() && is_glyph_subtype(&name) => con("Glyph"),
+        Type::Con(name, args) if name == "List" && args.len() == 1 => {
+            Type::Con("List".to_string(), vec![widen_glyph_subtype(inf, &args[0])])
+        }
+        pruned => pruned,
+    }
+}
+
+fn is_glyph_subtype(name: &str) -> bool {
+    matches!(
+        name,
+        "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
+    )
+}
+
+/// The directed widening arm of `unify` (ADR 0017): a concrete glyph subtype
+/// (`from`) satisfies a `Glyph` hole (`to`), and only in that direction. The
+/// argument order matters — `unify` calls this with the *found* type as `from`
+/// and the *expected* as `to`, so `AptPackage` found where `Glyph` is expected
+/// succeeds, while `Glyph` found where `AptPackage` is expected does not. That
+/// asymmetry is the whole soundness gain over ADR 0002's symmetric injection:
+/// a value typed `Glyph` is never narrowed back to a concrete variant it may
+/// not be, so a `case` on it is safe.
+fn glyph_widens_into(from: &str, from_args: &[Type], to: &str, to_args: &[Type]) -> bool {
+    from_args.is_empty() && to_args.is_empty() && to == "Glyph" && is_glyph_subtype(from)
+}
+
+fn con(name: &str) -> Type {
+    Type::Con(name.to_string(), vec![])
+}
+
+/// The constructor-scope contribution of a module's open-exposed (`Type(..)`)
+/// imports: each imported constructor's value scheme and each imported type's
+/// full variant set. The resolver harvests this from the interfaces a module
+/// imports and hands it to `check_entry`/`check_library`, which seed it into the
+/// `Infer` so `infer_pattern` can resolve imported constructors and the
+/// exhaustiveness checker can see their type's complete signature — the pattern
+/// counterpart to `imported_types` on the annotation side.
+#[derive(Default)]
+pub struct ImportedConstructors {
+    pub ctor_schemes: HashMap<String, Scheme>,
+    pub sum_ctors: HashMap<String, Vec<(String, usize)>>,
+}
+
+#[derive(Clone, Default)]
+pub struct TyEnv(BTreeMap<String, Scheme>);
+impl TyEnv {
+    fn get(&self, k: &str) -> Option<&Scheme> {
+        self.0.get(k)
+    }
+    pub fn scheme(&self, k: &str) -> Option<Scheme> {
+        self.0.get(k).cloned()
+    }
+    pub fn has(&self, k: &str) -> bool {
+        self.0.contains_key(k)
+    }
+    fn insert(&self, k: String, s: Scheme) -> TyEnv {
+        let mut m = self.0.clone();
+        m.insert(k, s);
+        TyEnv(m)
+    }
+    pub fn bind(self, k: String, s: Scheme) -> TyEnv {
+        self.insert(k, s)
+    }
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &Scheme)> {
+        self.0.iter()
+    }
+}
+
+fn mono(t: Type) -> Scheme {
+    Scheme {
+        vars: vec![],
+        row_vars: vec![],
+        ty: t,
+    }
+}
+
+fn infer_expr(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, TypeError> {
+    let ty = infer_expr_inner(inf, env, e)?;
+    inf.rec_type(&e.1, &ty);
+    Ok(ty)
+}
+
+fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<Type, TypeError> {
+    let span = &e.1;
+    match &e.0 {
+        Expr::Str(_) => Ok(con("String")),
+
+        Expr::Int(_) => Ok(inf.fresh_constrained(Constraint::Number)),
+
+        Expr::Float(_) => Ok(con("Float")),
+
+        // Mirrors `Expr::Str => con("String")` (ADR 0025).
+        Expr::Char(_) => Ok(con("Char")),
+
+        Expr::Var(name) => match env.get(name) {
+            Some(s) => {
+                inf.rec_use(span, name);
+                Ok(inf.instantiate(s))
+            }
+            None => {
+                let mut msg = format!("unknown name `{name}`");
+                if let Some(hint) = did_you_mean(name, env.entries().map(|(k, _)| k.clone())) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                let note = if name.contains('.') {
+                    "this is a module-qualified name; check the module and member spelling"
+                } else {
+                    "not bound by any declaration, `let`, or lambda parameter"
+                };
+                Err(TypeError::new(msg, span.clone()).note(note))
+            }
+        },
+
+        Expr::Ctor(name) => match env.get(name) {
+            Some(s) => {
+                inf.rec_use(span, name);
+                Ok(inf.instantiate(s))
+            }
+            None => {
+                let mut msg = format!("unknown constructor `{name}`");
+                let candidates = env
+                    .entries()
+                    .map(|(k, _)| k.clone())
+                    .filter(|k| k.chars().next().is_some_and(char::is_uppercase));
+                if let Some(hint) = did_you_mean(name, candidates) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                Err(TypeError::new(msg, span.clone()))
+            }
+        },
+
+        Expr::AptPackage(name) => {
+            let nt = infer_expr(inf, env, name)?;
+            inf.unify(&nt, &con("String"), &name.1)?;
+            Ok(con("AptPackage"))
+        }
+
+        Expr::SystemdService(unit) => {
+            let ut = infer_expr(inf, env, unit)?;
+            inf.unify(&ut, &con("String"), &unit.1)?;
+            Ok(con("SystemdService"))
+        }
+
+        // All three surface spellings (`file`/`directory`/`symlink`) share one
+        // glyph type, `Filesystem` (ADR 0019): the `Entry` distinction lives in
+        // the IR, not the type surface. Every field is `String` here — including
+        // `mode`, which stays an octal string until `eval` lowers it to a `u16`.
+        Expr::Filesystem { path, entry } => {
+            let pt = infer_expr(inf, env, path)?;
+            inf.unify(&pt, &con("String"), &path.1)?;
+            let fields: Vec<&Spanned<Expr>> = match entry {
+                EntryExpr::File { contents, mode } => vec![contents, mode],
+                EntryExpr::Directory { mode } => vec![mode],
+                EntryExpr::Symlink { target } => vec![target],
+            };
+            for field in fields {
+                let ft = infer_expr(inf, env, field)?;
+                inf.unify(&ft, &con("String"), &field.1)?;
+            }
+            Ok(con("Filesystem"))
+        }
+
+        Expr::LineInFile { path, line } => {
+            for field in [path, line] {
+                let ft = infer_expr(inf, env, field)?;
+                inf.unify(&ft, &con("String"), &field.1)?;
+            }
+            Ok(con("LineInFile"))
+        }
+
+        Expr::Scroll {
+            name,
+            policy,
+            contents,
+        } => {
+            let nt = infer_expr(inf, env, name)?;
+            inf.unify(&nt, &con("String"), &name.1)?;
+            if let Some(p) = policy {
+                let pt = infer_expr(inf, env, p)?;
+                // Frame expected-vs-found the way the author reads it: the
+                // context (`policy` field) is what's expected, the author's
+                // expression is what's found. The bare `unify` error names the
+                // two in unification order, which reads reversed here (ADR 0032
+                // §1, audit #41/#46), so replace it with a context-first message.
+                inf.unify(&pt, &con("Policy"), &p.1).map_err(|_| {
+                    TypeError::new(
+                        format!(
+                            "the `policy` field takes a `Policy` (from `keep`/`rollback`/`retry`), but this is a `{}`",
+                            render_type(&inf.apply(&pt))
+                        ),
+                        p.1.clone(),
+                    )
+                })?;
+            }
+            match contents {
+                ContentsExpr::Glyphs(glyphs) => {
+                    let gt = infer_expr(inf, env, glyphs)?;
+                    let gt = widen_glyph_subtype(inf, &gt);
+                    let glyph_list = Type::Con("List".to_string(), vec![con("Glyph")]);
+                    inf.unify(&gt, &glyph_list, &glyphs.1)?;
+                }
+                ContentsExpr::Groups(groups) => {
+                    let gt = infer_expr(inf, env, groups)?;
+                    let scroll_list = Type::Con("List".to_string(), vec![con("Scroll")]);
+                    inf.unify(&gt, &scroll_list, &groups.1)?;
+                }
+            }
+            Ok(con("Scroll"))
+        }
+
+        Expr::PolicyExhaust(_) => Ok(con("Policy")),
+
+        // `retry`'s knobs are a fixed, typed field set; an unknown field is a
+        // type error here (there is no open-record fallback). `onExhaust` takes a
+        // `Policy` — the shorthand `keep`/`rollback` value — rather than a
+        // bespoke `OnExhaust` type, so a policy is one uniform type wherever it
+        // appears (the `scroll` field and this nested field alike).
+        Expr::PolicyRetry(fields) => {
+            for (key, value) in fields.iter() {
+                let expected = match key.as_str() {
+                    "maxAttempts" => con("Int"),
+                    "baseDelayMs" | "maxDelayMs" | "maxElapsedMs" => con("Int"),
+                    "backoffMultiplier" | "jitterFraction" => con("Float"),
+                    "onExhaust" => con("Policy"),
+                    other => {
+                        return Err(TypeError::new(
+                            format!(
+                                "unknown `retry` field `{other}` — valid fields are maxAttempts, baseDelayMs, backoffMultiplier, maxDelayMs, jitterFraction, maxElapsedMs, onExhaust"
+                            ),
+                            value.1.clone(),
+                        ))
+                    }
+                };
+                let vt = infer_expr(inf, env, value)?;
+                inf.unify(&vt, &expected, &value.1)?;
+            }
+            Ok(con("Policy"))
+        }
+
+        Expr::List(items) => {
+            let elem = inf.fresh();
+            for it in items {
+                let t = infer_expr(inf, env, it)?;
+                let t = widen_glyph_subtype(inf, &t);
+                inf.unify(&elem, &t, &it.1)?;
+            }
+            Ok(Type::Con("List".to_string(), vec![elem]))
+        }
+
+        Expr::Lam { param, body } => {
+            let tv = inf.fresh();
+            let env2 = env.insert(param.clone(), mono(tv.clone()));
+            let mut added = HashMap::new();
+            added.insert(
+                param.clone(),
+                DefSite {
+                    span: span.clone(),
+                    module: None,
+                },
+            );
+            inf.rec_open_scope(body.1.clone(), &env2, added);
+            let bt = infer_expr(inf, &env2, body)?;
+            inf.rec_close_scope();
+            Ok(Type::Fun(Box::new(tv), Box::new(bt)))
+        }
+
+        Expr::App(f, x) => {
+            let ft = infer_expr(inf, env, f)?;
+            let xt = infer_expr(inf, env, x)?;
+            let ret = inf.fresh();
+            let expected = Type::Fun(Box::new(xt), Box::new(ret.clone()));
+            inf.unify(&ft, &expected, span)?;
+            Ok(ret)
+        }
+
+        Expr::Let { decls, body } => {
+            let env2 = infer_decls(inf, env, decls, false)?;
+            let added = decl_def_sites(decls);
+            inf.rec_open_scope(span.clone(), &env2, added);
+            let bt = infer_expr(inf, &env2, body)?;
+            inf.rec_close_scope();
+            Ok(bt)
+        }
+
+        Expr::Record(fields) => {
+            // A literal names every field it has, so it is a closed record —
+            // its type carries no row tail (ADR 0010).
+            let mut tys = BTreeMap::new();
+            for (k, v) in fields {
+                tys.insert(k.clone(), infer_expr(inf, env, v)?);
+            }
+            Ok(Type::Record(tys, Row::Closed))
+        }
+
+        // A tuple literal infers to a `Type::Tuple` of its elements' types,
+        // element-wise — the positional analogue of the `Record` arm above. Unit
+        // `()` is the empty tuple (ADR 0027 §3).
+        Expr::Tuple(items) => {
+            let mut elems = Vec::with_capacity(items.len());
+            for item in items {
+                elems.push(infer_expr(inf, env, item)?);
+            }
+            Ok(Type::Tuple(elems))
+        }
+
+        Expr::If { cond, then_, else_ } => {
+            let ct = infer_expr(inf, env, cond)?;
+            // Context-first framing, spanned at the condition (ADR 0032 §1) — as
+            // for the `policy` field above.
+            inf.unify(&ct, &con("Bool"), &cond.1).map_err(|_| {
+                TypeError::new(
+                    format!(
+                        "the condition of an `if` must be a `Bool`, but this is a `{}`",
+                        render_type(&inf.apply(&ct))
+                    ),
+                    cond.1.clone(),
+                )
+            })?;
+            let tt = infer_expr(inf, env, then_)?;
+            let tt = widen_glyph_subtype(inf, &tt);
+            let et = infer_expr(inf, env, else_)?;
+            let et = widen_glyph_subtype(inf, &et);
+            inf.unify(&tt, &et, &else_.1)?;
+            Ok(inf.apply(&tt))
+        }
+
+        Expr::Case { scrutinee, arms } => {
+            // Guard before the exhaustiveness pass: an armless `case … of`
+            // reached `check_exhaustive` and reported "add a _ catch-all"
+            // (audit #11), which points at the wrong fix. It needs any arm, not
+            // a catch-all.
+            if arms.is_empty() {
+                return Err(TypeError::new(
+                    "this `case` has no arms — a `case … of` needs at least one `pattern -> expression` arm",
+                    span.clone(),
+                ));
+            }
+            let st = infer_expr(inf, env, scrutinee)?;
+            let result = inf.fresh();
+            for arm in arms {
+                let mut arm_env = env.clone();
+                infer_pattern(inf, &mut arm_env, &arm.pat, &st)?;
+                let added = pattern_def_sites(&arm.pat);
+                inf.rec_open_scope(arm.body.1.clone(), &arm_env, added);
+                let bt = infer_expr(inf, &arm_env, &arm.body)?;
+                let bt = widen_glyph_subtype(inf, &bt);
+                inf.unify(&result, &bt, &arm.body.1)?;
+                inf.rec_close_scope();
+            }
+            check_exhaustive(inf, &st, arms, span)?;
+            Ok(inf.apply(&result))
+        }
+
+        Expr::Field(base, field) => {
+            // Row polymorphism (ADR 0010). Rather than require `base` to be a
+            // concrete record, unify it with an OPEN record demanding just this
+            // one field: `{ field : result | rest }`. A fresh row var `rest`
+            // absorbs whatever other fields `base` has. Because `base` may still
+            // be an unbound type var (a lambda parameter), this is what lets
+            // `\h -> h.name` type-check without knowing `h`'s full shape.
+            let bt = infer_expr(inf, env, base)?;
+            let pruned = inf.prune(&bt);
+            // A non-record constructor (e.g. `Int`) can never gain fields, so
+            // reject it now with a clearer message than a raw unify failure.
+            if let Type::Con(name, _) = &pruned {
+                return Err(TypeError::new(
+                    format!("field access `.{field}` on non-record type `{name}`"),
+                    base.1.clone(),
+                ));
+            }
+            let result = inf.fresh();
+            let rest = inf.fresh_row();
+            let mut demanded = BTreeMap::new();
+            demanded.insert(field.clone(), result.clone());
+            let open = Type::Record(demanded, rest);
+            inf.unify(&bt, &open, span)?;
+            Ok(inf.apply(&result))
+        }
+    }
+}
+
+/// Type a pattern against the scrutinee type, extending `env` with any bindings
+/// it introduces. A constructor pattern instantiates its scheme, unifies the
+/// result with the scrutinee, and recurses into sub-patterns; a var pattern
+/// binds the scrutinee type; `_` binds nothing; a string pattern forces
+/// `String` (ADR 0005).
+fn infer_pattern(
+    inf: &mut Infer,
+    env: &mut TyEnv,
+    pat: &Spanned<Pattern>,
+    scrutinee: &Type,
+) -> Result<(), TypeError> {
+    if inf.recording() {
+        let scrut = inf.apply(scrutinee);
+        inf.rec_type(&pat.1, &scrut);
+    }
+    match &pat.0 {
+        Pattern::Wildcard => Ok(()),
+        Pattern::Var(name) => {
+            *env = env.insert(name.clone(), mono(inf.apply(scrutinee)));
+            Ok(())
+        }
+        Pattern::Str(_) => inf.unify(scrutinee, &con("String"), &pat.1),
+        // Mirrors `Str`'s `con("String")` (ADR 0026 §4).
+        Pattern::Char(_) => inf.unify(scrutinee, &con("Char"), &pat.1),
+        // A `number` variable, NOT `con("Int")` (ADR 0026 §4): the same mint an
+        // integer literal *expression* gets. Keeping the scrutinee polymorphic
+        // `number` is what lets an int literal pattern match a `Float`-typed
+        // value — hard-`Int` would wrongly reject it.
+        Pattern::Int(_) => {
+            let num = inf.fresh_constrained(Constraint::Number);
+            inf.unify(scrutinee, &num, &pat.1)
+        }
+        // `[]` and `head :: tail` constrain the scrutinee to some `List elem`.
+        // `Cons` additionally binds its head at `elem` and its tail at the same
+        // list type — the recursive shape that lets a `case` walk a list.
+        Pattern::Nil => {
+            let elem = inf.fresh();
+            let list_ty = Type::Con("List".to_string(), vec![elem]);
+            inf.unify(scrutinee, &list_ty, &pat.1)
+        }
+        Pattern::Cons(head, tail) => {
+            let elem = inf.fresh();
+            let list_ty = Type::Con("List".to_string(), vec![elem.clone()]);
+            inf.unify(scrutinee, &list_ty, &pat.1)?;
+            infer_pattern(inf, env, head, &elem)?;
+            infer_pattern(inf, env, tail, &list_ty)
+        }
+        // A tuple pattern forces the scrutinee to a tuple of matching arity —
+        // one fresh element type per sub-pattern — then types each sub-pattern
+        // against its positional element (ADR 0027 §3). Unit matches with an
+        // empty element vector.
+        Pattern::Tuple(subpats) => {
+            let elems: Vec<Type> = subpats.iter().map(|_| inf.fresh()).collect();
+            inf.unify(scrutinee, &Type::Tuple(elems.clone()), &pat.1)?;
+            for (subpat, elem) in subpats.iter().zip(elems.iter()) {
+                infer_pattern(inf, env, subpat, elem)?;
+            }
+            Ok(())
+        }
+        Pattern::Ctor(name, subpats) => {
+            let scheme = inf.constructor_scheme(name).ok_or_else(|| {
+                let mut msg = format!("unknown constructor `{name}`");
+                let candidates = inf
+                    .user_ctor_schemes
+                    .keys()
+                    .cloned()
+                    .chain(crate::prelude::constructor_names());
+                if let Some(hint) = did_you_mean(name, candidates) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                TypeError::new(msg, pat.1.clone())
+            })?;
+            let instantiated = inf.instantiate(&scheme);
+            let (arg_types, result_type) = uncurry(&instantiated);
+            if arg_types.len() != subpats.len() {
+                return Err(TypeError::new(
+                    format!(
+                        "constructor `{name}` expects {} argument(s), found {}",
+                        arg_types.len(),
+                        subpats.len()
+                    ),
+                    pat.1.clone(),
+                ));
+            }
+            inf.unify(scrutinee, &result_type, &pat.1)?;
+            for (subpat, arg_type) in subpats.iter().zip(arg_types.iter()) {
+                infer_pattern(inf, env, subpat, arg_type)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn uncurry(ty: &Type) -> (Vec<Type>, Type) {
+    let mut args = Vec::new();
+    let mut cur = ty.clone();
+    while let Type::Fun(a, b) = cur {
+        args.push(*a);
+        cur = *b;
+    }
+    (args, cur)
+}
+
+// ---------------------------------------------------------------------------
+// Exhaustiveness + redundancy checking (ADR 0005).
+//
+// Maranget's (2007) "usefulness" algorithm, restricted to emet's pattern
+// language. `useful(matrix, q)` asks: is there a value matched by `q` but by no
+// row already in `matrix`? Two consequences fall out and together preserve
+// totality:
+//   * an arm is REDUNDANT if it is not useful against the arms above it;
+//   * a `case` is NON-EXHAUSTIVE if a bare wildcard is still useful after all
+//     arms — i.e. some value escapes every arm.
+// The checker guarantees a matching arm always exists, which is why `eval`'s
+// no-match path is `unreachable!`.
+// ---------------------------------------------------------------------------
+
+/// A pattern lowered for the usefulness check: variable binds are erased to
+/// `Wild` (they do not affect coverage).
+//
+// `Int`/`Char` ride alongside `Str` through the whole checker — here, in
+// `Head`, and in `lower_pattern`/`head_of`/`specialize`/`useful` — as arity-0
+// value-equality heads over an OPEN domain, with no new completeness logic (ADR
+// 0026 §6). `complete_signature` returns `None` for anything that isn't a `Con`
+// sum, so a literal head never forms a complete signature: a `case` over
+// literals is exhaustive only with a trailing `_`, and a duplicate literal (or
+// any arm after a catch-all) is redundant. NOTE: `Int` and `Char` are finite in
+// principle (2⁶⁴ integers, 2³² scalars), but we treat them as open like Elm —
+// enumerating every value is never a practical route to exhaustiveness.
+#[derive(Clone)]
+enum UPat {
+    Wild,
+    Ctor(String, Vec<UPat>),
+    Str(String),
+    Int(i64),
+    Char(char),
+}
+
+fn lower_pattern(pat: &Pattern) -> UPat {
+    match pat {
+        Pattern::Wildcard | Pattern::Var(_) => UPat::Wild,
+        Pattern::Str(s) => UPat::Str(s.clone()),
+        Pattern::Int(n) => UPat::Int(*n),
+        Pattern::Char(c) => UPat::Char(*c),
+        Pattern::Ctor(name, subs) => UPat::Ctor(
+            name.clone(),
+            subs.iter().map(|s| lower_pattern(&s.0)).collect(),
+        ),
+        // List patterns lower to the synthetic `[]`/`::` constructors, so the
+        // Maranget checker treats `List` as an ordinary two-constructor sum:
+        // a `case` is exhaustive exactly when it covers both, and a second `[]`
+        // (or an arm after a catch-all) is redundant. No list-specific code in
+        // the algorithm itself — see `prelude::sum_type_constructors`.
+        Pattern::Nil => UPat::Ctor(crate::prelude::NIL.to_string(), vec![]),
+        Pattern::Cons(head, tail) => UPat::Ctor(
+            crate::prelude::CONS.to_string(),
+            vec![lower_pattern(&head.0), lower_pattern(&tail.0)],
+        ),
+        // A tuple lowers to a single synthetic constructor `TUPLE_n` over its
+        // sub-patterns — the same trick that turns `List` into the `[]`/`::`
+        // sum, but with exactly one constructor. Its coverage therefore depends
+        // solely on its elements' coverage, so a tuple `case` needs no catch-all
+        // when the element patterns are exhaustive. No new usefulness logic — the
+        // three `List`-style touch-points (`lower_pattern` here,
+        // `complete_signature`, `constructor_arg_types`) carry it (ADR 0027 §5).
+        Pattern::Tuple(subs) => UPat::Ctor(
+            tuple_ctor_name(subs.len()),
+            subs.iter().map(|s| lower_pattern(&s.0)).collect(),
+        ),
+    }
+}
+
+/// The synthetic single-constructor name a tuple of `arity` elements lowers to,
+/// keyed by arity so a 2-tuple, a 3-tuple, and unit never collide.
+fn tuple_ctor_name(arity: usize) -> String {
+    format!("TUPLE_{arity}")
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Head {
+    Ctor(String, usize),
+    Str(String),
+    Int(i64),
+    Char(char),
+}
+
+fn head_of(pat: &UPat) -> Option<Head> {
+    match pat {
+        UPat::Wild => None,
+        UPat::Ctor(name, subs) => Some(Head::Ctor(name.clone(), subs.len())),
+        UPat::Str(s) => Some(Head::Str(s.clone())),
+        UPat::Int(n) => Some(Head::Int(*n)),
+        UPat::Char(c) => Some(Head::Char(*c)),
+    }
+}
+
+/// Maranget's S(head, matrix): keep only rows whose first pattern can match
+/// `head`, replacing that column with the constructor's sub-patterns (a
+/// wildcard expands to `arity` wildcards). Narrows the problem to "given the
+/// scrutinee is `head`, what remains?".
+fn specialize(matrix: &[Vec<UPat>], head: &Head) -> Vec<Vec<UPat>> {
+    let arity = match head {
+        Head::Ctor(_, n) => *n,
+        Head::Str(_) | Head::Int(_) | Head::Char(_) => 0,
+    };
+    let mut out = Vec::new();
+    for row in matrix {
+        let (first, rest) = row.split_first().expect("non-empty row");
+        match first {
+            UPat::Wild => {
+                let mut new_row = vec![UPat::Wild; arity];
+                new_row.extend_from_slice(rest);
+                out.push(new_row);
+            }
+            UPat::Ctor(name, subs) => {
+                if let Head::Ctor(hname, _) = head {
+                    if name == hname {
+                        let mut new_row = subs.clone();
+                        new_row.extend_from_slice(rest);
+                        out.push(new_row);
+                    }
+                }
+            }
+            UPat::Str(s) => {
+                if let Head::Str(hs) = head {
+                    if s == hs {
+                        out.push(rest.to_vec());
+                    }
+                }
+            }
+            UPat::Int(n) => {
+                if let Head::Int(hn) = head {
+                    if n == hn {
+                        out.push(rest.to_vec());
+                    }
+                }
+            }
+            UPat::Char(c) => {
+                if let Head::Char(hc) = head {
+                    if c == hc {
+                        out.push(rest.to_vec());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Maranget's D(matrix): the rows that match values whose first column is not
+/// any listed constructor — i.e. rows starting with a wildcard, first column
+/// dropped. Used when the columns's head constructors are not a complete set.
+fn default_matrix(matrix: &[Vec<UPat>]) -> Vec<Vec<UPat>> {
+    matrix
+        .iter()
+        .filter(|row| matches!(row[0], UPat::Wild))
+        .map(|row| row[1..].to_vec())
+        .collect()
+}
+
+/// The full set of constructors (name + arity) for a sum type, or `None` for
+/// a type with no finite constructor set (e.g. `String` — an infinite domain,
+/// so a wildcard column is never "complete" and a catch-all is mandatory).
+fn complete_signature(inf: &Infer, ty: &Type) -> Option<Vec<(String, usize)>> {
+    match inf.prune(ty) {
+        Type::Con(name, _) => inf.sum_type_constructors(&name),
+        // A tuple's "complete" signature is its single synthetic constructor, so
+        // once that one constructor appears in a wildcard column the column is
+        // complete and coverage falls through to the elements (ADR 0027 §5).
+        Type::Tuple(elems) => Some(vec![(tuple_ctor_name(elems.len()), elems.len())]),
+        _ => None,
+    }
+}
+
+fn constructor_arg_types(inf: &mut Infer, ctor: &str, ty: &Type) -> Vec<Type> {
+    // The synthetic tuple constructor's argument types are just the tuple's
+    // element types, read straight off the scrutinee — no scheme to instantiate
+    // (there is no real constructor), so `useful` recurses into the element
+    // columns with the correct per-column types (ADR 0027 §5).
+    if let Type::Tuple(elems) = inf.prune(ty) {
+        return elems.iter().map(|e| inf.apply(e)).collect();
+    }
+    let scheme = inf.constructor_scheme(ctor).expect("known constructor");
+    let instantiated = inf.instantiate(&scheme);
+    let (args, result) = uncurry(&instantiated);
+    let _ = inf.unify(&result, ty, &(0..0));
+    args.iter().map(|a| inf.apply(a)).collect()
+}
+
+/// Is `vector` useful against `matrix` — does some value match `vector` but no
+/// row of `matrix`? Recurses column by column. For a wildcard column whose
+/// matrix heads already cover the type's complete constructor set, it must
+/// prove usefulness under *some* constructor (splitting the wildcard); an
+/// incomplete set means a wildcard value escapes, so it recurses on the default
+/// matrix. `col_types` tracks each column's type to look up constructor sets.
+fn useful(inf: &mut Infer, matrix: &[Vec<UPat>], vector: &[UPat], col_types: &[Type]) -> bool {
+    if vector.is_empty() {
+        return matrix.is_empty();
+    }
+    let (first, rest) = vector.split_first().unwrap();
+    let (col_ty, rest_types) = col_types.split_first().unwrap();
+    match first {
+        UPat::Ctor(name, subs) => {
+            let head = Head::Ctor(name.clone(), subs.len());
+            let arg_types = constructor_arg_types(inf, name, col_ty);
+            let mut new_vector = subs.clone();
+            new_vector.extend_from_slice(rest);
+            let mut new_types = arg_types;
+            new_types.extend_from_slice(rest_types);
+            useful(inf, &specialize(matrix, &head), &new_vector, &new_types)
+        }
+        UPat::Str(s) => {
+            let head = Head::Str(s.clone());
+            useful(inf, &specialize(matrix, &head), rest, rest_types)
+        }
+        UPat::Int(n) => {
+            let head = Head::Int(*n);
+            useful(inf, &specialize(matrix, &head), rest, rest_types)
+        }
+        UPat::Char(c) => {
+            let head = Head::Char(*c);
+            useful(inf, &specialize(matrix, &head), rest, rest_types)
+        }
+        UPat::Wild => {
+            let heads: Vec<Head> = matrix.iter().filter_map(|row| head_of(&row[0])).collect();
+            let signature = complete_signature(inf, col_ty);
+            let complete = match &signature {
+                Some(ctors) => ctors.iter().all(|(name, arity)| {
+                    heads.iter().any(|h| *h == Head::Ctor(name.clone(), *arity))
+                }),
+                None => false,
+            };
+            if complete {
+                let ctors = signature.unwrap();
+                for (name, arity) in ctors {
+                    let head = Head::Ctor(name.clone(), arity);
+                    let arg_types = constructor_arg_types(inf, &name, col_ty);
+                    let mut new_vector = vec![UPat::Wild; arity];
+                    new_vector.extend_from_slice(rest);
+                    let mut new_types = arg_types;
+                    new_types.extend_from_slice(rest_types);
+                    if useful(inf, &specialize(matrix, &head), &new_vector, &new_types) {
+                        return true;
+                    }
+                }
+                false
+            } else {
+                useful(inf, &default_matrix(matrix), rest, rest_types)
+            }
+        }
+    }
+}
+
+/// Reject a `case` that is redundant or non-exhaustive. Arms are added to the
+/// matrix one at a time: an arm that is not useful against the arms above it is
+/// redundant. After all arms, a still-useful wildcard means some value is
+/// unmatched — non-exhaustive, reported with the missing constructors.
+fn check_exhaustive(
+    inf: &mut Infer,
+    scrutinee: &Type,
+    arms: &[Arm],
+    span: &Span,
+) -> Result<(), TypeError> {
+    let col_types = vec![inf.apply(scrutinee)];
+    let mut matrix: Vec<Vec<UPat>> = Vec::new();
+    for arm in arms {
+        let row = vec![lower_pattern(&arm.pat.0)];
+        if !useful(inf, &matrix, &row, &col_types) {
+            return Err(TypeError::new(
+                "redundant pattern: this arm can never match",
+                arm.pat.1.clone(),
+            ));
+        }
+        matrix.push(row);
+    }
+
+    let wildcard = vec![UPat::Wild];
+    if useful(inf, &matrix, &wildcard, &col_types) {
+        let missing = missing_constructors(inf, scrutinee, &matrix);
+        return Err(TypeError::new(
+            format!("non-exhaustive `case`: {missing}"),
+            span.clone(),
+        ));
+    }
+    Ok(())
+}
+
+fn missing_constructors(inf: &Infer, scrutinee: &Type, matrix: &[Vec<UPat>]) -> String {
+    match complete_signature(inf, scrutinee) {
+        Some(ctors) => {
+            let covered: Vec<Head> = matrix.iter().filter_map(|row| head_of(&row[0])).collect();
+            let missing: Vec<String> = ctors
+                .iter()
+                .filter(|(name, arity)| {
+                    !covered
+                        .iter()
+                        .any(|h| *h == Head::Ctor(name.clone(), *arity))
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            if missing.is_empty() {
+                "some values are not matched".to_string()
+            } else {
+                format!("missing constructor(s): {}", missing.join(", "))
+            }
+        }
+        None => "add a `_` catch-all arm to cover all remaining values".to_string(),
+    }
+}
+
+fn decl_def_sites(decls: &[Decl]) -> HashMap<String, DefSite> {
+    decls
+        .iter()
+        .map(|d| {
+            (
+                d.name.clone(),
+                DefSite {
+                    span: d.span.clone(),
+                    module: None,
+                },
+            )
+        })
+        .collect()
+}
+
+fn pattern_def_sites(pat: &Spanned<Pattern>) -> HashMap<String, DefSite> {
+    let mut out = HashMap::new();
+    collect_pattern_binders(pat, &mut out);
+    out
+}
+
+fn collect_pattern_binders(pat: &Spanned<Pattern>, out: &mut HashMap<String, DefSite>) {
+    match &pat.0 {
+        Pattern::Var(name) => {
+            out.insert(
+                name.clone(),
+                DefSite {
+                    span: pat.1.clone(),
+                    module: None,
+                },
+            );
+        }
+        Pattern::Ctor(_, subs) => {
+            for sub in subs {
+                collect_pattern_binders(sub, out);
+            }
+        }
+        Pattern::Cons(head, tail) => {
+            collect_pattern_binders(head, out);
+            collect_pattern_binders(tail, out);
+        }
+        Pattern::Tuple(subs) => {
+            for sub in subs {
+                collect_pattern_binders(sub, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Turn a decl (name, params, body) into an expression type: params become
+/// nested lambdas.
+fn decl_as_lambda(decl: &Decl) -> Spanned<Expr> {
+    let mut e = decl.body.clone();
+    for p in decl.params.iter().rev() {
+        let span = decl.span.clone();
+        e = Spanned(
+            Expr::Lam {
+                param: p.clone(),
+                body: Box::new(e),
+            },
+            span,
+        );
+    }
+    e
+}
+
+/// Infer the declarations by dependency analysis: group them into strongly
+/// connected components and infer each group together (ADR 0011). Every member
+/// of a group is bound to a fresh monomorphic variable before any body is
+/// inferred, so a group's members may reference one another in any direction —
+/// this is what makes mutual recursion type-check, and a singleton
+/// self-referential group is the self-recursion case. The whole group is
+/// generalized only once it is solved, so members are monomorphic *within* the
+/// group and polymorphic outside it. Groups come out in dependency order, so a
+/// group sees the generalized schemes of the groups it depends on and source
+/// order no longer matters for forward references.
+fn infer_decls(
+    inf: &mut Infer,
+    env: &TyEnv,
+    decls: &[Decl],
+    top_level: bool,
+) -> Result<TyEnv, TypeError> {
+    let mut cur = env.clone();
+    for group in crate::depgraph::scc_order(decls) {
+        cur = infer_group(inf, &cur, decls, &group, top_level)?;
+    }
+    Ok(cur)
+}
+
+/// Infer one dependency SCC. Every member is first bound to a fresh
+/// monomorphic variable, so members may call one another (or themselves) while
+/// their bodies are checked; a member's signature, if any, is unified against
+/// its inferred body in the same pass. Generalization happens against the
+/// *pre-group* `env`, not the body env that carries the members' monomorphic
+/// vars — generalizing against the body env would wrongly treat a group-mate's
+/// still-unresolved var as generalizable and hand a member a falsely
+/// polymorphic type. So members are monomorphic within the group and
+/// polymorphic only outside it.
+fn infer_group(
+    inf: &mut Infer,
+    env: &TyEnv,
+    decls: &[Decl],
+    group: &[usize],
+    top_level: bool,
+) -> Result<TyEnv, TypeError> {
+    let self_tys: Vec<Type> = group.iter().map(|_| inf.fresh()).collect();
+    let mut body_env = env.clone();
+    for (&idx, self_ty) in group.iter().zip(self_tys.iter()) {
+        body_env = body_env.insert(decls[idx].name.clone(), mono(self_ty.clone()));
+    }
+
+    let mut inferred_tys: Vec<Type> = Vec::with_capacity(group.len());
+    for (&idx, self_ty) in group.iter().zip(self_tys.iter()) {
+        let decl = &decls[idx];
+        let lam = decl_as_lambda(decl);
+        let inferred = infer_expr(inf, &body_env, &lam)?;
+        inf.unify(self_ty, &inferred, &decl.span)?;
+        if inf.recording() {
+            let name_span = decl.span.start..decl.span.start + decl.name.len();
+            inf.rec_type(&name_span, &inferred);
+        }
+        if let Some(sig) = &decl.sig {
+            inf.check_signature_generality(&inferred, &sig.0, env, &sig.1)?;
+            let sig_inst = inf.instantiate_signature(&sig.0);
+            inf.unify(&inferred, &sig_inst, &sig.1)?;
+        }
+        inferred_tys.push(inferred);
+    }
+
+    if top_level {
+        for inferred in &inferred_tys {
+            inf.default_number_vars(inferred);
+        }
+    }
+
+    let mut cur = env.clone();
+    for (&idx, inferred) in group.iter().zip(inferred_tys.iter()) {
+        let scheme = inf.generalize(env, inferred);
+        cur = cur.insert(decls[idx].name.clone(), scheme);
+    }
+    Ok(cur)
+}
+
+/// Arity of every built-in type constructor: the ground types (arity 0), the
+/// glyph/scroll types, and the generic `List`/`Maybe` (arity 1). User `type`
+/// decls extend this set; every type reference in a signature or variant field
+/// must resolve against one or the other. `Entry` is a built-in type now that a
+/// `Filesystem` glyph's `entry` field is matchable (ADR 0017/0019), so a
+/// signature or pattern may name it. `Policy`, `OnExhaust`, and `Contents` are
+/// first-class for the same reason (ADR 0031 §7): a library can compute a policy
+/// or a group tree behind a signature and hand it to `scroll`.
+fn builtin_type_arity(name: &str) -> Option<usize> {
+    match name {
+        "String" | "Char" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
+        | "Glyph" | "Entry" | "Scroll" | "Policy" | "OnExhaust" | "Contents" | "Bool" | "Int"
+        | "Float" | "Order" => Some(0),
+        "List" | "Maybe" => Some(1),
+        _ => None,
+    }
+}
+
+/// Assign each type parameter a distinct scheme variable id, drawn from the top
+/// of the `u32` space so it never collides with the fresh ids inference mints
+/// upward from 0 (the same discipline the prelude's sentinel ids follow). All
+/// occurrences of one param name in the declaration share an id.
+fn param_var_ids(params: &[String]) -> HashMap<String, u32> {
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.clone(), u32::MAX - i as u32))
+        .collect()
+}
+
+/// Rewrite a signature/variant `Type`, replacing each `Rigid(param)` bound by
+/// this declaration with its scheme variable, so the result can be quantified
+/// into a `Scheme`. Rigids not among the params are left intact (they are just
+/// nullary type references, validated separately).
+fn type_with_param_vars(ty: &Type, param_vars: &HashMap<String, u32>) -> Type {
+    match ty {
+        Type::Rigid(name) => match param_vars.get(name) {
+            Some(id) => Type::Var(*id, Constraint::None),
+            None => Type::Rigid(name.clone()),
+        },
+        Type::Con(name, args) => Type::Con(
+            name.clone(),
+            args.iter()
+                .map(|a| type_with_param_vars(a, param_vars))
+                .collect(),
+        ),
+        Type::Fun(a, b) => Type::Fun(
+            Box::new(type_with_param_vars(a, param_vars)),
+            Box::new(type_with_param_vars(b, param_vars)),
+        ),
+        Type::Record(fs, row) => Type::Record(
+            fs.iter()
+                .map(|(k, v)| (k.clone(), type_with_param_vars(v, param_vars)))
+                .collect(),
+            row.clone(),
+        ),
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|e| type_with_param_vars(e, param_vars))
+                .collect(),
+        ),
+        Type::Var(v, c) => Type::Var(*v, *c),
+    }
+}
+
+/// Check that every type constructor named in `ty` is known (built-in or a
+/// user type) with a matching arity, and that every `Rigid` is a declared type
+/// parameter. `type_arities` is the full set after collecting all user types,
+/// so decls may reference each other in any order. `bound` is the set of type
+/// parameter names in scope (a variant field or a signature has none beyond its
+/// own declaration's params).
+fn validate_type_refs(
+    ty: &Spanned<Type>,
+    type_arities: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+) -> Result<(), TypeError> {
+    validate_type_refs_inner(&ty.0, &ty.1, type_arities, bound)
+}
+
+fn validate_type_refs_inner(
+    ty: &Type,
+    span: &Span,
+    type_arities: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+) -> Result<(), TypeError> {
+    match ty {
+        Type::Con(name, args) => match type_arities.get(name) {
+            Some(arity) if *arity == args.len() => {
+                for a in args {
+                    validate_type_refs_inner(a, span, type_arities, bound)?;
+                }
+                Ok(())
+            }
+            Some(arity) => Err(TypeError::new(
+                format!(
+                    "type constructor `{name}` expects {arity} argument(s), found {}",
+                    args.len()
+                ),
+                span.clone(),
+            )),
+            None => {
+                let mut msg = format!("unknown type constructor `{name}`");
+                if let Some(hint) = did_you_mean(name, type_arities.keys().cloned()) {
+                    msg.push_str(&format!(" — did you mean `{hint}`?"));
+                }
+                if name == "Str" {
+                    msg.push_str(" (`Str` was removed; the type is now `String`)");
+                }
+                if name == "Glyphs" {
+                    msg.push_str(" (`Glyphs` was removed; the type is now `List Glyph`)");
+                }
+                Err(TypeError::new(msg, span.clone()))
+            }
+        },
+        Type::Fun(a, b) => {
+            validate_type_refs_inner(a, span, type_arities, bound)?;
+            validate_type_refs_inner(b, span, type_arities, bound)
+        }
+        Type::Record(fs, _) => {
+            for v in fs.values() {
+                validate_type_refs_inner(v, span, type_arities, bound)?;
+            }
+            Ok(())
+        }
+        Type::Tuple(elems) => {
+            for e in elems {
+                validate_type_refs_inner(e, span, type_arities, bound)?;
+            }
+            Ok(())
+        }
+        Type::Rigid(name) if !bound.contains(name) => Err(TypeError::new(
+            format!("unbound type variable `{name}`"),
+            span.clone(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Register the module's user `type` declarations, before any value decl is
+/// inferred. Returns the value type env extended with each variant's
+/// value-constructor scheme.
+///
+/// Two passes, because a variant field may name any type in the module —
+/// including the type being declared (`Tree`) or one declared later. The first
+/// loop collects every user type's arity (and rejects a name that duplicates
+/// another decl or a built-in), so the full arity set exists before anything is
+/// validated. The second loop then, per variant: validates its field types
+/// against that complete set (`validate_type_refs`), rejects a constructor name
+/// that duplicates another or shadows a built-in constructor, and builds the
+/// constructor scheme (`f1 -> … -> Name p1 p2`, quantified over the params).
+/// The order of decls in the source therefore never matters.
+///
+/// `imported_types` folds the arities of types this module imported (their
+/// names and parameter counts, harvested by the resolver) into the arity set,
+/// so a signature may reference an imported `type` alongside the module's own
+/// and the built-ins.
+fn register_type_decls(
+    inf: &mut Infer,
+    env: &TyEnv,
+    type_decls: &[TypeDecl],
+    imported_types: &HashMap<String, usize>,
+) -> Result<TyEnv, TypeError> {
+    let mut type_arities: HashMap<String, usize> = HashMap::new();
+    for td in type_decls {
+        if builtin_type_arity(&td.name).is_some() {
+            return Err(TypeError::new(
+                format!("type `{}` redefines a built-in type", td.name),
+                td.span.clone(),
+            ));
+        }
+        if type_arities
+            .insert(td.name.clone(), td.params.len())
+            .is_some()
+        {
+            return Err(TypeError::new(
+                format!("duplicate type declaration `{}`", td.name),
+                td.span.clone(),
+            ));
+        }
+    }
+    let mut all_arities = type_arities.clone();
+    for (name, arity) in imported_types {
+        all_arities.entry(name.clone()).or_insert(*arity);
+    }
+    for (name, arity) in builtin_types() {
+        all_arities.entry(name).or_insert(arity);
+    }
+
+    let mut out = env.clone();
+    let mut ctor_names: HashSet<String> = HashSet::new();
+    for td in type_decls {
+        let param_vars = param_var_ids(&td.params);
+        let bound: HashSet<String> = td.params.iter().cloned().collect();
+        let result_ty = Type::Con(
+            td.name.clone(),
+            td.params
+                .iter()
+                .map(|p| Type::Var(param_vars[p], Constraint::None))
+                .collect(),
+        );
+        let quantified: Vec<(u32, Constraint)> = td
+            .params
+            .iter()
+            .map(|p| (param_vars[p], Constraint::None))
+            .collect();
+        let members: Vec<(String, usize)> = td
+            .variants
+            .iter()
+            .map(|v| (v.name.clone(), v.fields.len()))
+            .collect();
+        inf.user_sum_ctors.insert(td.name.clone(), members);
+
+        for variant in &td.variants {
+            if !ctor_names.insert(variant.name.clone())
+                || crate::prelude::constructor_scheme(&variant.name).is_some()
+            {
+                return Err(TypeError::new(
+                    format!("duplicate constructor `{}`", variant.name),
+                    variant.span.clone(),
+                ));
+            }
+            for field in &variant.fields {
+                validate_type_refs(field, &all_arities, &bound)?;
+            }
+            let mut ctor_ty = result_ty.clone();
+            for field in variant.fields.iter().rev() {
+                let field_ty = type_with_param_vars(&field.0, &param_vars);
+                ctor_ty = Type::Fun(Box::new(field_ty), Box::new(ctor_ty));
+            }
+            let scheme = Scheme {
+                vars: quantified.clone(),
+                row_vars: vec![],
+                ty: ctor_ty,
+            };
+            inf.user_ctor_schemes
+                .insert(variant.name.clone(), scheme.clone());
+            out = out.insert(variant.name.clone(), scheme);
+        }
+    }
+    Ok(out)
+}
+
+fn builtin_types() -> Vec<(String, usize)> {
+    [
+        "String",
+        "Char",
+        "AptPackage",
+        "SystemdService",
+        "Filesystem",
+        "LineInFile",
+        "Glyph",
+        "Entry",
+        "Scroll",
+        "Policy",
+        "OnExhaust",
+        "Contents",
+        "Bool",
+        "Int",
+        "Float",
+        "Order",
+    ]
+    .iter()
+    .map(|n| (n.to_string(), 0usize))
+    .chain([("List".to_string(), 1usize), ("Maybe".to_string(), 1usize)])
+    .collect()
+}
+
+/// Validate every type constructor referenced in a value decl's signature,
+/// now that the full user-type arity set is known — the built-ins, this
+/// module's own `type` decls, and `imported_types` (imported type names and
+/// their arities), so a signature may name an imported type.
+fn validate_signature_refs(
+    type_decls: &[TypeDecl],
+    decls: &[Decl],
+    imported_types: &HashMap<String, usize>,
+) -> Result<(), TypeError> {
+    let mut arities: HashMap<String, usize> = builtin_types().into_iter().collect();
+    for (name, arity) in imported_types {
+        arities.insert(name.clone(), *arity);
+    }
+    for td in type_decls {
+        arities.insert(td.name.clone(), td.params.len());
+    }
+    for decl in decls {
+        if let Some(sig) = &decl.sig {
+            validate_type_refs(sig, &arities, &signature_rigids(&sig.0))?;
+        }
+    }
+    Ok(())
+}
+
+/// The `Rigid` names a signature is allowed to mention: any lowercase type
+/// variable it uses. A signature introduces its own type variables implicitly
+/// (`id : a -> a`), so they are all in scope for reference validation.
+fn signature_rigids(ty: &Type) -> HashSet<String> {
+    let mut acc = HashSet::new();
+    collect_rigids(ty, &mut acc);
+    acc
+}
+
+fn collect_rigids(ty: &Type, acc: &mut HashSet<String>) {
+    match ty {
+        Type::Rigid(name) => {
+            acc.insert(name.clone());
+        }
+        Type::Con(_, args) => {
+            for a in args {
+                collect_rigids(a, acc);
+            }
+        }
+        Type::Fun(a, b) => {
+            collect_rigids(a, acc);
+            collect_rigids(b, acc);
+        }
+        Type::Record(fs, _) => {
+            for v in fs.values() {
+                collect_rigids(v, acc);
+            }
+        }
+        Type::Tuple(elems) => {
+            for e in elems {
+                collect_rigids(e, acc);
+            }
+        }
+        Type::Var(_, _) => {}
+    }
+}
+
+/// Type-check a library module against a base env seeded with the interfaces
+/// of the modules it imports. Returns the module's full final type env, from
+/// which the resolver harvests the schemes of its exposed decls. No `main`
+/// requirement: a library never has one (that is enforced elsewhere).
+pub fn check_library(
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+    imported_ctors: &ImportedConstructors,
+) -> Result<TyEnv, TypeError> {
+    let mut inf = Infer::default();
+    inf.seed_imported_constructors(imported_ctors);
+    let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
+    validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
+    infer_decls(&mut inf, &env, &m.decls, true)
+}
+
+/// Type-check an entry module against a base env seeded with its imports,
+/// enforcing that `main : List Scroll` is present. Returns the final env plus
+/// `main`'s normalized type.
+pub fn check_entry(
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+    imported_ctors: &ImportedConstructors,
+) -> Result<(TyEnv, Type), TypeError> {
+    let mut inf = Infer::default();
+    inf.seed_imported_constructors(imported_ctors);
+    let env = register_type_decls(&mut inf, &base, &m.type_decls, imported_types)?;
+    validate_signature_refs(&m.type_decls, &m.decls, imported_types)?;
+    let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
+    finish_main(&mut inf, &final_env, main_decl_span(m))
+}
+
+/// Public entry: type-check a single-module program, returning the type env (so
+/// `main`'s type can be reported) or the first error.
+pub fn check_module(m: &Module) -> Result<(TyEnv, Type), TypeError> {
+    let mut inf = Infer::default();
+    let env = crate::prelude::ty_env();
+    let no_imports = HashMap::new();
+    let env = register_type_decls(&mut inf, &env, &m.type_decls, &no_imports)?;
+    validate_signature_refs(&m.type_decls, &m.decls, &no_imports)?;
+    let final_env = infer_decls(&mut inf, &env, &m.decls, true)?;
+    finish_main(&mut inf, &final_env, main_decl_span(m))
+}
+
+/// The LSP entry point: run inference with a recorder and return the finished
+/// `QueryIndex` alongside any error. The load-bearing step is the closing loop.
+/// Types are recorded *as inference runs*, when they may still contain
+/// unification variables that later unify to something concrete; recording the
+/// final type at each span requires running `apply` over every staged type
+/// **after** the whole module has solved. Doing it here, once the substitution
+/// is complete, is what makes hover report `Int` rather than an unresolved `t7`.
+pub fn analyze_module(
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+    imported_ctors: &ImportedConstructors,
+    imported_defs: HashMap<String, DefSite>,
+    file_span: Span,
+) -> (Option<TypeError>, QueryIndex) {
+    let mut inf = Infer {
+        recorder: Some(Recorder::default()),
+        ..Infer::default()
+    };
+    inf.seed_imported_constructors(imported_ctors);
+
+    let error = run_recorded(&mut inf, m, base, imported_types, imported_defs, file_span);
+
+    let mut recorder = inf.recorder.take().expect("recorder present");
+    for (span, ty) in std::mem::take(&mut recorder.type_spans) {
+        recorder.index.types.push((span, inf.apply(&ty)));
+    }
+    (error, recorder.index)
+}
+
+fn run_recorded(
+    inf: &mut Infer,
+    m: &Module,
+    base: TyEnv,
+    imported_types: &HashMap<String, usize>,
+    imported_defs: HashMap<String, DefSite>,
+    file_span: Span,
+) -> Option<TypeError> {
+    let env = match register_type_decls(inf, &base, &m.type_decls, imported_types) {
+        Ok(env) => env,
+        Err(e) => return Some(e),
+    };
+    if let Err(e) = validate_signature_refs(&m.type_decls, &m.decls, imported_types) {
+        return Some(e);
+    }
+    let mut top_defs = imported_defs;
+    top_defs.extend(decl_def_sites(&m.decls));
+    let top_scope = inf
+        .recorder
+        .as_mut()
+        .map(|r| r.open_scope(file_span, &base, top_defs));
+    let result = infer_decls(inf, &env, &m.decls, true);
+    match result {
+        Ok(final_env) => {
+            if let (Some(r), Some(id)) = (&mut inf.recorder, top_scope) {
+                let names: Vec<(String, Scheme)> = final_env
+                    .entries()
+                    .map(|(n, s)| (n.clone(), s.clone()))
+                    .collect();
+                r.index.scope_table.insert(id, names);
+            }
+            None
+        }
+        Err(e) => Some(e),
+    }
+}
+
+fn finish_main(
+    inf: &mut Infer,
+    final_env: &TyEnv,
+    main_span: Span,
+) -> Result<(TyEnv, Type), TypeError> {
+    let main = final_env.get("main").ok_or_else(|| {
+        TypeError::new("module has no `main` declaration", main_span.clone())
+            .note("add `main = [ ... ]` producing the scroll list")
+    })?;
+    let main_ty = inf.instantiate(main);
+    let main_ty = inf.apply(&main_ty);
+    let scroll_list = Type::Con("List".to_string(), vec![con("Scroll")]);
+    // Accept `List Scroll`, and also `List t` with an unresolved element (an
+    // empty `main = []` leaves the element a free var): both normalize to
+    // `List Scroll` for display. Any other shape is rejected.
+    let normalized = match &main_ty {
+        Type::Con(n, args) if n == "List" && args.len() == 1 => match &args[0] {
+            Type::Con(e, ea) if ea.is_empty() && e == "Scroll" => Some(scroll_list),
+            Type::Var(_, _) => Some(scroll_list),
+            _ => None,
+        },
+        _ => None,
+    };
+    match normalized {
+        Some(ty) => Ok((final_env.clone(), ty)),
+        None => Err(TypeError::new(
+            format!(
+                "`main` must be `List Scroll` (a list of scrolls), but is `{}`",
+                render_type(&main_ty)
+            ),
+            main_span,
+        )),
+    }
+}
+
+// The `List Scroll` mismatch underlines the `main` binding; the no-`main` error
+// falls back to `0..0` (file start) precisely because there is no decl to point
+// at — the same fallback `finish_main` receives, so both land sensibly.
+fn main_decl_span(m: &Module) -> Span {
+    m.decls
+        .iter()
+        .find(|d| d.name == "main")
+        .map(|d| d.span.clone())
+        .unwrap_or(0..0)
+}

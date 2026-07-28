@@ -1,0 +1,9 @@
+module Roles exposing (Role(..), glyphsFor)
+
+type Role = Web | Db
+
+glyphsFor : Role -> List Glyph
+glyphsFor role =
+  case role of
+    Web -> [ aptPackage { name = "nginx" } ]
+    Db  -> [ aptPackage { name = "postgresql" } ]

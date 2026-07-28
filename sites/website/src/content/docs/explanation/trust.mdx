@@ -1,0 +1,64 @@
+---
+title: Trust model
+description: What the agent verifies today (nothing cryptographic) and the signing / trust design that is roadmap, not built.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+<Aside type="caution" title="Roadmap — not implemented">
+  Nothing on this page about signing, keys, or trust is built yet.
+  `golemctl` does not sign manifests and `golemd` does not verify a signer.
+  This page records the intended design so it can be reviewed ahead of the
+  implementation, and states plainly what protects a node in the meantime.
+</Aside>
+
+## What the agent checks today
+
+On `POST /manifest`, `golemd`:
+
+1. Decodes the manifest bytes and checks `format_version`.
+2. Selects the scroll whose name matches its `--host`.
+3. Reconciles toward that scroll.
+
+There is **no signature check and no authentication**. Any client that can
+reach the listener can apply a manifest. The only thing protecting a node is
+where you bind the listener.
+
+## What protects a node in the meantime
+
+- **The listener defaults to `127.0.0.1:7474`.** Nothing off-box reaches it
+  unless you bind it wider or forward to it.
+- **Run it behind a tunnel or an SSH forward.** Until signing lands,
+  transport is the whole boundary — put the agent somewhere only you can
+  reach.
+- **Content addressing is not authentication.** A content id proves *what*
+  a scroll is, not *who* sent it. It makes tampering detectable in the sense
+  that a changed scroll has a changed id, but it does not establish trust.
+
+## The intended design (roadmap)
+
+The plan of record is manifest signing with an operator key the agent
+trusts:
+
+- The operator holds an **ed25519 signing key**; the agent holds the
+  corresponding **public key** (a small allowlist).
+- `golemctl` signs the manifest bytes; `golemd` verifies the signature
+  against its trusted keys before applying, and rejects an unsigned or
+  wrongly-signed manifest.
+- The trust boundary becomes the signing key, not the network — an attacker
+  on the wire can push nothing the agent will apply; an attacker who steals
+  the signing key has the same blast radius as stealing root SSH.
+
+None of this exists yet. When it lands, it will be documented here as
+implemented, with the exact key locations and CLI commands.
+
+## Threat model, honestly stated
+
+Today, an attacker who can reach the listener can apply any manifest. That
+is why the listener is localhost by default and why a real deployment must
+put the agent behind a tunnel or SSH forward. Golem does not yet defend the
+apply path cryptographically; do not expose `golemd` on an untrusted
+network.
+
+See [Status](/reference/status/) for the full implemented-vs-roadmap
+breakdown.

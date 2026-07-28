@@ -1,0 +1,79 @@
+---
+title: Install
+description: Build emetc, golemctl, and golemd; run the agent on a node.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Three binaries. `emetc` compiles Emet on your laptop; `golemctl` ships the
+result; `golemd` runs on each node.
+
+<Aside type="caution" title="What you need">
+  - A Rust toolchain (the repo pins it via `devenv` / `direnv`; see
+    `emet/CLAUDE.md`).
+  - A Debian box (or container) for the agent when you want real host
+    effects. The default `fake` reconciler needs no box.
+</Aside>
+
+## 1 — Build the binaries
+
+From a checkout of the golem workspace:
+
+```bash
+git clone https://codeberg.org/dull/golem
+cd golem
+cargo build --release -p emet -p golemctl -p golemd
+```
+
+That produces:
+
+- `emetc` — the Emet compiler (crate `emet`).
+- `golemctl` — the operator CLI.
+- `golemd` — the per-host agent.
+
+<Aside type="note" title="emetc on PATH">
+  `golemctl apply` shells out to `emetc` when you hand it a `.emet` file, so
+  `emetc` must be on `PATH`. Working in-tree before installing, use
+  `cargo run -p emet -- build …` and `cargo run -p golemctl -- …` directly.
+</Aside>
+
+## 2 — Run the agent
+
+`golemd` needs a `--host` name — that is how it selects its scroll from a
+fleet manifest. For a first run, use the default `fake` reconciler, which
+records what it would do without touching the box:
+
+```bash
+golemd --host web --reconciler fake --listen 127.0.0.1:7474
+```
+
+<Steps>
+1. Confirm it is up:
+
+   ```bash
+   curl -s http://127.0.0.1:7474/status
+   # → {"host":"web","latest_revision":null}
+   ```
+
+2. When you want real effects on a Debian box, switch the reconciler:
+
+   ```bash
+   golemd --host web --reconciler host --listen 127.0.0.1:7474
+   ```
+</Steps>
+
+The agent keeps its journal in `--state-dir` (default `/var/lib/golem`,
+file `planroom.db`). See the [CLI reference](/reference/cli/) for every
+flag.
+
+<Aside type="caution" title="No authentication yet">
+  `golemd` does not verify who sent a manifest. Keep the listener on
+  `127.0.0.1` or behind an SSH forward until signing lands — see
+  [Trust model](/explanation/trust/).
+</Aside>
+
+## What's next
+
+Write your first Emet program and watch it compile to glyphs.
+
+**[The config](/getting-started/the-config/)**

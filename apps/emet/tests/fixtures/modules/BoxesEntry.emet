@@ -1,0 +1,15 @@
+module Main exposing (..)
+
+import Boxes exposing (Box(..), unbox)
+
+held : Box String
+held = Box "boxed.service"
+
+reunbox : Box a -> a
+reunbox b =
+  case b of
+    Box x -> x
+
+main : List Scroll
+main =
+  [ scroll { name = "boxed", glyphs = [ systemdService { unit = unbox held }, systemdService { unit = reunbox (Box "matched.service") } ] } ]

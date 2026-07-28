@@ -1,0 +1,269 @@
+---
+title: The prelude
+description: The built-in functions every Emet module starts with — Basics, String, Char, List, and Maybe — with exact signatures.
+---
+
+Every Emet module opens with these bindings already in scope; nothing imports
+them. They are Rust primitives, not library source: Emet has no user recursion,
+so the combinators that iterate a list or a string cannot be written in the
+language and are supplied here. Names carrying a `List.` / `Maybe.` /
+`String.` / `Char.` prefix are a dotted-name convention, not a module system —
+`List.map` is one identifier resolved by lookup.
+
+Signatures use Emet type syntax: `a`/`b` are type variables, `number` /
+`comparable` / `appendable` are the three bounded variables, and `->` is
+right-associative so `Int -> Int -> Int` is a two-argument function. The bounds,
+the infix operators, and the base types are defined in
+[Values and types](/reference/language/values-and-types/); this page lists the
+named functions and states each one's behavior. For the four glyph constructors
+(`aptPackage`, `file`, …) see [The four glyphs](/reference/primitives/).
+
+## Basics
+
+Numeric, comparison, and boolean functions Elm exposes without a module prefix,
+plus the constructors of the built-in sum types. The arithmetic and comparison
+**operators** (`+` `-` `*` `/` `//` `^` `<` `>` `<=` `>=` `==` `/=` `&&` `||`
+`++` `::`) desugar to primitives that have no callable name; reach them through
+the operator. The named functions below are callable directly.
+
+### Numeric
+
+| Signature | Behavior |
+| --- | --- |
+| `abs : number -> number` | absolute value |
+| `negate : number -> number` | arithmetic negation |
+| `clamp : number -> number -> number -> number` | `clamp lo hi x` confines `x` to `lo..=hi` |
+| `toFloat : Int -> Float` | widen an `Int` to `Float` |
+| `round : Float -> Int` | round to the nearest integer |
+| `floor : Float -> Int` | round toward negative infinity |
+| `ceiling : Float -> Int` | round toward positive infinity |
+| `truncate : Float -> Int` | round toward zero |
+| `modBy : Int -> Int -> Int` | `modBy m x` is `x` modulo `m`, sign of `m`; `modBy 0 _` is `0` |
+| `remainderBy : Int -> Int -> Int` | `remainderBy d x` is the remainder of `x / d`, sign of `x`; `remainderBy 0 _` is `0` |
+
+```emet
+clamp 0 255 300  -- 255
+modBy 3 10       -- 1
+```
+
+Integer division `//` and exponentiation `^` are operators backed by
+primitives without a callable name — see
+[Values and types](/reference/language/values-and-types/). Division, `modBy`,
+and `remainderBy` are total: a zero divisor yields `0` rather than trapping.
+
+### Comparison
+
+Operate on any `comparable` (`Int`, `Float`, `String`, `Char`, and orderings of
+them).
+
+| Signature | Behavior |
+| --- | --- |
+| `compare : comparable -> comparable -> Order` | `LT`, `EQ`, or `GT` |
+| `min : comparable -> comparable -> comparable` | the lesser of two |
+| `max : comparable -> comparable -> comparable` | the greater of two |
+
+The relational operators `<` `>` `<=` `>=` `==` `/=` yield `Bool` over the same
+`comparable` bound.
+
+### Boolean
+
+| Signature | Behavior |
+| --- | --- |
+| `not : Bool -> Bool` | logical negation |
+
+`&&` and `||` are the operators for conjunction and disjunction.
+
+### Constructors
+
+The built-in sum types are ordinary types defined by these constructors;
+they are in scope to build and to pattern-match.
+
+| Constructor | Type | Meaning |
+| --- | --- | --- |
+| `True` | `Bool` | boolean true |
+| `False` | `Bool` | boolean false |
+| `Just` | `a -> Maybe a` | a present value |
+| `Nothing` | `Maybe a` | an absent value |
+| `LT` | `Order` | less-than, from `compare` |
+| `EQ` | `Order` | equal |
+| `GT` | `Order` | greater-than |
+
+## String
+
+The Elm `elm/core` `String` surface: names, argument order, and total /
+clamping semantics all follow Elm. Every length, index, and slice bound is a
+**Unicode scalar** index (`String.length` counts scalars), never a byte or
+grapheme offset — a combining mark counts as its own scalar. No
+function traps: out-of-range counts clamp and empty inputs return an empty
+result or `[]`.
+
+### Building and converting
+
+| Signature | Behavior |
+| --- | --- |
+| `String.append : String -> String -> String` | concatenate two strings |
+| `String.concat : List String -> String` | concatenate a list of strings |
+| `String.join : String -> List String -> String` | `join sep parts` inserts `sep` between parts |
+| `String.split : String -> String -> List String` | `split sep s`; an empty `sep` splits into one string per scalar |
+| `String.words : String -> List String` | split on runs of whitespace, trimming ends |
+| `String.lines : String -> List String` | split on `\n`, `\r`, and `\r\n` line terminators |
+| `String.repeat : Int -> String -> String` | `repeat n s` is `s` concatenated `n` times |
+| `String.replace : String -> String -> String -> String` | `replace before after s` replaces every `before` |
+| `String.cons : Char -> String -> String` | prepend a `Char` |
+| `String.fromChar : Char -> String` | a one-character string |
+| `String.fromInt : Int -> String` | decimal rendering of an `Int` |
+| `String.fromFloat : Float -> String` | decimal rendering of a `Float` |
+| `String.toInt : String -> Maybe Int` | parse an `Int`, else `Nothing` |
+| `String.toFloat : String -> Maybe Float` | parse a `Float`, else `Nothing` |
+| `String.toList : String -> List Char` | the string's scalars, in order |
+| `String.fromList : List Char -> String` | assemble a string from scalars |
+| `String.uncons : String -> Maybe (Char, String)` | split off the first scalar: `Just (first, rest)`, or `Nothing` on `""` |
+
+```emet
+String.join ", " [ "a", "b", "c" ]  -- "a, b, c"
+String.toInt "42"                   -- Just 42
+```
+
+### Querying
+
+| Signature | Behavior |
+| --- | --- |
+| `String.length : String -> Int` | number of Unicode scalars |
+| `String.isEmpty : String -> Bool` | whether the string has no scalars |
+| `String.contains : String -> String -> Bool` | `contains needle s` |
+| `String.startsWith : String -> String -> Bool` | `startsWith prefix s` |
+| `String.endsWith : String -> String -> Bool` | `endsWith suffix s` |
+| `String.indexes : String -> String -> List Int` | scalar indices of every (possibly overlapping) match; empty needle → `[]` |
+| `String.indices : String -> String -> List Int` | alias of `String.indexes` |
+
+### Slicing
+
+Every count is a scalar count; a count under `1` yields the empty string (or,
+for `dropLeft` / `dropRight`, the whole string).
+
+| Signature | Behavior |
+| --- | --- |
+| `String.slice : Int -> Int -> String -> String` | `slice start end s`; negative indices count from the end, bounds clamp, crossed bounds → `""` |
+| `String.left : Int -> String -> String` | first `n` scalars |
+| `String.right : Int -> String -> String` | last `n` scalars |
+| `String.dropLeft : Int -> String -> String` | drop the first `n` scalars |
+| `String.dropRight : Int -> String -> String` | drop the last `n` scalars |
+
+```emet
+String.slice 1 (-1) "hello"  -- "ell"
+String.right 3 "hello"       -- "llo"
+```
+
+### Case and whitespace
+
+| Signature | Behavior |
+| --- | --- |
+| `String.reverse : String -> String` | reverse the scalars |
+| `String.toUpper : String -> String` | uppercase (full Unicode mapping) |
+| `String.toLower : String -> String` | lowercase (full Unicode mapping) |
+| `String.trim : String -> String` | strip leading and trailing whitespace |
+| `String.trimLeft : String -> String` | strip leading whitespace |
+| `String.trimRight : String -> String` | strip trailing whitespace |
+| `String.pad : Int -> Char -> String -> String` | center-pad to width `n`; an odd deficit favors the left |
+| `String.padLeft : Int -> Char -> String -> String` | left-pad to width `n` |
+| `String.padRight : Int -> Char -> String -> String` | right-pad to width `n` |
+
+### Higher-order
+
+| Signature | Behavior |
+| --- | --- |
+| `String.map : (Char -> Char) -> String -> String` | map each scalar |
+| `String.filter : (Char -> Bool) -> String -> String` | keep scalars passing the test |
+| `String.foldl : (Char -> b -> b) -> b -> String -> b` | fold from the left |
+| `String.foldr : (Char -> b -> b) -> b -> String -> b` | fold from the right |
+| `String.any : (Char -> Bool) -> String -> Bool` | whether any scalar passes |
+| `String.all : (Char -> Bool) -> String -> Bool` | whether every scalar passes |
+
+## Char
+
+The Elm `elm/core` `Char` surface. A `Char` is one Unicode scalar, agreeing
+with the scalar indexing of `String` above; it is authoring-time only and never
+reaches the wire. The `is*` predicates are Elm's ASCII-oriented
+definitions.
+
+| Signature | Behavior |
+| --- | --- |
+| `Char.toCode : Char -> Int` | the Unicode code point |
+| `Char.fromCode : Int -> Char` | the scalar for a code point; out-of-range or a surrogate → `U+FFFD` |
+| `Char.toUpper : Char -> Char` | uppercase mapping |
+| `Char.toLower : Char -> Char` | lowercase mapping |
+| `Char.isUpper : Char -> Bool` | ASCII `A`–`Z` |
+| `Char.isLower : Char -> Bool` | ASCII `a`–`z` |
+| `Char.isAlpha : Char -> Bool` | ASCII letter |
+| `Char.isAlphaNum : Char -> Bool` | ASCII letter or digit |
+| `Char.isDigit : Char -> Bool` | ASCII `0`–`9` |
+| `Char.isOctDigit : Char -> Bool` | ASCII `0`–`7` |
+| `Char.isHexDigit : Char -> Bool` | ASCII `0`–`9`, `a`–`f`, `A`–`F` |
+| `Char.isSpace : Char -> Bool` | space, tab, newline, carriage return, vertical tab, or form feed |
+
+```emet
+Char.toCode 'A'      -- 65
+Char.isDigit '7'     -- True
+```
+
+## List
+
+The list combinators — Emet's only way to iterate. `List` sum functions require
+`number` where they add.
+
+| Signature | Behavior |
+| --- | --- |
+| `List.map : (a -> b) -> List a -> List b` | apply a function to each element |
+| `List.filter : (a -> Bool) -> List a -> List a` | keep elements passing the test |
+| `List.foldl : (a -> b -> b) -> b -> List a -> b` | fold from the left |
+| `List.foldr : (a -> b -> b) -> b -> List a -> b` | fold from the right |
+| `List.append : List a -> List a -> List a` | concatenate two lists |
+| `List.concat : List (List a) -> List a` | flatten one level |
+| `List.concatMap : (a -> List b) -> List a -> List b` | map then flatten |
+| `List.isEmpty : List a -> Bool` | whether the list has no elements |
+| `List.length : List a -> Int` | number of elements |
+| `List.range : Int -> Int -> List Int` | `range lo hi` is `[lo..hi]` inclusive; empty if `lo > hi` |
+| `List.sum : List number -> number` | sum of the elements; `[]` → `0` |
+
+```emet
+List.map (\x -> x * x) [ 1, 2, 3 ]   -- [ 1, 4, 9 ]
+List.foldl (\x acc -> acc + x) 0 [ 1, 2, 3 ]  -- 6
+List.range 1 5                        -- [ 1, 2, 3, 4, 5 ]
+```
+
+Prepend an element with the `::` operator; concatenate two lists (or two
+strings) with `++`. Both are operators without a callable name — see
+[Values and types](/reference/language/values-and-types/).
+
+## Maybe
+
+| Signature | Behavior |
+| --- | --- |
+| `Maybe.map : (a -> b) -> Maybe a -> Maybe b` | map the value inside a `Just`, else `Nothing` |
+| `Maybe.andThen : (a -> Maybe b) -> Maybe a -> Maybe b` | chain a `Maybe`-returning function |
+| `Maybe.withDefault : a -> Maybe a -> a` | the value in a `Just`, or the default for `Nothing` |
+
+```emet
+Maybe.withDefault 0 (String.toInt "x")      -- 0
+Maybe.andThen (\n -> Just (n + 1)) (Just 4) -- Just 5
+```
+
+## Tuple
+
+Build and transform pairs. Every function operates on the two-element tuple —
+a three-element tuple is destructured by pattern, as in Elm. For the tuple type
+itself see [Values and types](/reference/language/values-and-types/#tuples-and-unit).
+
+| Signature | Behavior |
+| --- | --- |
+| `Tuple.pair : a -> b -> (a, b)` | build a pair from two values |
+| `Tuple.first : (a, b) -> a` | the first element |
+| `Tuple.second : (a, b) -> b` | the second element |
+| `Tuple.mapFirst : (a -> x) -> (a, b) -> (x, b)` | apply a function to the first element |
+| `Tuple.mapSecond : (b -> y) -> (a, b) -> (a, y)` | apply a function to the second element |
+| `Tuple.mapBoth : (a -> x) -> (b -> y) -> (a, b) -> (x, y)` | apply a function to each element |
+
+```emet
+Tuple.first (Tuple.pair 7 9)         -- 7
+Tuple.mapSecond (\n -> n + 1) (1, 2) -- (1, 3)
+```

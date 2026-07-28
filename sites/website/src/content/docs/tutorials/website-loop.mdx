@@ -1,0 +1,152 @@
+---
+title: The website loop
+description: golem deploying golem's own docs — build the website container, push it to the fleet registry, run it as a Workload, and curl the Starlight homepage for HTTP 200.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This is golem deploying golem's own docs. `examples/website/` closes the dogfood
+loop: build this Starlight site into a container on one golem-managed box, push
+it to the golem-hosted registry, run it as a `Workload` on a third, and curl the
+homepage for a 200. It builds on the
+[registry tutorial](/tutorials/registry-on-the-fleet/) — get that registry
+serving first.
+
+## The three boxes
+
+| Box | `examples/website/` scroll | Role |
+| --- | --- | --- |
+| `registry` | (from the registry tutorial) | stores the image |
+| `builder` | `builder.emet` | builds the site image and pushes it |
+| `web` | `website.emet` | pulls the image and serves it publicly |
+
+`builder.emet` provisions podman and the insecure-registry drop-in — the box can
+push, but *building and pushing is a CI step, not a glyph*. The scroll only makes
+the box able to push:
+
+```emet
+builderGlyphs : List Glyph
+builderGlyphs =
+  [ aptPackage { name = "podman" }
+  , file
+      { path = "/etc/containers/registries.conf.d/golem-registry.conf"
+      , contents = insecureConfContents      -- 10.0.2.2:5000, insecure
+      , mode = "0644"
+      }
+  ]
+```
+
+`website.emet` runs the served container. It drops in the same insecure-registry
+fragment, then a single **public** `Workload` — the `golem-website` image pulled
+from the fleet registry, published on `:80`:
+
+```emet
+import Quadlet exposing
+  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registryEndpoint : String
+registryEndpoint = "10.0.2.2:5000"
+
+website : Workload
+website =
+  Workload
+    { name = "golem-website"
+    , image = image registryEndpoint "golem-website" "latest"
+    , env = []
+    , ports = [ tcp 80 80 ]
+    , volumes = []
+    , restart = Always
+    , expose = Public
+    }
+
+main : List Scroll
+main = [ scroll { name = "web", glyphs = websiteGlyphs } ]
+```
+
+`expose = Public` opens `:80` to the world — an nftables `file` *plus* a
+`lineInFile` on the shared ingress chain — so the web scroll lowers to six
+glyphs:
+
+```
+planned scrolls (1):
+  scroll `web` (6 glyphs):
+    * ensure file `/etc/containers/registries.conf.d/golem-registry.conf` (mode 0644)
+    * ensure apt package `podman` installed
+    * ensure file `/etc/containers/systemd/golem-website.container` (mode 0644)
+    * enable + start systemd unit `golem-website.service`
+    * ensure file `/etc/nftables.d/golem-website-80.nft` (mode 0644)
+    * ensure line `tcp dport 80 accept comment "ingress golem-website"` present in file `/etc/nftables.d/ingress.nft`
+```
+
+## Run the loop
+
+The registry from the [registry tutorial](/tutorials/registry-on-the-fleet/) must
+be up and published on `5000:5000`.
+
+<Steps>
+1. **Boot and provision the builder and web boxes.** Publish the web box's `:80`
+   so you can curl it from the host:
+
+   ```bash
+   fleet up --hosts builder --publish builder=5000:5000
+   fleet up --hosts web --publish web=8080:80
+   fleet deploy --hosts builder,web
+   fleet apply examples/website/builder.emet --hosts builder
+   ```
+
+2. **Build the site image on the builder and push it.** The image serves the
+   built Starlight `dist/` — build the docs, hand the tree to the builder, and
+   push it to the registry:
+
+   ```bash
+   (cd sites/website && bun run build)
+   # copy dist/ into the builder and build+push the image there:
+   fleet ssh builder -- podman build -t 10.0.2.2:5000/golem-website:latest /path/to/site
+   fleet ssh builder -- podman push 10.0.2.2:5000/golem-website:latest
+   ```
+
+3. **Apply the web scroll.** The web box pulls the freshly-pushed image from the
+   registry and starts serving:
+
+   ```bash
+   fleet apply examples/website/website.emet --hosts web
+   ```
+
+4. **Curl the homepage for a 200.** The web box's `:80` is published to the host:
+
+   ```bash
+   curl -sI http://127.0.0.1:8080/ | head -1     # → HTTP/1.1 200 OK
+   ```
+</Steps>
+
+golem built the docs, golem's registry stored them, and golem serves them — the
+whole loop, one glyph model, four kinds.
+
+<Aside type="note" title="The push is CI, not a glyph">
+  `podman build`/`push` are steps a CI job runs; golem does not model them. The
+  scrolls provision the boxes to *do* the build and *run* the result. That
+  boundary — golem owns durable host state, CI owns the transient build — is
+  deliberate.
+</Aside>
+
+## Explore from here
+
+- **Re-deploy a docs change.** Edit a page, rebuild, push a new `:latest`, and
+  re-apply the web scroll — the `.container` glyph's content id is unchanged (the
+  tag is the same), so pin a new tag or a digest with `imageAt` to make the diff
+  replace it.
+- **Reverse the web box.** Apply an empty scroll to `web` and watch golem stop the
+  container, remove the quadlet, close `:80`, and remove exactly its ingress line
+  from the shared chain — leaving any other host's line intact.
+- **Add a second served site.** Write another public `Workload` on a different
+  port and apply it alongside — two containers, two firewall openings, derived
+  from their ports.
+
+## Where to next
+
+- **[The Quadlet library](/reference/workloads/)** — the `Workload` and `Expose`
+  this loop is built on.
+- **[A tour of the lichess fleet](/guides/litour/)** — the same shapes at fleet
+  scale.
+- **[Reversible reconcile](/explanation/reversible-reconcile/)** — why reversing the
+  web box is exact.

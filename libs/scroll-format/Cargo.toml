@@ -1,0 +1,12 @@
+[package]
+name = "scroll-format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+postcard = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }

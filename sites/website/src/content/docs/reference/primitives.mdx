@@ -1,0 +1,182 @@
+---
+title: The four glyphs
+description: aptPackage, systemdService, file, lineInFile — the only resource kinds the agent enacts. Every abstraction lowers to these.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+A **glyph** is one bottom-level OS resource. Emet has exactly four glyph
+primitives, and `golemd` enacts exactly these four — nothing else. Every
+higher-level shape you write (a container workload, a service, an ingress)
+is an Emet function that returns a `List Glyph` and lowers to these.
+
+Each glyph is a reserved record constructor in Emet. Every field is a
+fully-evaluated concrete `String` — there is no templating, no placeholder
+substitution, no `${…}` in the compiled output. String interpolation and
+`String.join` run at compile time; the glyph carries only the final bytes.
+
+<Aside type="note" title="Adding a fifth kind is a language decision, not an agent one">
+  The closed set of four is the whole engine surface. New capability is a
+  new **Emet abstraction** composed from these, not a new resource kind in
+  `golemd`. The one exception — a genuinely new primitive — is a change to
+  the shared `scroll-format` model plus a new reconciler, and bumps the
+  manifest `format_version`.
+</Aside>
+
+## `aptPackage`
+
+Ensure an apt package is installed.
+
+```emet
+aptPackage { name = "nginx" }
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | `String` | the package to install |
+
+Glyph key: `apt:<name>`.
+
+**Reversibility.** On apply, `golemd` queries whether the package is
+already installed (`dpkg-query`). If not, it installs it and records
+"installed by us"; on reverse it removes it. If the package was already
+present, apply is a no-op and reverse leaves it alone. Golem never removes
+a package it did not install.
+
+## `systemdService`
+
+Ensure a systemd unit is enabled and started.
+
+```emet
+systemdService { unit = "nginx.service" }
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `unit` | `String` | the unit to `enable --now` |
+
+Glyph key: `systemd:<unit>`.
+
+**Reversibility.** On apply, `golemd` records the unit's prior
+enabled/active state, then enables and starts it. On reverse it restores
+the prior state — if golem enabled it, `disable --now`; if it was already
+enabled, leave it.
+
+## `file`
+
+Ensure a file exists with fixed contents and mode.
+
+```emet
+file
+  { path = "/etc/app/site.conf"
+  , contents = "[server]\nlisten = 8080\n"
+  , mode = "0644"
+  }
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | `String` | absolute path on the host |
+| `contents` | `String` | the exact file body |
+| `mode` | `String` | octal mode, e.g. `"0644"` |
+
+Glyph key: `file:<path>`.
+
+`mode` is a plain string like `"0644"` — the field carries the octal text,
+not a number.
+
+**Reversibility.** On apply, `golemd` reads the prior contents and mode
+(or notes the file was absent), then writes the desired contents atomically
+(temp file + rename). On reverse it restores the prior bytes and mode, or
+deletes the file if golem created it.
+
+### `directory` and `symlink` — the same glyph, two more spellings
+
+`file` is one of three surface spellings of the filesystem glyph. The other
+two build a directory or a symlink at a path:
+
+```emet
+directory { path = "/var/lib/registry", mode = "0755" }
+
+symlink { path = "/etc/nginx/sites-enabled/site.conf", target = "/etc/nginx/sites-available/site.conf" }
+```
+
+Each arm carries only its own fields — `directory` takes no `contents`,
+`symlink` takes neither `contents` nor `mode` — so a symlink with a mode or a
+directory with contents cannot be written down. All three share the
+`file:<path>` key, reconcile through the one filesystem reconciler, and
+reverse the same way (restore the prior entry, or remove what golem created).
+A `Quadlet` [`FromHost`](/reference/workloads/) mount emits a `directory` for
+its bind-mount source; you rarely write one by hand.
+
+<Aside type="tip" title="Contents are built in Emet">
+  A config file's body is produced by the language — string interpolation
+  and `String.join` — and fully evaluated before it reaches the `contents`
+  field. See [The config](/getting-started/the-config/) for how a port
+  number becomes a rendered config string.
+</Aside>
+
+## `lineInFile`
+
+Ensure a single line is present in a file.
+
+```emet
+lineInFile
+  { path = "/etc/nftables.d/ingress.nft"
+  , line = "tcp dport 443 accept comment \"ingress lila\""
+  }
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | `String` | the file to edit |
+| `line` | `String` | the exact line to ensure present |
+
+Glyph key: `fileline:<path>:<line>`.
+
+**Reversibility.** On apply, if the line is already present, apply is a
+no-op and reverse does nothing. Otherwise `golemd` appends it and records
+that it added the line; on reverse it removes exactly that line. Golem
+never removes a line it did not add.
+
+<Aside type="caution" title="Ordering with file">
+  If a later `file` glyph rewrites the same path, order matters. A scroll's
+  glyphs apply in list order and reverse in the exact reverse order — a
+  LIFO undo stack recorded in the journal. See
+  [Reversible reconcile](/explanation/reversible-reconcile/).
+</Aside>
+
+## Conflict rules within a scroll
+
+Two glyphs with the **same key** in one scroll must be identical, or the
+compiler's per-scroll analysis rejects them. Two *different* scrolls may
+share a key freely — two hosts installing `nginx` is fine. Uniqueness is
+per host, never fleet-wide.
+
+## Building abstractions
+
+You rarely write raw glyphs beyond the smallest hosts. Instead you compose
+them — either with your own function returning a `List Glyph`, or with the
+shipped [`Quadlet`](/reference/workloads/) library, whose `Workload` lowers a
+typed container spec down to exactly these glyphs:
+
+```emet
+import Quadlet exposing ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registry : List Glyph
+registry =
+  workloadGlyphs
+    (Workload
+      { name = "registry"
+      , image = image "docker.io/library" "registry" "2"
+      , env = [], ports = [ tcp 5000 5000 ], volumes = []
+      , restart = Always, expose = Internal
+      })
+```
+
+That lowers to the podman `aptPackage`, the `.container` quadlet `file`, its
+`systemdService`, and one nftables `file` for the internal port opening — four
+glyphs the agent already understands, no fifth kind. See the
+[Quadlet reference](/reference/workloads/), the
+[service abstraction guide](/guides/app-and-db/), and the
+[lichess tour](/guides/litour/) for the full pattern.

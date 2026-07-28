@@ -1,0 +1,219 @@
+---
+title: The config
+description: Write a fleet in Emet — a typed functional language. main is a List Scroll; each scroll is one host's glyphs.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+You author a fleet in **Emet**, a typed, Elm-modeled functional language. A
+program is a set of top-level declarations; the one that matters is `main :
+List Scroll`. A `Scroll` is one host's desired state — a `name` and a list
+of `glyphs`. A glyph is one OS resource.
+
+## The smallest program
+
+```emet
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs = [ aptPackage { name = "nginx" } ]
+      }
+  ]
+```
+
+Compile it and look at the plan:
+
+```bash
+emetc build web.emet --text
+```
+
+```
+planned scrolls (1):
+  scroll `web` (1 glyphs):
+    * ensure apt package `nginx` installed
+```
+
+Add more glyphs; order is kept:
+
+```emet
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ aptPackage { name = "nginx" }
+          , systemdService { unit = "nginx.service" }
+          ]
+      }
+  ]
+```
+
+Those are two of the [four glyphs](/reference/primitives/). The other two
+are `file` and `lineInFile`.
+
+## A recipe as a function
+
+Repeating a block per host is waste. A declaration is `name args = body`,
+with an optional signature line above it:
+
+```emet
+webHost : String -> Scroll
+webHost name =
+  scroll
+    { name = name
+    , glyphs =
+        [ aptPackage { name = "nginx" }
+        , systemdService { unit = "nginx.service" }
+        ]
+    }
+
+main : List Scroll
+main = [ webHost "web-1", webHost "web-2" ]
+```
+
+`webHost` is now your word for "a plain web host." That is the whole idea:
+abstractions are ordinary functions, and they lower to glyphs.
+
+## Contents are computed, then frozen
+
+A config file's body is built by the language and fully evaluated before it
+reaches the `contents` field. There is no templating downstream — the glyph
+carries the final string:
+
+```emet
+renderConfig : Int -> String
+renderConfig port =
+  String.join "\n"
+    [ "[server]"
+    , "listen = ${String.fromInt port}"
+    , "workers = 4"
+    ]
+
+siteFile : Int -> File
+siteFile port =
+  file
+    { path = "/etc/app/site.conf"
+    , contents = renderConfig port
+    , mode = "0644"
+    }
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "app"
+      , glyphs =
+          [ aptPackage { name = "app" }
+          , siteFile 8080
+          , systemdService { unit = "app.service" }
+          ]
+      }
+  ]
+```
+
+`${…}` is Emet string interpolation — it runs at compile time and desugars
+to `String.concat`. The compiled `file` glyph contains `listen = 8080`, not
+a placeholder.
+
+## Types catch mistakes early
+
+Emet is Hindley-Milner typed. `renderConfig` above is `Int -> String`; call
+it with a `String` and the compiler rejects it. `case` must be exhaustive:
+
+```emet
+type Role = Web | Db
+
+glyphsFor : Role -> List Glyph
+glyphsFor role =
+  case role of
+    Web -> [ aptPackage { name = "nginx" },      systemdService { unit = "nginx.service" } ]
+    Db  -> [ aptPackage { name = "postgresql" }, systemdService { unit = "postgresql.service" } ]
+
+host : { name : String, role : Role } -> Scroll
+host h = scroll { name = h.name, glyphs = glyphsFor h.role }
+
+main : List Scroll
+main =
+  List.map host
+    [ { name = "web-1", role = Web }
+    , { name = "web-2", role = Web }
+    , { name = "db-1",  role = Db }
+    ]
+```
+
+Drop the `Db` arm and the compiler flags the non-exhaustive match — the
+mistake finds you before any bytes leave your laptop.
+
+## Splitting across modules
+
+A file is a module. Expose names with `module … exposing (…)` and pull them
+in with `import`:
+
+```emet
+module Fleet exposing (internalNetwork, endpoint)
+
+internalNetwork : String
+internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address port = "${address}:${String.fromInt port}"
+```
+
+```emet
+module Main exposing (..)
+
+import Fleet exposing (internalNetwork)
+
+-- use internalNetwork here…
+```
+
+This is how the [lichess fleet](/guides/litour/) keeps a shared library of
+abstractions (`Lichess`, `Fleet`) separate from the fleet definition that
+uses them.
+
+## Higher-level shapes are yours to build
+
+There is no built-in "container," "service," or "ingress." A container is an
+Emet value that lowers to a `List Glyph`. golem ships one such library —
+[`Quadlet`](/reference/workloads/), a strongly-typed model of Podman quadlets
+— and a `Workload` from it lowers to a podman package, a `.container` quadlet
+`file`, a `systemdService`, and any firewall openings its ports need:
+
+```emet
+import Quadlet exposing
+  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registry : Workload
+registry =
+  Workload
+    { name = "registry"
+    , image = image "docker.io/library" "registry" "2"
+    , env = []
+    , ports = [ tcp 5000 5000 ]
+    , volumes = []
+    , restart = Always
+    , expose = Internal
+    }
+
+glyphs : List Glyph
+glyphs = workloadGlyphs registry
+```
+
+`Workload` is a record you fill in and `workloadGlyphs` is the lowering — no
+new engine kind, just data checked by the type system. The
+[service abstraction guide](/guides/app-and-db/) builds a thin helper on top
+of it, and the [Quadlet reference](/reference/workloads/) documents every
+field.
+
+<Aside type="note" title="No JSON, no YAML, no templating">
+  Emet has no JSON/YAML intermediary and no Jinja-style templating. Every
+  glyph field is a concrete string produced by the language and checked by
+  the type system.
+</Aside>
+
+## Where to next
+
+- **[Applying changes](/getting-started/applying/)** — compile to a
+  manifest and reconcile a box.
+- **[A first glyph](/guides/hello-agent/)** — the smallest end-to-end run.
+- **[The four glyphs](/reference/primitives/)** — the full field reference.

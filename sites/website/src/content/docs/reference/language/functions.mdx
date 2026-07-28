@@ -1,0 +1,109 @@
+---
+title: Functions
+description: Emet function declarations, optional signatures, currying and partial application, let bindings, lambdas, and if expressions.
+---
+
+Function declarations, local bindings, and the two branching forms. For
+literals, operators, and types see
+[values and types](/reference/language/values-and-types/); for the built-in
+functions see the [prelude](/reference/language/prelude/).
+
+## Declarations
+
+A declaration is a name, zero or more parameters, `=`, and a body:
+
+```emet
+double x = x + x
+```
+
+An optional signature line may immediately precede it:
+
+```emet
+double : Int -> Int
+double x = x + x
+```
+
+Parameters desugar to nested lambdas, so a declaration is a name bound to an
+expression. A declaration with no parameters is a value:
+
+```emet
+port : Int
+port = 8080
+```
+
+### Recursion
+
+Top-level declarations may be recursive, and mutually recursive across the
+module — a declaration may reference any other, defined earlier or later.
+`let` bindings likewise.
+
+```emet
+isEven : Int -> Bool
+isEven n = if n == 0 then True else isOdd (n - 1)
+
+isOdd : Int -> Bool
+isOdd n = if n == 0 then False else isEven (n - 1)
+```
+
+## Currying and partial application
+
+Every function of more than one parameter is curried; applying fewer arguments
+than the arity yields a function.
+
+```emet
+add : Int -> Int -> Int
+add x y = x + y
+
+addFive : Int -> Int
+addFive = add 5
+```
+
+Application is by juxtaposition and left-associative: `f a b` is `(f a) b`.
+
+## Lambdas
+
+`\params -> body` is an anonymous function:
+
+```emet
+main : List Scroll
+main = List.map (\name -> scroll { name = name, glyphs = [] }) [ "a", "b" ]
+```
+
+A multi-parameter lambda `\x y -> …` desugars to nested single-parameter
+lambdas.
+
+## `let … in`
+
+`let` introduces local bindings, in scope in the body after `in`. Each binding
+follows the declaration form and may carry a signature.
+
+```emet
+area : Float -> Float
+area r =
+  let
+    pi = 3.14159
+  in
+    pi * r * r
+```
+
+Bindings may be mutually recursive and referenced in any order. `let x = e in
+body` is also valid on a single line.
+
+## `if … then … else …`
+
+A conditional over a `Bool`. Both branches are required and must have the same
+type.
+
+```emet
+label : Int -> String
+label n = if n > 0 then "positive" else "non-positive"
+```
+
+`if` is equivalent to a two-arm `case` on `True` / `False`.
+
+## See also
+
+- [Values and types](/reference/language/values-and-types/) — literals, operators, types.
+- [Pattern matching](/reference/language/pattern-matching/) — `case` and patterns.
+- [Modules](/reference/language/modules/) — `module`, `import`, the search path.
+- [Prelude](/reference/language/prelude/) — the standard-library functions.

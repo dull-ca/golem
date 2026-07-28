@@ -1,0 +1,127 @@
+-- The lichess fleet's own ergonomic helpers (ADR 0023 layer c): user Emet built
+-- on the shipped `Quadlet` library, not part of it. `dockerImage`/`workload`/
+-- `service` are thin shortcuts over `Workload` for this fleet's common shapes —
+-- a docker.io image, a no-ingress workload, an internally-exposed service.
+--
+-- `ingress` stays hand-rolled nginx (its own `aptPackage`/`file`/`lineInFile`/
+-- `systemdService` glyphs) because a reverse proxy is a *different* container's
+-- config, not a property of the upstream workload — so it is not a quadlet
+-- `Workload` and does not go through the library (ADR 0023 §7).
+module Lichess exposing
+  ( dockerImage
+  , ghcrImage
+  , workload
+  , service
+  , ingress
+  , host
+  )
+
+import Fleet exposing (internalNetwork)
+import Quadlet exposing
+  ( Image
+  , image
+  , tcp
+  , Restart(..)
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+
+dockerImage : String -> String -> Image
+dockerImage name tag = image "docker.io" name tag
+
+ghcrImage : String -> String -> Image
+ghcrImage name tag = image "ghcr.io" name tag
+
+workload : String -> Image -> List Glyph
+workload name img =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = img
+      , env = []
+      , ports = []
+      , volumes = []
+      , restart = Always
+      , expose = Unexposed
+      })
+
+service : String -> Image -> Int -> List Glyph
+service name img port =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = img
+      , env = []
+      , ports = [ tcp port port ]
+      , volumes = []
+      , restart = Always
+      , expose = Internal
+      })
+
+nginxSitePath : String -> String
+nginxSitePath name = "/etc/nginx/sites-enabled/${name}.conf"
+
+nftablesPath : String -> String
+nftablesPath name = "/etc/nftables.d/${name}.nft"
+
+nginxSite : String -> String -> String
+nginxSite name upstream =
+  String.join "\n"
+    [ "upstream ${upstream}_backend {"
+    , "  server ${upstream}.internal;"
+    , "}"
+    , ""
+    , "server {"
+    , "  listen 443 ssl http2;"
+    , "  server_name ${name};"
+    , ""
+    , "  ssl_certificate /etc/letsencrypt/live/${name}/fullchain.pem;"
+    , "  ssl_certificate_key /etc/letsencrypt/live/${name}/privkey.pem;"
+    , ""
+    , "  location / {"
+    , "    proxy_pass http://${upstream}_backend;"
+    , "    proxy_set_header Host $host;"
+    , "    proxy_set_header X-Real-IP $remote_addr;"
+    , "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
+    , "    proxy_set_header X-Forwarded-Proto $scheme;"
+    , "  }"
+    , "}"
+    ]
+
+ingressRule : String -> Int -> String
+ingressRule name port =
+  String.join "\n"
+    [ "table inet filter {"
+    , "  chain input {"
+    , "    tcp dport ${String.fromInt port} ip saddr ${internalNetwork} accept comment \"ingress ${name}\""
+    , "  }"
+    , "}"
+    ]
+
+ingressLine : String -> Int -> String
+ingressLine name port =
+  "tcp dport ${String.fromInt port} accept comment \"ingress ${name}\""
+
+ingress : String -> String -> Int -> List Glyph
+ingress name upstream port =
+  [ aptPackage { name = "nginx" }
+  , file
+      { path = nginxSitePath name
+      , contents = nginxSite name upstream
+      , mode = "0644"
+      }
+  , file
+      { path = nftablesPath "ingress-${name}"
+      , contents = ingressRule name port
+      , mode = "0644"
+      }
+  , lineInFile
+      { path = "/etc/nftables.d/ingress.nft"
+      , line = ingressLine name port
+      }
+  , systemdService { unit = "nginx.service" }
+  ]
+
+host : String -> List Glyph -> Scroll
+host name glyphs = scroll { name = name, glyphs = glyphs }

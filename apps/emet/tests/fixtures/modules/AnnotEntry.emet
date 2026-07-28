@@ -1,0 +1,10 @@
+module Main exposing (..)
+
+import Roles exposing (Role(..), glyphsFor)
+
+web : Role
+web = Web
+
+main : List Scroll
+main =
+  [ scroll { name = "web", glyphs = glyphsFor web } ]

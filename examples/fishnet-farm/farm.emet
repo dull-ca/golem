@@ -1,0 +1,125 @@
+-- The fishnet farm: the first example fleet built as a recursive scroll tree
+-- (ADR 0031). One host, "scaly" (matching the dogfood VM so it can apply to the
+-- running box), is a *branch* scroll of named sub-scrolls rather than a flat bag
+-- of glyphs. Each leaf scroll is an independent failure-isolation unit: golemd
+-- enacts, retries, and — on exhaustion — rolls back or keeps each leaf on its
+-- own, and one leaf failing never touches a sibling.
+--
+-- The tree under "scaly":
+--   fishnet-move      — three leaves (client-1..3), each a `niklasf/fishnet`
+--                       workload with a unique container/unit name
+--                       (fishnet-move-1..3).
+--   fishnet-analysis  — two leaves (client-1..2), same image, unique names
+--                       (fishnet-analysis-1..2).
+--   base              — one leaf: the `htop` package plus a one-line motd file.
+--   canary            — one leaf with `policy = keep` whose image is deliberately
+--                       unpullable (`golem-example/does-not-exist:latest`). Its
+--                       unit is EXPECTED to fail to start. Because the leaf's
+--                       policy is `keep`, golemd reports it `partial` (kept, with
+--                       forensics) instead of rolling it back — and every sibling
+--                       leaf still settles green. This is the per-unit isolation
+--                       the tree exists to demonstrate: the farm is healthy even
+--                       though the canary is down.
+--
+-- `moveClient`/`analysisClient`/`canaryClient` are small local helpers that
+-- compute a leaf scroll from an index, so the two client groups are
+-- library-computed rather than hand-listed — the group tree is data.
+--
+-- Every workload leaf pulls in `Quadlet`'s `aptPackage { name = "podman" }`,
+-- so all leaves under "scaly" deliberately share the `apt:podman` glyph key —
+-- the diff flattens by `Glyph::key()` (docs/adr/0031 §4), so sibling leaves
+-- declaring the same key is intentional, not duplication.
+--
+-- `Quadlet` is resolved from `lib/` via the repo-root `emet.json` (ADR 0024),
+-- so this entry directory needs no copy of the shared library.
+--
+-- Run (from the golem repo root):
+--   fleet up scaly                          # boot the "scaly" VM
+--   fleet deploy examples/fishnet-farm/farm.emet
+--   fleet apply scaly                       # enact; siblings green, canary partial
+module Main exposing (..)
+
+import Quadlet exposing
+  ( Image
+  , image
+  , Restart(..)
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+
+fishnetImage : Image
+fishnetImage = image "docker.io" "niklasf/fishnet" "latest"
+
+worker : String -> Image -> List Glyph
+worker unit img =
+  workloadGlyphs
+    (Workload
+      { name = unit
+      , image = img
+      , env = []
+      , ports = []
+      , volumes = []
+      , restart = Always
+      , expose = Unexposed
+      })
+
+moveClient : Int -> Scroll
+moveClient n =
+  scroll
+    { name = "client-${String.fromInt n}"
+    , glyphs = worker "fishnet-move-${String.fromInt n}" fishnetImage
+    }
+
+analysisClient : Int -> Scroll
+analysisClient n =
+  scroll
+    { name = "client-${String.fromInt n}"
+    , glyphs = worker "fishnet-analysis-${String.fromInt n}" fishnetImage
+    }
+
+base : Scroll
+base =
+  scroll
+    { name = "base"
+    , glyphs =
+        [ aptPackage { name = "htop" }
+        , file
+            { path = "/etc/motd.d/farm"
+            , contents = "This host runs the golem fishnet farm.\n"
+            , mode = "0644"
+            }
+        ]
+    }
+
+canaryImage : Image
+canaryImage = image "docker.io" "golem-example/does-not-exist" "latest"
+
+canary : Scroll
+canary =
+  scroll
+    { name = "canary"
+    , policy = keep
+    , glyphs = worker "fishnet-canary" canaryImage
+    }
+
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , groups =
+        [ scroll
+            { name = "fishnet-move"
+            , groups = List.map moveClient [ 1, 2, 3 ]
+            }
+        , scroll
+            { name = "fishnet-analysis"
+            , groups = List.map analysisClient [ 1, 2 ]
+            }
+        , base
+        , canary
+        ]
+    }
+
+main : List Scroll
+main = [ scaly ]

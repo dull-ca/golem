@@ -1,0 +1,129 @@
+---
+title: Manifest format
+description: The binary, content-addressed artifact emetc emits and golemd consumes — Manifest, AddressedScroll, ContentId, serialized with postcard and hashed with BLAKE3.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The **manifest** is the contract between the compiler and the agent.
+`emetc build` emits it; `golemd` consumes it. It is a binary,
+content-addressed artifact — not JSON, not a text plan. Its schema is the
+shared `scroll-format` crate (`libs/scroll-format/`), which both `emet`
+and `golemd` depend on and neither owns, so the writer and reader cannot
+drift.
+
+## The model
+
+```
+Manifest {
+  format_version : u32,
+  emet_version   : String,
+  scrolls        : [ AddressedScroll ],
+}
+
+AddressedScroll {
+  content_id : ContentId,     // BLAKE3 over the scroll's bytes
+  scroll     : Scroll,        // one host's glyphs
+}
+
+Scroll { name : String, glyphs : [ Glyph ] }
+```
+
+A manifest carries the **whole fleet** — every host's scroll. Each
+`golemd` selects the one `AddressedScroll` whose `scroll.name` matches its
+own `--host` and ignores the rest.
+
+## Content addressing
+
+A scroll's identity is `content_id(scroll) = blake3(postcard::to_stdvec(scroll))`
+— the BLAKE3 hash of the scroll's deterministic [postcard](https://github.com/jamesmunns/postcard)
+bytes. The hash is over the **scroll alone**, never over the manifest or
+its neighbours, so:
+
+- An identical scroll always yields an identical `ContentId`.
+- A scroll's id does not depend on its position in the manifest.
+- A scroll's id does not depend on `emet_version`.
+
+That is what makes reconciliation cheap and precise. Same bytes ⇒ same id
+⇒ no-op; a changed field ⇒ new id ⇒ an upgrade. The agent also hashes each
+glyph individually (`content_id_of_glyph`) so a one-line change to one file
+re-applies only that glyph, not the whole scroll — see
+[Reversible reconcile](/explanation/reversible-reconcile/).
+
+`ContentId` is a 32-byte digest. Its string form is lowercase hex (64
+characters); `golemctl state` prints it that way.
+
+## Determinism is the correctness property
+
+Postcard is **non-self-describing**: a type's field order and enum variant
+order *are* the encoding. There are no field names on the wire. That makes
+the bytes canonical by construction — the same `Scroll` value always
+serializes to the same bytes and hashes to the same id — but it also means
+reordering or adding a field is a wire-breaking change, not a free
+refactor.
+
+The `scroll-format` crate pins this with golden-byte and round-trip tests:
+a fixed scroll serializes to a committed byte constant and hashes to a
+committed id; `from_bytes(to_bytes(m)) == m`; a scroll's id is invariant to
+its position and to `emet_version`.
+
+## `format_version` vs `emet_version`
+
+Two version fields, two jobs:
+
+- **`format_version`** (`u32`) versions the wire layout — the manifest
+  shape, any `Scroll`/`Glyph` field or variant, the postcard format, the
+  BLAKE3 hash. It is checked on read: `from_bytes` rejects an unknown
+  `format_version` with a typed error rather than a misparse. It is
+  currently `1`.
+- **`emet_version`** (`String`) records which compiler build wrote the
+  manifest. It is provenance only, sits deliberately **outside every
+  hash**, and is never checked. Rebuilding an unchanged fleet with a newer
+  compiler yields byte-identical per-scroll content ids.
+
+## The three `emetc build` views
+
+The binary manifest is the default and the only content-addressed
+artifact. Two other views exist for humans and never leave the trust path:
+
+- **default** — the binary manifest (postcard bytes), to `-o PATH` or
+  stdout. This is what `golemctl apply` ships.
+- **`--text`** — a readable plan (`Scroll::describe` / `Glyph::describe`).
+  Eyeball view only.
+- **`--json`** — a self-describing JSON rendering of the same manifest, for
+  ad-hoc tooling. **Not** content-addressed; never the artifact `golemd`
+  consumes.
+
+See the [CLI reference](/reference/cli/) for the exact flags.
+
+## What the agent does on receipt
+
+`golemd` accepts manifest bytes at `POST /manifest`:
+
+```
+on POST /manifest:
+  manifest = scroll_format::from_bytes(body)   // checks format_version
+  scroll   = manifest.select(this host's name) // by scroll.name
+  ops      = diff(last applied outcomes, scroll's glyphs)  // by glyph key + CID
+  enact each op through the Reconciler, capturing an Inverse per glyph
+  journal the ordered outcomes as a Reconcile revision
+```
+
+The diff, the enact, and the journalled reversal records are the subject of
+[Reversible reconcile](/explanation/reversible-reconcile/).
+
+<Aside type="note" title="The local journal is golemd's own choice">
+  The wire format is binary postcard. `golemd`'s local journal — its record
+  of what it applied and how to reverse it — is stored in SQLite and may be
+  JSON for legibility. That is a private implementation detail of the agent,
+  not part of this contract.
+</Aside>
+
+## Where to look in the source
+
+| Concern | Path |
+| --- | --- |
+| Manifest / AddressedScroll / ContentId | `libs/scroll-format/src/manifest.rs`, `content_id.rs` |
+| Glyph / Scroll model | `libs/scroll-format/src/scroll.rs` |
+| Compiler (writer) | `apps/emet/` (re-exports the model via `emet::ir`) |
+| Agent (reader) | `apps/golemd/` |

@@ -1,0 +1,19 @@
+[package]
+name    = "golemctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+anyhow       = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap         = { workspace = true }
+reqwest      = { workspace = true }
+iocraft      = { workspace = true }
+
+[dev-dependencies]
+tempfile     = { workspace = true }

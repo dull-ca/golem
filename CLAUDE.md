@@ -2,31 +2,53 @@
 
 ## The model
 
-A per-node **bookkeeping** agent — it records, resolves, and journals; it
-does **not** touch the host (no install, no signing, no multi-node, no
-resource kinds beyond `packages`). Enforcement layers on top later.
+You author a fleet in **Emet** (`emet/`), a typed functional language. A
+program evaluates to `main : List Scroll` — one **Scroll** per host. A Scroll is
+a recursive, strict tree (ADR 0031): each level holds *either* **glyphs** (a
+leaf unit) *or* named sub-scrolls (a branch), never both. Leaf units are the
+failure-isolation boundary — one unit's failure never rolls back a sibling — and
+each may carry an optional `policy`. The glyphs come over exactly four kinds:
 
-Vocabulary (chosen deliberately — keep it consistent):
+- **`aptPackage { name }`** — a Debian package.
+- **`systemdService { unit }`** — an enabled+started unit.
+- **the filesystem glyph** — `file` / `directory` / `symlink`, three surface
+  spellings of one `Glyph::Filesystem { path, entry }` whose `entry` is an
+  `Entry` sum (`File { contents, perms }` | `Directory { perms }` | `Symlink
+  { target }`) with typed `Perms { mode, owner, group }`. Each arm carries only
+  its own fields, so illegal states (a symlink with a mode, a directory with
+  contents) are unrepresentable (ADR 0019).
+- **`lineInFile { path, line }`** — one line ensured present in a file.
 
-- **Blueprint** — what a user submits: `{ name, packages }`.
-- **commission / decommission** — the request to add/replace, or remove, a blueprint.
-- **build / teardown** — what golem *would* do in answer to a successful
-  commission / decommission. Vocabulary only today; nothing runs.
-- **State** — resolved view: `packages: { pkg → [blueprint names that want it] }`.
-- **Revision** — append-only journal entry per change (`Init` / `Commission` /
-  `Decommission`); embeds the State and the Actions.
-- **Action** — `Install` / `Remove`. Recorded, never executed.
+There is no fifth resource kind. `directory` and `symlink` are **variants of the
+filesystem entry**, not new glyphs — just as `AptPackage` | `SystemdService` are
+variants of one `Glyph` sum — so the count stays four *reconciler-owned kinds*.
+Richer shapes (workloads, services, ingress) are Emet library abstractions that
+*compile down* to these four glyphs — never new golemd kinds.
 
-Source of truth: the Rust types in `crates/golem-types/`. User-facing
-contract: `nickel/lib.ncl`. Build & run: `QUICKSTART.md`.
+`emetc` compiles a program to a binary, content-addressed **manifest** (BLAKE3
+over postcard bytes; per-scroll and per-glyph content ids). golemd ingests the
+manifest, selects its host's scroll, and **diffs by content id** into glyph
+operations (`GlyphOp` — `Install` / `Remove` / `Replace` / `Noop`, keyed by
+`Glyph::key()`, versioned by content id). It enacts each op through a reversible
+**Reconciler** (`apply` captures the prior state as an `Inverse`; `reverse`
+restores it exactly) and journals the ordered outcomes as an append-only
+**Revision** (`Init` / `Reconcile`) so upgrades and removals undo precisely
+what golem did. golem only ever reverses edits it recorded — it never touches
+pre-existing host state.
+
+Source of truth for the wire model: the **`scroll-format`** crate
+(`libs/scroll-format/`), shared by writer (`emetc`) and reader (`golemd`).
+The authoring contract is the Emet language. Build & run: `QUICKSTART.md`.
 
 ## The wire format is an implementation detail
 
-The model above is the contract between `golemctl` and `golemd` — not the
-bytes. JSON today (Nickel exports it); a binary, statically-typed format is
-the plan of record. The model doesn't change, the serializer does. Don't
-elevate JSON details (key order, base64) as the headline, and don't add
-features that only make sense for hand-written JSON.
+The model above is the contract between `emetc` and `golemd` — not the exact
+bytes. The manifest is binary postcard today; its `format_version` guards
+artifacts at rest. The model doesn't change, the serializer might. Don't
+elevate encoding details (postcard field order, hex) as the headline — though
+note that because the format is non-self-describing, a glyph's field/variant
+order *is* the encoding, so reordering one is a `format_version` bump, not a
+free refactor.
 
 ## Skill routing
 
@@ -39,6 +61,11 @@ Auto mode is on; prefer action over planning.
 Never use git unless explicitly asked — no commits, pushes, branches, or
 resets. The user decides when to commit.
 
-## Docs site
+## Docs
 
-`docs/` still describes an older, richer model. Leave it alone — not there yet.
+Two separate trees:
+
+- **`sites/website/`** — the Astro/Starlight public docs site, on the current
+  glyph/scroll/manifest model. Run and build from there (`sites/website`).
+- **`docs/`** — the markdown design docs: `adr/`, `design/`, `guide/`,
+  `PLAN.md`, `TODO.md`. The decision and backlog record, not the published site.

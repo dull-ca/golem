@@ -1,0 +1,4793 @@
+//! The write path: turn a manifest into host changes, durably and reversibly
+//! (ADR 0020). The foreman selects this host's scroll, diffs it against the
+//! currently-applied set (`wal::applied_outcomes`, folded from the WAL), and
+//! enacts the resulting ops through the [`Reconciler`] port — writing a
+//! write-ahead log around every side effect.
+//!
+//! **The bracketing invariant.** Every side effect is framed by two durable
+//! writes: an `Intended` [`WalStep`](crate::journal::WalStep) row is committed
+//! *before* `Reconciler::apply`/`reverse` is called, and a `Done`/`Failed` row
+//! *after* it returns (see [`Foreman::enact_apply`]/[`Foreman::enact_reverse`]).
+//! A crash can therefore land the daemon in "an effect was intended but its
+//! outcome was never recorded" — but never in "an effect happened and golem has
+//! no trace of it." That gap is what recovery closes; it is why the intent row
+//! comes first.
+//!
+//! **Recovery.** On construction, and again under the write lock before each
+//! reconcile, [`Foreman::recover`] settles any interrupted attempt before a new
+//! manifest is allowed in (ingest is gated on the latest attempt being settled,
+//! so a fresh manifest can never clobber an in-progress reversal). Recovery:
+//! [`Foreman::redrive_intended`] re-drives every `Intended`-without-terminal step
+//! idempotently (reconcilers observe host state first, so re-running converges
+//! whether or not the interrupted call took effect), then
+//! [`Foreman::rollback_attempt`] reverses the attempt's still-applied steps in
+//! reverse order. Both are resumable: a step already `Reversed` is never reversed
+//! again, so a rollback continues from wherever the log shows it stopped.
+//!
+//! Recovery and the reconcile write path share one `write` mutex, so only one
+//! attempt is ever in flight and recovery never races an incoming manifest.
+
+use anyhow::Result;
+use scroll_format::{
+    from_bytes, AddressedScroll, ContentId, Contents, Entry, Glyph, LeafUnit, Policy, Scroll,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
+
+use crate::config::{EnactConfig, OnExhaustConfig, RetryConfig};
+use crate::journal::{
+    AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
+    WalStep, WalStepState,
+};
+use crate::planroom::PlanRoom;
+use crate::progress::{EventKind, EventLevel, ProgressRegistry};
+use crate::reconcile::plan;
+use crate::reconciler::{EnactError, Reconciler};
+use crate::report::{
+    FailClassReport, FailPhase, GlyphAction, GlyphFailure, GlyphLine, GlyphOutcome,
+    ReconcileReport, UnitOutcome, UnitReport,
+};
+use crate::wal::applied_outcomes;
+
+/// The retryability of one failed enact call, tracked in memory across a unit's
+/// retry rounds. The WAL records the `Failed` bracket (crash-recovery truth) but
+/// not the class — the class is a live-loop concern, so the round loop keeps it
+/// alongside each op's ordinal (ADR 0029 §1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum RetryClass {
+    Fatal,
+    Retryable,
+}
+
+/// The classified result of one bracketed reconciler call: `Ok` on success,
+/// `Failed` carrying why it failed and its retryability. A reconciler failure is
+/// never a `Result::Err` — it lives here and in the WAL `Failed` row — so a
+/// failing op no longer aborts the loop (only genuine planroom I/O bails).
+#[derive(Debug, Clone)]
+pub(crate) enum StepClass {
+    Ok,
+    /// A shared duplicate settled by [`Foreman::enact_credited`] — another unit's
+    /// success put its `(key, cid)` on the host, so this op did no real work. A
+    /// distinct terminal class so the report and projection can render it as
+    /// satisfied-by-sharing (`≡`) rather than real work (`✓`) (ADR 0034 §1).
+    Credited,
+    Failed(RetryClass, String),
+}
+
+/// The terminal classification of a still-failing op after the round loop ends:
+/// `Fatal` never retried, `RetriesExhausted` a retryable that hit a limit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FailClass {
+    Fatal,
+    RetriesExhausted,
+}
+
+/// Which side of the bracket failed — an `apply` or a `reverse`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Phase {
+    Enact,
+    Reverse,
+}
+
+/// One glyph that a leaf unit could not settle, collected after best-effort and
+/// retries drained. Mapped into a wire [`GlyphFailure`] by `unit_report_from`.
+#[derive(Debug, Clone)]
+pub(crate) struct UnitFailure {
+    pub glyph_key: String,
+    pub unit_path: Vec<String>,
+    pub phase: Phase,
+    pub class: FailClass,
+    pub attempts: u32,
+    pub message: String,
+    pub rolled_back: bool,
+    pub details: Option<String>,
+}
+
+/// A leaf unit's fate: the failures it could not settle, whether its
+/// `on_exhaust = rollback` undid this attempt's applied glyphs, and the rolled-up
+/// unit outcome.
+pub(crate) struct UnitResult {
+    pub unit_path: Vec<String>,
+    pub glyphs: Vec<GlyphLine>,
+    pub failures: Vec<UnitFailure>,
+    pub outcome: UnitOutcome,
+}
+
+fn classify(e: EnactError) -> StepClass {
+    match e {
+        EnactError::Fatal(m) => StepClass::Failed(RetryClass::Fatal, m),
+        EnactError::Retryable(m) => StepClass::Failed(RetryClass::Retryable, m),
+    }
+}
+
+/// The per-round delay before re-driving a unit's still-failing ops:
+/// `min(max_delay_ms, base_delay_ms × backoff_multiplier^(round-1))`, then
+/// perturbed by ± `jitter_fraction` (uniform, via `fastrand`) to de-synchronize
+/// retries across a fleet (ADR 0029 §3).
+pub(crate) fn round_delay(retry: &RetryConfig, round: u32) -> Duration {
+    let exp = retry.backoff_multiplier.powi((round - 1) as i32);
+    let raw = (retry.base_delay_ms as f64 * exp).min(retry.max_delay_ms as f64);
+    let jitter = if retry.jitter_fraction > 0.0 {
+        let span = raw * retry.jitter_fraction;
+        raw + (fastrand::f64() * 2.0 - 1.0) * span
+    } else {
+        raw
+    };
+    Duration::from_millis(jitter.max(0.0) as u64)
+}
+
+pub struct Foreman {
+    host: String,
+    planroom: Box<dyn PlanRoom>,
+    reconciler: Box<dyn Reconciler>,
+    /// Fleet default (from `golemd.toml`); the per-scroll `policy` cascade
+    /// overrides it per unit via `resolve_retry`.
+    retry: RetryConfig,
+    /// Host-wide enact width (from `golemd.toml [enact]`): the size of the worker
+    /// pool `run_reconcile` drains the unit queue with. `workers = 1` reproduces
+    /// fully-serial enact (ADR 0034 §3).
+    enact: EnactConfig,
+    write: Mutex<()>,
+    progress: ProgressRegistry,
+    reports: Mutex<std::collections::BTreeMap<u64, ReconcileReport>>,
+}
+
+#[derive(Debug)]
+pub struct SelectedScroll {
+    pub content_id: ContentId,
+    pub scroll: Scroll,
+}
+
+const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/systemd"];
+
+/// The synthetic terminal segment every vanished-removes group appends to its
+/// resolved unit path, so the group's `unit_path` is one segment longer than the
+/// surviving ancestor it resolved to and therefore disjoint from that ancestor's
+/// own path. Without it a group resolving to a present unit's path — a flat host
+/// (`[host]`) or a glyph dropped from a still-present unit B (`[host, b]`) — would
+/// share that unit's `unit_path`, and a removes-group rollback would reverse the
+/// present unit's applied steps. Both those present units are leaves whose path
+/// ends at the resolved node, so appending any segment makes the group disjoint.
+/// The marker is chosen so a group reports legibly as `… / b / <removes>`; angle
+/// brackets are unconventional in an authored scroll name, and Emet does not
+/// reserve names, so this is a naming convention rather than an enforced literal.
+const REMOVES_SEGMENT: &str = "<removes>";
+
+impl Foreman {
+    pub fn new(host: String, planroom: Box<dyn PlanRoom>, reconciler: Box<dyn Reconciler>) -> Self {
+        let foreman = Self {
+            host,
+            planroom,
+            reconciler,
+            retry: RetryConfig::default(),
+            enact: EnactConfig::default(),
+            write: Mutex::new(()),
+            progress: ProgressRegistry::new(),
+            reports: Mutex::new(std::collections::BTreeMap::new()),
+        };
+        if let Err(e) = foreman.recover() {
+            warn!(?e, "startup recovery failed");
+        }
+        foreman
+    }
+
+    pub fn with_retry_config(mut self, cfg: RetryConfig) -> Self {
+        self.retry = cfg;
+        self
+    }
+
+    pub fn with_enact_config(mut self, cfg: EnactConfig) -> Self {
+        self.enact = cfg;
+        self
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn progress(&self) -> &ProgressRegistry {
+        &self.progress
+    }
+
+    /// Acquire the single write lock, recovering the guard if a prior holder
+    /// panicked and poisoned it. This is sound because the lock guards no
+    /// in-memory invariant — every durable fact lives in the WAL, bracketed
+    /// `Intended`→terminal (ADR 0020 §2). A panic mid-reconcile can only leave an
+    /// unsettled attempt in the log, which the next `recover` re-drives and rolls
+    /// back; there is no torn in-process structure a poisoned guard could expose.
+    /// So poison must not wedge the daemon: the next apply takes the guard, runs
+    /// its own recover-then-gate, and proceeds (ADR 0033, panic-guard).
+    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Ingest and reconcile in one synchronous call — the in-process path for
+    /// tests that exercise a whole reconcile without the async HTTP surface. The
+    /// HTTP surface itself is 202-then-poll (ADR 0033 §1) and calls [`ingest`]
+    /// and [`run_reconcile`] separately; this shim keeps the single-call shape.
+    ///
+    /// [`ingest`]: Foreman::ingest
+    /// [`run_reconcile`]: Foreman::run_reconcile
+    pub fn apply_manifest(&self, bytes: &[u8]) -> Result<ReconcileReport, ForemanError> {
+        let (reconcile_id, selected) = self.ingest(bytes)?;
+        self.run_reconcile(reconcile_id, selected)
+    }
+
+    /// The cheap, synchronous half of an apply (ADR 0033 §1): decode the
+    /// manifest, select this host's scroll, gate on any in-flight attempt, then
+    /// open the attempt and mark it `Enacting`. Returns the `reconcile_id` the
+    /// client polls; [`run_reconcile`](Foreman::run_reconcile) does the enact
+    /// under the same lock discipline. Its failures are the reasons a reconcile
+    /// never started, so they surface synchronously on the `POST` (ADR 0033 §1).
+    pub fn ingest(&self, bytes: &[u8]) -> Result<(u64, SelectedScroll), ForemanError> {
+        let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
+            detail: e.to_string(),
+        })?;
+        let selected = self.select(&manifest.scrolls);
+        info!(
+            host = %self.host,
+            scroll = %selected.content_id,
+            glyphs = selected.scroll.all_glyphs().len(),
+            "manifest ingested"
+        );
+        let _w = self.write_guard();
+        // NOTE: gate BEFORE recover, not after (a deliberate departure from a
+        // recover-then-gate reading of ADR 0020 §3). recover_locked rolls back
+        // any unsettled latest attempt, so recovering first would undo the very
+        // in-flight attempt this gate exists to protect — its `run_reconcile`
+        // has released nothing yet, only handed us back the id between the two
+        // write-lock acquisitions — and the gate could never fire. Genuinely
+        // stale attempts (a crash before this daemon started) are already rolled
+        // back by the startup `recover()` in `Foreman::new`; anything unsettled
+        // seen here is a live reconcile.
+        if let Some(attempt) =
+            self.planroom
+                .latest_attempt()
+                .map_err(|e| ForemanError::WalUnreadable {
+                    detail: e.to_string(),
+                })?
+        {
+            if !attempt.phase.is_settled() {
+                return Err(ForemanError::ReconcileInProgress {
+                    reconcile_id: attempt.reconcile_id,
+                });
+            }
+        }
+        self.recover_locked()
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        let attempt = self
+            .planroom
+            .open_attempt(Some(selected.content_id))
+            .map_err(ForemanError::Internal)?;
+        self.planroom
+            .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Enacting)
+            .map_err(ForemanError::Internal)?;
+        self.progress.open(attempt.reconcile_id);
+        Ok((attempt.reconcile_id, selected))
+    }
+
+    fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
+        match scrolls.iter().find(|a| a.scroll.name == self.host) {
+            Some(a) => SelectedScroll {
+                content_id: a.content_id,
+                scroll: a.scroll.clone(),
+            },
+            None => SelectedScroll {
+                content_id: scroll_format::content_id(&empty_scroll(&self.host)),
+                scroll: empty_scroll(&self.host),
+            },
+        }
+    }
+
+    /// Plan and enact one already-ingested attempt under the write lock. Diffs
+    /// the desired scroll against the WAL-folded applied set and enacts each unit
+    /// best-effort. On success runs config propagation and settles; on a unit's
+    /// exhausted retries it rolls back that unit's applied steps and reports the
+    /// failure, leaving the node at its last committed state. The attempt was
+    /// opened and marked `Enacting` by [`Foreman::ingest`]; that open, unsettled
+    /// attempt is what gates a concurrent ingest between the two lock
+    /// acquisitions (ADR 0020 §3).
+    ///
+    /// Four phases in fixed order (ADR 0034 §3): the serial batch pre-pass
+    /// ([`Reconciler::prepare`], apt front-loaded into one invocation); the
+    /// **parallel unit phase** below; the serial cross-unit removes; then settle.
+    /// The unit phase drains `units` on a bounded worker pool of `self.enact.workers`
+    /// threads — an `AtomicU64` hands each worker the next index, and each runs one
+    /// unit's whole `enact_unit` (its round loop, its `on_exhaust`) before taking
+    /// another. Reports land in per-index slots so `unit_reports` stays in source
+    /// order however the workers interleave; the first `Err` any worker raises is
+    /// captured and returned after the pool joins.
+    ///
+    /// The one ordering guarantee that survives parallelism: **within** a unit,
+    /// glyphs still enact in source order. **Between** units there is deliberately
+    /// none — the authored model promises no cross-unit ordering (ADR 0034 §3, §4),
+    /// so the executor is free to run them at once. `workers = 1` collapses this to
+    /// the fully-serial walk, the safe fallback.
+    pub fn run_reconcile(
+        &self,
+        reconcile_id: u64,
+        desired: SelectedScroll,
+    ) -> Result<ReconcileReport, ForemanError> {
+        let _w = self.write_guard();
+        let steps = self
+            .planroom
+            .wal_steps()
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        let prior = applied_outcomes(&steps);
+        // NOTE: `retry_clock` is a Mutex, not a Cell, so the attempt-wide retry
+        // budget survives units running concurrently (ADR 0034 §3). The clock is
+        // started lazily on the first unit that actually retries and shared across
+        // all units, bounding the whole reconcile — not each unit (ADR 0029 §3).
+        let retry_clock: Mutex<Option<Instant>> = Mutex::new(None);
+        let units = desired.scroll.leaf_units();
+        let mut unit_reports = Vec::new();
+        // NOTE: `next_ord` is an AtomicU64 so each worker reserves its unit's
+        // disjoint `step_ord` block from its own thread (ADR 0034 §3);
+        // `enact_unit`'s `fetch_add(ops.len())` keeps per-unit ords disjoint
+        // whatever order the reservations interleave.
+        let next_ord = AtomicU64::new(0);
+        let unit_ops: Vec<Vec<GlyphOp>> = units
+            .iter()
+            .map(|unit| {
+                plan(&prior, &leaf_as_scroll(unit))
+                    .into_iter()
+                    .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
+                    .collect()
+            })
+            .collect();
+        // NOTE: `enact_or_credit` reads three attempt-scoped sets, each covering a
+        // different slice of an op's lifecycle (ADR 0034 §1–2):
+        //   - `shared`: a per-op immutable mask, computed once. `true` marks an op
+        //     whose `(key, cid)` pair is declared by more than one unit — a
+        //     crediting *candidate*. Read-only, so no lock ([`shared_pairs`]).
+        //   - `batch_installed`: apt names the pre-pass actually installed this
+        //     attempt. A unit *removes* a name to claim it (drain-once); once empty
+        //     for a name, later declarers apply for real.
+        //   - `succeeded`: shared `(key, cid)` pairs a real apply (or a claim) has
+        //     put on the host. A pair is *inserted* on first success; later shared
+        //     declarers of it credit instead of re-applying.
+        // The two mutable sets are `Mutex`, not `Cell`, so the worker pool (ADR
+        // 0034 §3) reads and mutates them across concurrent unit threads; the Mutex
+        // makes claim-once and credit-after-success both first-writer-wins.
+        let shared = shared_pairs(&unit_ops);
+        let unit_paths: Vec<&[String]> = units.iter().map(|u| u.path.as_slice()).collect();
+        for (unit_idx, op_owners) in shared_owners(&unit_ops, &unit_paths)
+            .into_iter()
+            .enumerate()
+        {
+            for (op_idx, owner) in op_owners.into_iter().enumerate() {
+                if let Some(owner) = owner {
+                    self.progress.mark_shared(
+                        reconcile_id,
+                        unit_paths[unit_idx],
+                        &unit_ops[unit_idx][op_idx].key(),
+                        &owner,
+                    );
+                }
+            }
+        }
+        let enacting_ops: Vec<GlyphOp> = unit_ops.iter().flatten().cloned().collect();
+        // NOTE: the first unit declaring a batch-installed package claims the real
+        // `Inverse::RemoveAptPackage` its per-unit `apply_apt` can no longer observe
+        // — the batch already made the package present, so every per-unit apply sees
+        // `changed = false`/`Inverse::Nothing` (ADR 0034 §2). `HostReconciler::prepare`
+        // reports any batch/fallback failure at warn level and still returns `Ok`
+        // with whatever `batch_installed` dpkg truth shows, so a partially
+        // successful fallback is never discarded; the `Err` arm below is reached
+        // only by a caught reconciler panic, for which the set starts empty and the
+        // per-unit applies classify the failure as before.
+        let batch_installed = match self.reconciler.prepare(&enacting_ops) {
+            Ok(outcome) => outcome.batch_installed,
+            Err(e) => {
+                warn!(
+                    error = %format!("{e:?}"),
+                    "prepare pre-pass reported a failure; per-unit enact will classify"
+                );
+                std::collections::HashSet::new()
+            }
+        };
+        let batch_installed: Mutex<std::collections::HashSet<String>> = Mutex::new(batch_installed);
+        let succeeded: Mutex<std::collections::HashSet<(String, ContentId)>> =
+            Mutex::new(std::collections::HashSet::new());
+        let results: Mutex<Vec<Option<UnitReport>>> =
+            Mutex::new((0..units.len()).map(|_| None).collect());
+        let queue = AtomicU64::new(0);
+        let workers = self.enact.workers.max(1);
+        let enact_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let idx = queue.fetch_add(1, Ordering::SeqCst) as usize;
+                    if idx >= units.len() {
+                        break;
+                    }
+                    let unit = &units[idx];
+                    let effective = resolve_retry(&self.retry, &unit.policy_chain);
+                    match self.enact_unit(
+                        reconcile_id,
+                        &next_ord,
+                        &unit_ops[idx],
+                        &shared[idx],
+                        &succeeded,
+                        &batch_installed,
+                        &prior,
+                        &unit.path,
+                        &effective,
+                        &retry_clock,
+                    ) {
+                        Ok(result) => {
+                            results.lock().unwrap()[idx] = Some(unit_report_from(result));
+                        }
+                        Err(e) => {
+                            *enact_err.lock().unwrap() = Some(e);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = enact_err.into_inner().unwrap() {
+            return Err(ForemanError::Internal(e));
+        }
+        unit_reports.extend(results.into_inner().unwrap().into_iter().flatten());
+
+        for group in self
+            .plan_vanished_removes(&prior, &desired.scroll, &units)
+            .map_err(ForemanError::Internal)?
+        {
+            let effective = resolve_retry(&self.retry, &group.policy_chain);
+            let shared = vec![false; group.ops.len()];
+            let result = self
+                .enact_unit(
+                    reconcile_id,
+                    &next_ord,
+                    &group.ops,
+                    &shared,
+                    &succeeded,
+                    &batch_installed,
+                    &prior,
+                    &group.unit_path,
+                    &effective,
+                    &retry_clock,
+                )
+                .map_err(ForemanError::Internal)?;
+            unit_reports.push(unit_report_from(result));
+        }
+
+        self.propagate_config(reconcile_id)
+            .map_err(ForemanError::Internal)?;
+        let revision = self
+            .settle(reconcile_id, &desired)
+            .map_err(ForemanError::Internal)?;
+        let report = ReconcileReport::roll_up(revision, unit_reports);
+        log_settled(&report);
+        self.reports
+            .lock()
+            .unwrap()
+            .insert(reconcile_id, report.clone());
+        Ok(report)
+    }
+
+    /// The detached-run wrapper the async HTTP path spawns (ADR 0033 §1): run the
+    /// reconcile and contain any panic so it cannot wedge the daemon. Reconciler
+    /// panics are already caught at the port ([`PanicCatching`]) and never reach
+    /// here — this is the outer guard for a panic anywhere else on the run (a
+    /// `.expect` in settle, say) that would otherwise unwind while `run_reconcile`
+    /// holds the write lock. [`std::panic::catch_unwind`] catches it, an ERROR
+    /// event is pushed to the poll ring so a watching client sees the fault, and
+    /// [`Foreman::recover`] rolls the still-`Enacting` attempt back to its last
+    /// committed set exactly as crash recovery does (ADR 0020 §3), leaving the
+    /// attempt terminally `RolledBack` and the next apply free to proceed. The
+    /// write lock is poison-tolerant ([`Foreman::write_guard`]), so `recover`
+    /// takes it cleanly even after a panicking holder poisoned it.
+    ///
+    /// [`PanicCatching`]: crate::reconciler::PanicCatching
+    pub fn run_reconcile_guarded(&self, reconcile_id: u64, desired: SelectedScroll) {
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_reconcile(reconcile_id, desired)
+        }));
+        match run {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                error!(reconcile_id, error = %e, "reconcile run failed");
+            }
+            Err(_) => {
+                error!(reconcile_id, "reconcile run panicked; recovering");
+                self.progress.record(
+                    reconcile_id,
+                    EventLevel::Error,
+                    std::slice::from_ref(&self.host),
+                    "",
+                    "reconcile panicked; rolling back",
+                );
+                if let Err(e) = self.recover() {
+                    error!(reconcile_id, error = %e, "recovery after panic failed");
+                }
+            }
+        }
+    }
+
+    /// The `Remove` ops for glyphs that belong to no present leaf unit — a unit
+    /// that vanished between manifests (ADR 0031 §4). The whole-scroll diff over
+    /// `all_glyphs` yields these removes; each is grouped under the longest prefix
+    /// of its recorded `unit_path` that still exists as a node in the new scroll
+    /// tree — the nearest surviving ancestor — whose policy chain the group
+    /// inherits. An empty recorded path (an old host-root placeholder row) falls
+    /// back to the host root. The group's own `unit_path` is that resolved path
+    /// plus a [`REMOVES_SEGMENT`] terminal, keeping it disjoint from every present
+    /// unit's path so a removes-group rollback never reverses a present unit's
+    /// steps; policy resolution still runs on the un-suffixed resolved path.
+    fn plan_vanished_removes<'a>(
+        &self,
+        prior: &[Outcome],
+        desired: &'a Scroll,
+        units: &[LeafUnit<'_>],
+    ) -> Result<Vec<RemoveGroup<'a>>> {
+        let removes: Vec<GlyphOp> = plan(prior, desired)
+            .into_iter()
+            .filter(|o| matches!(o, GlyphOp::Remove { .. }))
+            .collect();
+        if removes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let recorded = self.recorded_unit_paths()?;
+        let nodes = node_paths(desired, units);
+        let mut groups: Vec<RemoveGroup> = Vec::new();
+        for op in removes {
+            let recorded_path = recorded.get(&op.key()).cloned().unwrap_or_default();
+            let resolved =
+                surviving_prefix(&recorded_path, &nodes).unwrap_or_else(|| vec![self.host.clone()]);
+            let mut unit_path = resolved.clone();
+            unit_path.push(REMOVES_SEGMENT.to_string());
+            match groups.iter_mut().find(|g| g.unit_path == unit_path) {
+                Some(g) => g.ops.push(op),
+                None => {
+                    let policy_chain = policy_chain_for_path(desired, &resolved);
+                    groups.push(RemoveGroup {
+                        unit_path,
+                        ops: vec![op],
+                        policy_chain,
+                    });
+                }
+            }
+        }
+        Ok(groups)
+    }
+
+    /// Each applied glyph key mapped to the `unit_path` its most recent WAL step
+    /// recorded (ADR 0031 §4) — the source the vanished-removes pass groups by.
+    fn recorded_unit_paths(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+        let steps = self.planroom.wal_steps()?;
+        let mut latest: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for step in &steps {
+            latest.insert(step.glyph_key.clone(), step.unit_path.clone());
+        }
+        Ok(latest)
+    }
+
+    /// Enact one leaf unit best-effort (ADR 0029 §1), returning its
+    /// [`UnitResult`]. Round 1 runs every op once; between rounds the still-failing
+    /// retryable ops are re-driven after [`round_delay`], stopping when nothing
+    /// remains, `max_attempts` rounds are reached, or the `max_elapsed_ms`
+    /// wall-time budget is spent — whichever trips first. The budget is measured
+    /// against `retry_clock`, a single lazily-started clock shared across every
+    /// unit that begins at the attempt's first retry decision — the first time any
+    /// unit is about to sleep between rounds — so first-pass enacts never consume
+    /// the budget and `max_elapsed_ms` bounds only the whole reconcile's retrying.
+    /// A unit reached after the budget is already spent gets only its opening
+    /// round; a unit that settles in round one leaves the clock untouched for a
+    /// later unit (ADR 0029 §3, addendum). A `Failed` op never aborts the
+    /// loop; its class is tracked in memory (the WAL records the bracket for crash
+    /// recovery, not the class). Once the loop gives up, each still-failing op is
+    /// diagnosed **once** — `Reconciler::diagnose` captures host forensics onto the
+    /// failure — before the unit's `on_exhaust` (`rollback` | `keep`) settles its
+    /// fate, scoped to this unit's `unit_path` so a sibling unit is never touched
+    /// and so the evidence is captured before a rollback removes it (ADR 0029 §4,
+    /// §2).
+    #[allow(clippy::too_many_arguments)]
+    fn enact_unit(
+        &self,
+        reconcile_id: u64,
+        next_ord: &AtomicU64,
+        ops: &[GlyphOp],
+        shared: &[bool],
+        succeeded: &Mutex<std::collections::HashSet<(String, ContentId)>>,
+        batch_installed: &Mutex<std::collections::HashSet<String>>,
+        prior: &[Outcome],
+        unit_path: &[String],
+        retry: &RetryConfig,
+        retry_clock: &Mutex<Option<Instant>>,
+    ) -> Result<UnitResult> {
+        // NOTE: `step_ord` is unique across ALL units of an attempt — one atomic
+        // `fetch_add(ops.len())` reserves this unit a disjoint `[base_ord, base_ord
+        // + ops.len())` block, so blocks never overlap however concurrent units
+        // interleave their reservations (ADR 0034 §3). The WAL grouping predicates
+        // (`has_terminal`/`next_reversible`/`reversed_after`, `wal::cancelled_dones`)
+        // key on `(step_ord, action)` and depend on it.
+        let base_ord = next_ord.fetch_add(ops.len() as u64, Ordering::SeqCst);
+        let mut classes: Vec<StepClass> = Vec::with_capacity(ops.len());
+        for (offset, op) in ops.iter().enumerate() {
+            let class = self.enact_or_credit(
+                reconcile_id,
+                base_ord + offset as u64,
+                op,
+                shared[offset],
+                succeeded,
+                batch_installed,
+                prior,
+                unit_path,
+                1,
+            )?;
+            classes.push(class);
+        }
+        let mut round = 1u32;
+        loop {
+            let remaining = remaining_ops(ops, &classes);
+            if remaining.is_empty() {
+                break;
+            }
+            if round + 1 > retry.max_attempts {
+                break;
+            }
+            {
+                let clock = retry_clock.lock().unwrap();
+                if clock.is_some_and(|c| c.elapsed().as_millis() as u64 >= retry.max_elapsed_ms) {
+                    break;
+                }
+            }
+            {
+                let mut clock = retry_clock.lock().unwrap();
+                if clock.is_none() {
+                    *clock = Some(Instant::now());
+                }
+            }
+            let delay = round_delay(retry, round);
+            for offset in &remaining {
+                self.progress
+                    .set_retry(reconcile_id, &ops[*offset as usize].key(), delay);
+            }
+            std::thread::sleep(delay);
+            round += 1;
+            for offset in remaining {
+                let op = &ops[offset as usize];
+                self.progress.clear_retry(reconcile_id, &op.key());
+                classes[offset as usize] = self.enact_or_credit(
+                    reconcile_id,
+                    base_ord + offset,
+                    op,
+                    shared[offset as usize],
+                    succeeded,
+                    batch_installed,
+                    prior,
+                    unit_path,
+                    round,
+                )?;
+            }
+        }
+        let mut failures = unit_failures(ops, &classes, unit_path, round);
+        for f in &mut failures {
+            error!(
+                glyph_key = %f.glyph_key,
+                round,
+                class = failclass_tag(f.class),
+                reason = %f.message,
+                "enact failed; giving up"
+            );
+            if let Some(op) = ops.iter().find(|o| o.key() == f.glyph_key) {
+                f.details = self.reconciler.diagnose(op.glyph());
+            }
+        }
+        let has_failures = !failures.is_empty();
+        let rolled_back = has_failures && retry.on_exhaust == OnExhaustConfig::Rollback;
+        if rolled_back {
+            self.rollback_unit(reconcile_id, unit_path)?;
+        }
+        let outcome = if !has_failures {
+            UnitOutcome::Settled
+        } else if rolled_back {
+            UnitOutcome::RolledBack
+        } else {
+            UnitOutcome::Partial
+        };
+        let glyphs = glyph_lines(ops, &classes, rolled_back, round);
+        Ok(UnitResult {
+            unit_path: unit_path.to_vec(),
+            glyphs,
+            failures: failures
+                .into_iter()
+                .map(|mut f| {
+                    f.rolled_back = rolled_back;
+                    f
+                })
+                .collect(),
+            outcome,
+        })
+    }
+
+    /// Route one op down exactly one of four branches, tried in this order — the
+    /// order is the correctness argument, each earlier arm foreclosing a bug the
+    /// later arms would otherwise cause (ADR 0034 §1–2):
+    ///
+    /// 1. **`Noop` → [`enact_one`] passthrough.** A `Noop` never participates in
+    ///    crediting or claiming: it takes none of the arms below, so it can neither
+    ///    be credited by a sibling nor seed `succeeded`. This arm comes first
+    ///    because crediting a `Noop` would write a phantom `Done` shadowing the real
+    ///    prior inverse still on record for that key — `enact_one`'s `Noop` arm
+    ///    writes no WAL step precisely to keep that prior the latest (ADR 0020
+    ///    inverse-loss).
+    /// 2. **Shared pair already in `succeeded` → [`enact_credited`].** A sibling
+    ///    already ran a real `apply` that put this `(key, cid)` on the host, so this
+    ///    op writes the credited bracket (no host effect). Gating on `succeeded`
+    ///    — not merely on being a shared candidate — is what makes a failed
+    ///    first-declarer harmless: the pair never entered the set, so this arm is
+    ///    skipped and the op falls through to a real apply rather than crediting a
+    ///    phantom the host lacks (pre-dedup semantics, safe by reconciler
+    ///    idempotence).
+    /// 3. **Apt `Install` whose name is still in `batch_installed` →
+    ///    [`enact_claimed`].** The batch pre-pass already made this package present,
+    ///    so no per-unit `apply_apt` can observe the install (each would see
+    ///    `changed = false`/`Inverse::Nothing`) and no unit would hold the real
+    ///    inverse. The FIRST unit to reach the package `remove`s the name under the
+    ///    mutex so only one claimer wins, and records the real
+    ///    `Inverse::RemoveAptPackage` bracket without re-running apt. This arm must
+    ///    precede the real-apply arm: reaching #4 for a batch-installed package
+    ///    would record `Inverse::Nothing`, leaving no unit able to reverse the
+    ///    batch install (the untracked-batch-install bug).
+    /// 4. **Otherwise → real [`enact_one`], seeding `succeeded` on `Ok`.** The op
+    ///    runs its reconciler `apply`; on an `Ok` class a shared op records its pair
+    ///    so later declarers credit at arm #2. Arms #3 and #4 both seed `succeeded`
+    ///    when shared, so a claim seeds the set exactly as a real apply would.
+    ///
+    /// A non-shared op is never credited (#2 and the seeding in #3/#4 are gated on
+    /// `shared`). The `succeeded` mutex makes crediting first-success-wins under the
+    /// worker pool (ADR 0034 §3); it only suppresses a *redundant*
+    /// apply after a success, never coordinates two racing real applies (idempotent
+    /// by construction). A later observer of a package whose name was already
+    /// claimed (removed from `batch_installed`) falls through to arm #4 and honestly
+    /// observes the package installed.
+    #[allow(clippy::too_many_arguments)]
+    fn enact_or_credit(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        shared: bool,
+        succeeded: &Mutex<std::collections::HashSet<(String, ContentId)>>,
+        batch_installed: &Mutex<std::collections::HashSet<String>>,
+        prior: &[Outcome],
+        unit_path: &[String],
+        round: u32,
+    ) -> Result<StepClass> {
+        if matches!(op, GlyphOp::Noop { .. }) {
+            return self.enact_one(reconcile_id, ord, op, prior, unit_path, round);
+        }
+        let pair = (op.key(), enacted_cid_of(op));
+        if shared && succeeded.lock().unwrap().contains(&pair) {
+            // NOTE: marked before the WAL write, not after. `enact_credited`'s
+            // `Done` row folds as plain `Applied` until this fact exists, so a
+            // poll landing between the two durable writes would misread a
+            // credited op as real work (ADR 0034 §1).
+            self.progress
+                .mark_credited(reconcile_id, unit_path, &op.key());
+            let class = self.enact_credited(reconcile_id, ord, op, unit_path)?;
+            return Ok(class);
+        }
+        if let GlyphOp::Install {
+            glyph: glyph @ Glyph::AptPackage { name },
+            ..
+        } = op
+        {
+            if batch_installed.lock().unwrap().remove(name) {
+                let class = self.enact_claimed(reconcile_id, ord, op, glyph, unit_path)?;
+                if shared && matches!(class, StepClass::Ok) {
+                    succeeded.lock().unwrap().insert(pair);
+                }
+                return Ok(class);
+            }
+        }
+        let class = self.enact_one(reconcile_id, ord, op, prior, unit_path, round)?;
+        if shared && matches!(class, StepClass::Ok) {
+            succeeded.lock().unwrap().insert(pair);
+        }
+        Ok(class)
+    }
+
+    /// Record a shared op's bracket without touching the host — another unit
+    /// already ran a real `apply` that succeeded for this `(key, cid)` this attempt
+    /// ([`enact_or_credit`] gates on the success set). The bracket is byte-identical
+    /// to the idempotent re-observation it replaces: `Intended` then `Done`,
+    /// `changed = false`, `Inverse::Nothing`, under this unit's own `step_ord` and
+    /// `unit_path`, no reconciler call. So a unit-scoped rollback of a crediting
+    /// unit reverses `Inverse::Nothing` — zero host effect — and the applied-set
+    /// fold is unchanged: only the enacting unit holds the real inverse and can undo
+    /// the host change (ADR 0034 §1).
+    fn enact_credited(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        unit_path: &[String],
+    ) -> Result<StepClass> {
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Intended,
+            op,
+            Some(&Inverse::Nothing),
+            None,
+            unit_path,
+        )?;
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Done,
+            op,
+            Some(&Inverse::Nothing),
+            Some(false),
+            unit_path,
+        )?;
+        Ok(StepClass::Credited)
+    }
+
+    /// Record the bracket for an apt `Install` the batch pre-pass already
+    /// installed this attempt, without re-running apt (ADR 0034 §2). The claim is
+    /// as trustworthy as a real apply's receipt because it rests on the same dpkg
+    /// probe `apply_apt` uses: `HostReconciler::prepare` confirmed the package
+    /// absent before the batch and present after, the exact
+    /// absent-before/present-after check a per-unit `apply_apt` runs to decide it
+    /// changed the host. On that confirmed truth the bracket carries the real
+    /// [`Inverse::RemoveAptPackage`] (from [`inverse_of`]) and `changed = true`,
+    /// exactly the receipt a per-unit `apply_apt` would have captured had it done
+    /// the install itself. Only the first unit to reach the package claims it
+    /// ([`enact_or_credit`] removes the name from `batch_installed` under the
+    /// mutex); the enacting bracket is what a unit-scoped rollback reverses to
+    /// remove the batch-installed package, closing the gap where a successful batch
+    /// left every per-unit apply observing `changed = false`/`Inverse::Nothing`
+    /// and no unit holding the real inverse.
+    ///
+    /// [`inverse_of`]: crate::reconciler::inverse_of
+    fn enact_claimed(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        glyph: &Glyph,
+        unit_path: &[String],
+    ) -> Result<StepClass> {
+        let inverse = crate::reconciler::inverse_of(glyph);
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Intended,
+            op,
+            Some(&inverse),
+            None,
+            unit_path,
+        )?;
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Done,
+            op,
+            Some(&inverse),
+            Some(true),
+            unit_path,
+        )?;
+        Ok(StepClass::Ok)
+    }
+
+    /// Enact one op once and return its classified [`StepClass`]. `Noop` touches
+    /// nothing and writes no step (so the prior `Done` and inverse stay the latest
+    /// for that key — ADR 0020 subsumes `preserve_prior_inverses`). A `Replace`
+    /// that [`replaces_in_place`] is a single `Apply` whose captured inverse
+    /// restores the old — no window where the resource is absent; every other
+    /// `Replace` and every `Remove` reverses the prior outcome first. A reconciler
+    /// failure is returned as a `Failed` class (never `Err`); only planroom I/O
+    /// bails with `?`.
+    fn enact_one(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        prior: &[Outcome],
+        unit_path: &[String],
+        round: u32,
+    ) -> Result<StepClass> {
+        match op {
+            GlyphOp::Noop { .. } => {
+                debug!(key = %op.key(), "noop");
+                Ok(StepClass::Ok)
+            }
+            GlyphOp::Install { cid, glyph } => {
+                info!(key = %op.key(), "install");
+                self.enact_apply(reconcile_id, ord, op, glyph, *cid, None, unit_path, round)
+            }
+            GlyphOp::Replace {
+                old_cid,
+                new_cid,
+                glyph,
+            } => {
+                info!(key = %op.key(), "replace");
+                if replaces_in_place(glyph) {
+                    self.enact_apply(
+                        reconcile_id,
+                        ord,
+                        op,
+                        glyph,
+                        *new_cid,
+                        None,
+                        unit_path,
+                        round,
+                    )
+                } else {
+                    let prior_outcome = self.prior_outcome(prior, &op.key(), *old_cid, glyph);
+                    let reversed = self.enact_reverse(
+                        reconcile_id,
+                        ord,
+                        op,
+                        &prior_outcome,
+                        unit_path,
+                        round,
+                    )?;
+                    if let StepClass::Failed(..) = reversed {
+                        return Ok(reversed);
+                    }
+                    self.enact_apply(
+                        reconcile_id,
+                        ord,
+                        op,
+                        glyph,
+                        *new_cid,
+                        None,
+                        unit_path,
+                        round,
+                    )
+                }
+            }
+            GlyphOp::Remove { cid, glyph } => {
+                info!(key = %op.key(), "remove");
+                let prior_outcome = self.prior_outcome(prior, &op.key(), *cid, glyph);
+                self.enact_reverse(reconcile_id, ord, op, &prior_outcome, unit_path, round)
+            }
+        }
+    }
+
+    /// One bracketed `apply`: append `Intended`, call the reconciler **once**,
+    /// then append `Done` with the captured inverse and `changed`, or `Failed`.
+    /// The `Intended` write is committed before the reconciler runs, so a crash
+    /// across the call leaves a recoverable trace (ADR 0020 §2). A reconciler
+    /// failure returns its [`StepClass`] and logs immediately at the `Failed` arm
+    /// (glyph key + reason only, never contents/secrets — ADR 0029 §2); it never
+    /// aborts the loop. Only a planroom write bails with `?`.
+    #[allow(clippy::too_many_arguments)]
+    fn enact_apply(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        glyph: &Glyph,
+        cid: ContentId,
+        intended_inverse: Option<&Inverse>,
+        unit_path: &[String],
+        round: u32,
+    ) -> Result<StepClass> {
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Apply,
+            WalStepState::Intended,
+            op,
+            intended_inverse,
+            None,
+            unit_path,
+        )?;
+        self.progress.record(
+            reconcile_id,
+            EventLevel::Info,
+            unit_path,
+            &op.key(),
+            &format!("{} {}", action_tag_for(op), op.key()),
+        );
+        // NOTE: enact_apply is the one place holding this op's full progress
+        // context (reconcile_id, unit_path, glyph key), so the cmd sink is built
+        // here and captures it — each line records against the exact glyph that
+        // produced it. Context rides the closure per call; the reconciler seam
+        // stays glyph-only, with no reconcile-scoped state threaded through it.
+        let key = op.key();
+        let mut sink = |level: EventLevel, line: &str| {
+            self.progress
+                .record_kind(reconcile_id, level, EventKind::Cmd, unit_path, &key, line);
+        };
+        match self.reconciler.apply_streaming(glyph, cid, &mut sink) {
+            Ok(outcome) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Apply,
+                    WalStepState::Done,
+                    op,
+                    Some(&outcome.inverse),
+                    Some(outcome.changed),
+                    unit_path,
+                )?;
+                Ok(StepClass::Ok)
+            }
+            Err(e) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Apply,
+                    WalStepState::Failed,
+                    op,
+                    None,
+                    None,
+                    unit_path,
+                )?;
+                let class = classify(e);
+                log_step_failure(&op.key(), round, &class);
+                self.record_failure(reconcile_id, unit_path, &op.key(), &class);
+                Ok(class)
+            }
+        }
+    }
+
+    /// One bracketed `reverse`: append `Intended` carrying the prior outcome's
+    /// inverse (the state to restore), reverse **once**, then append
+    /// `Done`/`Failed`. Same intent-before ordering, single call, and immediate
+    /// Failed-arm logging as [`Foreman::enact_apply`].
+    #[allow(clippy::too_many_arguments)]
+    fn enact_reverse(
+        &self,
+        reconcile_id: u64,
+        ord: u64,
+        op: &GlyphOp,
+        prior_outcome: &Outcome,
+        unit_path: &[String],
+        round: u32,
+    ) -> Result<StepClass> {
+        self.planroom.append_wal_step(
+            reconcile_id,
+            ord,
+            &op.key(),
+            WalAction::Reverse,
+            WalStepState::Intended,
+            op,
+            Some(&prior_outcome.inverse),
+            None,
+            unit_path,
+        )?;
+        match self.reconciler.reverse(prior_outcome) {
+            Ok(()) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Reverse,
+                    WalStepState::Done,
+                    op,
+                    Some(&prior_outcome.inverse),
+                    Some(true),
+                    unit_path,
+                )?;
+                Ok(StepClass::Ok)
+            }
+            Err(e) => {
+                self.planroom.append_wal_step(
+                    reconcile_id,
+                    ord,
+                    &op.key(),
+                    WalAction::Reverse,
+                    WalStepState::Failed,
+                    op,
+                    None,
+                    None,
+                    unit_path,
+                )?;
+                let class = classify(e);
+                log_step_failure(&op.key(), round, &class);
+                self.record_failure(reconcile_id, unit_path, &op.key(), &class);
+                Ok(class)
+            }
+        }
+    }
+
+    // NOTE: the reason string a failed op carries lives only in memory (ADR 0029
+    // §1) — the WAL records that an op `Failed`, never why. This hands it to the
+    // poll's event ring, mapping the retry class to a level a client renders: a
+    // retryable failure is a `warn` (another round follows), a fatal one an
+    // `error` (ADR 0033 §2).
+    fn record_failure(
+        &self,
+        reconcile_id: u64,
+        unit_path: &[String],
+        glyph_key: &str,
+        class: &StepClass,
+    ) {
+        let (level, reason) = match class {
+            StepClass::Failed(RetryClass::Retryable, m) => (EventLevel::Warn, m.clone()),
+            StepClass::Failed(RetryClass::Fatal, m) => (EventLevel::Error, m.clone()),
+            StepClass::Ok | StepClass::Credited => (EventLevel::Info, String::new()),
+        };
+        self.progress
+            .record(reconcile_id, level, unit_path, glyph_key, &reason);
+    }
+
+    /// The outcome whose inverse a `Reverse`/`Remove` step will consume. Normally
+    /// the recorded applied outcome for this key; if none is found (the applied
+    /// set does not know this glyph) it falls back to a synthesized inverse from
+    /// the glyph itself, so a reverse always has something to restore.
+    fn prior_outcome(
+        &self,
+        prior: &[Outcome],
+        key: &str,
+        cid: ContentId,
+        glyph: &Glyph,
+    ) -> Outcome {
+        prior
+            .iter()
+            .find(|o| o.op.key() == key)
+            .cloned()
+            .unwrap_or(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+    }
+
+    /// After a successful enact, restart units whose backing files this attempt
+    /// changed (ADR 0020 §5). A unit-directory `file` that was `Replace`d keeps
+    /// the `systemdService` unit a `Noop` — the unit resource did not change, but
+    /// its input did — so the running unit would otherwise never pick up the new
+    /// config. Collect the distinct units mapped from this attempt's changed
+    /// files ([`unit_for_config_file`]) and `restart_unit` each, appended as its
+    /// own WAL steps under [`WalAction::Restart`] (keyed `restart:<unit>`, inverse
+    /// `Nothing` — a restart of a running unit has no separate reversal; the
+    /// unit's lifecycle stays owned by its `systemdService` step). The `Restart`
+    /// action keeps these brackets out of the applied-state fold
+    /// (`wal::applied_outcomes` folds only `Apply` steps) so a restart never
+    /// registers its unit as applied — a service that failed to enact must still
+    /// diff as an attempt next reconcile, never masked to `Noop` — and out of
+    /// rollback ([`next_reversible`]); a crash mid-propagation re-runs the
+    /// idempotent try-restart ([`Foreman::redrive_intended`]) rather than
+    /// reversing it. Scoped to files golem itself wrote under unit directories, so
+    /// it never restarts units for host-managed config golem did not touch. A
+    /// changed file whose `Done` a later `Reversed` cancelled — a unit that applied
+    /// its config then rolled back under `on_exhaust = rollback` — is excluded via
+    /// [`crate::wal::cancelled_dones`], the same pairing the applied-set fold uses,
+    /// so a rolled-back unit's service is never spuriously restarted (ADR 0029 §4).
+    fn propagate_config(&self, reconcile_id: u64) -> Result<()> {
+        let steps = self.planroom.wal_steps_for(reconcile_id)?;
+        let cancelled = crate::wal::cancelled_dones(&steps);
+        let mut units: Vec<String> = Vec::new();
+        for step in &steps {
+            if step.state != WalStepState::Done || step.changed != Some(true) {
+                continue;
+            }
+            if cancelled.contains(&step.seq) {
+                continue;
+            }
+            if let Some(path) = changed_file_path(&step.op) {
+                if let Some(unit) = unit_for_config_file(&path) {
+                    if !units.contains(&unit) {
+                        units.push(unit);
+                    }
+                }
+            }
+        }
+        if units.is_empty() {
+            return Ok(());
+        }
+        let ord = steps
+            .iter()
+            .map(|s| s.step_ord)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        // NOTE: same host-root placeholder as `enact` — see the note there.
+        let unit_path = [self.host.clone()];
+        for (n, unit) in units.into_iter().enumerate() {
+            let glyph = Glyph::SystemdService { unit: unit.clone() };
+            let cid = scroll_format::content_id_of_glyph(&glyph);
+            let op = GlyphOp::Noop {
+                cid,
+                glyph: glyph.clone(),
+            };
+            let step_ord = ord + n as u64;
+            self.planroom.append_wal_step(
+                reconcile_id,
+                step_ord,
+                &format!("restart:{unit}"),
+                WalAction::Restart,
+                WalStepState::Intended,
+                &op,
+                Some(&Inverse::Nothing),
+                None,
+                &unit_path,
+            )?;
+            let restarted = self.reconciler.restart_unit(&unit);
+            let state = match &restarted {
+                Ok(()) => WalStepState::Done,
+                Err(_) => WalStepState::Failed,
+            };
+            self.planroom.append_wal_step(
+                reconcile_id,
+                step_ord,
+                &format!("restart:{unit}"),
+                WalAction::Restart,
+                state,
+                &op,
+                Some(&Inverse::Nothing),
+                Some(false),
+                &unit_path,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Close a successful attempt: mark it `Committed`, refresh the applied-state
+    /// cache from the WAL fold, and read back the `Reconcile` revision that
+    /// committing this attempt now projects. Nothing is appended — marking the
+    /// attempt `Committed` *is* what makes the revision exist
+    /// (`wal::projected_revisions`), so its outcomes are the same fold as the
+    /// cache. History and the applied set agree because both come from the one log.
+    fn settle(&self, reconcile_id: u64, desired: &SelectedScroll) -> Result<Revision> {
+        self.planroom
+            .set_attempt_phase(reconcile_id, AttemptPhase::Committed)?;
+        let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
+        self.planroom.put_applied_state(&AppliedState {
+            scroll_content_id: desired.content_id,
+            scroll: desired.scroll.clone(),
+            outcomes,
+        })?;
+        let revision = self
+            .planroom
+            .revision(
+                self.planroom
+                    .latest_revision_id()?
+                    .expect("a committed attempt projects a revision"),
+            )
+            .map(|rev| rev.expect("the latest revision id resolves"))?;
+        Ok(revision)
+    }
+
+    /// Rewrite the `applied_state` cache row from the current WAL fold, reusing
+    /// the last cached scroll for the fields the WAL does not carry. Called after
+    /// a rollback and after recovery so the cache tracks the authoritative log;
+    /// does nothing when there is neither a prior cache nor any applied outcome.
+    fn cache_applied_state(&self) -> Result<()> {
+        let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
+        let prior = self.planroom.applied_state()?;
+        if prior.is_none() && outcomes.is_empty() {
+            return Ok(());
+        }
+        let scroll = prior
+            .map(|a| a.scroll)
+            .unwrap_or_else(|| empty_scroll(&self.host));
+        self.planroom.put_applied_state(&AppliedState {
+            scroll_content_id: scroll_format::content_id(&scroll),
+            scroll,
+            outcomes,
+        })
+    }
+
+    /// Undo every still-applied step of an attempt, latest first, marking each
+    /// `Reversed`. Resumable and idempotent: it re-reads the WAL each iteration
+    /// and [`next_reversible`] only returns a `Done` step not already `Reversed`,
+    /// so a rollback interrupted by a crash continues from where the log stopped
+    /// and never reverses a step twice (ADR 0020 §3). Each step is undone by
+    /// [`Foreman::reverse_target`].
+    fn rollback_attempt(&self, reconcile_id: u64) -> Result<()> {
+        self.planroom
+            .set_attempt_phase(reconcile_id, AttemptPhase::RollingBack)?;
+        loop {
+            let steps = self.planroom.wal_steps_for(reconcile_id)?;
+            let Some(target) = next_reversible(&steps) else {
+                break;
+            };
+            self.reverse_target(reconcile_id, target)?;
+        }
+        Ok(())
+    }
+
+    /// Undo one still-applied step and mark it `Reversed`. Reversing an `Apply`
+    /// runs `reverse`; reversing a `Reverse` re-`apply`s, restoring the old
+    /// version. [`next_reversible`] never yields a [`WalAction::Restart`] step, so
+    /// that arm is unreachable — a restart has no reversal. A failed undo is
+    /// logged and the step is still marked `Reversed`; the reconcilers are
+    /// idempotent, so a re-drive on the next recovery converges (ADR 0020 §3).
+    fn reverse_target(&self, reconcile_id: u64, target: &WalStep) -> Result<()> {
+        let cid = applied_cid_of(&target.op, target.action);
+        let outcome = Outcome {
+            op: target.op.clone(),
+            cid,
+            inverse: target.inverse.clone().unwrap_or(Inverse::Nothing),
+            changed: target.changed.unwrap_or(false),
+        };
+        let undone = match target.action {
+            WalAction::Apply => self.reconciler.reverse(&outcome),
+            WalAction::Reverse => self.reconciler.apply(target.op.glyph(), cid).map(|_| ()),
+            WalAction::Restart => unreachable!("a Restart step is never reversible"),
+        };
+        if let Err(e) = undone {
+            warn!(glyph_key = %target.glyph_key, phase = "reverse", ?e, "rollback step failed");
+        }
+        self.planroom.append_wal_step(
+            reconcile_id,
+            target.step_ord,
+            &target.glyph_key,
+            target.action,
+            WalStepState::Reversed,
+            &target.op,
+            target.inverse.as_ref(),
+            target.changed,
+            &target.unit_path,
+        )?;
+        Ok(())
+    }
+
+    /// [`Foreman::rollback_attempt`] restricted to one leaf unit's steps (ADR 0029
+    /// §4). The LIFO reversal is identical; the `next_reversible` search runs over
+    /// only the steps whose `unit_path` equals this unit's, so a sibling unit's
+    /// applied glyphs are never in the set and stay committed. This is the
+    /// deliberate per-unit `on_exhaust = rollback`; whole-attempt crash recovery
+    /// still uses the unscoped [`Foreman::rollback_attempt`].
+    ///
+    /// The `unit_path` filter is also the isolation boundary under parallel enact
+    /// (ADR 0034 §3): with sibling units enacting concurrently, the WAL this reads
+    /// may hold a sibling's in-flight brackets — interleaved by `seq`, not grouped.
+    /// Scoping the search to this unit's path is what keeps a rolling-back unit from
+    /// reversing a sibling's still-committing steps.
+    fn rollback_unit(&self, reconcile_id: u64, unit_path: &[String]) -> Result<()> {
+        loop {
+            let steps = self.planroom.wal_steps_for(reconcile_id)?;
+            let scoped: Vec<WalStep> = steps
+                .into_iter()
+                .filter(|s| s.unit_path == unit_path)
+                .collect();
+            let Some(target) = next_reversible(&scoped).cloned() else {
+                break;
+            };
+            self.reverse_target(reconcile_id, &target)?;
+        }
+        Ok(())
+    }
+
+    /// Settle any interrupted attempt, under the write lock. Called once at
+    /// startup (from [`Foreman::new`]) and again by [`Foreman::reconcile`] before
+    /// each manifest, so recovery is always a precondition of ingest.
+    pub fn recover(&self) -> Result<()> {
+        let _w = self.write_guard();
+        self.recover_locked()
+    }
+
+    /// The recovery algorithm (ADR 0020 §3), assuming the write lock is held. A
+    /// settled latest attempt needs nothing but a cache refresh. An unsettled one
+    /// died mid-flight: re-drive its incomplete `Intended` steps
+    /// ([`Foreman::redrive_intended`]), roll the attempt back
+    /// ([`Foreman::rollback_attempt`]) so the node returns to its last committed
+    /// applied set, mark it `RolledBack`, and rebuild the cache. A rollback
+    /// already in progress resumes rather than restarts, because
+    /// `rollback_attempt` skips already-`Reversed` steps.
+    fn recover_locked(&self) -> Result<()> {
+        let Some(attempt) = self.planroom.latest_attempt()? else {
+            return Ok(());
+        };
+        if attempt.phase.is_settled() {
+            return self.cache_applied_state();
+        }
+        self.redrive_intended(&attempt)?;
+        self.rollback_attempt(attempt.reconcile_id)?;
+        self.planroom
+            .set_attempt_phase(attempt.reconcile_id, AttemptPhase::RolledBack)?;
+        self.cache_applied_state()
+    }
+
+    /// Resolve every `Intended` step of an interrupted attempt that has no
+    /// terminal row — the steps golem crashed across, where the side effect may
+    /// or may not have happened. Re-run each idempotently (`apply` re-`apply`s and
+    /// re-captures the inverse; `reverse` re-reverses; a [`WalAction::Restart`]
+    /// re-runs the idempotent try-restart) and record the result as the step's
+    /// `Done`/`Failed`, so rollback afterward sees a consistent log. Safe because
+    /// every reconciler observes host state first, so re-running converges whether
+    /// or not the interrupted call took effect (ADR 0020 §3).
+    fn redrive_intended(&self, attempt: &ReconcileAttempt) -> Result<()> {
+        let steps = self.planroom.wal_steps_for(attempt.reconcile_id)?;
+        for step in &steps {
+            if step.state != WalStepState::Intended || has_terminal(&steps, step) {
+                continue;
+            }
+            let redriven = match step.action {
+                WalAction::Apply => {
+                    let cid = applied_cid_of(&step.op, WalAction::Apply);
+                    self.reconciler.apply(step.op.glyph(), cid).map(Some)
+                }
+                WalAction::Reverse => {
+                    let outcome = Outcome {
+                        op: step.op.clone(),
+                        cid: applied_cid_of(&step.op, WalAction::Reverse),
+                        inverse: step.inverse.clone().unwrap_or(Inverse::Nothing),
+                        changed: step.changed.unwrap_or(true),
+                    };
+                    self.reconciler.reverse(&outcome).map(|_| None)
+                }
+                WalAction::Restart => match step.op.glyph() {
+                    Glyph::SystemdService { unit } => {
+                        self.reconciler.restart_unit(unit).map(|_| None)
+                    }
+                    _ => Ok(None),
+                },
+            };
+            match redriven {
+                Ok(outcome) => {
+                    let (inverse, changed) = match step.action {
+                        WalAction::Apply => {
+                            let o = outcome.expect("apply returns an outcome");
+                            (o.inverse, o.changed)
+                        }
+                        WalAction::Reverse => {
+                            (step.inverse.clone().unwrap_or(Inverse::Nothing), true)
+                        }
+                        WalAction::Restart => (Inverse::Nothing, false),
+                    };
+                    self.planroom.append_wal_step(
+                        attempt.reconcile_id,
+                        step.step_ord,
+                        &step.glyph_key,
+                        step.action,
+                        WalStepState::Done,
+                        &step.op,
+                        Some(&inverse),
+                        Some(changed),
+                        &step.unit_path,
+                    )?;
+                }
+                Err(_) => {
+                    self.planroom.append_wal_step(
+                        attempt.reconcile_id,
+                        step.step_ord,
+                        &step.glyph_key,
+                        step.action,
+                        WalStepState::Failed,
+                        &step.op,
+                        None,
+                        None,
+                        &step.unit_path,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The currently-applied state, with `outcomes` always the live WAL fold —
+    /// the cache row supplies only the scroll and its content id. So a caller sees
+    /// the authoritative applied set even if the cache row lags. `None` only when
+    /// nothing has ever been applied and no cache exists.
+    pub fn applied_state(&self) -> Result<Option<AppliedState>> {
+        let outcomes = applied_outcomes(&self.planroom.wal_steps()?);
+        match self.planroom.applied_state()? {
+            Some(cached) => Ok(Some(AppliedState { outcomes, ..cached })),
+            None if outcomes.is_empty() => Ok(None),
+            None => Ok(Some(AppliedState {
+                scroll_content_id: scroll_format::content_id(&empty_scroll(&self.host)),
+                scroll: empty_scroll(&self.host),
+                outcomes,
+            })),
+        }
+    }
+
+    pub fn revisions(&self) -> Result<Vec<Revision>> {
+        self.planroom.revisions()
+    }
+
+    pub fn revision(&self, id: u64) -> Result<Option<Revision>> {
+        self.planroom.revision(id)
+    }
+
+    pub fn latest_revision_id(&self) -> Result<Option<u64>> {
+        self.planroom.latest_revision_id()
+    }
+
+    pub fn latest_reconcile_id(&self) -> Result<Option<u64>> {
+        Ok(self.planroom.latest_attempt()?.map(|a| a.reconcile_id))
+    }
+
+    /// The read model for one poll (ADR 0033 §2). Assembles the projection from
+    /// the durable WAL rows (`wal_steps_for`) and the best-effort in-memory ring
+    /// (events + retry countdowns), attaching the cached `ReconcileReport` only
+    /// once the attempt has settled. Takes **no** write lock: every read here is
+    /// a `PlanRoom` query on its own short-lived connection mutex, so a poll
+    /// never blocks on — nor delays — the running reconcile, and observes each
+    /// WAL bracket as soon as it commits (ADR 0033 §2, concurrency stance).
+    pub fn progress_projection(
+        &self,
+        reconcile_id: u64,
+        after: u64,
+    ) -> Result<Option<crate::projection::ReconcileProgress>> {
+        let Some(attempt) = self
+            .planroom
+            .attempts()?
+            .into_iter()
+            .find(|a| a.reconcile_id == reconcile_id)
+        else {
+            return Ok(None);
+        };
+        let steps = self.planroom.wal_steps_for(reconcile_id)?;
+        let events = self.progress.events_after(reconcile_id, after);
+        let retries = self.progress.retries(reconcile_id);
+        let credit = self.progress.credit(reconcile_id);
+        let report = if attempt.phase.is_settled() {
+            let cached = self.reports.lock().unwrap().get(&reconcile_id).cloned();
+            match cached {
+                Some(report) => Some(report),
+                None => self.rebuild_report(&attempt)?,
+            }
+        } else {
+            None
+        };
+        let mut proj =
+            crate::projection::project(&attempt, &steps, events, report, &retries, &credit);
+        proj.cursor = proj.cursor.max(after);
+        Ok(Some(proj))
+    }
+
+    /// Rebuild a settled attempt's report from durable state when the in-memory
+    /// cache has lost it — the reattach path after a daemon restart (ADR 0033 §2,
+    /// "report present once settled"). A committed attempt's report is folded from
+    /// its WAL rows plus the revision it projected (`revision_for_attempt`); the
+    /// degraded fields (empty failure messages, no forensics `details`,
+    /// WAL-derived round counts) are documented at `projection::rebuild_report`.
+    /// The rebuilt report is cached so a second poll hits the cache. A
+    /// `RolledBack` attempt (a whole-attempt recovery rollback) never produced a
+    /// report and projects no revision, so there is nothing durable to rebuild —
+    /// it degrades to `None`.
+    fn rebuild_report(&self, attempt: &ReconcileAttempt) -> Result<Option<ReconcileReport>> {
+        let attempts = self.planroom.attempts()?;
+        let steps = self.planroom.wal_steps()?;
+        let Some(revision) =
+            crate::wal::revision_for_attempt(&attempts, &steps, attempt.reconcile_id)
+        else {
+            return Ok(None);
+        };
+        let report = crate::projection::rebuild_report(attempt, &steps, revision);
+        self.reports
+            .lock()
+            .unwrap()
+            .insert(attempt.reconcile_id, report.clone());
+        Ok(Some(report))
+    }
+}
+
+/// A typed write-path failure the HTTP surface maps to a structured
+/// `{ kind, message }` body (ADR 0029 §5). `WalUnreadable` and
+/// `ManifestUndecodable` carry actionable messages instead of leaking a raw
+/// rusqlite/postcard internal; `Internal` wraps anything else.
+#[derive(Debug)]
+pub enum ForemanError {
+    WalUnreadable { detail: String },
+    ManifestUndecodable { detail: String },
+    ReconcileInProgress { reconcile_id: u64 },
+    Internal(anyhow::Error),
+}
+
+impl ForemanError {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ForemanError::WalUnreadable { .. } => "wal-unreadable",
+            ForemanError::ManifestUndecodable { .. } => "manifest-undecodable",
+            ForemanError::ReconcileInProgress { .. } => "reconcile-in-progress",
+            ForemanError::Internal(_) => "internal",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            ForemanError::WalUnreadable { .. } => {
+                "golemd couldn't read its write-ahead log; it may be from an incompatible golemd version. Run `fleet reset` on this host to start from a clean state.".to_string()
+            }
+            ForemanError::ManifestUndecodable { detail } => {
+                format!("golemd couldn't decode the manifest: {detail}")
+            }
+            ForemanError::ReconcileInProgress { reconcile_id } => {
+                format!("a reconcile ({reconcile_id}) is already running on this host; poll it instead of re-applying")
+            }
+            ForemanError::Internal(e) => format!("{e:#}"),
+        }
+    }
+}
+
+impl std::fmt::Display for ForemanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+impl std::error::Error for ForemanError {}
+
+/// The `Remove` ops of one or more vanished units that share a surviving-ancestor
+/// `unit_path`, enacted together as one unit under that ancestor's `policy_chain`
+/// (ADR 0031 §4). The chain borrows from the desired scroll for the duration of
+/// the reconcile.
+struct RemoveGroup<'a> {
+    unit_path: Vec<String>,
+    ops: Vec<GlyphOp>,
+    policy_chain: Vec<&'a scroll_format::Policy>,
+}
+
+/// A per-op mask over `unit_ops`, source order preserved: `true` marks an op
+/// whose `(key, cid)` pair is declared by more than one op across the plan — a
+/// crediting *candidate*, for `Install`/`Replace`/`Remove` ops. It does not
+/// decide who enacts; that is settled at runtime against the attempt's success
+/// set (ADR 0034 §1). The first candidate to reach its op runs the real `apply`
+/// and, only on success, records the pair so later candidates for the same pair
+/// credit (`enact_credited`) instead of re-running. A candidate whose earlier
+/// sibling *failed* the real apply finds the pair absent and applies for real
+/// itself — pre-dedup retry semantics, safe by reconciler idempotence. A pair
+/// declared by exactly one op is never a candidate (mask `false`) and always
+/// enacts. `Noop` pairs are counted here like any other but never read as
+/// candidates: `enact_or_credit` routes every `Noop` straight to `enact_one`
+/// before consulting this mask, so a duplicated `Noop` pair is `true` but inert.
+/// Only `(key, cid)` identity is shared — the same key with a divergent cid is
+/// NOT shared and remains silent last-wins on the host (ADR 0034 §1, a recorded
+/// wart to surface, not resolve here).
+fn shared_pairs(unit_ops: &[Vec<GlyphOp>]) -> Vec<Vec<bool>> {
+    let mut counts: std::collections::HashMap<(String, ContentId), u32> =
+        std::collections::HashMap::new();
+    for ops in unit_ops {
+        for op in ops {
+            *counts.entry((op.key(), enacted_cid_of(op))).or_insert(0) += 1;
+        }
+    }
+    unit_ops
+        .iter()
+        .map(|ops| {
+            ops.iter()
+                .map(|op| counts[&(op.key(), enacted_cid_of(op))] > 1)
+                .collect()
+        })
+        .collect()
+}
+
+/// Per-op, source order preserved: `Some(owner_path)` when this op is a shared
+/// *duplicate* — its `(key, cid)` is declared by an earlier op in the plan and
+/// this op is NOT that first declarer — carrying the first declarer's `unit_path`
+/// as `owner`; `None` for a first declarer or a singleton. This is the projection
+/// view of dedup (ADR 0034 §1): the first declarer renders as real work, later
+/// declarers as shared context crediting it. It complements [`shared_pairs`]
+/// (which marks every candidate, first declarer included, for the crediting
+/// decision) — here only the followers are named, and by whom. Ops are visited in
+/// the same source order [`shared_pairs`] counts them, so "first" is the first
+/// `(unit_idx, op_idx)` to reach a pair.
+fn shared_owners(
+    unit_ops: &[Vec<GlyphOp>],
+    unit_paths: &[&[String]],
+) -> Vec<Vec<Option<Vec<String>>>> {
+    let mut first: std::collections::HashMap<(String, ContentId), Vec<String>> =
+        std::collections::HashMap::new();
+    unit_ops
+        .iter()
+        .enumerate()
+        .map(|(unit_idx, ops)| {
+            ops.iter()
+                .map(|op| {
+                    let pair = (op.key(), enacted_cid_of(op));
+                    match first.get(&pair) {
+                        Some(owner) => Some(owner.clone()),
+                        None => {
+                            first.insert(pair, unit_paths[unit_idx].to_vec());
+                            None
+                        }
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn enacted_cid_of(op: &GlyphOp) -> ContentId {
+    match op {
+        GlyphOp::Install { cid, .. } | GlyphOp::Noop { cid, .. } | GlyphOp::Remove { cid, .. } => {
+            *cid
+        }
+        GlyphOp::Replace { new_cid, .. } => *new_cid,
+    }
+}
+
+/// A leaf unit flattened into a leaf `Scroll` so [`plan`] can diff its glyphs
+/// against the whole prior applied set. The diff naturally yields Installs and
+/// Replaces for this unit's glyphs; the caller filters out Removes (which the
+/// whole-scroll vanished-removes pass owns — Resolution 1).
+fn leaf_as_scroll(unit: &LeafUnit<'_>) -> Scroll {
+    Scroll {
+        name: unit.path.last().cloned().unwrap_or_default(),
+        policy: None,
+        contents: Contents::Glyphs(unit.glyphs.to_vec()),
+    }
+}
+
+/// Every node path in the new scroll tree: each leaf unit's path plus all its
+/// prefixes (so interior branch and root paths are included). The set the
+/// vanished-removes pass matches a recorded path's longest surviving prefix
+/// against (ADR 0031 §4).
+fn node_paths(desired: &Scroll, units: &[LeafUnit<'_>]) -> Vec<Vec<String>> {
+    let mut nodes: Vec<Vec<String>> = vec![vec![desired.name.clone()]];
+    for unit in units {
+        for len in 1..=unit.path.len() {
+            let prefix = unit.path[..len].to_vec();
+            if !nodes.contains(&prefix) {
+                nodes.push(prefix);
+            }
+        }
+    }
+    nodes
+}
+
+/// The longest prefix of a recorded `unit_path` that still exists as a node in
+/// the new tree — the nearest surviving ancestor (ADR 0031 §4). `None` when the
+/// recorded path is empty (a Plan-1 host-root placeholder), so the caller falls
+/// back to the host root.
+fn surviving_prefix(recorded: &[String], nodes: &[Vec<String>]) -> Option<Vec<String>> {
+    if recorded.is_empty() {
+        return None;
+    }
+    for len in (1..=recorded.len()).rev() {
+        let prefix = recorded[..len].to_vec();
+        if nodes.contains(&prefix) {
+            return Some(prefix);
+        }
+    }
+    None
+}
+
+/// The ancestor policies along a surviving node path, root-to-leaf — the policy
+/// chain that resolves a vanished-removes group's `RetryConfig` (ADR 0031 §4).
+fn policy_chain_for_path<'a>(desired: &'a Scroll, path: &[String]) -> Vec<&'a Policy> {
+    let mut chain = Vec::new();
+    let mut node = desired;
+    if path.first().map(String::as_str) != Some(node.name.as_str()) {
+        return chain;
+    }
+    if let Some(p) = &node.policy {
+        chain.push(p);
+    }
+    for name in &path[1..] {
+        let Contents::Groups(children) = &node.contents else {
+            break;
+        };
+        let Some(next) = children.iter().find(|c| &c.name == name) else {
+            break;
+        };
+        node = next;
+        if let Some(p) = &node.policy {
+            chain.push(p);
+        }
+    }
+    chain
+}
+
+/// The ops still failing after a unit's round loop, mapped to [`UnitFailure`]s:
+/// a `Fatal` op is class `Fatal`; a `Retryable` op that hit a limit is
+/// `RetriesExhausted`. `attempts` is the number of rounds the unit ran.
+fn unit_failures(
+    ops: &[GlyphOp],
+    classes: &[StepClass],
+    unit_path: &[String],
+    rounds: u32,
+) -> Vec<UnitFailure> {
+    let mut failures = Vec::new();
+    for (ord, class) in classes.iter().enumerate() {
+        let StepClass::Failed(retry_class, message) = class else {
+            continue;
+        };
+        let (class, attempts) = match retry_class {
+            RetryClass::Fatal => (FailClass::Fatal, 1),
+            RetryClass::Retryable => (FailClass::RetriesExhausted, rounds),
+        };
+        failures.push(UnitFailure {
+            glyph_key: ops[ord].key(),
+            unit_path: unit_path.to_vec(),
+            phase: phase_of(&ops[ord]),
+            class,
+            attempts,
+            message: message.clone(),
+            rolled_back: false,
+            details: None,
+        });
+    }
+    failures
+}
+
+fn glyph_action_of(op: &GlyphOp) -> GlyphAction {
+    match op {
+        GlyphOp::Install { .. } => GlyphAction::Install,
+        GlyphOp::Replace { .. } => GlyphAction::Replace,
+        GlyphOp::Remove { .. } => GlyphAction::Remove,
+        GlyphOp::Noop { .. } => GlyphAction::Noop,
+    }
+}
+
+fn action_tag_for(op: &GlyphOp) -> &'static str {
+    match op {
+        GlyphOp::Install { .. } => "install",
+        GlyphOp::Replace { .. } => "replace",
+        GlyphOp::Remove { .. } => "remove",
+        GlyphOp::Noop { .. } => "noop",
+    }
+}
+
+/// One [`GlyphLine`] per op in enact order (ADR 0029 addendum): a `Noop` is
+/// `Unchanged` with zero attempts; a still-failing op is `Failed` carrying its
+/// message and its exact round count; an op that applied but was undone by this
+/// unit's `on_exhaust = rollback` is `RolledBack`; anything else that applied and
+/// stayed is `Applied`.
+///
+// NOTE: the `Ok` arms report attempts = 1 unconditionally. A retryable that
+// failed a round or two before it succeeded still reads 1, because the round
+// count that survives here (`rounds`) is the unit's, not the op's — only the
+// `Failed` arm's count is per-op exact.
+fn glyph_lines(
+    ops: &[GlyphOp],
+    classes: &[StepClass],
+    rolled_back: bool,
+    rounds: u32,
+) -> Vec<GlyphLine> {
+    ops.iter()
+        .zip(classes.iter())
+        .map(|(op, class)| {
+            let action = glyph_action_of(op);
+            let (outcome, attempts, message) = match (class, action) {
+                (StepClass::Failed(retry_class, msg), _) => {
+                    let attempts = match retry_class {
+                        RetryClass::Fatal => 1,
+                        RetryClass::Retryable => rounds,
+                    };
+                    (GlyphOutcome::Failed, attempts, Some(msg.clone()))
+                }
+                (StepClass::Ok, GlyphAction::Noop) => (GlyphOutcome::Unchanged, 0, None),
+                (StepClass::Ok, _) if rolled_back => (GlyphOutcome::RolledBack, 1, None),
+                (StepClass::Ok, _) => (GlyphOutcome::Applied, 1, None),
+                (StepClass::Credited, _) if rolled_back => (GlyphOutcome::RolledBack, 1, None),
+                (StepClass::Credited, _) => (GlyphOutcome::Credited, 1, None),
+            };
+            GlyphLine {
+                glyph_key: op.key(),
+                action,
+                outcome,
+                attempts,
+                message,
+            }
+        })
+        .collect()
+}
+
+/// Which side of the bracket a failed op runs on — a `Remove` fails in
+/// `Reverse`, everything else in `Enact`. (A reverse-then-apply `Replace` whose
+/// reverse leg failed is reported under `Enact`; the distinction the report cares
+/// about is remove-teardown vs. forward enact.)
+fn phase_of(op: &GlyphOp) -> Phase {
+    match op {
+        GlyphOp::Remove { .. } => Phase::Reverse,
+        _ => Phase::Enact,
+    }
+}
+
+/// The still-failing retryable ops eligible for the next round: those whose
+/// in-memory class is `Failed(Retryable, _)`. A `Fatal` op is terminal and never
+/// re-driven; an `Ok` op is done (ADR 0029 §1).
+fn remaining_ops(ops: &[GlyphOp], classes: &[StepClass]) -> Vec<u64> {
+    let mut remaining = Vec::new();
+    for (ord, _op) in ops.iter().enumerate() {
+        if let StepClass::Failed(RetryClass::Retryable, _) = classes[ord] {
+            remaining.push(ord as u64);
+        }
+    }
+    remaining
+}
+
+/// The `class` tag logged and reported for a terminal failure.
+fn failclass_tag(class: FailClass) -> &'static str {
+    match class {
+        FailClass::Fatal => "fatal",
+        FailClass::RetriesExhausted => "retries-exhausted",
+    }
+}
+
+/// Log a `Failed` bracket the moment its row is written (ADR 0029 §2): a
+/// retryable at `warn` (it may retry), a fatal at `error` (terminal). Only the
+/// glyph key and the reconciler's reason are logged — never contents or secrets.
+fn log_step_failure(glyph_key: &str, round: u32, class: &StepClass) {
+    match class {
+        StepClass::Failed(RetryClass::Retryable, msg) => {
+            warn!(glyph_key, round, class = "retryable", reason = %msg, "enact failed; will retry");
+        }
+        StepClass::Failed(RetryClass::Fatal, msg) => {
+            error!(glyph_key, round, class = "fatal", reason = %msg, "enact failed; not retryable");
+        }
+        StepClass::Ok | StepClass::Credited => {}
+    }
+}
+
+fn top_outcome_tag(outcome: crate::report::TopOutcome) -> &'static str {
+    match outcome {
+        crate::report::TopOutcome::Settled => "settled",
+        crate::report::TopOutcome::Partial => "partial",
+        crate::report::TopOutcome::RolledBack => "rolled_back",
+    }
+}
+
+/// The closing info line of an apply: the revision this attempt projected, its
+/// outcome count, the rolled-up top outcome, and the per-unit fate counts.
+fn log_settled(report: &ReconcileReport) {
+    let mut settled = 0u32;
+    let mut partial = 0u32;
+    let mut rolled_back = 0u32;
+    for unit in &report.units {
+        match unit.outcome {
+            UnitOutcome::Settled => settled += 1,
+            UnitOutcome::Partial => partial += 1,
+            UnitOutcome::RolledBack => rolled_back += 1,
+        }
+    }
+    info!(
+        revision = report.revision.id,
+        outcomes = report.revision.outcomes.len(),
+        outcome = top_outcome_tag(report.outcome),
+        units_settled = settled,
+        units_partial = partial,
+        units_rolled_back = rolled_back,
+        "revision recorded"
+    );
+}
+
+/// Map a foreman-internal [`UnitResult`] onto the wire [`UnitReport`] (ADR 0029
+/// §5). The internal outcome, phase, and class enums translate one-for-one.
+fn unit_report_from(result: UnitResult) -> UnitReport {
+    let failures = result
+        .failures
+        .into_iter()
+        .map(|f| GlyphFailure {
+            glyph_key: f.glyph_key,
+            unit_path: f.unit_path,
+            phase: match f.phase {
+                Phase::Enact => FailPhase::Enact,
+                Phase::Reverse => FailPhase::Reverse,
+            },
+            class: match f.class {
+                FailClass::Fatal => FailClassReport::Fatal,
+                FailClass::RetriesExhausted => FailClassReport::RetriesExhausted,
+            },
+            attempts: f.attempts,
+            message: f.message,
+            rolled_back: f.rolled_back,
+            details: f.details,
+        })
+        .collect();
+    UnitReport {
+        unit_path: result.unit_path,
+        outcome: result.outcome,
+        glyphs: result.glyphs,
+        failures,
+    }
+}
+
+// A leaf scroll (ADR 0031 §1) holding no glyphs — the desired state that diffs
+// every currently-applied glyph to a `Remove`, used when this host has no scroll
+// in the manifest.
+fn empty_scroll(host: &str) -> Scroll {
+    Scroll {
+        name: host.to_string(),
+        policy: None,
+        contents: scroll_format::Contents::Glyphs(vec![]),
+    }
+}
+
+/// Whether a `Replace` on this glyph can update in place — one `Apply` whose
+/// captured inverse restores the prior version — instead of reverse-then-apply
+/// (ADR 0020 §4). Only `Filesystem::File`: an atomic overwrite has no window
+/// where the file is absent and stays exactly reversible. `aptPackage` and
+/// `systemdService` have distinct reverse/re-apply effects (a package
+/// remove/install, a unit stop/start) and must stay reverse-then-apply.
+fn replaces_in_place(glyph: &Glyph) -> bool {
+    matches!(
+        glyph,
+        Glyph::Filesystem {
+            entry: Entry::File { .. },
+            ..
+        }
+    )
+}
+
+fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
+    match op {
+        GlyphOp::Install { cid, .. } | GlyphOp::Noop { cid, .. } | GlyphOp::Remove { cid, .. } => {
+            *cid
+        }
+        GlyphOp::Replace {
+            new_cid, old_cid, ..
+        } => match action {
+            WalAction::Reverse => *old_cid,
+            WalAction::Apply | WalAction::Restart => *new_cid,
+        },
+    }
+}
+
+/// Whether an `Intended` step has any later terminal row (`Done`/`Failed`/
+/// `Reversed`) for the same step, matched by `step_ord`+`action`: a step's rows
+/// share those, and `step_ord` is attempt-unique (see `enact_unit`) so the match
+/// never crosses units. An `Intended` with no terminal successor is what
+/// [`Foreman::redrive_intended`] must re-drive.
+fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
+    steps.iter().any(|s| {
+        s.seq > intended.seq
+            && s.step_ord == intended.step_ord
+            && s.action == intended.action
+            && matches!(
+                s.state,
+                WalStepState::Done | WalStepState::Failed | WalStepState::Reversed
+            )
+    })
+}
+
+/// The latest `Done` step of the attempt not yet `Reversed` — the next one a
+/// rollback should undo. Scanning newest-first reverses in the opposite order to
+/// application (LIFO), and skipping already-`Reversed` steps is what makes
+/// [`Foreman::rollback_attempt`] resumable. [`WalAction::Restart`] steps are
+/// operational records with no reversal (the unit's lifecycle is owned by its
+/// `systemdService` step), so a rollback never picks one up.
+fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
+    steps.iter().rev().find(|s| {
+        s.state == WalStepState::Done && s.action != WalAction::Restart && !reversed_after(steps, s)
+    })
+}
+
+fn reversed_after(steps: &[WalStep], done: &WalStep) -> bool {
+    steps.iter().any(|s| {
+        s.seq > done.seq
+            && s.step_ord == done.step_ord
+            && s.action == done.action
+            && s.state == WalStepState::Reversed
+    })
+}
+
+/// Fold the per-scroll policy cascade over the fleet default to get one leaf
+/// unit's effective `RetryConfig`. Cascade order, NEAREST WINS: `golemd.toml`
+/// default → ancestor branch policies root→leaf → the leaf's own policy. A field
+/// unset at every scope stays at the config default (which itself falls back to
+/// the built-in). `policy_chain` is root-most first, so left-to-right folding
+/// lets the nearest (leaf) scope win. See ADR 0029 §3 and ADR 0031 §3.
+pub(crate) fn resolve_retry(
+    base: &RetryConfig,
+    policy_chain: &[&scroll_format::Policy],
+) -> RetryConfig {
+    let mut cfg = *base;
+    for policy in policy_chain {
+        if let Some(v) = policy.base_delay_ms {
+            cfg.base_delay_ms = v;
+        }
+        if let Some(v) = policy.backoff_multiplier {
+            cfg.backoff_multiplier = v;
+        }
+        if let Some(v) = policy.max_delay_ms {
+            cfg.max_delay_ms = v;
+        }
+        if let Some(v) = policy.jitter_fraction {
+            cfg.jitter_fraction = v;
+        }
+        if let Some(v) = policy.max_attempts {
+            cfg.max_attempts = v;
+        }
+        if let Some(v) = policy.max_elapsed_ms {
+            cfg.max_elapsed_ms = v;
+        }
+        if let Some(v) = policy.on_exhaust {
+            cfg.on_exhaust = match v {
+                scroll_format::OnExhaust::Rollback => crate::config::OnExhaustConfig::Rollback,
+                scroll_format::OnExhaust::Keep => crate::config::OnExhaustConfig::Keep,
+            };
+        }
+    }
+    cfg
+}
+
+fn changed_file_path(op: &GlyphOp) -> Option<String> {
+    match op.glyph() {
+        Glyph::Filesystem {
+            path,
+            entry: Entry::File { .. },
+        } => Some(path.clone()),
+        _ => None,
+    }
+}
+
+/// The systemd unit a golem-written config file belongs to, or `None` if the
+/// path is not under a unit directory (ADR 0020 §5). Location is the whole
+/// signal: only files under [`UNIT_DIRECTORIES`] are treated as unit config. A
+/// drop-in under `foo.service.d/` maps to `foo.service`; a Podman quadlet
+/// `foo.container` maps to its generated `foo.service`; a `foo.service` file maps
+/// to itself.
+fn unit_for_config_file(path: &str) -> Option<String> {
+    let under_unit_dir = UNIT_DIRECTORIES.iter().any(|dir| path.starts_with(dir));
+    if !under_unit_dir {
+        return None;
+    }
+    if let Some(component) = path.find(".service.d/") {
+        let stem = &path[..component];
+        let name = stem.rsplit('/').next()?;
+        return Some(format!("{name}.service"));
+    }
+    let file = path.rsplit('/').next()?;
+    if let Some(stem) = file.strip_suffix(".container") {
+        return Some(format!("{stem}.service"));
+    }
+    if file.ends_with(".service") {
+        return Some(file.to_string());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::{Inverse, RevisionKind};
+    use crate::planroom::MemoryPlanRoom;
+    use crate::reconciler::EnactResult;
+    use crate::report::{FailClassReport, TopOutcome, UnitOutcome};
+    use scroll_format::{Glyph, Manifest, OnExhaust, Policy};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Recorder {
+        calls: Mutex<Vec<String>>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl Recorder {
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl Reconciler for Recorder {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("apply {}", glyph.key()));
+            self.present.lock().unwrap().insert(glyph.key(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("reverse {}", outcome.op.key()));
+            self.present.lock().unwrap().remove(&outcome.op.key());
+            Ok(())
+        }
+    }
+
+    struct FlakyThenOk {
+        fails_left: Mutex<u32>,
+        calls: Mutex<u32>,
+    }
+    impl FlakyThenOk {
+        fn new(fails: u32) -> Self {
+            Self {
+                fails_left: Mutex::new(fails),
+                calls: Mutex::new(0),
+            }
+        }
+    }
+    impl Reconciler for FlakyThenOk {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            *self.calls.lock().unwrap() += 1;
+            let mut left = self.fails_left.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                Err(EnactError::Retryable("flaky".into()))
+            } else {
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    struct Failing {
+        make: fn(String) -> EnactError,
+        calls: Mutex<u32>,
+    }
+    impl Failing {
+        fn new(make: fn(String) -> EnactError) -> Self {
+            Self {
+                make,
+                calls: Mutex::new(0),
+            }
+        }
+        fn calls(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+    impl Reconciler for Failing {
+        fn apply(&self, _glyph: &Glyph, _cid: ContentId) -> EnactResult<Outcome> {
+            *self.calls.lock().unwrap() += 1;
+            Err((self.make)("nope".into()))
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A fake reconciler scripted per glyph key: a key can be told to fail `Fatal`
+    /// or `Retryable` a given number of times (or always); everything else applies
+    /// and reverses like [`Recorder`], tracking the present set so a rollback is
+    /// observable. Models the existing fakes, keyed so best-effort and per-unit
+    /// isolation can be exercised (ADR 0029 §1/§4).
+    struct ScriptedReconciler {
+        present: Mutex<BTreeMap<String, ContentId>>,
+        fatal: Mutex<Vec<String>>,
+        retryable_left: Mutex<BTreeMap<String, u32>>,
+        retryable_always: Mutex<Vec<String>>,
+        fatal_reverse: Mutex<Vec<String>>,
+        restarts: Mutex<Vec<String>>,
+        diagnosis: Mutex<Option<String>>,
+        events: Mutex<Vec<String>>,
+    }
+    impl ScriptedReconciler {
+        fn new() -> Self {
+            Self {
+                present: Mutex::new(BTreeMap::new()),
+                fatal: Mutex::new(Vec::new()),
+                retryable_left: Mutex::new(BTreeMap::new()),
+                retryable_always: Mutex::new(Vec::new()),
+                fatal_reverse: Mutex::new(Vec::new()),
+                restarts: Mutex::new(Vec::new()),
+                diagnosis: Mutex::new(None),
+                events: Mutex::new(Vec::new()),
+            }
+        }
+        fn diagnosis(self, text: &str) -> Self {
+            *self.diagnosis.lock().unwrap() = Some(text.into());
+            self
+        }
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+        fn fatal_reverse_on(self, key: &str) -> Self {
+            self.fatal_reverse.lock().unwrap().push(key.into());
+            self
+        }
+        fn fatal_on(self, key: &str) -> Self {
+            self.fatal.lock().unwrap().push(key.into());
+            self
+        }
+        fn retryable_times(self, key: &str, times: u32) -> Self {
+            self.retryable_left
+                .lock()
+                .unwrap()
+                .insert(key.into(), times);
+            self
+        }
+        fn retryable_always(self, key: &str) -> Self {
+            self.retryable_always.lock().unwrap().push(key.into());
+            self
+        }
+        fn ok_default(self) -> Self {
+            self
+        }
+        fn present_keys(&self) -> Vec<String> {
+            self.present.lock().unwrap().keys().cloned().collect()
+        }
+        fn restarts(&self) -> Vec<String> {
+            self.restarts.lock().unwrap().clone()
+        }
+    }
+    impl Reconciler for ScriptedReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            self.events.lock().unwrap().push(format!("apply {key}"));
+            if self.fatal.lock().unwrap().iter().any(|k| k == &key) {
+                return Err(EnactError::Fatal(format!("scripted fatal for {key}")));
+            }
+            if self
+                .retryable_always
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|k| k == &key)
+            {
+                return Err(EnactError::Retryable(format!(
+                    "scripted retryable for {key}"
+                )));
+            }
+            {
+                let mut left = self.retryable_left.lock().unwrap();
+                if let Some(n) = left.get_mut(&key) {
+                    if *n > 0 {
+                        *n -= 1;
+                        return Err(EnactError::Retryable(format!(
+                            "scripted retryable for {key}"
+                        )));
+                    }
+                }
+            }
+            self.present.lock().unwrap().insert(key.clone(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("prepare {}", ops.len()));
+            Ok(crate::reconciler::PrepareOutcome::default())
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            let key = outcome.op.key();
+            self.events.lock().unwrap().push(format!("reverse {key}"));
+            if self.fatal_reverse.lock().unwrap().iter().any(|k| k == &key) {
+                return Err(EnactError::Fatal(format!(
+                    "scripted fatal reverse for {key}"
+                )));
+            }
+            self.present.lock().unwrap().remove(&key);
+            Ok(())
+        }
+        fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+            self.restarts.lock().unwrap().push(unit.to_string());
+            Ok(())
+        }
+        fn diagnose(&self, glyph: &Glyph) -> Option<String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("diagnose {}", glyph.key()));
+            self.diagnosis.lock().unwrap().clone()
+        }
+    }
+
+    fn retry_config(max_attempts: u32) -> RetryConfig {
+        RetryConfig {
+            max_attempts,
+            base_delay_ms: 0,
+            ..Default::default()
+        }
+    }
+
+    fn foreman(host: &str, reconciler: Box<dyn Reconciler>) -> Foreman {
+        Foreman::new(host.into(), Box::new(MemoryPlanRoom::new()), reconciler)
+            .with_retry_config(retry_config(3))
+    }
+
+    /// A foreman over the scripted reconciler, on host `"host"`, tight retries so
+    /// tests run fast. Kept behind an `Arc` so the test can read the reconciler's
+    /// present set after an apply.
+    fn foreman_with(reconciler: ScriptedReconciler) -> ScriptedForeman {
+        let rec = Arc::new(reconciler);
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 3,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        ScriptedForeman { foreman: f, rec }
+    }
+
+    struct ScriptedForeman {
+        foreman: Foreman,
+        rec: Arc<ScriptedReconciler>,
+    }
+    impl ScriptedForeman {
+        fn with_retry_config(mut self, cfg: RetryConfig) -> Self {
+            self.foreman = self.foreman.with_retry_config(cfg);
+            self
+        }
+        // NOTE: dedup/claim COUNT assertions (`enacts_once`, shared-glyph rollback,
+        // the crediting tests) pin `EnactConfig { workers: 1 }` through this helper.
+        // With workers > 1, two units racing a real apply of the same key is a
+        // legitimate outcome that varies the counts — idempotence, not dedup, is the
+        // invariant then (ADR 0034 §1). Pin workers = 1 whenever a test asserts an
+        // exact apply/claim/credit count; leave it at the default only when the test
+        // is about concurrency itself.
+        fn with_enact_config(mut self, cfg: EnactConfig) -> Self {
+            self.foreman = self.foreman.with_enact_config(cfg);
+            self
+        }
+        fn apply_scroll(&self, mut scroll: Scroll) -> Result<ReconcileReport, ForemanError> {
+            scroll.name = self.foreman.host().to_string();
+            let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
+            self.foreman.apply_manifest(&bytes)
+        }
+    }
+
+    fn applied_keys(f: &ScriptedForeman) -> Vec<String> {
+        f.rec.present_keys()
+    }
+
+    fn apt(name: &str) -> Glyph {
+        Glyph::AptPackage { name: name.into() }
+    }
+
+    fn unit_file(path: &str, contents: &str) -> Glyph {
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::File {
+                contents: contents.into(),
+                perms: scroll_format::Perms {
+                    mode: 0o644,
+                    owner: None,
+                    group: None,
+                },
+            },
+        }
+    }
+
+    fn manifest(scrolls: Vec<Scroll>) -> Vec<u8> {
+        scroll_format::to_bytes(&Manifest::from_scrolls(scrolls, "test"))
+    }
+
+    fn scroll(host: &str, glyphs: Vec<Glyph>) -> Scroll {
+        Scroll {
+            name: host.into(),
+            policy: None,
+            contents: Contents::Glyphs(glyphs),
+        }
+    }
+
+    fn leaf_scroll(name: &str, glyphs: Vec<Glyph>) -> Scroll {
+        Scroll {
+            name: name.into(),
+            policy: None,
+            contents: Contents::Glyphs(glyphs),
+        }
+    }
+
+    fn leaf_scroll_with_policy(name: &str, policy: Policy, glyphs: Vec<Glyph>) -> Scroll {
+        Scroll {
+            name: name.into(),
+            policy: Some(policy),
+            contents: Contents::Glyphs(glyphs),
+        }
+    }
+
+    fn branch_scroll(name: &str, groups: Vec<Scroll>) -> Scroll {
+        Scroll {
+            name: name.into(),
+            policy: None,
+            contents: Contents::Groups(groups),
+        }
+    }
+
+    // --- Task 4: best-effort within a unit; sibling isolation ---
+
+    #[test]
+    fn a_fatal_glyph_does_not_veto_the_rest_of_its_unit() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            on_exhaust: OnExhaustConfig::Keep,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = leaf_scroll("unit", vec![apt("bad"), apt("good")]);
+        let report = foreman.apply_scroll(scroll).unwrap();
+        assert_eq!(report.units.len(), 1);
+        assert_eq!(report.units[0].failures.len(), 1);
+        assert_eq!(report.units[0].failures[0].glyph_key, "apt:bad");
+        assert!(applied_keys(&foreman).contains(&"apt:good".to_string()));
+    }
+
+    #[test]
+    fn one_unit_failing_leaves_a_sibling_unit_settled() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("broken", vec![apt("bad")]),
+                leaf_scroll("healthy", vec![apt("good")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let healthy = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "healthy")
+            .unwrap();
+        assert!(healthy.failures.is_empty());
+        assert!(applied_keys(&foreman).contains(&"apt:good".to_string()));
+    }
+
+    #[test]
+    fn prepare_runs_once_before_any_unit_enact() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![apt("podman")]),
+                leaf_scroll("b", vec![apt("htop")]),
+            ],
+        );
+        foreman.apply_scroll(scroll).unwrap();
+        let events = foreman.rec.events();
+        let prepares: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.starts_with("prepare "))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(prepares.len(), 1, "prepare runs exactly once");
+        let first_apply = events.iter().position(|e| e.starts_with("apply ")).unwrap();
+        assert!(prepares[0] < first_apply, "prepare precedes every apply");
+        assert_eq!(
+            events[prepares[0]], "prepare 2",
+            "prepare sees both distinct enacting ops"
+        );
+    }
+
+    // --- Task 5: backoff/jitter/dual limits ---
+
+    #[test]
+    fn a_retryable_glyph_succeeds_within_the_attempt_limit() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_times("apt:flaky", 2)
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 1,
+            max_delay_ms: 2,
+            jitter_fraction: 0.0,
+            ..Default::default()
+        });
+        let report = foreman
+            .apply_scroll(leaf_scroll("u", vec![apt("flaky")]))
+            .unwrap();
+        assert!(report.units[0].failures.is_empty());
+        assert!(applied_keys(&foreman).contains(&"apt:flaky".to_string()));
+    }
+
+    #[test]
+    fn round_delay_saturates_at_max_delay() {
+        let cfg = RetryConfig {
+            base_delay_ms: 100,
+            backoff_multiplier: 10.0,
+            max_delay_ms: 500,
+            jitter_fraction: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(super::round_delay(&cfg, 1).as_millis(), 100);
+        assert_eq!(super::round_delay(&cfg, 2).as_millis(), 500);
+        assert_eq!(super::round_delay(&cfg, 5).as_millis(), 500);
+    }
+
+    #[test]
+    fn a_never_succeeding_retryable_gives_up_as_retries_exhausted() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("apt:doomed")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 3,
+            base_delay_ms: 1,
+            max_delay_ms: 1,
+            jitter_fraction: 0.0,
+            max_elapsed_ms: 60_000,
+            on_exhaust: OnExhaustConfig::Keep,
+            ..Default::default()
+        });
+        let report = foreman
+            .apply_scroll(leaf_scroll("u", vec![apt("doomed")]))
+            .unwrap();
+        assert_eq!(report.units[0].failures.len(), 1);
+        assert_eq!(
+            report.units[0].failures[0].class,
+            FailClassReport::RetriesExhausted
+        );
+        assert_eq!(report.units[0].failures[0].attempts, 3);
+    }
+
+    // --- Task 6: per-unit on_exhaust, scoped rollback ---
+
+    #[test]
+    fn a_units_rollback_undoes_only_its_own_glyphs() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("broken", vec![apt("good-in-broken"), apt("bad")]),
+                leaf_scroll("healthy", vec![apt("healthy-pkg")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let broken = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "broken")
+            .unwrap();
+        assert_eq!(broken.outcome, UnitOutcome::RolledBack);
+        assert!(!applied_keys(&foreman).contains(&"apt:good-in-broken".to_string()));
+        assert!(applied_keys(&foreman).contains(&"apt:healthy-pkg".to_string()));
+    }
+
+    #[test]
+    fn a_keep_unit_leaves_its_applied_glyphs() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let leaf = leaf_scroll_with_policy(
+            "u",
+            Policy {
+                on_exhaust: Some(OnExhaust::Keep),
+                ..Default::default()
+            },
+            vec![apt("kept"), apt("bad")],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(report.units[0].outcome, UnitOutcome::Partial);
+        assert!(applied_keys(&foreman).contains(&"apt:kept".to_string()));
+        assert!(report.units[0].failures.iter().all(|f| !f.rolled_back));
+    }
+
+    // --- Task 8: report shape, typed errors, sibling-remove regression ---
+
+    #[test]
+    fn a_rolled_back_unit_reports_glyph_lines_in_enact_order() {
+        use crate::report::{GlyphAction, GlyphOutcome};
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("systemd:fishnet.service")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+            jitter_fraction: 0.0,
+            on_exhaust: OnExhaustConfig::Rollback,
+            ..Default::default()
+        });
+        let leaf = leaf_scroll(
+            "unit",
+            vec![
+                apt("podman"),
+                unit_file("/etc/containers/systemd/fishnet.container", "v1"),
+                Glyph::SystemdService {
+                    unit: "fishnet.service".into(),
+                },
+            ],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        let unit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "unit")
+            .unwrap();
+        assert_eq!(unit.outcome, UnitOutcome::RolledBack);
+        let outcomes: Vec<GlyphOutcome> = unit.glyphs.iter().map(|g| g.outcome).collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                GlyphOutcome::RolledBack,
+                GlyphOutcome::RolledBack,
+                GlyphOutcome::Failed
+            ]
+        );
+        let actions: Vec<GlyphAction> = unit.glyphs.iter().map(|g| g.action).collect();
+        assert_eq!(
+            actions,
+            vec![
+                GlyphAction::Install,
+                GlyphAction::Install,
+                GlyphAction::Install
+            ]
+        );
+        let failed = unit
+            .glyphs
+            .iter()
+            .find(|g| g.outcome == GlyphOutcome::Failed)
+            .unwrap();
+        assert_eq!(failed.glyph_key, "systemd:fishnet.service");
+        assert_eq!(failed.attempts, 5);
+        assert_eq!(
+            failed.message.as_deref(),
+            Some("scripted retryable for systemd:fishnet.service")
+        );
+    }
+
+    #[test]
+    fn a_noop_reconcile_reports_all_unchanged_glyph_lines() {
+        use crate::report::GlyphOutcome;
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = leaf_scroll("host", vec![apt("podman"), apt("fishnet")]);
+        foreman.apply_scroll(scroll.clone()).unwrap();
+        let report = foreman.apply_scroll(scroll).unwrap();
+        assert_eq!(report.units.len(), 1);
+        assert_eq!(report.units[0].outcome, UnitOutcome::Settled);
+        assert!(!report.units[0].glyphs.is_empty());
+        assert!(report.units[0]
+            .glyphs
+            .iter()
+            .all(|g| g.outcome == GlyphOutcome::Unchanged && g.attempts == 0));
+    }
+
+    #[test]
+    fn apply_manifest_returns_a_report_with_units_in_source_order() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![apt("one")]),
+                leaf_scroll("b", vec![apt("two")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        assert_eq!(report.outcome, TopOutcome::Settled);
+        let names: Vec<String> = report
+            .units
+            .iter()
+            .map(|u| u.unit_path.last().unwrap().clone())
+            .collect();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn an_undecodable_manifest_is_a_typed_error() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        match foreman.foreman.apply_manifest(b"not a manifest") {
+            Err(e) => assert_eq!(e.kind(), "manifest-undecodable"),
+            Ok(_) => panic!("expected a typed error"),
+        }
+    }
+
+    #[test]
+    fn an_apply_emits_progress_events_for_each_installed_glyph() {
+        let f = foreman_with(ScriptedReconciler::new().ok_default());
+        let scroll = Scroll {
+            name: "host".into(),
+            policy: None,
+            contents: Contents::Glyphs(vec![apt("nginx"), apt("pg")]),
+        };
+        let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
+        let (id, sel) = f.foreman.ingest(&bytes).unwrap();
+        f.foreman.run_reconcile(id, sel).unwrap();
+        let events = f.foreman.progress().events_after(id, 0);
+        let messages: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
+        assert!(messages.iter().any(|m| m.contains("apt:nginx")));
+        assert!(messages.iter().any(|m| m.contains("apt:pg")));
+        assert!(events.iter().all(|e| e.seq >= 1));
+    }
+
+    #[test]
+    fn a_second_ingest_while_unsettled_is_reconcile_in_progress() {
+        let f = foreman_with(ScriptedReconciler::new().ok_default());
+        let scroll = Scroll {
+            name: "host".into(),
+            policy: None,
+            contents: Contents::Glyphs(vec![apt("nginx")]),
+        };
+        let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
+        let (id, _sel) = f.foreman.ingest(&bytes).unwrap();
+        assert_eq!(id, 1);
+        let err = f.foreman.ingest(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            ForemanError::ReconcileInProgress { reconcile_id: 1 }
+        ));
+        assert_eq!(err.kind(), "reconcile-in-progress");
+    }
+
+    #[test]
+    fn enacting_one_unit_does_not_remove_a_sibling_units_applied_glyph() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![apt("a-pkg")]),
+                leaf_scroll("b", vec![apt("b-pkg")]),
+            ],
+        );
+        foreman.apply_scroll(scroll.clone()).unwrap();
+        assert!(applied_keys(&foreman).contains(&"apt:b-pkg".to_string()));
+
+        let report = foreman.apply_scroll(scroll).unwrap();
+        assert_eq!(report.outcome, TopOutcome::Settled);
+        assert!(applied_keys(&foreman).contains(&"apt:b-pkg".to_string()));
+        let attempt = report.revision.id;
+        let _ = attempt;
+        for unit in &report.units {
+            assert!(unit.failures.is_empty());
+        }
+        assert!(applied_keys(&foreman).contains(&"apt:a-pkg".to_string()));
+    }
+
+    #[test]
+    fn a_vanished_unit_glyph_is_removed_under_a_surviving_ancestor() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler);
+        let before = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("keep", vec![apt("stays")]),
+                leaf_scroll("gone", vec![apt("removed")]),
+            ],
+        );
+        foreman.apply_scroll(before).unwrap();
+        assert!(applied_keys(&foreman).contains(&"apt:removed".to_string()));
+
+        let after = branch_scroll("host", vec![leaf_scroll("keep", vec![apt("stays")])]);
+        let report = foreman.apply_scroll(after).unwrap();
+        assert_eq!(report.outcome, TopOutcome::Settled);
+        assert!(!applied_keys(&foreman).contains(&"apt:removed".to_string()));
+        assert!(applied_keys(&foreman).contains(&"apt:stays".to_string()));
+    }
+
+    // --- Review fixes: removes-group path isolation, whole-reconcile budget,
+    //     rollback-aware config propagation ---
+
+    #[test]
+    fn a_flat_host_removes_rollback_does_not_reverse_a_present_glyph() {
+        let reconciler = ScriptedReconciler::new()
+            .fatal_reverse_on("apt:goes")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        foreman
+            .apply_scroll(leaf_scroll("host", vec![apt("goes")]))
+            .unwrap();
+        assert!(applied_keys(&foreman).contains(&"apt:goes".to_string()));
+
+        let report = foreman
+            .apply_scroll(leaf_scroll("host", vec![apt("stays")]))
+            .unwrap();
+        let removes = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().map(String::as_str) == Some("<removes>"))
+            .expect("the vanished-removes group reports its own unit");
+        assert_eq!(removes.outcome, UnitOutcome::RolledBack);
+        assert!(
+            applied_keys(&foreman).contains(&"apt:stays".to_string()),
+            "a failing vanished-remove rolling back must not reverse the present unit's freshly-applied glyph"
+        );
+    }
+
+    #[test]
+    fn a_dropped_glyph_removes_rollback_does_not_reverse_the_surviving_unit() {
+        let reconciler = ScriptedReconciler::new()
+            .fatal_reverse_on("apt:dropped")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let kept = "file:/etc/app/kept.conf".to_string();
+        let before = branch_scroll(
+            "host",
+            vec![leaf_scroll(
+                "b",
+                vec![unit_file("/etc/app/kept.conf", "v1"), apt("dropped")],
+            )],
+        );
+        foreman.apply_scroll(before).unwrap();
+        assert!(applied_keys(&foreman).contains(&kept));
+
+        let after = branch_scroll(
+            "host",
+            vec![leaf_scroll(
+                "b",
+                vec![unit_file("/etc/app/kept.conf", "v2")],
+            )],
+        );
+        foreman.apply_scroll(after).unwrap();
+        assert!(
+            applied_keys(&foreman).contains(&kept),
+            "a dropped glyph's remove rolling back must not reverse unit b's replaced glyph"
+        );
+    }
+
+    #[test]
+    fn max_elapsed_bounds_the_whole_reconcile_not_each_unit() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("apt:one")
+            .retryable_always("apt:two")
+            .ok_default();
+        let foreman = foreman_with(reconciler)
+            .with_retry_config(RetryConfig {
+                max_attempts: 5,
+                base_delay_ms: 5,
+                backoff_multiplier: 1.0,
+                max_delay_ms: 5,
+                jitter_fraction: 0.0,
+                max_elapsed_ms: 1,
+                on_exhaust: OnExhaustConfig::Keep,
+            })
+            .with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("one")]),
+                leaf_scroll("second", vec![apt("two")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let first = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "first")
+            .unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        assert_eq!(first.failures[0].class, FailClassReport::RetriesExhausted);
+        assert_eq!(second.failures[0].class, FailClassReport::RetriesExhausted);
+        assert_eq!(
+            second.failures[0].attempts, 1,
+            "the budget spent on the first unit leaves the second only its opening round"
+        );
+    }
+
+    #[test]
+    fn a_give_up_captures_forensics_before_rollback() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("systemd:fishnet.service")
+            .diagnosis("=== systemctl status fishnet.service ===\nActive: failed")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 2,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+            jitter_fraction: 0.0,
+            on_exhaust: OnExhaustConfig::Rollback,
+            ..Default::default()
+        });
+        let leaf = leaf_scroll(
+            "unit",
+            vec![
+                apt("podman"),
+                Glyph::SystemdService {
+                    unit: "fishnet.service".into(),
+                },
+            ],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        let unit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "unit")
+            .unwrap();
+        assert_eq!(unit.outcome, UnitOutcome::RolledBack);
+        let failure = unit
+            .failures
+            .iter()
+            .find(|f| f.glyph_key == "systemd:fishnet.service")
+            .unwrap();
+        assert_eq!(
+            failure.details.as_deref(),
+            Some("=== systemctl status fishnet.service ===\nActive: failed")
+        );
+        let events = foreman.rec.events();
+        let diagnosed = events
+            .iter()
+            .position(|e| e == "diagnose systemd:fishnet.service")
+            .expect("the failed service is diagnosed");
+        let reversed = events
+            .iter()
+            .position(|e| e == "reverse apt:podman")
+            .expect("the applied package is rolled back");
+        assert!(
+            diagnosed < reversed,
+            "forensics must be captured before any rollback reverses host state"
+        );
+    }
+
+    #[test]
+    fn a_first_round_success_does_not_start_the_retry_clock() {
+        let reconciler = ScriptedReconciler::new()
+            .retryable_always("apt:two")
+            .ok_default();
+        let foreman = foreman_with(reconciler).with_retry_config(RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 0,
+            backoff_multiplier: 1.0,
+            max_delay_ms: 0,
+            jitter_fraction: 0.0,
+            max_elapsed_ms: 0,
+            on_exhaust: OnExhaustConfig::Keep,
+        });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("one")]),
+                leaf_scroll("second", vec![apt("two")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        assert_eq!(
+            second.failures[0].attempts, 2,
+            "a fully-successful first unit must not start the clock, so the retrying unit still gets its opening round plus one retry before the zero budget trips"
+        );
+    }
+
+    #[test]
+    fn a_rolled_back_config_file_is_not_restarted_on_settle() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let leaf = leaf_scroll(
+            "unit",
+            vec![
+                unit_file("/etc/containers/systemd/registry.container", "v1"),
+                apt("bad"),
+            ],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(report.units[0].outcome, UnitOutcome::RolledBack);
+        assert!(
+            foreman.rec.restarts().is_empty(),
+            "a unit whose config rolled back must not restart its service"
+        );
+    }
+
+    // --- existing contract tests (updated to per-unit best-effort) ---
+
+    #[test]
+    fn with_retry_config_is_stored() {
+        let foreman = Foreman::new(
+            "h".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(Recorder::default()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 9,
+            ..Default::default()
+        });
+        assert_eq!(foreman.retry.max_attempts, 9);
+    }
+
+    #[test]
+    fn with_enact_config_is_stored() {
+        let foreman = Foreman::new(
+            "h".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(Recorder::default()),
+        )
+        .with_enact_config(EnactConfig { workers: 1 });
+        assert_eq!(foreman.enact.workers, 1);
+    }
+
+    struct OverlapReconciler {
+        gate: Arc<std::sync::Barrier>,
+        both_arrived: Arc<std::sync::atomic::AtomicBool>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl OverlapReconciler {
+        fn new() -> Self {
+            Self {
+                gate: Arc::new(std::sync::Barrier::new(2)),
+                both_arrived: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                present: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+    impl Reconciler for OverlapReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            if glyph.key().starts_with("apt:latch") {
+                self.gate.wait();
+                self.both_arrived
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.present.lock().unwrap().insert(glyph.key(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn two_independent_units_enact_concurrently() {
+        let rec = Arc::new(OverlapReconciler::new());
+        let arrived = rec.both_arrived.clone();
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 2 });
+        let scroll = {
+            let mut s = branch_scroll(
+                "host",
+                vec![
+                    leaf_scroll("a", vec![apt("latch-a")]),
+                    leaf_scroll("b", vec![apt("latch-b")]),
+                ],
+            );
+            s.name = "host".into();
+            s
+        };
+        let bytes = manifest(vec![scroll]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f.apply_manifest(&bytes).map(|_| ()));
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert!(
+            done.is_ok(),
+            "the reconcile completed (the two units met at the barrier)"
+        );
+        assert!(
+            arrived.load(std::sync::atomic::Ordering::SeqCst),
+            "both units were inside apply simultaneously — genuine overlap, not interleaving"
+        );
+    }
+
+    struct ConcurrencyWitnessReconciler {
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        max_seen: Arc<std::sync::atomic::AtomicUsize>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl ConcurrencyWitnessReconciler {
+        fn new() -> Self {
+            Self {
+                in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                present: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+    impl Reconciler for ConcurrencyWitnessReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            if glyph.key().starts_with("apt:latch") {
+                let now = self
+                    .in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.max_seen
+                    .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                for _ in 0..50_000 {
+                    std::hint::spin_loop();
+                }
+                self.in_flight
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.present.lock().unwrap().insert(glyph.key(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn workers_one_never_overlaps_units() {
+        let rec = Arc::new(ConcurrencyWitnessReconciler::new());
+        let max = rec.max_seen.clone();
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![apt("latch-a")]),
+                leaf_scroll("b", vec![apt("latch-b")]),
+                leaf_scroll("c", vec![apt("latch-c")]),
+            ],
+        );
+        let report = f.apply_manifest(&manifest(vec![scroll])).unwrap();
+        assert_eq!(report.units.len(), 3, "every unit still settles serially");
+        assert_eq!(
+            max.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "workers = 1 never runs two units' applies at once — today's serial behavior"
+        );
+    }
+
+    struct RollbackVsEnactReconciler {
+        release_slow: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        slow_recv: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        reversing_started: Arc<std::sync::atomic::AtomicBool>,
+        slow_in_apply: Arc<std::sync::atomic::AtomicBool>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+    }
+    impl RollbackVsEnactReconciler {
+        fn new() -> Self {
+            let (tx, rx) = std::sync::mpsc::channel();
+            Self {
+                release_slow: Mutex::new(Some(tx)),
+                slow_recv: Mutex::new(Some(rx)),
+                reversing_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                slow_in_apply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                present: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+    impl Reconciler for RollbackVsEnactReconciler {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            if key == "apt:b-slow" {
+                self.slow_in_apply
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let rx = self.slow_recv.lock().unwrap().take();
+                if let Some(rx) = rx {
+                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                }
+            }
+            if key == "apt:a-bad" {
+                return Err(EnactError::Fatal("scripted fatal for apt:a-bad".into()));
+            }
+            self.present.lock().unwrap().insert(key, cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            self.reversing_started
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(tx) = self.release_slow.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            self.present.lock().unwrap().remove(&outcome.op.key());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_units_rollback_reverses_only_its_own_steps_while_a_sibling_is_mid_enact() {
+        let rec = Arc::new(RollbackVsEnactReconciler::new());
+        let slow_in_apply = rec.slow_in_apply.clone();
+        let reversing = rec.reversing_started.clone();
+        let witness = rec.clone();
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            on_exhaust: OnExhaustConfig::Rollback,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 2 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("bunit", vec![apt("b-slow")]),
+                leaf_scroll("aunit", vec![apt("a-good"), apt("a-bad")]),
+            ],
+        );
+        let bytes = manifest(vec![scroll]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f.apply_manifest(&bytes));
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(10));
+        let report = done
+            .expect("the reconcile completed (b-slow released by a-good's reverse)")
+            .unwrap();
+        assert!(
+            slow_in_apply.load(std::sync::atomic::Ordering::SeqCst),
+            "the sibling was genuinely inside its apply"
+        );
+        assert!(
+            reversing.load(std::sync::atomic::Ordering::SeqCst),
+            "the failing unit rolled back"
+        );
+        let keys: Vec<String> = witness.present.lock().unwrap().keys().cloned().collect();
+        assert!(
+            !keys.contains(&"apt:a-good".to_string()),
+            "the failing unit reversed its own applied glyph, got {keys:?}"
+        );
+        assert!(
+            keys.contains(&"apt:b-slow".to_string()),
+            "the concurrent sibling's applied glyph survived the other unit's rollback, got {keys:?}"
+        );
+        let aunit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "aunit")
+            .unwrap();
+        assert_eq!(aunit.outcome, UnitOutcome::RolledBack);
+        let bunit = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "bunit")
+            .unwrap();
+        assert_eq!(bunit.outcome, UnitOutcome::Settled);
+    }
+
+    #[test]
+    fn applies_only_this_hosts_scroll() {
+        let rec = Arc::new(Recorder::default());
+        let f = foreman("h1", Box::new(rec.clone()));
+        let bytes = manifest(vec![
+            scroll("h1", vec![apt("nginx")]),
+            scroll("h2", vec![apt("other")]),
+        ]);
+        let report = f.apply_manifest(&bytes).unwrap();
+
+        assert_eq!(report.revision.kind, RevisionKind::Reconcile);
+        assert_eq!(rec.calls(), vec!["apply apt:nginx"]);
+        assert_eq!(f.revisions().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn missing_host_scroll_is_empty_reconcile() {
+        let rec = Arc::new(Recorder::default());
+        let f = foreman("h1", Box::new(rec.clone()));
+        let bytes = manifest(vec![scroll("h2", vec![apt("other")])]);
+        f.apply_manifest(&bytes).unwrap();
+        assert!(rec.calls().is_empty());
+    }
+
+    #[test]
+    fn reapplying_same_scroll_is_noop_but_still_journals() {
+        let rec = Arc::new(Recorder::default());
+        let f = foreman("h1", Box::new(rec.clone()));
+        let bytes = manifest(vec![scroll("h1", vec![apt("nginx")])]);
+        f.apply_manifest(&bytes).unwrap();
+        rec.calls.lock().unwrap().clear();
+        f.apply_manifest(&bytes).unwrap();
+        assert!(rec.calls().is_empty(), "a Noop enacts no side effect");
+        assert_eq!(f.revisions().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn removed_glyph_is_reversed() {
+        let rec = Arc::new(Recorder::default());
+        let f = foreman("h1", Box::new(rec.clone()));
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx"), apt("pg")])]))
+            .unwrap();
+        rec.calls.lock().unwrap().clear();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx")])]))
+            .unwrap();
+        assert!(rec.calls().contains(&"reverse apt:pg".to_string()));
+    }
+
+    #[test]
+    fn empty_scroll_removes_everything() {
+        let rec = Arc::new(Recorder::default());
+        let f = foreman("h1", Box::new(rec.clone()));
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("nginx")])]))
+            .unwrap();
+        rec.calls.lock().unwrap().clear();
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![])]))
+            .unwrap();
+        assert_eq!(rec.calls(), vec!["reverse apt:nginx"]);
+        assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+    }
+
+    #[test]
+    fn retryable_failures_are_retried_until_success() {
+        let flaky = Arc::new(FlakyThenOk::new(2));
+        let f = foreman("h1", Box::new(flaky.clone()));
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
+            .unwrap();
+        assert_eq!(*flaky.calls.lock().unwrap(), 3);
+    }
+
+    #[test]
+    fn no_retry_config_attempts_once() {
+        let failing = Arc::new(Failing::new(EnactError::Retryable));
+        let f = Foreman::new(
+            "h1".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(failing.clone()),
+        )
+        .with_retry_config(retry_config(1));
+        let report = f
+            .apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
+            .unwrap();
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert_eq!(failing.calls(), 1);
+    }
+
+    #[test]
+    fn exhausted_retries_report_and_roll_back_by_default() {
+        let failing = Arc::new(Failing::new(EnactError::Retryable));
+        let f = foreman("h1", Box::new(failing.clone()));
+        let report = f
+            .apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
+            .unwrap();
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert_eq!(
+            report.units[0].failures[0].class,
+            FailClassReport::RetriesExhausted
+        );
+        assert_eq!(failing.calls(), 3);
+        assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+        assert_eq!(f.revisions().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn fatal_failure_is_not_retried_and_rolls_back_by_default() {
+        let failing = Arc::new(Failing::new(EnactError::Fatal));
+        let f = foreman("h1", Box::new(failing.clone()));
+        let report = f
+            .apply_manifest(&manifest(vec![scroll("h1", vec![apt("app")])]))
+            .unwrap();
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert_eq!(report.units[0].failures[0].class, FailClassReport::Fatal);
+        assert_eq!(failing.calls(), 1);
+        assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+        assert_eq!(f.revisions().unwrap().len(), 2);
+    }
+
+    struct HostModel {
+        present: Mutex<BTreeMap<String, ContentId>>,
+        calls: Mutex<Vec<String>>,
+    }
+    impl HostModel {
+        fn new() -> Self {
+            Self {
+                present: Mutex::new(BTreeMap::new()),
+                calls: Mutex::new(vec![]),
+            }
+        }
+        fn present_keys(&self) -> Vec<String> {
+            self.present.lock().unwrap().keys().cloned().collect()
+        }
+    }
+    impl Reconciler for HostModel {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            let mut present = self.present.lock().unwrap();
+            let already = present.get(&key) == Some(&cid);
+            present.insert(key.clone(), cid);
+            self.calls.lock().unwrap().push(format!("apply {key}"));
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: if already {
+                    Inverse::Nothing
+                } else {
+                    crate::reconciler::inverse_of(glyph)
+                },
+                changed: !already,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            match &outcome.inverse {
+                Inverse::Nothing => {}
+                _ => {
+                    self.present.lock().unwrap().remove(&outcome.op.key());
+                }
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("reverse {}", outcome.op.key()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reapply_preserves_real_inverses_so_later_removal_reverts_host() {
+        let host = Arc::new(HostModel::new());
+        let f = foreman("h1", Box::new(host.clone()));
+
+        let s = manifest(vec![scroll("h1", vec![apt("nginx")])]);
+        f.apply_manifest(&s).unwrap();
+        f.apply_manifest(&s).unwrap();
+
+        let stored = f.applied_state().unwrap().unwrap();
+        let nginx = stored
+            .outcomes
+            .iter()
+            .find(|o| o.op.key() == "apt:nginx")
+            .unwrap();
+        assert_eq!(
+            nginx.inverse,
+            Inverse::RemoveAptPackage {
+                name: "nginx".into()
+            },
+            "re-apply must not overwrite the real inverse with Nothing"
+        );
+
+        f.apply_manifest(&manifest(vec![scroll("h1", vec![])]))
+            .unwrap();
+
+        assert!(
+            host.present_keys().is_empty(),
+            "removal must revert the host"
+        );
+        assert!(host
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"reverse apt:nginx".to_string()));
+        assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+    }
+
+    #[test]
+    fn atomic_step_ord_reserves_disjoint_blocks() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let next = AtomicU64::new(0);
+        let a = next.fetch_add(3, Ordering::SeqCst);
+        let b = next.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(a, 0);
+        assert_eq!(b, 3);
+        assert_eq!(next.load(Ordering::SeqCst), 5);
+        assert!(b >= a + 3, "the second block never overlaps the first");
+    }
+
+    #[test]
+    fn a_failed_first_declarer_lets_the_next_unit_really_apply_a_shared_glyph() {
+        struct FailFirstApply {
+            present: Mutex<BTreeMap<String, ContentId>>,
+            failed_keys: Mutex<Vec<String>>,
+        }
+        impl Reconciler for FailFirstApply {
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let key = glyph.key();
+                let mut failed = self.failed_keys.lock().unwrap();
+                if key == "apt:shared" && !failed.contains(&key) {
+                    failed.push(key);
+                    return Err(EnactError::Fatal("scripted first-apply failure".into()));
+                }
+                self.present.lock().unwrap().insert(key, cid);
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                self.present.lock().unwrap().remove(&outcome.op.key());
+                Ok(())
+            }
+        }
+        let rec = Arc::new(FailFirstApply {
+            present: Mutex::new(BTreeMap::new()),
+            failed_keys: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            on_exhaust: OnExhaustConfig::Keep,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("shared")]),
+                leaf_scroll("second", vec![apt("shared")]),
+            ],
+        );
+        let bytes = manifest(vec![scroll]);
+        f.apply_manifest(&bytes).unwrap();
+
+        assert!(
+            rec.present.lock().unwrap().contains_key("apt:shared"),
+            "the second unit really applies apt:shared after the first failed it"
+        );
+        let steps = f.planroom.wal_steps().unwrap();
+        let real_dones: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:shared"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(
+            real_dones.len(),
+            1,
+            "exactly one Done bracket for apt:shared — the second unit's real apply"
+        );
+        assert!(
+            !matches!(real_dones[0].inverse, Some(Inverse::Nothing) | None),
+            "the surviving Done carries a real inverse, not the phantom Inverse::Nothing"
+        );
+        let outcomes = f.applied_state().unwrap().unwrap().outcomes;
+        let shared: Vec<_> = outcomes
+            .iter()
+            .filter(|o| o.op.key() == "apt:shared")
+            .collect();
+        assert_eq!(shared.len(), 1);
+        assert!(
+            !matches!(shared[0].inverse, Inverse::Nothing),
+            "the fold credits apt:shared to the real applier, never a phantom"
+        );
+    }
+
+    #[test]
+    fn a_shared_key_across_units_enacts_once_and_credits_the_rest() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman"), apt("only-first")]),
+                leaf_scroll("second", vec![apt("podman"), apt("only-second")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let applies = foreman
+            .rec
+            .events()
+            .iter()
+            .filter(|e| e.as_str() == "apply apt:podman")
+            .count();
+        assert_eq!(
+            applies, 1,
+            "the shared apt:podman glyph is enacted exactly once across the two units"
+        );
+        assert!(applied_keys(&foreman).contains(&"apt:podman".to_string()));
+        assert!(applied_keys(&foreman).contains(&"apt:only-first".to_string()));
+        assert!(applied_keys(&foreman).contains(&"apt:only-second".to_string()));
+        let first = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "first")
+            .unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        assert!(first.glyphs.iter().any(|g| g.glyph_key == "apt:podman"));
+        assert!(
+            second.glyphs.iter().any(|g| g.glyph_key == "apt:podman"),
+            "the second unit still reports its own apt:podman bracket"
+        );
+    }
+
+    #[test]
+    fn the_projection_marks_a_shared_duplicate_and_names_its_owner() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        foreman.apply_scroll(scroll).unwrap();
+        let id = foreman.foreman.latest_reconcile_id().unwrap().unwrap();
+        let proj = foreman.foreman.progress_projection(id, 0).unwrap().unwrap();
+        let first = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "first")
+            .unwrap();
+        let second = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let first_podman = first
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        let second_podman = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        assert!(
+            !first_podman.shared,
+            "the first declarer does the real work, so it is not a shared duplicate"
+        );
+        assert!(
+            second_podman.shared,
+            "the second declarer of the same (key, cid) is a shared duplicate"
+        );
+        assert_eq!(
+            second_podman.owner,
+            Some(vec!["host".to_string(), "first".to_string()]),
+            "the duplicate names the first declarer's unit_path as owner"
+        );
+    }
+
+    #[test]
+    fn a_credited_duplicate_projects_the_credited_state() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        foreman.apply_scroll(scroll).unwrap();
+        let id = foreman.foreman.latest_reconcile_id().unwrap().unwrap();
+        let proj = foreman.foreman.progress_projection(id, 0).unwrap().unwrap();
+        let second = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let second_podman = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        assert!(
+            matches!(second_podman.state, crate::projection::GlyphState::Credited),
+            "the crediting unit's terminal is Credited, not Applied: {:?}",
+            second_podman.state
+        );
+    }
+
+    struct GatedPlanRoom {
+        inner: MemoryPlanRoom,
+        gate_on: (&'static str, &'static str, WalStepState),
+        armed: std::sync::atomic::AtomicBool,
+        parked: Arc<std::sync::atomic::AtomicBool>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl GatedPlanRoom {
+        fn new(
+            gate_on: (&'static str, &'static str, WalStepState),
+        ) -> (
+            Self,
+            Arc<std::sync::atomic::AtomicBool>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let parked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = std::sync::mpsc::channel();
+            let gated = Self {
+                inner: MemoryPlanRoom::new(),
+                gate_on,
+                armed: std::sync::atomic::AtomicBool::new(true),
+                parked: parked.clone(),
+                release: Mutex::new(Some(rx)),
+            };
+            (gated, parked, tx)
+        }
+    }
+    impl PlanRoom for GatedPlanRoom {
+        fn applied_state(&self) -> Result<Option<AppliedState>> {
+            self.inner.applied_state()
+        }
+        fn put_applied_state(&self, state: &AppliedState) -> Result<()> {
+            self.inner.put_applied_state(state)
+        }
+        fn revisions(&self) -> Result<Vec<Revision>> {
+            self.inner.revisions()
+        }
+        fn revision(&self, id: u64) -> Result<Option<Revision>> {
+            self.inner.revision(id)
+        }
+        fn latest_revision_id(&self) -> Result<Option<u64>> {
+            self.inner.latest_revision_id()
+        }
+        fn open_attempt(&self, scroll_content_id: Option<ContentId>) -> Result<ReconcileAttempt> {
+            self.inner.open_attempt(scroll_content_id)
+        }
+        fn set_attempt_phase(&self, reconcile_id: u64, phase: AttemptPhase) -> Result<()> {
+            self.inner.set_attempt_phase(reconcile_id, phase)
+        }
+        fn latest_attempt(&self) -> Result<Option<ReconcileAttempt>> {
+            self.inner.latest_attempt()
+        }
+        fn attempts(&self) -> Result<Vec<ReconcileAttempt>> {
+            self.inner.attempts()
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn append_wal_step(
+            &self,
+            reconcile_id: u64,
+            step_ord: u64,
+            glyph_key: &str,
+            action: WalAction,
+            state: WalStepState,
+            op: &GlyphOp,
+            inverse: Option<&Inverse>,
+            changed: Option<bool>,
+            unit_path: &[String],
+        ) -> Result<WalStep> {
+            let step = self.inner.append_wal_step(
+                reconcile_id,
+                step_ord,
+                glyph_key,
+                action,
+                state,
+                op,
+                inverse,
+                changed,
+                unit_path,
+            )?;
+            let unit = unit_path.last().map(String::as_str).unwrap_or("");
+            if self.gate_on == (unit, glyph_key, state)
+                && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(rx) = self.release.lock().unwrap().take() {
+                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                }
+            }
+            Ok(step)
+        }
+        fn wal_steps(&self) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps()
+        }
+        fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps_for(reconcile_id)
+        }
+    }
+
+    #[test]
+    fn a_poll_between_the_credited_wal_write_and_the_credit_fact_still_reads_credited() {
+        let (planroom, parked, release) =
+            GatedPlanRoom::new(("second", "apt:podman", WalStepState::Done));
+        let reconciler = Arc::new(ScriptedReconciler::new().ok_default());
+        let foreman = Arc::new(
+            Foreman::new("host".into(), Box::new(planroom), Box::new(reconciler))
+                .with_retry_config(RetryConfig {
+                    max_attempts: 3,
+                    base_delay_ms: 0,
+                    ..Default::default()
+                })
+                .with_enact_config(EnactConfig { workers: 1 }),
+        );
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        let bytes = manifest(vec![scroll]);
+        let f = foreman.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f.apply_manifest(&bytes));
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !parked.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the crediting write never parked at the gate"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let id = foreman
+            .latest_reconcile_id()
+            .unwrap()
+            .expect("an attempt is open");
+        let proj = foreman
+            .progress_projection(id, 0)
+            .unwrap()
+            .expect("the attempt projects");
+        let second = proj
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let second_podman = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        let observed_state = second_podman.state;
+
+        let _ = release.send(());
+        let done = rx.recv_timeout(std::time::Duration::from_secs(5));
+        done.expect("the reconcile completed").unwrap();
+
+        assert!(
+            matches!(observed_state, crate::projection::GlyphState::Credited),
+            "a poll racing the credited WAL commit read {observed_state:?}, not Credited"
+        );
+    }
+
+    #[test]
+    fn a_credited_duplicate_reports_the_credited_outcome() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let line = second
+            .glyphs
+            .iter()
+            .find(|g| g.glyph_key == "apt:podman")
+            .unwrap();
+        assert_eq!(
+            line.outcome,
+            GlyphOutcome::Credited,
+            "the crediting unit's GlyphLine reports Credited, not Applied"
+        );
+    }
+
+    #[test]
+    fn only_the_enacting_unit_rollback_removes_a_shared_glyph() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("second", vec![apt("shared"), apt("bad")]),
+                leaf_scroll("later", vec![apt("shared")]),
+            ],
+        );
+        let report = foreman.apply_scroll(scroll).unwrap();
+        let second = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "second")
+            .unwrap();
+        let later = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "later")
+            .unwrap();
+        assert_eq!(
+            second.outcome,
+            UnitOutcome::RolledBack,
+            "the enacting unit fails on apt:bad and rolls its own glyphs back, removing apt:shared"
+        );
+        assert_eq!(
+            later.outcome,
+            UnitOutcome::Settled,
+            "the crediting unit settles: its credited bracket is a no-op it need not undo"
+        );
+        assert!(
+            !applied_keys(&foreman).contains(&"apt:shared".to_string()),
+            "the enacting unit's rollback removed the shared glyph exactly once"
+        );
+    }
+
+    #[test]
+    fn a_keep_unit_crediting_a_shared_glyph_stays_partial() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:down").ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+        let enacting = leaf_scroll("base", vec![apt("shared")]);
+        let canary = leaf_scroll_with_policy(
+            "canary",
+            Policy {
+                on_exhaust: Some(OnExhaust::Keep),
+                ..Default::default()
+            },
+            vec![apt("shared"), apt("down")],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![enacting, canary]))
+            .unwrap();
+        let base = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "base")
+            .unwrap();
+        let canary_u = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "canary")
+            .unwrap();
+        assert_eq!(base.outcome, UnitOutcome::Settled);
+        assert_eq!(canary_u.outcome, UnitOutcome::Partial);
+        assert!(
+            applied_keys(&foreman).contains(&"apt:shared".to_string()),
+            "the shared glyph enacted by base stays applied; the canary kept its partial state"
+        );
+    }
+
+    #[test]
+    fn a_keep_canary_failing_a_shared_glyph_first_lets_the_sibling_apply_it() {
+        struct FailFirstShared {
+            present: Mutex<BTreeMap<String, ContentId>>,
+            failed_keys: Mutex<Vec<String>>,
+        }
+        impl Reconciler for FailFirstShared {
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let key = glyph.key();
+                let mut failed = self.failed_keys.lock().unwrap();
+                if key == "apt:shared" && !failed.contains(&key) {
+                    failed.push(key);
+                    return Err(EnactError::Fatal("scripted first-apply failure".into()));
+                }
+                self.present.lock().unwrap().insert(key, cid);
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                self.present.lock().unwrap().remove(&outcome.op.key());
+                Ok(())
+            }
+        }
+        let rec = Arc::new(FailFirstShared {
+            present: Mutex::new(BTreeMap::new()),
+            failed_keys: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(rec.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            on_exhaust: OnExhaustConfig::Keep,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
+        let canary = leaf_scroll("canary", vec![apt("shared")]);
+        let sibling = leaf_scroll("sibling", vec![apt("shared")]);
+        let report = f
+            .apply_manifest(&manifest(vec![branch_scroll(
+                "host",
+                vec![canary, sibling],
+            )]))
+            .unwrap();
+        let canary_u = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "canary")
+            .unwrap();
+        let sibling_u = report
+            .units
+            .iter()
+            .find(|u| u.unit_path.last().unwrap() == "sibling")
+            .unwrap();
+        assert_eq!(
+            canary_u.outcome,
+            UnitOutcome::Partial,
+            "the canary declares apt:shared first, fails it, and keeps its partial state"
+        );
+        assert_eq!(
+            sibling_u.outcome,
+            UnitOutcome::Settled,
+            "the sibling really applies apt:shared after the canary failed it"
+        );
+        assert!(
+            rec.present.lock().unwrap().contains_key("apt:shared"),
+            "apt:shared is present on the host — the sibling installed it for real"
+        );
+    }
+
+    #[test]
+    fn a_noop_credited_by_a_sibling_does_not_shadow_the_real_inverse() {
+        let reconciler = ScriptedReconciler::new().ok_default();
+        let foreman = foreman_with(reconciler).with_enact_config(EnactConfig { workers: 1 });
+
+        // Attempt 1: only "first" declares apt:shared — a real Install.
+        let attempt1 = branch_scroll("host", vec![leaf_scroll("first", vec![apt("shared")])]);
+        foreman.apply_scroll(attempt1).unwrap();
+        let steps = foreman.foreman.planroom.wal_steps().unwrap();
+        let real_dones: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:shared"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(real_dones.len(), 1);
+        assert!(!matches!(
+            real_dones[0].inverse,
+            Some(Inverse::Nothing) | None
+        ));
+
+        // Attempt 2: both "first" and "second" declare apt:shared at the same
+        // cid — both plan a Noop against the fold from attempt 1.
+        let attempt2 = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("shared")]),
+                leaf_scroll("second", vec![apt("shared")]),
+            ],
+        );
+        foreman.apply_scroll(attempt2).unwrap();
+
+        let applies_after_attempt2 = foreman
+            .rec
+            .events()
+            .iter()
+            .filter(|e| e.as_str() == "apply apt:shared")
+            .count();
+        assert_eq!(
+            applies_after_attempt2, 1,
+            "apt:shared is never re-applied by either Noop declarer"
+        );
+
+        let steps = foreman.foreman.planroom.wal_steps().unwrap();
+        let dones_after_attempt2: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:shared"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(
+            dones_after_attempt2.len(),
+            1,
+            "a Noop writes no WAL step, on either side of the shared pair, so no new Done row for apt:shared appears"
+        );
+        let outcomes = foreman.foreman.applied_state().unwrap().unwrap().outcomes;
+        let shared = outcomes
+            .iter()
+            .find(|o| o.op.key() == "apt:shared")
+            .expect("apt:shared is still in the applied set after two Noops");
+        assert!(
+            !matches!(shared.inverse, Inverse::Nothing),
+            "the fold's latest inverse for apt:shared is still attempt 1's real inverse, \
+             not a credited Noop's Inverse::Nothing"
+        );
+
+        // Attempt 3: drop apt:shared everywhere — Remove folds the latest
+        // inverse and must reverse the real one, not Inverse::Nothing.
+        let attempt3 = branch_scroll(
+            "host",
+            vec![leaf_scroll("first", vec![]), leaf_scroll("second", vec![])],
+        );
+        foreman.apply_scroll(attempt3).unwrap();
+
+        assert!(
+            foreman
+                .rec
+                .events()
+                .iter()
+                .any(|e| e.as_str() == "reverse apt:shared"),
+            "the reconciler's real reverse was invoked for apt:shared, not skipped over Inverse::Nothing"
+        );
+        assert!(
+            !applied_keys(&foreman).contains(&"apt:shared".to_string()),
+            "dropping apt:shared actually removes it from the host — no inverse loss"
+        );
+    }
+
+    #[test]
+    fn resolve_retry_uses_config_when_no_policy() {
+        let base = RetryConfig {
+            max_attempts: 5,
+            ..Default::default()
+        };
+        let eff = super::resolve_retry(&base, &[]);
+        assert_eq!(eff.max_attempts, 5);
+        assert_eq!(eff.on_exhaust, OnExhaustConfig::Rollback);
+    }
+
+    #[test]
+    fn resolve_retry_leaf_overrides_ancestor_overrides_config() {
+        let base = RetryConfig {
+            max_attempts: 5,
+            ..Default::default()
+        };
+        let ancestor = Policy {
+            max_attempts: Some(8),
+            on_exhaust: Some(OnExhaust::Rollback),
+            ..Policy::default()
+        };
+        let leaf = Policy {
+            on_exhaust: Some(OnExhaust::Keep),
+            ..Policy::default()
+        };
+        let eff = super::resolve_retry(&base, &[&ancestor, &leaf]);
+        assert_eq!(eff.max_attempts, 8);
+        assert_eq!(eff.on_exhaust, OnExhaustConfig::Keep);
+    }
+
+    #[test]
+    fn partial_failure_rolls_back_applied_outcomes() {
+        struct FailSecond {
+            calls: Mutex<u32>,
+            reversed: Mutex<Vec<String>>,
+        }
+        impl Reconciler for FailSecond {
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let mut c = self.calls.lock().unwrap();
+                *c += 1;
+                if *c == 2 {
+                    return Err(EnactError::Fatal("boom".into()));
+                }
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                self.reversed.lock().unwrap().push(outcome.op.key());
+                Ok(())
+            }
+        }
+        let rec = Arc::new(FailSecond {
+            calls: Mutex::new(0),
+            reversed: Mutex::new(vec![]),
+        });
+        let f = foreman("h1", Box::new(rec.clone()));
+        let report = f
+            .apply_manifest(&manifest(vec![scroll("h1", vec![apt("a"), apt("b")])]))
+            .unwrap();
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert_eq!(*rec.reversed.lock().unwrap(), vec!["apt:a".to_string()]);
+        assert!(f.applied_state().unwrap().unwrap().outcomes.is_empty());
+    }
+
+    /// A fake host modelling the real apt/batch semantics: `prepare` batch-installs
+    /// every apt `Install` name absent from the host, reporting the freshly
+    /// installed ones in `batch_installed`; a later per-unit `apply` of an apt
+    /// glyph observes it already installed and returns `changed = false`/
+    /// `Inverse::Nothing` (the exact idempotence that opened the rollback gap).
+    /// Non-apt glyphs apply normally, with a scripted `Fatal` per key. `reverse`
+    /// records the call and removes the package/glyph from the host set, so a
+    /// rollback that removes a batch-installed package is observable.
+    struct BatchHost {
+        installed: Mutex<std::collections::BTreeSet<String>>,
+        present: Mutex<BTreeMap<String, ContentId>>,
+        fatal: Mutex<Vec<String>>,
+        reversed: Mutex<Vec<(String, Inverse)>>,
+        applies: Mutex<Vec<String>>,
+    }
+    impl BatchHost {
+        fn new() -> Self {
+            Self {
+                installed: Mutex::new(std::collections::BTreeSet::new()),
+                present: Mutex::new(BTreeMap::new()),
+                fatal: Mutex::new(Vec::new()),
+                reversed: Mutex::new(Vec::new()),
+                applies: Mutex::new(Vec::new()),
+            }
+        }
+        fn fatal_on(self, key: &str) -> Self {
+            self.fatal.lock().unwrap().push(key.into());
+            self
+        }
+    }
+    impl Reconciler for BatchHost {
+        fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+            let mut installed = self.installed.lock().unwrap();
+            let mut batch_installed = std::collections::HashSet::new();
+            for op in ops {
+                if let GlyphOp::Install {
+                    glyph: Glyph::AptPackage { name },
+                    ..
+                } = op
+                {
+                    if installed.insert(name.clone()) {
+                        batch_installed.insert(name.clone());
+                    }
+                }
+            }
+            Ok(crate::reconciler::PrepareOutcome { batch_installed })
+        }
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let key = glyph.key();
+            self.applies.lock().unwrap().push(key.clone());
+            if self.fatal.lock().unwrap().iter().any(|k| k == &key) {
+                return Err(EnactError::Fatal(format!("scripted fatal for {key}")));
+            }
+            if let Glyph::AptPackage { name } = glyph {
+                let mut installed = self.installed.lock().unwrap();
+                let already = installed.contains(name);
+                installed.insert(name.clone());
+                self.present.lock().unwrap().insert(key.clone(), cid);
+                return Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: if already {
+                        Inverse::Nothing
+                    } else {
+                        crate::reconciler::inverse_of(glyph)
+                    },
+                    changed: !already,
+                });
+            }
+            self.present.lock().unwrap().insert(key.clone(), cid);
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+            let key = outcome.op.key();
+            self.reversed
+                .lock()
+                .unwrap()
+                .push((key.clone(), outcome.inverse.clone()));
+            if let Inverse::RemoveAptPackage { name } = &outcome.inverse {
+                self.installed.lock().unwrap().remove(name);
+            }
+            self.present.lock().unwrap().remove(&key);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_units_rollback_removes_a_batch_installed_package() {
+        let host = Arc::new(BatchHost::new().fatal_on("systemd:doomed"));
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = scroll(
+            "host",
+            vec![
+                apt("podman"),
+                Glyph::SystemdService {
+                    unit: "doomed".into(),
+                },
+            ],
+        );
+        let report = f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert!(
+            host.reversed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, inv)| k == "apt:podman"
+                    && matches!(inv, Inverse::RemoveAptPackage { name } if name == "podman")),
+            "the on_exhaust rollback reverses apt:podman with the real RemoveAptPackage, \
+             removing the batch-installed package"
+        );
+        assert!(
+            !host.installed.lock().unwrap().contains("podman"),
+            "the batch-installed podman is removed from the host by the rollback"
+        );
+    }
+
+    #[test]
+    fn exactly_one_declarer_claims_a_batch_installed_package() {
+        let host = Arc::new(BatchHost::new());
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        })
+        .with_enact_config(EnactConfig { workers: 1 });
+        let scroll = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("first", vec![apt("podman")]),
+                leaf_scroll("second", vec![apt("podman")]),
+            ],
+        );
+        f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        let steps = f.planroom.wal_steps().unwrap();
+        let dones: Vec<&WalStep> = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:podman"
+                    && s.state == WalStepState::Done
+                    && s.action == WalAction::Apply
+            })
+            .collect();
+        assert_eq!(
+            dones.len(),
+            2,
+            "both units record their own apt:podman bracket"
+        );
+        let real: Vec<&&WalStep> = dones
+            .iter()
+            .filter(|s| {
+                s.changed == Some(true)
+                    && matches!(&s.inverse, Some(Inverse::RemoveAptPackage { name }) if name == "podman")
+            })
+            .collect();
+        assert_eq!(
+            real.len(),
+            1,
+            "exactly one bracket carries changed=true + the real RemoveAptPackage inverse (the claimer)"
+        );
+        let credited: Vec<&&WalStep> = dones
+            .iter()
+            .filter(|s| s.changed == Some(false) && matches!(s.inverse, Some(Inverse::Nothing)))
+            .collect();
+        assert_eq!(
+            credited.len(),
+            1,
+            "the other bracket credits: changed=false + Inverse::Nothing"
+        );
+        assert!(
+            host.applies
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|k| k != "apt:podman"),
+            "the claim reads the batch's install; apt:podman is never re-applied per-unit"
+        );
+    }
+
+    #[test]
+    fn a_batch_failed_package_is_claimed_by_its_own_real_apply_not_the_batch() {
+        // podman installs in the batch; nope is NOT installed by the batch, so it
+        // is absent from `batch_installed` and its per-unit apply records the real
+        // inverse the ordinary way (ADR 0034 §2, hardening 2) — no double-claim.
+        struct PartialBatchHost {
+            installed: Mutex<std::collections::BTreeSet<String>>,
+            applies: Mutex<Vec<String>>,
+        }
+        impl Reconciler for PartialBatchHost {
+            fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+                let mut installed = self.installed.lock().unwrap();
+                let mut batch_installed = std::collections::HashSet::new();
+                for op in ops {
+                    if let GlyphOp::Install {
+                        glyph: Glyph::AptPackage { name },
+                        ..
+                    } = op
+                    {
+                        if name == "nope" {
+                            continue;
+                        }
+                        if installed.insert(name.clone()) {
+                            batch_installed.insert(name.clone());
+                        }
+                    }
+                }
+                Ok(crate::reconciler::PrepareOutcome { batch_installed })
+            }
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                let key = glyph.key();
+                self.applies.lock().unwrap().push(key.clone());
+                if let Glyph::AptPackage { name } = glyph {
+                    let mut installed = self.installed.lock().unwrap();
+                    let already = installed.contains(name);
+                    installed.insert(name.clone());
+                    return Ok(Outcome {
+                        op: GlyphOp::Install {
+                            cid,
+                            glyph: glyph.clone(),
+                        },
+                        cid,
+                        inverse: if already {
+                            Inverse::Nothing
+                        } else {
+                            crate::reconciler::inverse_of(glyph)
+                        },
+                        changed: !already,
+                    });
+                }
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+                Ok(())
+            }
+        }
+        let host = Arc::new(PartialBatchHost {
+            installed: Mutex::new(std::collections::BTreeSet::new()),
+            applies: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = scroll("host", vec![apt("podman"), apt("nope")]);
+        f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        assert!(
+            host.applies.lock().unwrap().iter().any(|k| k == "apt:nope"),
+            "the batch-failed nope is applied for real per-unit"
+        );
+        assert!(
+            host.applies
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|k| k != "apt:podman"),
+            "the batch-installed podman is claimed, never re-applied"
+        );
+        let steps = f.planroom.wal_steps().unwrap();
+        let nope_real = steps.iter().any(|s| {
+            s.glyph_key == "apt:nope"
+                && s.state == WalStepState::Done
+                && matches!(&s.inverse, Some(Inverse::RemoveAptPackage { name }) if name == "nope")
+        });
+        assert!(
+            nope_real,
+            "apt:nope's real per-unit apply records the RemoveAptPackage inverse"
+        );
+        let podman_claimed = steps
+            .iter()
+            .filter(|s| {
+                s.glyph_key == "apt:podman"
+                    && s.state == WalStepState::Done
+                    && matches!(&s.inverse, Some(Inverse::RemoveAptPackage { name }) if name == "podman")
+            })
+            .count();
+        assert_eq!(
+            podman_claimed, 1,
+            "apt:podman is claimed exactly once — no double-claim"
+        );
+    }
+
+    #[test]
+    fn on_exhaust_rollback_reverses_a_batch_installed_package_when_the_fallback_partially_failed() {
+        // Mirrors the real `HostReconciler::prepare`: the batch (and its per-glyph
+        // fallback) partially fails — podman installs, nope does not — and
+        // `prepare` still returns `Ok` carrying podman in `batch_installed`, the
+        // dpkg-verified receipt, rather than discarding it on the swallowed error.
+        // `apply` mirrors `BatchHost`: an apt glyph already present on the host
+        // (the batch's doing) reports `changed = false`/`Inverse::Nothing`, the
+        // exact idempotence that makes the foreman's claim the only path to a
+        // real `RemoveAptPackage` bracket.
+        struct PartiallyFailingFallbackHost {
+            installed: Mutex<std::collections::BTreeSet<String>>,
+            reversed: Mutex<Vec<(String, Inverse)>>,
+        }
+        impl Reconciler for PartiallyFailingFallbackHost {
+            fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<crate::reconciler::PrepareOutcome> {
+                let mut installed = self.installed.lock().unwrap();
+                installed.insert("podman".into());
+                let mut batch_installed = std::collections::HashSet::new();
+                batch_installed.insert("podman".to_string());
+                Ok(crate::reconciler::PrepareOutcome { batch_installed })
+            }
+            fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+                if let Glyph::SystemdService { unit } = glyph {
+                    if unit == "doomed" {
+                        return Err(EnactError::Fatal("scripted fatal for doomed".into()));
+                    }
+                }
+                if let Glyph::AptPackage { name } = glyph {
+                    let mut installed = self.installed.lock().unwrap();
+                    let already = installed.contains(name);
+                    installed.insert(name.clone());
+                    return Ok(Outcome {
+                        op: GlyphOp::Install {
+                            cid,
+                            glyph: glyph.clone(),
+                        },
+                        cid,
+                        inverse: if already {
+                            Inverse::Nothing
+                        } else {
+                            crate::reconciler::inverse_of(glyph)
+                        },
+                        changed: !already,
+                    });
+                }
+                Ok(Outcome {
+                    op: GlyphOp::Install {
+                        cid,
+                        glyph: glyph.clone(),
+                    },
+                    cid,
+                    inverse: crate::reconciler::inverse_of(glyph),
+                    changed: true,
+                })
+            }
+            fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
+                let key = outcome.op.key();
+                self.reversed
+                    .lock()
+                    .unwrap()
+                    .push((key, outcome.inverse.clone()));
+                if let Inverse::RemoveAptPackage { name } = &outcome.inverse {
+                    self.installed.lock().unwrap().remove(name);
+                }
+                Ok(())
+            }
+        }
+        let host = Arc::new(PartiallyFailingFallbackHost {
+            installed: Mutex::new(std::collections::BTreeSet::new()),
+            reversed: Mutex::new(Vec::new()),
+        });
+        let f = Foreman::new(
+            "host".into(),
+            Box::new(MemoryPlanRoom::new()),
+            Box::new(host.clone()),
+        )
+        .with_retry_config(RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 0,
+            ..Default::default()
+        });
+        let scroll = scroll(
+            "host",
+            vec![
+                apt("podman"),
+                Glyph::SystemdService {
+                    unit: "doomed".into(),
+                },
+            ],
+        );
+        let report = f.apply_manifest(&manifest(vec![scroll])).unwrap();
+
+        assert_eq!(report.outcome, TopOutcome::RolledBack);
+        assert!(
+            host.reversed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, inv)| k == "apt:podman"
+                    && matches!(inv, Inverse::RemoveAptPackage { name } if name == "podman")),
+            "the on_exhaust rollback reverses apt:podman with the real RemoveAptPackage even \
+             though the batch's per-glyph fallback partially failed this attempt"
+        );
+        assert!(
+            !host.installed.lock().unwrap().contains("podman"),
+            "the batch-installed podman is removed from the host by the rollback, not left \
+             permanently untracked"
+        );
+    }
+}

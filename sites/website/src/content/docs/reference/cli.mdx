@@ -1,0 +1,150 @@
+---
+title: CLI reference
+description: emetc, golemctl, and golemd — the commands, flags, and HTTP endpoints.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Three binaries. `emetc` compiles Emet to a manifest. `golemctl` ships a
+manifest to a node and reads its state. `golemd` runs on each node and
+reconciles it.
+
+The `fleet` VM harness wraps these same primitives to compile, ship, and
+inspect against throwaway Debian VMs — see the [Deploy a fleet to
+VMs](/tutorials/the-vm-harness/) tutorial.
+
+## `emetc`
+
+The Emet compiler.
+
+```
+emetc build [FILE] [OPTIONS]
+```
+
+With no `FILE`, `emetc build` compiles a built-in demo program (useful for
+a smoke check). With a `FILE`, it compiles that `.emet` source.
+
+| Flag | Effect |
+| --- | --- |
+| `-o`, `--out <PATH>` | write output to a file instead of stdout |
+| `--text` (`--human`) | emit the readable plan instead of the binary manifest |
+| `--json` | emit the JSON debug view instead of the binary manifest |
+
+**Default output is the binary, content-addressed manifest** — raw postcard
+bytes to stdout (or `-o PATH`), with diagnostics on stderr so it composes in
+a pipe. `--text`, `--human`, and `--json` are mutually exclusive and each
+opt out of the binary artifact.
+
+```bash
+# Compile the lichess fleet to a manifest file.
+emetc build examples/lichess/fleet.emet -o fleet.manifest
+
+# Eyeball the plan.
+emetc build examples/lichess/fleet.emet --text
+
+# JSON view for ad-hoc tooling (not content-addressed).
+emetc build examples/lichess/fleet.emet --json | jq '.scrolls | length'
+```
+
+<Aside type="note" title="In-tree invocation">
+  Building from the golem workspace before `emetc` is installed, use
+  `cargo run -p emet -- build FILE …`. `golemctl apply` expects `emetc` on
+  `PATH`.
+</Aside>
+
+## `golemctl`
+
+The operator CLI. Every command takes the agent's base URL as `<addr>`.
+
+```
+golemctl <COMMAND>
+
+Commands:
+  apply    <source> <addr>   Compile-and-ship, or ship a prebuilt manifest
+  state    <addr>            Print the host's applied scroll + content id
+  history  <addr>            Print the revision journal
+  show     <addr> <id>       Print one revision by id
+```
+
+### `golemctl apply <source> <addr>`
+
+If `<source>` ends in `.emet`, `golemctl` shells out to `emetc build
+<source>` and ships the resulting binary manifest. Otherwise it reads
+`<source>` as prebuilt manifest bytes and ships those. Either way it
+`POST`s to `<addr>/manifest`.
+
+```bash
+golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
+golemctl apply fleet.manifest              http://127.0.0.1:7474
+```
+
+### `golemctl state <addr>`
+
+Reads `GET /state` — the current applied scroll for the host and its
+content id (lowercase hex).
+
+### `golemctl history <addr>` / `golemctl show <addr> <id>`
+
+`history` reads `GET /revisions` (the append-only journal). `show` reads
+`GET /revisions/:id` for one entry — its kind (`Init` / `Reconcile`), the
+content id enacted, the ordered glyph ops, and the reversal receipts.
+
+<Aside type="caution" title="No keys yet">
+  `golemctl` does not sign manifests and `golemd` does not verify a signer.
+  There is no `keygen`, `sign`, or `push` command. Signing is
+  [roadmap](/explanation/trust/).
+</Aside>
+
+## `golemd`
+
+The per-host agent.
+
+```
+golemd [OPTIONS] --host <HOST>
+
+Options:
+      --host <HOST>            This node's name; selects its scroll from the manifest [env: GOLEM_HOST]
+      --state-dir <DIR>        Where to keep planroom.db [default: /var/lib/golem]
+      --listen <ADDR>          HTTP listen address [default: 127.0.0.1:7474]
+      --reconciler <KIND>      host | fake [default: fake] [env: GOLEM_RECONCILER]
+```
+
+### `--host <name>` (required)
+
+The node's identity. On a manifest, `golemd` selects the `AddressedScroll`
+whose `scroll.name` equals this value and reconciles toward it, ignoring
+every other host's scroll. Also settable via `GOLEM_HOST`.
+
+### `--reconciler host | fake`
+
+Which reconciler enacts glyphs:
+
+- **`fake`** (default) — an in-memory reconciler that records ops without
+  touching the host. Exercises the full diff / enact / journal spine with
+  zero I/O; used by tests and for dry runs.
+- **`host`** — the real reconcilers: apt, systemd, file, lineInFile against
+  a live Debian box.
+
+Also settable via `GOLEM_RECONCILER`.
+
+### `--state-dir <dir>` / `--listen <addr>`
+
+`--state-dir` holds the SQLite journal (`planroom.db`), golem's record of
+what it applied and how to reverse it. `--listen` is the HTTP bind address;
+default `127.0.0.1:7474`.
+
+## HTTP endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/manifest` | Accept a binary manifest; select this host's scroll, reconcile, journal. Returns the outcome as JSON. |
+| `GET` | `/state` | The current applied scroll and its content id. |
+| `GET` | `/revisions` | The full revision journal. |
+| `GET` | `/revisions/:id` | One revision. |
+| `GET` | `/status` | `{ host, latest_revision }`. |
+
+<Aside type="note" title="No coordination surface">
+  These endpoints are for an operator inspecting one node. There is no
+  fleet-coordination API — a manifest carries the whole fleet, but each node
+  acts only on its own scroll.
+</Aside>

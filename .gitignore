@@ -34,8 +34,14 @@ smoke-test/operator.pk
 smoke-test/signed-*.json
 
 # docs site (Astro Starlight)
-docs/node_modules
-docs/dist
-docs/.astro
-docs/bun.lockb
+sites/website/node_modules
+sites/website/dist
+sites/website/.astro
+sites/website/bun.lockb
 
+# fleet test-harness runtime dir (ephemeral VMs, images, keys)
+/.fleet/
+apps/fleet/__pycache__/
+
+__pycache__/
+*.pyc

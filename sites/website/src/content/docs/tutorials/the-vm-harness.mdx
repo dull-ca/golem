@@ -1,0 +1,153 @@
+---
+title: Deploy a fleet to VMs
+description: Boot ephemeral Debian VMs with the fleet harness, deploy golemd, apply a scroll, read the journal, and reverse it — golemd's real reconcilers against real boxes.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+golem's unit tests drive the reconcilers through a fake host — that proves the
+logic but never touches apt, systemd, or a real filesystem. The `fleet` harness
+(`apps/fleet/`) closes that gap: it boots throwaway rootless-QEMU Debian VMs,
+deploys a static `golemd` to each, applies a scroll, and lets you read the
+journal and logs. Everything is ephemeral — a VM is a copy-on-write overlay on
+one shared base image, and `reset` wipes the lot.
+
+Run everything through the `fleet` devenv script (it puts you at the repo root
+with the harness importable). `fleet` drives the same `emetc`/`golemctl`/`golemd`
+primitives documented in the [CLI reference](/reference/cli/).
+
+## The loop
+
+<Steps>
+1. **Boot a VM.** The lichess host names come predefined; boot one:
+
+   ```bash
+   fleet up --hosts scaly
+   ```
+
+   `up` ensures the cached Debian base image and the fleet keypair, then brings
+   the guest up on ports derived from its name (ssh on `2200+slot`, golemd on
+   `8800+slot`). With no `--hosts` it boots the full lichess set; `--count N`
+   boots the first N.
+
+2. **Deploy golemd.** Build the static `golemd` once and install it on the
+   guest:
+
+   ```bash
+   fleet deploy --hosts scaly
+   ```
+
+   This builds a musl-static `golemd`, copies it in, starts it as a systemd
+   unit, and polls `/status` until it answers.
+
+3. **Apply a scroll.** The `smoke.emet` fixture is one of each host-touching
+   glyph, targeting host `scaly`:
+
+   ```bash
+   fleet apply apps/fleet/smoke.emet --hosts scaly
+   ```
+
+   `apply` compiles the `.emet` source to a manifest here, then POSTs the same
+   bytes to each target's golemd. The guest selects the `scaly` scroll,
+   reconciles toward it with its **`host`** reconciler, and prints the revision
+   it recorded.
+
+4. **Read what happened.**
+
+   ```bash
+   fleet status               # who is up, golemd reachable, content-id, glyph count, last revision
+   fleet logs scaly -f        # tail golemd's journal on the guest (-f to follow)
+   ```
+</Steps>
+
+## Poke the box
+
+The reconcile above installed `htop`, wrote `/etc/golem-smoke.conf`, and ensured
+a `managed` line in it. Go see it — the guest is a real Debian box:
+
+```bash
+fleet ssh scaly                                   # interactive shell
+fleet ssh scaly cat /etc/golem-smoke.conf         # → ok / managed
+fleet ssh scaly dpkg-query -W htop                # golem installed it
+fleet ssh scaly -- sudo journalctl -u golemd -b   # the daemon's own log
+```
+
+<Aside type="tip" title="Try the daemon-reload proof">
+  Apply `apps/fleet/reload-proof.emet` instead — it writes a systemd unit file
+  with a `file` glyph, then enables it with a `systemdService`. Enabling a
+  just-written unit fails without a `daemon-reload` first; this fixture is how
+  that fix was found on a real box, and it is the kind of bug a fake
+  host never surfaces.
+</Aside>
+
+## Edit, re-apply, watch the diff
+
+The reconcile is content-addressed, so re-applying the same scroll is all
+no-ops — the interesting part is changing it. Copy `smoke.emet`, edit a glyph
+(change the file contents, swap `htop` for another package, add a `file`), and
+re-apply:
+
+```bash
+fleet apply my-smoke.emet --hosts scaly
+fleet logs scaly            # the new revision reconciled only the changed glyphs
+```
+
+Only the glyphs whose content id changed are `Replace`d (reverse the old, apply
+the new); everything unchanged is a `Noop`. There is no version number to
+type — content ids are the version axis. See
+[Applying changes](/getting-started/applying/).
+
+## Reverse it
+
+There is no separate "undo" command — reversing is applying a **smaller** scroll.
+golem diffs the new desired state against its journal and turns every glyph no
+longer present into a `Remove`, running each recorded uninstaller. Apply an empty
+scroll to take everything back:
+
+```emet
+main : List Scroll
+main = [ scroll { name = "scaly", glyphs = [] } ]
+```
+
+```bash
+fleet apply empty.emet --hosts scaly
+fleet ssh scaly cat /etc/golem-smoke.conf     # gone — golem created it
+fleet ssh scaly dpkg-query -W htop            # removed — golem installed it
+```
+
+`htop` is removed **only because** golem installed it and recorded
+`InstalledByUs`; a package already on the box is left alone. The `managed` line
+is removed only because golem added it. That is the property worth having:
+removal restores what was there before golem touched the resource. See
+[Reversible reconcile](/explanation/reversible-reconcile/).
+
+## Tear down
+
+```bash
+fleet down scaly       # stop the VM, keep its disk — a later `up scaly` resumes it
+fleet reset            # kill every VM, wipe all per-VM data, back to a clean slate
+fleet reset --purge    # also drop the cached image and keypair
+```
+
+`down` keeps the overlay disk, so `fleet up --hosts scaly` brings the same guest
+back with its data (flush with `sync` in the guest first if a very recent write
+must survive). `reset` is the clean slate.
+
+## Explore from here
+
+- **Break something on purpose.** Hand-edit `/etc/golem-smoke.conf` in the guest,
+  then re-apply — watch the `file` reconciler restore the managed contents.
+- **Inspect the manifest.** `cargo run -q -p emet -- build apps/fleet/smoke.emet
+  --json | jq` shows the content ids the diff keys on.
+- **Read a revision.** golemd's `/revisions/:id` endpoint carries each op and the
+  inverse it recorded to reverse it — the receipts that make removal exact.
+- **Write your own glyph or helper** and apply it: a `directory`, a
+  [`Quadlet.Workload`](/reference/workloads/), an `ingress`. Then reverse it and
+  confirm the box is clean.
+
+## Where to next
+
+- **[A registry on the fleet](/tutorials/registry-on-the-fleet/)** — run a real
+  container registry on a VM with golem.
+- **[The website loop](/tutorials/website-loop/)** — golem building and serving
+  golem's own docs.
