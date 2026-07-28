@@ -16,8 +16,8 @@
 
         # The golem agent (golemd) and CLI (golemctl) as their own flake
         # outputs: each builds and tests only its own workspace crate, off the
-        # shared Cargo.lock. CI (`.woodpecker.yml`) builds `.#golemd .#golemctl`
-        # as release binaries.
+        # shared Cargo.lock. These are release outputs — CI builds them via the
+        # `checks` below (`nix flake check`; ADR 0035).
         golemd = pkgs.rustPlatform.buildRustPackage {
           pname = "golemd";
           version = "0.1.0";
@@ -107,10 +107,12 @@
         };
 
         # `dist/` is a gitignored build artifact, so a pure flake evaluation
-        # (which only sees committed source) can't read it. Instead `GOLEM_SITE_DIST`
-        # carries the built path; reading an env var forces `nix build --impure`.
-        # Unset (e.g. a local `dist/` present in the source tree) falls back to
-        # the in-tree path.
+        # (which only sees committed source) can't read it. Three cases, in order:
+        # `GOLEM_SITE_DIST` carries the built path (reading the env var forces
+        # `nix build --impure`); else an in-tree `dist/` if one is present; else
+        # null. Null means no dist is available, and `website-container` is then
+        # omitted from `packages` entirely (below) rather than failing eval — so a
+        # pure `nix flake check`, which walks every `packages` output, stays green.
         siteDist =
           let env = builtins.getEnv "GOLEM_SITE_DIST";
           in
@@ -118,10 +120,20 @@
           else if builtins.pathExists ./sites/website/dist then ./sites/website/dist
           else null;
 
-        # The default website image, wired to the env-supplied dist path above.
-        # Built (not pushed) in CI as `nix build --impure .#website-container`.
+        # The default website image, wired to the dist path above. Present in
+        # `packages` only when `siteDist != null` (the `optionalAttrs` below);
+        # `let` is lazy, so this binding is never forced when siteDist is null.
+        # Built (not pushed) as `nix build --impure .#website-container` — outside
+        # the `checks` gate, since Astro's dist can't be produced purely (ADR 0035
+        # §4).
         website-container = mkWebsiteContainer siteDist;
 
+        # `cargo test` over the whole workspace, in one derivation. The
+        # per-package outputs above run only their own crate's tests (`-p`), so
+        # nothing exercises cross-crate integration tests or the crates with no
+        # release binary (e.g. scroll-format) — this closes that gap. It is the
+        # test half of the `nix flake check` gate (ADR 0035 §1); the per-package
+        # builds are the build half.
         workspace-tests = pkgs.rustPlatform.buildRustPackage {
           pname = "golem-workspace-tests";
           version = "0.1.0";
@@ -129,6 +141,19 @@
           inherit cargoLock;
         };
 
+        # The `apps/fleet` python harness (fleet is a python CLI, not a Rust
+        # crate), run under `unittest` against a nix-built interpreter with its
+        # deps.
+        #
+        # The `| cat` is load-bearing, not filler. `apps/fleet/cli.py` builds a
+        # module-level `rich.Console()` with default tty auto-detection, and one
+        # test asserts plain-text output. Under a bare `nix build`, the builder's
+        # stdout goes straight to the build log, which `rich` reads as a tty — so
+        # it colorizes and the plain-text assertion breaks. Piping through `cat`
+        # forces a real pipe, `isatty()` reports false, and the output matches the
+        # non-nix `pytest` run. stdenv's `set -o pipefail` still fails the build on
+        # a real test failure, so the pipe hides nothing. Delete it and the gate
+        # goes flaky under nix.
         fleet-tests = pkgs.runCommand "golem-fleet-tests"
           {
             nativeBuildInputs = [
@@ -147,6 +172,11 @@
           inherit website-container;
         };
 
+        # The complete CI gate: `nix flake check` builds every one of these
+        # (ADR 0035 §1). The six binary builds prove the toolchain compiles;
+        # workspace-tests and fleet-tests prove it passes. `website-container` is
+        # deliberately absent — it needs `--impure` + an external dist (ADR 0035
+        # §4).
         checks = {
           inherit golemd golemctl emetc emet-lsp golemd-static golemctl-static;
           inherit workspace-tests fleet-tests;
