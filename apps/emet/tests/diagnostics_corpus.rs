@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 fn corpus(name: &str) -> String {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("../../.superpowers/sdd/errmsg/corpus");
+    p.push("tests/corpus");
     p.push(name);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }

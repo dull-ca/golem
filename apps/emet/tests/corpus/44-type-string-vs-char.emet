@@ -1,0 +1,4 @@
+f : Char -> Char
+f c = c
+
+main = f "x"

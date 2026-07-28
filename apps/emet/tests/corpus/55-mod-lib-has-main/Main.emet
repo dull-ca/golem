@@ -1,0 +1,3 @@
+import Lib
+
+main = Lib.helper 1

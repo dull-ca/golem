@@ -1,0 +1,3 @@
+main : List Scroll
+main =
+  [ scroll { name = "web" } ]

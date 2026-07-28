@@ -1,0 +1,6 @@
+f x =
+  case x of
+    1.5 -> "a"
+    _ -> "b"
+
+main = f 2.0

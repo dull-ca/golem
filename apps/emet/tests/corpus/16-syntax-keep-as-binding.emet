@@ -1,0 +1,3 @@
+keep n = n + 1
+
+main = keep 2

@@ -1,0 +1,1 @@
+main = List.mpa (\x -> x) [ 1, 2, 3 ]

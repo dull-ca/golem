@@ -1,0 +1,4 @@
+module Helper exposing (visible)
+
+visible = 1
+hidden = 2
