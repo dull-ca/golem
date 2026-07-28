@@ -111,13 +111,16 @@
         # carries the built path; reading an env var forces `nix build --impure`.
         # Unset (e.g. a local `dist/` present in the source tree) falls back to
         # the in-tree path.
-        siteDistFromEnv =
+        siteDist =
           let env = builtins.getEnv "GOLEM_SITE_DIST";
-          in if env == "" then ./sites/website/dist else /. + env;
+          in
+          if env != "" then /. + env
+          else if builtins.pathExists ./sites/website/dist then ./sites/website/dist
+          else null;
 
         # The default website image, wired to the env-supplied dist path above.
         # Built (not pushed) in CI as `nix build --impure .#website-container`.
-        website-container = mkWebsiteContainer siteDistFromEnv;
+        website-container = mkWebsiteContainer siteDist;
 
         workspace-tests = pkgs.rustPlatform.buildRustPackage {
           pname = "golem-workspace-tests";
@@ -138,8 +141,10 @@
       in
       {
         packages = {
-          inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp website-container;
+          inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp;
           default = emetc;
+        } // pkgs.lib.optionalAttrs (siteDist != null) {
+          inherit website-container;
         };
 
         checks = {
