@@ -118,11 +118,33 @@
         # The default website image, wired to the env-supplied dist path above.
         # Built (not pushed) in CI as `nix build --impure .#website-container`.
         website-container = mkWebsiteContainer siteDistFromEnv;
+
+        workspace-tests = pkgs.rustPlatform.buildRustPackage {
+          pname = "golem-workspace-tests";
+          version = "0.1.0";
+          src = ./.;
+          inherit cargoLock;
+        };
+
+        fleet-tests = pkgs.runCommand "golem-fleet-tests"
+          {
+            nativeBuildInputs = [
+              (pkgs.python3.withPackages (ps: with ps; [ typer rich httpx ]))
+            ];
+          } ''
+          PYTHONPATH=${./.}/apps python -m unittest discover -s ${./.}/apps/fleet/tests | cat
+          touch $out
+        '';
       in
       {
         packages = {
           inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp website-container;
           default = emetc;
+        };
+
+        checks = {
+          inherit golemd golemctl emetc emet-lsp golemd-static golemctl-static;
+          inherit workspace-tests fleet-tests;
         };
 
         lib.mkWebsiteContainer = mkWebsiteContainer;
