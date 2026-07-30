@@ -22,7 +22,6 @@
         pkgsStatic = pkgs.pkgsStatic;
         inherit (pkgs) lib;
 
-        craneLib = crane.mkLib pkgs;
         craneLibStatic = crane.mkLib pkgsStatic;
 
         # A positive allow-list rather than `craneLib.cleanCargoSource`, which
@@ -54,66 +53,49 @@
           strictDeps = true;
         };
 
-        # Third-party deps, compiled against dummied-out workspace sources: the
-        # store path survives any `.rs` edit here, so it stays a cachix hit.
-        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-          pname = "golem-workspace";
-        });
-
         # crane derives CARGO_BUILD_TARGET and the cross linker/CC vars from
         # pkgsStatic's host platform; only `+crt-static` has to be stated.
+        #
+        # Every binary is a portable static-musl build, for Debian guests. A
+        # nix-dynamic binary links its interpreter as a /nix/store path, so it
+        # can't run off NixOS; pkgsStatic links everything (musl libc, bundled
+        # sqlite, rustls/ring crypto) into one file.
         staticArgs = commonArgs // {
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
           doCheck = false;
         };
 
-        # A second deps build, not a variant of the first: musl is a different
-        # rustc target and shares no compiled output with the native one.
-        cargoArtifactsStatic = craneLibStatic.buildDepsOnly (staticArgs // {
+        # Third-party deps, compiled against dummied-out workspace sources: the
+        # store path survives any `.rs` edit here, so it stays a cachix hit.
+        cargoArtifacts = craneLibStatic.buildDepsOnly (staticArgs // {
           pname = "golem-workspace-static";
         });
 
         # The golem agent (golemd) and CLI (golemctl) as their own flake
-        # outputs: each builds and tests only its own workspace crate, off the
-        # shared Cargo.lock. These are release outputs — CI builds them via the
+        # outputs: each builds only its own workspace crate, off the shared
+        # Cargo.lock. These are release outputs — CI builds them via the
         # `checks` below (`nix flake check`; ADR 0035).
-        golemd = craneLib.buildPackage (commonArgs // {
+        golemd = craneLibStatic.buildPackage (staticArgs // {
           pname = "golemd";
           inherit cargoArtifacts;
           # Setting cargoExtraArgs drops crane's own `--locked`, hence the
-          # explicit one. The same string governs the build and test phases.
+          # explicit one.
           cargoExtraArgs = "--locked -p golemd";
         });
 
-        golemctl = craneLib.buildPackage (commonArgs // {
+        golemctl = craneLibStatic.buildPackage (staticArgs // {
           pname = "golemctl";
           inherit cargoArtifacts;
           cargoExtraArgs = "--locked -p golemctl";
         });
 
-        # Portable static-musl golemd/golemctl for Debian guests. A nix-dynamic
-        # binary links its interpreter as a /nix/store path, so it can't run off
-        # NixOS; pkgsStatic links everything (musl libc, bundled sqlite,
-        # rustls/ring crypto) into one file. `nix build .#golemd-static`.
-        golemd-static = craneLibStatic.buildPackage (staticArgs // {
-          pname = "golemd-static";
-          cargoArtifacts = cargoArtifactsStatic;
-          cargoExtraArgs = "--locked -p golemd";
-        });
-
-        golemctl-static = craneLibStatic.buildPackage (staticArgs // {
-          pname = "golemctl-static";
-          cargoArtifacts = cargoArtifactsStatic;
-          cargoExtraArgs = "--locked -p golemctl";
-        });
-
-        emetc = craneLib.buildPackage (commonArgs // {
+        emetc = craneLibStatic.buildPackage (staticArgs // {
           pname = "emet";
           inherit cargoArtifacts;
           cargoExtraArgs = "--locked -p emet";
         });
 
-        emet-lsp = craneLib.buildPackage (commonArgs // {
+        emet-lsp = craneLibStatic.buildPackage (staticArgs // {
           pname = "emet-lsp";
           inherit cargoArtifacts;
           cargoExtraArgs = "--locked -p emet-lsp";
@@ -171,15 +153,15 @@
         # §4).
         website-container = mkWebsiteContainer siteDist;
 
-        # `cargo test` over the whole workspace, in one derivation. The
-        # per-package outputs above run only their own crate's tests (`-p`), so
-        # nothing exercises cross-crate integration tests or the crates with no
-        # release binary (e.g. scroll-format) — this closes that gap. It is the
-        # test half of the `nix flake check` gate (ADR 0035 §1); the per-package
-        # builds are the build half.
-        workspace-tests = craneLib.cargoTest (commonArgs // {
+        # `cargo test` over the whole workspace, in one derivation — including
+        # cross-crate integration tests and the crates with no release binary
+        # (e.g. scroll-format). It is the test half of the `nix flake check`
+        # gate (ADR 0035 §1); the per-package builds are the build half, and
+        # they carry `doCheck = false` because this owns testing.
+        workspace-tests = craneLibStatic.cargoTest (staticArgs // {
           pname = "golem-workspace-tests";
           inherit cargoArtifacts;
+          doCheck = true;
           # Nothing downstream consumes this check's target dir; crane's default
           # would push ~38 MiB of artifacts to cachix every run.
           doInstallCargoArtifacts = false;
@@ -210,19 +192,21 @@
       in
       {
         packages = {
-          inherit golemd golemctl golemd-static golemctl-static emetc emet-lsp;
+          inherit golemd golemctl emetc emet-lsp;
+          golemd-static = golemd;
+          golemctl-static = golemctl;
           default = emetc;
         } // pkgs.lib.optionalAttrs (siteDist != null) {
           inherit website-container;
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
-        # (ADR 0035 §1). The six binary builds prove the toolchain compiles;
+        # (ADR 0035 §1). The four binary builds prove the toolchain compiles;
         # workspace-tests and fleet-tests prove it passes. `website-container` is
         # deliberately absent — it needs `--impure` + an external dist (ADR 0035
         # §4).
         checks = {
-          inherit golemd golemctl emetc emet-lsp golemd-static golemctl-static;
+          inherit golemd golemctl emetc emet-lsp;
           inherit workspace-tests fleet-tests;
         };
 
