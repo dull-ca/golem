@@ -17,6 +17,12 @@ self-hosted box exists. This softens the original Actions rejection to
 "interim only": the gate is machine-agnostic, so the runner can move to the
 golem-managed box without changing anything but where it runs.
 
+Amended 2026-07-30: the rust builds moved to crane (`buildDepsOnly` — compiled
+dependencies are their own cached derivation) with a cargo-hakari
+workspace-hack, and the flake collapsed to a single musl-static target: four
+static binaries (`-static` names kept as aliases), one deps artifact, and the
+workspace test suite running under the target we ship.
+
 ## Context
 
 Both repositories (golem, `emet.nvim`) moved from Codeberg to GitHub after

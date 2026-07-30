@@ -8,7 +8,7 @@ principle by ADR 0035; this is the concrete, runnable sketch.
 One gate, one cache, and any machine can be CI:
 
 - **The gate is `nix flake check`** on the repo flake. It runs the whole
-  workspace test suite, the `apps/fleet` harness, and the six binary builds
+  workspace test suite, the `apps/fleet` harness, and the four binary builds
   (`flake.nix` `checks`). Nothing about CI is a separate system — a dev machine
   runs the identical command and gets the identical result.
 - **The cache is one cachix cache.** The CI box builds the flake outputs and
