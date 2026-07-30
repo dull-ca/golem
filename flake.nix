@@ -24,7 +24,7 @@
 
         craneLibStatic = crane.mkLib pkgsStatic;
 
-        # A positive allow-list rather than `craneLib.cleanCargoSource`, which
+        # A positive allow-list rather than crane's `cleanCargoSource`, which
         # strips the non-`.rs` `.emet` fixtures the emet suites read. The payoff:
         # edits outside these roots (docs/, sites/) leave every rust build cached.
         rustSourceRoots = [
@@ -53,13 +53,14 @@
           strictDeps = true;
         };
 
-        # crane derives CARGO_BUILD_TARGET and the cross linker/CC vars from
-        # pkgsStatic's host platform; only `+crt-static` has to be stated.
-        #
         # Every binary is a portable static-musl build, for Debian guests. A
         # nix-dynamic binary links its interpreter as a /nix/store path, so it
         # can't run off NixOS; pkgsStatic links everything (musl libc, bundled
-        # sqlite, rustls/ring crypto) into one file.
+        # sqlite, rustls/ring crypto) into one file. One target, so one deps
+        # graph below and one set of outputs.
+        #
+        # crane derives CARGO_BUILD_TARGET and the cross linker/CC vars from
+        # pkgsStatic's host platform; only `+crt-static` has to be stated.
         staticArgs = commonArgs // {
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
           doCheck = false;
@@ -161,6 +162,9 @@
         workspace-tests = craneLibStatic.cargoTest (staticArgs // {
           pname = "golem-workspace-tests";
           inherit cargoArtifacts;
+          # Load-bearing: crane runs the tests in the *check* phase, so
+          # inheriting staticArgs' `doCheck = false` would compile the test
+          # binaries, run none of them, and still report the gate green.
           doCheck = true;
           # Nothing downstream consumes this check's target dir; crane's default
           # would push ~38 MiB of artifacts to cachix every run.
@@ -193,6 +197,8 @@
       {
         packages = {
           inherit golemd golemctl emetc emet-lsp;
+          # Aliases, not builds: every output is static now. devenv's
+          # `build-static` and apps/fleet/deploy.py still name these.
           golemd-static = golemd;
           golemctl-static = golemctl;
           default = emetc;
