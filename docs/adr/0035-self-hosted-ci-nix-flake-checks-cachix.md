@@ -10,6 +10,13 @@ cachix activation are **pending consequences**, not built here — tracked in
 mechanism is left **open** (see §5); it supersedes ADR 0028's Forgejo channel
 without deciding a replacement.
 
+Amended 2026-07-29: cachix activated (cache `dull-ca`, wired repo-scoped via
+`flake.nix` `nixConfig` and `devenv.nix`), and an **interim GitHub Actions
+workflow** (`.github/workflows/ci.yml`) runs the same gate until the
+self-hosted box exists. This softens the original Actions rejection to
+"interim only": the gate is machine-agnostic, so the runner can move to the
+golem-managed box without changing anything but where it runs.
+
 ## Context
 
 Both repositories (golem, `emet.nvim`) moved from Codeberg to GitHub after

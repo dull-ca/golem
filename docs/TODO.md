@@ -393,13 +393,14 @@ CI moved off Codeberg's Woodpecker to a self-hosted nix + cachix gate (ADR 0035;
 - **Stand up the self-hosted CI box, provisioned by golem (dogfood).** The
   poll-build-push loop in `docs/design/ci-cachix-nix.md` — golem's own four
   glyphs author the box that runs `nix flake check` on every push and pushes the
-  closure to cachix. ADR 0035 §2.
+  closure to cachix. ADR 0035 §2. Until then an interim GitHub Actions workflow
+  (`.github/workflows/ci.yml`) runs the same gate (ADR 0035 status amendment);
+  retire it when the box is live.
 
-- **cachix activation.** Create the cache on app.cachix.org; wire
-  `nixConfig.extra-substituters` / `extra-trusted-public-keys` into `flake.nix`
-  (only once the real cache name and public key exist — a placeholder there warns
-  on every command); place the write auth token on the CI box at mode `0600`.
-  ADR 0035 §3.
+- ~~**cachix activation.**~~ Done 2026-07-29: cache `dull-ca`, wired repo-scoped
+  in `flake.nix` `nixConfig` and `devenv.nix`; the auth token lives in the
+  `DULL_CA_CACHIX_PRIVATE_KEY` GitHub secret (and later on the CI box at mode
+  `0600`). ADR 0035 §3.
 
 - **Release publishing mechanism — OPEN (ADR 0035 §5).** ADR 0028's
   Forgejo/Codeberg channel is gone with the move to GitHub. The policy survives
