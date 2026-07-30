@@ -1,6 +1,12 @@
 { pkgs, ... }:
 
 {
+  # Caches the devenv environment itself; golem build artifacts flow through
+  # the flake's nixConfig + cachix watch-exec instead.
+  cachix.enable = true;
+  cachix.pull = [ "dull-ca" ];
+  cachix.push = "dull-ca";
+
   languages.rust = {
     enable = true;
     channel = "stable";
