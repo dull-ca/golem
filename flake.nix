@@ -25,6 +25,9 @@
         craneLib = crane.mkLib pkgs;
         craneLibStatic = crane.mkLib pkgsStatic;
 
+        # A positive allow-list rather than `craneLib.cleanCargoSource`, which
+        # strips the non-`.rs` `.emet` fixtures the emet suites read. The payoff:
+        # edits outside these roots (docs/, sites/) leave every rust build cached.
         rustSourceRoots = [
           "Cargo.toml"
           "Cargo.lock"
@@ -51,15 +54,21 @@
           strictDeps = true;
         };
 
+        # Third-party deps, compiled against dummied-out workspace sources: the
+        # store path survives any `.rs` edit here, so it stays a cachix hit.
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           pname = "golem-workspace";
         });
 
+        # crane derives CARGO_BUILD_TARGET and the cross linker/CC vars from
+        # pkgsStatic's host platform; only `+crt-static` has to be stated.
         staticArgs = commonArgs // {
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
           doCheck = false;
         };
 
+        # A second deps build, not a variant of the first: musl is a different
+        # rustc target and shares no compiled output with the native one.
         cargoArtifactsStatic = craneLibStatic.buildDepsOnly (staticArgs // {
           pname = "golem-workspace-static";
         });
@@ -71,6 +80,8 @@
         golemd = craneLib.buildPackage (commonArgs // {
           pname = "golemd";
           inherit cargoArtifacts;
+          # Setting cargoExtraArgs drops crane's own `--locked`, hence the
+          # explicit one. The same string governs the build and test phases.
           cargoExtraArgs = "--locked -p golemd";
         });
 
@@ -169,6 +180,8 @@
         workspace-tests = craneLib.cargoTest (commonArgs // {
           pname = "golem-workspace-tests";
           inherit cargoArtifacts;
+          # Nothing downstream consumes this check's target dir; crane's default
+          # would push ~38 MiB of artifacts to cachix every run.
           doInstallCargoArtifacts = false;
         });
 
