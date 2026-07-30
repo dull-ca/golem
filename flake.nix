@@ -12,77 +12,101 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, crane }:
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
         pkgsStatic = pkgs.pkgsStatic;
+        inherit (pkgs) lib;
 
-        cargoLock = { lockFile = ./Cargo.lock; };
+        craneLib = crane.mkLib pkgs;
+        craneLibStatic = crane.mkLib pkgsStatic;
+
+        rustSourceRoots = [
+          "Cargo.toml"
+          "Cargo.lock"
+          "emet.json"
+          "apps"
+          "examples"
+          "lib"
+          "libs"
+        ];
+
+        rustSource =
+          let repoRoot = toString ./.; in
+          lib.cleanSourceWith {
+            name = "golem-rust-source";
+            src = ./.;
+            filter = path: _type:
+              let relative = lib.removePrefix "${repoRoot}/" (toString path);
+              in lib.elem (lib.head (lib.splitString "/" relative)) rustSourceRoots;
+          };
+
+        commonArgs = {
+          src = rustSource;
+          version = "0.1.0";
+          strictDeps = true;
+        };
+
+        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          pname = "golem-workspace";
+        });
+
+        staticArgs = commonArgs // {
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          doCheck = false;
+        };
+
+        cargoArtifactsStatic = craneLibStatic.buildDepsOnly (staticArgs // {
+          pname = "golem-workspace-static";
+        });
 
         # The golem agent (golemd) and CLI (golemctl) as their own flake
         # outputs: each builds and tests only its own workspace crate, off the
         # shared Cargo.lock. These are release outputs — CI builds them via the
         # `checks` below (`nix flake check`; ADR 0035).
-        golemd = pkgs.rustPlatform.buildRustPackage {
+        golemd = craneLib.buildPackage (commonArgs // {
           pname = "golemd";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-          cargoBuildFlags = [ "-p" "golemd" ];
-          cargoTestFlags = [ "-p" "golemd" ];
-        };
+          inherit cargoArtifacts;
+          cargoExtraArgs = "--locked -p golemd";
+        });
 
-        golemctl = pkgs.rustPlatform.buildRustPackage {
+        golemctl = craneLib.buildPackage (commonArgs // {
           pname = "golemctl";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-          cargoBuildFlags = [ "-p" "golemctl" ];
-          cargoTestFlags = [ "-p" "golemctl" ];
-        };
+          inherit cargoArtifacts;
+          cargoExtraArgs = "--locked -p golemctl";
+        });
 
         # Portable static-musl golemd/golemctl for Debian guests. A nix-dynamic
         # binary links its interpreter as a /nix/store path, so it can't run off
         # NixOS; pkgsStatic links everything (musl libc, bundled sqlite,
         # rustls/ring crypto) into one file. `nix build .#golemd-static`.
-        golemd-static = pkgsStatic.rustPlatform.buildRustPackage {
+        golemd-static = craneLibStatic.buildPackage (staticArgs // {
           pname = "golemd-static";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-          cargoBuildFlags = [ "-p" "golemd" ];
-          doCheck = false;
-        };
+          cargoArtifacts = cargoArtifactsStatic;
+          cargoExtraArgs = "--locked -p golemd";
+        });
 
-        golemctl-static = pkgsStatic.rustPlatform.buildRustPackage {
+        golemctl-static = craneLibStatic.buildPackage (staticArgs // {
           pname = "golemctl-static";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-          cargoBuildFlags = [ "-p" "golemctl" ];
-          doCheck = false;
-        };
+          cargoArtifacts = cargoArtifactsStatic;
+          cargoExtraArgs = "--locked -p golemctl";
+        });
 
-        emetc = pkgs.rustPlatform.buildRustPackage {
+        emetc = craneLib.buildPackage (commonArgs // {
           pname = "emet";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-          cargoBuildFlags = [ "-p" "emet" ];
-          cargoTestFlags = [ "-p" "emet" ];
-        };
+          inherit cargoArtifacts;
+          cargoExtraArgs = "--locked -p emet";
+        });
 
-        emet-lsp = pkgs.rustPlatform.buildRustPackage {
+        emet-lsp = craneLib.buildPackage (commonArgs // {
           pname = "emet-lsp";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-          cargoBuildFlags = [ "-p" "emet-lsp" ];
-          cargoTestFlags = [ "-p" "emet-lsp" ];
-        };
+          inherit cargoArtifacts;
+          cargoExtraArgs = "--locked -p emet-lsp";
+        });
 
         # Package a pre-built Starlight `dist/` into a Caddy image (see
         # sites/website/Caddyfile). The site is built bun-first, then packaged
@@ -142,12 +166,11 @@
         # release binary (e.g. scroll-format) — this closes that gap. It is the
         # test half of the `nix flake check` gate (ADR 0035 §1); the per-package
         # builds are the build half.
-        workspace-tests = pkgs.rustPlatform.buildRustPackage {
+        workspace-tests = craneLib.cargoTest (commonArgs // {
           pname = "golem-workspace-tests";
-          version = "0.1.0";
-          src = ./.;
-          inherit cargoLock;
-        };
+          inherit cargoArtifacts;
+          doInstallCargoArtifacts = false;
+        });
 
         # The `apps/fleet` python harness (fleet is a python CLI, not a Rust
         # crate), run under `unittest` against a nix-built interpreter with its
