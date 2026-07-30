@@ -14,6 +14,7 @@ tracing-subscriber = { workspace = true }
 clap         = { workspace = true }
 reqwest      = { workspace = true }
 iocraft      = { workspace = true }
+workspace-hack = { version = "0.1", path = "../../libs/workspace-hack" }
 
 [dev-dependencies]
 tempfile     = { workspace = true }

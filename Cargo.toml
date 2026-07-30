@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/golemd", "apps/golemctl", "apps/emet", "apps/emet-lsp", "libs/scroll-format"]
+members = ["apps/golemd", "apps/golemctl", "apps/emet", "apps/emet-lsp", "libs/scroll-format", "libs/workspace-hack"]
 
 [workspace.package]
 version     = "0.1.0"
