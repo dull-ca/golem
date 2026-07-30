@@ -1,6 +1,14 @@
 {
   description = "golem build outputs: golem agent + CLI, emet compiler, and LSP";
 
+  # Repo-scoped cachix cache (ADR 0035): applies only to builds of this flake.
+  nixConfig = {
+    extra-substituters = [ "https://dull-ca.cachix.org" ];
+    extra-trusted-public-keys = [
+      "dull-ca.cachix.org-1:dRCsbIU6rWu2X/4+BOxwvtyVOHUXXmRp7ZmEXwne9bk="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
