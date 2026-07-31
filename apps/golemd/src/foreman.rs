@@ -41,6 +41,7 @@ use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
     WalStep, WalStepState,
 };
+use crate::plan_report::{PlanReport, PlanSummary, PlannedOp, PredictedReload, ReloadKind};
 use crate::planroom::PlanRoom;
 use crate::progress::{EventKind, EventLevel, ProgressRegistry};
 use crate::reconcile::plan;
@@ -288,6 +289,55 @@ impl Foreman {
             .map_err(ForemanError::Internal)?;
         self.progress.open(attempt.reconcile_id);
         Ok((attempt.reconcile_id, selected))
+    }
+
+    pub fn plan_manifest(&self, bytes: &[u8]) -> Result<PlanReport, ForemanError> {
+        let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
+            detail: e.to_string(),
+        })?;
+        let desired = self.select(&manifest.scrolls);
+        let steps = self
+            .planroom
+            .wal_steps()
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        let prior = applied_outcomes(&steps);
+        let units = desired.scroll.leaf_units();
+        let mut ops: Vec<GlyphOp> = Vec::new();
+        let mut planned: Vec<PlannedOp> = Vec::new();
+        for unit in &units {
+            for op in plan(&prior, &leaf_as_scroll(unit))
+                .into_iter()
+                .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
+            {
+                planned.push(PlannedOp::of(&unit.path, &op));
+                ops.push(op);
+            }
+        }
+        for group in self
+            .plan_vanished_removes(&prior, &desired.scroll, &units)
+            .map_err(ForemanError::Internal)?
+        {
+            for op in group.ops {
+                planned.push(PlannedOp::of(&group.unit_path, &op));
+                ops.push(op);
+            }
+        }
+        let against_revision =
+            self.planroom
+                .latest_revision_id()
+                .map_err(|e| ForemanError::WalUnreadable {
+                    detail: e.to_string(),
+                })?;
+        Ok(PlanReport {
+            host: self.host.clone(),
+            scroll_content_id: desired.content_id.to_string(),
+            against_revision,
+            summary: PlanSummary::over(&planned),
+            ops: planned,
+            reloads: predicted_restarts(&ops),
+        })
     }
 
     fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
@@ -2164,6 +2214,35 @@ fn unit_for_config_file(path: &str) -> Option<String> {
         return Some(file.to_string());
     }
     None
+}
+
+fn predicted_restarts(ops: &[GlyphOp]) -> Vec<PredictedReload> {
+    let mut reloads: Vec<PredictedReload> = Vec::new();
+    for op in ops {
+        if matches!(op, GlyphOp::Noop { .. }) {
+            continue;
+        }
+        let Some(path) = changed_file_path(op) else {
+            continue;
+        };
+        let Some(unit) = unit_for_config_file(&path) else {
+            continue;
+        };
+        let key = op.key();
+        match reloads.iter_mut().find(|r| r.unit == unit) {
+            Some(reload) => {
+                if !reload.triggered_by.contains(&key) {
+                    reload.triggered_by.push(key);
+                }
+            }
+            None => reloads.push(PredictedReload {
+                unit,
+                kind: ReloadKind::Restart,
+                triggered_by: vec![key],
+            }),
+        }
+    }
+    reloads
 }
 
 #[cfg(test)]
@@ -4788,6 +4867,225 @@ mod tests {
             !host.installed.lock().unwrap().contains("podman"),
             "the batch-installed podman is removed from the host by the rollback, not left \
              permanently untracked"
+        );
+    }
+
+    // --- Task PLAN-1: the read-only dry run behind `POST /plan` ---
+
+    fn actions(report: &PlanReport) -> Vec<(String, GlyphAction)> {
+        report
+            .ops
+            .iter()
+            .map(|op| (op.glyph_key.clone(), op.action))
+            .collect()
+    }
+
+    #[test]
+    fn a_plan_against_an_empty_wal_is_all_installs_in_source_order() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx"), apt("curl")])]);
+
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(report.host, "host");
+        assert_eq!(
+            report.against_revision,
+            Some(1),
+            "a host that has never applied anything still sits on the projected Init revision"
+        );
+        assert_eq!(
+            actions(&report),
+            vec![
+                ("apt:nginx".to_string(), GlyphAction::Install),
+                ("apt:curl".to_string(), GlyphAction::Install),
+            ]
+        );
+        assert_eq!(
+            report.summary,
+            PlanSummary {
+                install: 2,
+                ..Default::default()
+            }
+        );
+        assert_eq!(report.ops[0].unit_path, vec!["host".to_string()]);
+        assert!(report.reloads.is_empty());
+    }
+
+    #[test]
+    fn a_plan_after_a_revision_orders_the_unit_ops_first_and_the_vanished_removes_last() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![branch_scroll(
+                "host",
+                vec![
+                    leaf_scroll("web", vec![apt("nginx"), unit_file("/etc/motd", "old")]),
+                    leaf_scroll("legacy", vec![apt("telnetd")]),
+                ],
+            )]))
+            .unwrap();
+
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![leaf_scroll(
+                "web",
+                vec![apt("nginx"), unit_file("/etc/motd", "new"), apt("curl")],
+            )],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            actions(&report),
+            vec![
+                ("apt:nginx".to_string(), GlyphAction::Noop),
+                ("file:/etc/motd".to_string(), GlyphAction::Replace),
+                ("apt:curl".to_string(), GlyphAction::Install),
+                ("apt:telnetd".to_string(), GlyphAction::Remove),
+            ]
+        );
+        assert_eq!(
+            report.summary,
+            PlanSummary {
+                install: 1,
+                replace: 1,
+                remove: 1,
+                noop: 1,
+            }
+        );
+        assert_eq!(report.against_revision, Some(2));
+        assert_eq!(
+            report.ops[3].unit_path,
+            vec!["host".to_string(), REMOVES_SEGMENT.to_string()],
+            "a vanished unit's remove is grouped under its nearest surviving ancestor"
+        );
+        let replace = &report.ops[1];
+        assert!(replace.old_cid.is_some());
+        assert_ne!(replace.old_cid, replace.new_cid);
+    }
+
+    #[test]
+    fn a_plan_predicts_a_restart_for_every_changed_unit_file_and_none_for_a_noop() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll(
+                "host",
+                vec![
+                    unit_file("/etc/systemd/system/quiet.service", "same"),
+                    unit_file("/etc/systemd/system/loud.service", "old"),
+                ],
+            )]))
+            .unwrap();
+
+        let bytes = manifest(vec![scroll(
+            "host",
+            vec![
+                unit_file("/etc/systemd/system/quiet.service", "same"),
+                unit_file("/etc/systemd/system/loud.service", "new"),
+                unit_file("/etc/systemd/system/fresh.service", "brand new"),
+                unit_file("/etc/motd", "not a unit file"),
+            ],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            report
+                .reloads
+                .iter()
+                .map(|r| (r.unit.clone(), r.kind, r.triggered_by.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "loud.service".to_string(),
+                    ReloadKind::Restart,
+                    vec!["file:/etc/systemd/system/loud.service".to_string()]
+                ),
+                (
+                    "fresh.service".to_string(),
+                    ReloadKind::Restart,
+                    vec!["file:/etc/systemd/system/fresh.service".to_string()]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plan_writes_nothing_to_the_journal() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("nginx")])]))
+            .unwrap();
+        let steps_before = foreman.foreman.planroom.wal_steps().unwrap().len();
+        let attempts_before = foreman.foreman.planroom.attempts().unwrap().len();
+        let revisions_before = foreman.foreman.revisions().unwrap().len();
+        let events_before = foreman.rec.events().len();
+
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx"), apt("curl")])]);
+        foreman.foreman.plan_manifest(&bytes).unwrap();
+        foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            foreman.foreman.planroom.wal_steps().unwrap().len(),
+            steps_before
+        );
+        assert_eq!(
+            foreman.foreman.planroom.attempts().unwrap().len(),
+            attempts_before
+        );
+        assert_eq!(foreman.foreman.revisions().unwrap().len(), revisions_before);
+        assert_eq!(
+            foreman.rec.events().len(),
+            events_before,
+            "planning touches no reconciler"
+        );
+    }
+
+    #[test]
+    fn a_plan_runs_while_an_attempt_is_still_open() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+        let (reconcile_id, _selected) = foreman.foreman.ingest(&bytes).unwrap();
+
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            actions(&report),
+            vec![("apt:nginx".to_string(), GlyphAction::Install)],
+            "an open attempt has enacted nothing yet, so the plan still diffs against the \
+             last committed set"
+        );
+        assert_eq!(
+            foreman.foreman.latest_reconcile_id().unwrap(),
+            Some(reconcile_id),
+            "planning opens no attempt of its own"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_manifest_is_a_typed_plan_error() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let err = foreman
+            .foreman
+            .plan_manifest(b"not a manifest")
+            .unwrap_err();
+        assert_eq!(err.kind(), "manifest-undecodable");
+    }
+
+    #[test]
+    fn a_manifest_without_this_host_plans_the_removal_of_everything_applied() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("nginx")])]))
+            .unwrap();
+
+        let bytes = manifest(vec![scroll("other", vec![apt("nginx")])]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            actions(&report),
+            vec![("apt:nginx".to_string(), GlyphAction::Remove)]
         );
     }
 }

@@ -32,6 +32,7 @@ pub struct AppState {
 pub fn router(app: AppState) -> Router {
     Router::new()
         .route("/manifest", post(apply_manifest))
+        .route("/plan", post(plan_manifest))
         .route("/reconciles/latest", get(reconcile_latest))
         .route("/reconciles/:id", get(reconcile))
         .route("/state", get(state))
@@ -93,6 +94,19 @@ async fn apply_manifest(
     let foreman = s.foreman.clone();
     tokio::task::spawn_blocking(move || foreman.run_reconcile_guarded(reconcile_id, selected));
     Ok((StatusCode::ACCEPTED, Json(Accepted { reconcile_id })))
+}
+
+async fn plan_manifest(
+    AxState(s): AxState<AppState>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let bytes = body.to_vec();
+    let foreman = s.foreman.clone();
+    let report = tokio::task::spawn_blocking(move || foreman.plan_manifest(&bytes))
+        .await
+        .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
+        .map_err(ApiError::from_foreman)?;
+    Ok(Json(report))
 }
 
 #[derive(Deserialize)]
