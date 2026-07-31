@@ -11,6 +11,7 @@ use scroll_format::{ContentId, Entry, Glyph, Manifest, Perms, Scroll};
 struct RestartRecorder {
     files: Mutex<std::collections::BTreeMap<String, String>>,
     restarts: Mutex<Vec<String>>,
+    reloads: Mutex<Vec<String>>,
 }
 
 impl RestartRecorder {
@@ -19,6 +20,9 @@ impl RestartRecorder {
     }
     fn restarts(&self) -> Vec<String> {
         self.restarts.lock().unwrap().clone()
+    }
+    fn reloads(&self) -> Vec<String> {
+        self.reloads.lock().unwrap().clone()
     }
 }
 
@@ -81,6 +85,10 @@ impl Reconciler for RestartRecorder {
         self.restarts.lock().unwrap().push(unit.to_string());
         Ok(())
     }
+    fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+        self.reloads.lock().unwrap().push(unit.to_string());
+        Ok(())
+    }
 }
 
 fn quadlet(path: &str, contents: &str) -> Glyph {
@@ -98,11 +106,15 @@ fn quadlet(path: &str, contents: &str) -> Glyph {
 }
 
 fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
+    notifying_manifest(glyphs, &[])
+}
+
+fn notifying_manifest(glyphs: Vec<Glyph>, notifies: &[&str]) -> Vec<u8> {
     scroll_format::to_bytes(&Manifest::from_scrolls(
         vec![Scroll {
             name: "h1".into(),
             policy: None,
-            notifies: vec![],
+            notifies: notifies.iter().map(|u| u.to_string()).collect(),
             contents: scroll_format::Contents::Glyphs(glyphs),
         }],
         "test",
@@ -184,4 +196,44 @@ fn a_service_file_under_the_systemd_dir_restarts_itself() {
     )]))
     .unwrap();
     assert_eq!(rec.restarts(), vec!["api.service".to_string()]);
+}
+
+#[test]
+fn a_changed_file_outside_any_unit_directory_reloads_the_units_it_notifies() {
+    let rec = RestartRecorder::new();
+    let f = foreman(rec.clone());
+
+    f.apply_manifest(&notifying_manifest(
+        vec![quadlet("/etc/nginx/nginx.conf", "worker_processes 1;")],
+        &["nginx.service"],
+    ))
+    .unwrap();
+    assert_eq!(rec.reloads(), vec!["nginx.service".to_string()]);
+    assert!(
+        rec.restarts().is_empty(),
+        "the structural heuristic never fires outside a unit directory"
+    );
+
+    rec.reloads.lock().unwrap().clear();
+    f.apply_manifest(&notifying_manifest(
+        vec![quadlet("/etc/nginx/nginx.conf", "worker_processes auto;")],
+        &["nginx.service"],
+    ))
+    .unwrap();
+    assert_eq!(
+        rec.reloads(),
+        vec!["nginx.service".to_string()],
+        "an edited config reloads the notified unit again"
+    );
+
+    rec.reloads.lock().unwrap().clear();
+    f.apply_manifest(&notifying_manifest(
+        vec![quadlet("/etc/nginx/nginx.conf", "worker_processes auto;")],
+        &["nginx.service"],
+    ))
+    .unwrap();
+    assert!(
+        rec.reloads().is_empty(),
+        "an unchanged config notifies nothing"
+    );
 }

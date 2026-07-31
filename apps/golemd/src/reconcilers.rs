@@ -505,6 +505,19 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         self.try_restart(unit)
     }
 
+    fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+        let reloaded = self
+            .runner
+            .run("systemctl", &["try-reload-or-restart", unit])?;
+        if !reloaded.succeeded() {
+            return Err(EnactError::Retryable(format!(
+                "systemctl try-reload-or-restart {unit}: {}",
+                reloaded.stderr
+            )));
+        }
+        Ok(())
+    }
+
     fn diagnose(&self, glyph: &Glyph) -> Option<String> {
         match glyph {
             Glyph::SystemdService { unit } => self.diagnose_systemd(unit),

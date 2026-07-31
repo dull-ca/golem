@@ -193,7 +193,7 @@ fn applied_cid(step: &WalStep) -> ContentId {
             new_cid, old_cid, ..
         } => match step.action {
             WalAction::Reverse => *old_cid,
-            WalAction::Apply | WalAction::Restart => *new_cid,
+            WalAction::Apply | WalAction::Restart | WalAction::Reload => *new_cid,
         },
     }
 }
@@ -298,6 +298,27 @@ mod tests {
         assert!(
             applied_outcomes(&[restart]).is_empty(),
             "a Restart bracket is an operational record, never an applied glyph"
+        );
+    }
+
+    #[test]
+    fn a_reload_done_never_folds_into_the_applied_set() {
+        let glyph = Glyph::SystemdService {
+            unit: "app.service".into(),
+        };
+        let reload = WalStep {
+            glyph_key: "reload:app.service".into(),
+            action: WalAction::Reload,
+            op: GlyphOp::Noop {
+                cid: cid(&glyph),
+                glyph: glyph.clone(),
+            },
+            inverse: Some(Inverse::Nothing),
+            ..done_apply(1, 0, &apt("nginx"))
+        };
+        assert!(
+            applied_outcomes(&[reload]).is_empty(),
+            "a Reload bracket is an operational record, never an applied glyph"
         );
     }
 

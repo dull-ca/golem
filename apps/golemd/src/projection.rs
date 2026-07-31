@@ -10,9 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::journal::{
-    AttemptPhase, GlyphOp, ReconcileAttempt, Revision, WalAction, WalStep, WalStepState,
-};
+use crate::journal::{AttemptPhase, GlyphOp, ReconcileAttempt, Revision, WalStep, WalStepState};
 use crate::progress::ProgressEvent;
 use crate::report::{
     FailClassReport, FailPhase, GlyphAction, GlyphFailure, GlyphLine, GlyphOutcome,
@@ -173,7 +171,7 @@ fn fold_state(rows: &[&WalStep]) -> (GlyphState, u32) {
 /// first-appearance order, that glyph's `wal_step` rows in seq order.
 type GroupedUnit<'a> = (Vec<String>, Vec<(String, Vec<&'a WalStep>)>);
 
-/// Group one attempt's non-`Restart` `wal_step` rows into ordered units, each an
+/// Group one attempt's `wal_step` rows into ordered units, each an
 /// ordered list of `(glyph_key, its rows in seq order)`. First-appearance order
 /// is preserved for both units and keys so the projection and the rebuilt report
 /// present glyphs in enact order. Shared by [`project`] and [`rebuild_report`] so
@@ -186,9 +184,6 @@ fn group_units<'a>(attempt: &ReconcileAttempt, steps: &'a [WalStep]) -> Vec<Grou
         .iter()
         .filter(|s| s.reconcile_id == attempt.reconcile_id)
     {
-        if step.action == WalAction::Restart {
-            continue;
-        }
         let unit = step.unit_path.clone();
         if !order.contains(&unit) {
             order.push(unit.clone());

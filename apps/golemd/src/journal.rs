@@ -202,6 +202,7 @@ pub enum WalAction {
     Apply,
     Reverse,
     Restart,
+    Reload,
 }
 
 /// The lifecycle of one WAL step (ADR 0020 §1). A step is appended `Intended`

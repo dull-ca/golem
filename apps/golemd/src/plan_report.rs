@@ -26,10 +26,11 @@ pub struct PlannedOp {
     pub describe: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ReloadKind {
     Restart,
+    ReloadOrRestart,
 }
 
 #[derive(Debug, Clone, Serialize)]
