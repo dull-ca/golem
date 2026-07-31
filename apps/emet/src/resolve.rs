@@ -92,6 +92,13 @@ pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
     }
 }
 
+/// `analyze_entry` for an entry whose text the caller already holds — an unsaved
+/// editor buffer. Only the entry is overlaid; every imported module is still read
+/// from disk, so another dirty buffer in the same project is analyzed as last
+/// saved.
+///
+/// Unlike the compile path this keeps going after a module fails, so the editor
+/// still gets an index for the file in front of the reader.
 pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     let search_path = manifest::search_path_for(entry);
 
@@ -256,6 +263,9 @@ fn read_source(path: &Path) -> Result<String, Vec<Error>> {
     })
 }
 
+/// `load_graph` minus the read: parse this module, record it, then walk its
+/// imports over the search path. Split out so a caller holding the source — the
+/// LSP, with a buffer — can enter the graph without the file on disk.
 fn load_module(
     path: &Path,
     source: String,
@@ -380,6 +390,12 @@ fn import_ty_env(
 ) -> Result<TyEnv, Error> {
     let mut env = crate::prelude::ty_env();
     for import in &module.imports {
+        // NOTE: an imported module has no interface when it failed to
+        // type-check and `analyze_entry_source` carried on past it — so every
+        // interface lookup in this file skips a missing one rather than indexing
+        // the map. Indexing here aborted the LSP process on the first broken
+        // library. The compile path never reaches it: `check_and_eval` returns
+        // on the first library error.
         let Some(iface) = interfaces.get(&import.module) else {
             continue;
         };
@@ -430,10 +446,13 @@ fn bind_import_exposing_ty(
     Ok(())
 }
 
-/// Collect the arities of types this module imports via `exposing (Type)`, so
-/// inference can validate signatures that mention an imported type name (fed to
-/// `check_entry`/`check_library` as `imported_types`). A type is importable only
-/// if the exporting module exposed it.
+/// Every type name this module can write, rendered for hover: its own
+/// declarations plus the ones it imports through `exposing`. An imported type
+/// shows its constructors only when this module wrote `(..)` *and* the exporter
+/// exposed them — the same visibility the pattern side enforces, so hover never
+/// advertises a constructor a `case` here could not use. Rendering reads the
+/// exporter's own `TypeDecl`, which is why the loaded modules are passed in
+/// alongside their interfaces.
 fn type_definitions(
     module: &Module,
     loaded: &HashMap<String, Loaded>,

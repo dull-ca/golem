@@ -223,6 +223,15 @@ pub fn analyze_source(src: &str) -> Analysis {
     Analysis { diagnostics, index }
 }
 
+/// Analyze one open document as the entry of its own import graph: `buffer`
+/// stands in for the file at `path`, the imports come from disk. This is what
+/// makes an editor agree with `emetc` about an imported type or value.
+///
+/// Diagnostics from the other modules in the graph are dropped rather than
+/// shown: their spans index into their own file, so rendering them against this
+/// document would underline unrelated text. The reader sees them on opening that
+/// file. A graph that fails to load leaves no index for this path, so hover
+/// falls back to the single-file one — degraded, rather than dead.
 pub fn analyze_document(path: &Path, buffer: &str) -> Analysis {
     let resolve::ProjectAnalysis {
         diagnostics,
@@ -246,6 +255,9 @@ pub fn analyze_document(path: &Path, buffer: &str) -> Analysis {
     }
 }
 
+/// The document's symbol outline, re-parsed from `source` because the index
+/// records spans, not structure. A buffer that does not parse yields nothing —
+/// the outline empties mid-edit rather than going stale.
 pub fn document_outline(source: &str, index: &QueryIndex) -> Vec<query::Symbol> {
     match parse_source_multi(source) {
         Ok(module) => query::outline(&module, source, index),

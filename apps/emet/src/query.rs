@@ -87,6 +87,10 @@ pub fn display_scheme(scheme: &Scheme) -> String {
     scheme.ty.to_string()
 }
 
+/// The type name written at `offset`, read from the token stream rather than the
+/// index — types have no spans to record. Uppercase only: a lowercase token at a
+/// cursor is a value, which the index answers for, so restricting the fallback
+/// keeps it from guessing at names it knows nothing about.
 pub fn type_name_at(source: &str, offset: usize) -> Option<String> {
     let tokens = crate::lexer::lex(source).ok()?;
     tokens
@@ -98,6 +102,9 @@ pub fn type_name_at(source: &str, offset: usize) -> Option<String> {
         })
 }
 
+/// This module's own `type` declarations, keyed by name. Always rendered with
+/// their constructors: everything a module declares is in scope inside it.
+/// `resolve::type_definitions` adds the imported ones, where visibility applies.
 pub fn local_type_definitions(module: &Module) -> HashMap<String, TypeDefinition> {
     module
         .type_decls
@@ -117,6 +124,13 @@ pub fn local_type_definitions(module: &Module) -> HashMap<String, TypeDefinition
         .collect()
 }
 
+/// A `type` declaration as source-shaped text for hover. `with_constructors` is
+/// false when the reader cannot name them — an imported type exposed without
+/// `(..)` — so the hover shows what is in scope, not the exporter's internals.
+///
+/// NOTE: record fields come out alphabetical, not in the order they were
+/// written. `ast::Type::Record` is a `BTreeMap`; source order is retained
+/// nowhere.
 pub fn render_type_declaration(declaration: &TypeDecl, with_constructors: bool) -> String {
     let mut rendered = format!("type {}", declaration.name);
     for param in &declaration.params {
@@ -215,6 +229,11 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
+/// The document's top-level symbols in source order — the module header, its
+/// types (with their constructors as children), and its declarations. A
+/// declaration's detail is the type inference *recorded* at its name span, with
+/// the written signature as fallback, so an unannotated declaration still shows
+/// what it turned out to be.
 pub fn outline(module: &Module, source: &str, index: &QueryIndex) -> Vec<Symbol> {
     let mut symbols: Vec<Symbol> = Vec::new();
 
@@ -318,6 +337,15 @@ fn module_header_symbol(source: &str, name: &str) -> Option<Symbol> {
     }
 }
 
+/// The contiguous run of `--` lines immediately above a definition — the prose
+/// hover shows under the type. A bare `--` renders as a blank line, so paragraph
+/// breaks survive; a blank line ends the block.
+///
+/// Only a column-zero definition takes one. An indented binding — a `let`, a
+/// lambda parameter, a `case` binder — would otherwise inherit the enclosing
+/// declaration's prose from the line above it. The signature line is skipped
+/// because `Decl::span` starts at the *binding*, leaving `name : …` between the
+/// block and the span.
 pub fn doc_comment_above_definition(source: &str, definition: &Span) -> Option<String> {
     let binding = line_start_before(source, definition.start);
     if binding != definition.start {

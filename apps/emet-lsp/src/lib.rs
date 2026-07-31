@@ -1,9 +1,13 @@
 //! The LSP feature layer (ADR 0018): translate an editor request at a cursor
 //! into an `emet` query and shape the answer for LSP. It holds **no language
-//! semantics** — every type, scope, and definition comes from `emet`'s single
-//! inference engine via `analyze_source`, so the adapter and the compiler can
-//! never disagree. What lives here is purely the LSP boundary: LSP UTF-16
-//! positions ↔ byte offsets, and `emet` types ↔ LSP payloads.
+//! semantics** — every type, scope, definition, doc comment, and outline comes
+//! from `emet`'s single inference engine, so the adapter and the compiler can
+//! never disagree. Every feature enters through `analysis_of`, which picks the
+//! project-aware `analyze_document` or single-file `analyze_source` by whether
+//! the URI has a path; going through one door is what keeps hover, completion,
+//! go-to-definition, and diagnostics from drifting apart. What lives here is
+//! purely the LSP boundary: LSP UTF-16 positions ↔ byte offsets, `emet` facts ↔
+//! LSP payloads, and the Markdown assembly for hover.
 
 use std::path::PathBuf;
 
@@ -23,8 +27,10 @@ fn document_path(uri: &Uri) -> Option<PathBuf> {
     uri.as_str().strip_prefix("file://").map(PathBuf::from)
 }
 
-/// The inferred type at the cursor, as a Markdown hover. `None` when no
-/// recorded expression covers the position.
+/// What is under the cursor, as a Markdown hover: an expression's inferred type
+/// plus its definition's doc comment and origin module, or — where no expression
+/// was recorded — the declaration of the type name written there. `None` when
+/// the position is neither.
 pub fn hover_at(uri: &Uri, source: &str, position: Position) -> Option<Hover> {
     let analysis = analysis_of(uri, source);
     let offset = offset_at(source, position);
@@ -41,6 +47,11 @@ pub fn hover_at(uri: &Uri, source: &str, position: Position) -> Option<Hover> {
     }
 }
 
+/// Hover's fallback for a type name — reached only when no recorded expression
+/// covers the cursor, which is what leaves a constructor *use* on the value path
+/// where its inferred type is the better answer. A type in an annotation, a
+/// `type` declaration, or an `exposing` list has no expression span at all
+/// (`ast::Type` carries none), so the name is recovered from the token stream.
 fn type_name_hover(
     uri: &Uri,
     source: &str,
