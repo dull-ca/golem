@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted 2026-07-20; implementation to follow.
+Accepted 2026-07-20; implementation followed. Superseded by 0037
+(2026-07-31) as the description of the LSP surface: analysis became
+project-aware over the import graph, hover gained doc comments, origin,
+type-name and builtin-type payloads, and documentSymbol landed. The
+decisions here (compiler-owned QueryIndex, thin LSP presentation) carry
+forward unchanged.
 
 ## Context
 
