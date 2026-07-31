@@ -86,3 +86,68 @@ fn use_resolves_to_definition_span_same_file() {
     assert!(def.span.contains(&def_decl_offset) || def.span.start == def_decl_offset);
     assert!(def.module.is_none());
 }
+
+const DOCUMENTED: &str = "\
+-- Greets the world.
+--
+-- Second paragraph.
+greeting : String
+greeting = \"hi\"
+
+plain : String
+plain = \"no docs\"
+
+-- Detached by a blank line.
+
+detached : String
+detached = \"nope\"
+
+main : List Scroll
+main =
+  let local = greeting
+  in []
+";
+
+#[test]
+fn doc_comment_above_a_documented_definition_is_its_comment_block() {
+    let span = byte_offset(DOCUMENTED, "greeting = ", 0);
+    let doc = emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 8))
+        .expect("a doc comment above greeting");
+    assert_eq!(doc, "Greets the world.\n\nSecond paragraph.");
+}
+
+#[test]
+fn an_undocumented_definition_has_no_doc_comment() {
+    let span = byte_offset(DOCUMENTED, "plain = ", 0);
+    assert_eq!(
+        emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 5)),
+        None
+    );
+}
+
+#[test]
+fn a_comment_separated_by_a_blank_line_is_not_a_doc_comment() {
+    let span = byte_offset(DOCUMENTED, "detached = ", 0);
+    assert_eq!(
+        emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 8)),
+        None
+    );
+}
+
+#[test]
+fn a_local_binding_takes_no_doc_comment_from_the_line_above_it() {
+    let span = byte_offset(DOCUMENTED, "local = ", 0);
+    assert_eq!(
+        emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 5)),
+        None
+    );
+}
+
+#[test]
+fn a_type_declaration_carries_its_doc_comment() {
+    let src = "-- A shape, round or square.\ntype Shape = Circle Int | Square Int\n";
+    let start = byte_offset(src, "type Shape", 0);
+    let doc = emet::query::doc_comment_above_definition(src, &(start..src.len()))
+        .expect("a doc comment above the type");
+    assert_eq!(doc, "A shape, round or square.");
+}

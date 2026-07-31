@@ -163,3 +163,49 @@ fn definition_of_an_imported_name_opens_the_library_module() {
         .unwrap() as u32;
     assert_eq!(location.range.start.line, definition_line);
 }
+
+const DOCUMENTED_LIBRARY: &str = "module Shapes exposing (Shape(..), describe)\n\ntype Shape = Circle Int | Square Int\n\n-- Names a shape in one word.\n--\n-- Total: every shape has a name.\ndescribe : Shape -> String\ndescribe shape =\n  case shape of\n    Circle _ ->\n      \"round\"\n    Square _ ->\n      \"boxy\"\n";
+
+fn hover_text(uri: &Uri, source: &str, line_needle: &str, word: &str) -> String {
+    let line = source
+        .lines()
+        .position(|l| l.contains(line_needle))
+        .unwrap() as u32;
+    let column = source
+        .lines()
+        .nth(line as usize)
+        .unwrap()
+        .find(word)
+        .unwrap() as u32;
+    let hover = hover_at(uri, source, Position::new(line, column)).expect("a hover");
+    match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => markup.value,
+        _ => panic!("expected markup contents"),
+    }
+}
+
+#[test]
+fn hover_on_a_documented_imported_value_carries_signature_prose_and_origin() {
+    let project = project("documented_import", DOCUMENTED_LIBRARY, ENTRY);
+    let text = hover_text(&project.uri(), ENTRY, "describe unitShape", "describe");
+    assert!(
+        text.contains("```emet\nShape -> String\n```"),
+        "hover text: {text}"
+    );
+    assert!(
+        text.contains("Names a shape in one word."),
+        "hover text: {text}"
+    );
+    assert!(
+        text.contains("Total: every shape has a name."),
+        "hover text: {text}"
+    );
+    assert!(text.contains("from Shapes"), "hover text: {text}");
+}
+
+#[test]
+fn hover_on_an_undocumented_local_value_is_the_type_alone() {
+    let project = project("undocumented_local", DOCUMENTED_LIBRARY, ENTRY);
+    let text = hover_text(&project.uri(), ENTRY, "describe unitShape", "unitShape");
+    assert_eq!(text, "```emet\nShape\n```");
+}

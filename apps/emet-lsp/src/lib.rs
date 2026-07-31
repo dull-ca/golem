@@ -29,13 +29,49 @@ pub fn hover_at(uri: &Uri, source: &str, position: Position) -> Option<Hover> {
     let analysis = analysis_of(uri, source);
     let offset = offset_at(source, position);
     let ty = analysis.index.type_at(offset)?;
+    let described = analysis
+        .index
+        .definition_at(offset)
+        .map(|site| describe_definition(uri, source, site))
+        .unwrap_or_default();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: format!("```emet\n{ty}\n```"),
+            value: hover_markdown(&ty.to_string(), described),
         }),
         range: None,
     })
+}
+
+#[derive(Default)]
+struct Described {
+    doc: Option<String>,
+    origin: Option<String>,
+}
+
+fn describe_definition(uri: &Uri, source: &str, site: &emet::query::DefSite) -> Described {
+    match &site.module {
+        None => Described {
+            doc: emet::query::doc_comment_above_definition(source, &site.span),
+            origin: None,
+        },
+        Some(module) => Described {
+            doc: imported_module_source(uri, module)
+                .and_then(|(_, text)| emet::query::doc_comment_above_definition(&text, &site.span)),
+            origin: Some(module.clone()),
+        },
+    }
+}
+
+fn hover_markdown(declaration: &str, described: Described) -> String {
+    let mut markdown = format!("```emet\n{declaration}\n```");
+    if let Some(doc) = described.doc {
+        markdown.push_str(&format!("\n\n{doc}"));
+    }
+    if let Some(origin) = described.origin {
+        markdown.push_str(&format!("\n\n*from {origin}*"));
+    }
+    markdown
 }
 
 /// The names in scope at the cursor as completion items, each labeled with its
@@ -83,6 +119,14 @@ fn imported_module_location(
     module: &str,
     span: &std::ops::Range<usize>,
 ) -> Option<Location> {
+    let (target_uri, target_source) = imported_module_source(uri, module)?;
+    Some(Location {
+        uri: target_uri,
+        range: span_to_range(&target_source, span),
+    })
+}
+
+fn imported_module_source(uri: &Uri, module: &str) -> Option<(Uri, String)> {
     let path = document_path(uri)?;
     let target = emet::manifest::search_path_for(&path)
         .directories()
@@ -91,10 +135,7 @@ fn imported_module_location(
         .find(|candidate| candidate.exists())?;
     let target_source = std::fs::read_to_string(&target).ok()?;
     let target_uri: Uri = format!("file://{}", target.display()).parse().ok()?;
-    Some(Location {
-        uri: target_uri,
-        range: span_to_range(&target_source, span),
-    })
+    Some((target_uri, target_source))
 }
 
 /// Convert an LSP `Position` (zero-based line, UTF-16 code-unit column) to a

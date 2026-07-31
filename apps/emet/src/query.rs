@@ -79,3 +79,78 @@ impl QueryIndex {
 pub fn display_scheme(scheme: &Scheme) -> String {
     scheme.ty.to_string()
 }
+
+pub fn doc_comment_above_definition(source: &str, definition: &Span) -> Option<String> {
+    let binding = line_start_before(source, definition.start);
+    if binding != definition.start {
+        return None;
+    }
+    let bound_name = leading_identifier(line_at(source, binding));
+    let mut block_start = binding;
+    if let Some(previous) = line_before(source, block_start) {
+        if is_signature_for(line_at(source, previous), bound_name) {
+            block_start = previous;
+        }
+    }
+
+    let mut paragraphs: Vec<String> = Vec::new();
+    while let Some(previous) = line_before(source, block_start) {
+        match comment_body(line_at(source, previous)) {
+            Some(body) => {
+                paragraphs.push(body);
+                block_start = previous;
+            }
+            None => break,
+        }
+    }
+    paragraphs.reverse();
+
+    let doc = paragraphs.join("\n");
+    let doc = doc.trim_matches('\n').to_string();
+    if doc.is_empty() {
+        None
+    } else {
+        Some(doc)
+    }
+}
+
+fn line_start_before(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())]
+        .rfind('\n')
+        .map(|newline| newline + 1)
+        .unwrap_or(0)
+}
+
+fn line_before(source: &str, line_start: usize) -> Option<usize> {
+    if line_start == 0 {
+        None
+    } else {
+        Some(line_start_before(source, line_start - 1))
+    }
+}
+
+fn line_at(source: &str, line_start: usize) -> &str {
+    let rest = &source[line_start..];
+    let end = rest.find('\n').unwrap_or(rest.len());
+    rest[..end].trim_end_matches('\r')
+}
+
+fn leading_identifier(line: &str) -> &str {
+    let end = line
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\''))
+        .unwrap_or(line.len());
+    &line[..end]
+}
+
+fn is_signature_for(line: &str, name: &str) -> bool {
+    !name.is_empty()
+        && line
+            .strip_prefix(name)
+            .map(|rest| rest.trim_start().starts_with(':'))
+            .unwrap_or(false)
+}
+
+fn comment_body(line: &str) -> Option<String> {
+    let body = line.strip_prefix("--")?;
+    Some(body.strip_prefix(' ').unwrap_or(body).to_string())
+}
