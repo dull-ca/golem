@@ -104,12 +104,12 @@ Compile, and `emetc build … --text` shows the four glyphs. Apply, and the
 agent ensures nginx is installed and running, the HTML page is written, and
 the site config is in place.
 
-## Adding one line to a shared file with `lineInFile`
+## Amending a file golem did not write, with `lineInFile`
 
 The three `file`-and-package glyphs each own a whole resource. Sometimes you
 only want to ensure **one line** is present in a file someone else owns —
 that is `lineInFile`. Say the maintenance page's server block must be
-`include`d from a shared nginx entrypoint:
+`include`d from an nginx entrypoint the distro shipped:
 
 ```emet
 includeLine : String -> Glyph
@@ -124,6 +124,11 @@ Add `includeLine cfg.host` to `siteDownGlyphs` and the agent appends that one
 line if it is missing. On reverse it removes **exactly that line, and only if
 golem added it** — a hand-added line, or another host's include, is left
 untouched.
+
+That "someone else owns it" qualifier is the whole rule. Where golem owns both
+sides — several units contributing to one config — the answer is a drop-in
+directory with one complete file per contributor, not lines appended to a file
+they share (ADR 0041). See [The four glyphs](/reference/primitives/).
 
 <Aside type="caution" title="file and lineInFile on the same path">
   If a `file` glyph rewrites a path that a `lineInFile` also edits, order

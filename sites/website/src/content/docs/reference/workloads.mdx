@@ -164,8 +164,24 @@ container does not publish:
 | `Expose` | Firewall glyphs emitted |
 | --- | --- |
 | `Unexposed` | none |
-| `Internal` | one nftables `file` per port, opening it to `Fleet.internalNetwork` |
-| `Public` | one nftables `file` per port opening it to the world, plus one `lineInFile` on the shared ingress chain |
+| `Internal` | `Nftables.nftablesBase`, plus one `<name>-<port>.nft` drop-in per port, opening it to `Fleet.internalNetwork` |
+| `Public` | `Nftables.nftablesBase`, plus one `public-<name>-<port>.nft` drop-in per port, opening it to the world |
+
+Each drop-in is a **complete file** under `/etc/nftables.d/` — a whole
+`table inet golem` block with its own accept rule — never a line appended to a
+file other workloads share (ADR 0041). Every exposed workload also carries
+`nftablesBase`: the `nftables` package, the drop-in directory, the entrypoint
+conf that includes the glob, the `00-base` chain, and the oneshot
+`golem-nftables.service` that loads them. Repeating it is the point — the glyphs
+are identical, so they share content ids and enact once. A scroll that writes
+drop-ins wants `notifies = [ "golem-nftables.service" ]` so the ruleset is
+reloaded once the files are in place.
+
+<Aside type="caution" title="The base chain drops what nothing declares">
+  `00-base` hooks input at `policy drop`, with standing accepts for established
+  traffic, loopback, icmp, dhcp, ssh, and golemd's `7474`. Anything else a box
+  listens on is closed unless a workload declares it through `expose`.
+</Aside>
 
 <Aside type="note" title="The reverse proxy is a different container">
   `Workload` does not carry TLS or a reverse-proxy site config. An nginx or
@@ -187,25 +203,34 @@ container does not publish:
    `EnvVar`, and `Restart=`.
 5. `systemdService { unit = "<name>.service" }` — the unit Podman's generator
    produces from the `.container`.
-6. the firewall glyphs from `expose`.
+6. the firewall glyphs from `expose` — the nftables base first, then the
+   drop-ins, in that order because the base carries the `/etc/nftables.d`
+   directory and glyphs enact in source order.
 
 The registry `Workload` — one TCP port, one named volume, internally exposed —
-lowers to exactly five glyphs. From
+lowers to eleven glyphs. From
 `cargo run -q -p emet -- build examples/registry/registry.emet --text`:
 
 ```
 planned scrolls (1):
-  scroll `registry` (5 glyphs):
+  scroll `registry` (11 glyphs):
     * ensure apt package `podman` installed
     * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
     * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
     * enable + start systemd unit `registry.service`
+    * ensure apt package `nftables` installed
+    * ensure directory `/etc/nftables.d` (mode 0755)
+    * ensure file `/etc/golem-nftables.conf` (mode 0755)
+    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
+    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
+    * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
+    ↻ registry notifies golem-nftables.service
 ```
 
-The named-volume `.volume` unit (glyph 2) and the internal firewall opening
-(glyph 5) both fall out of the typed spec — the hand-rolled registry quadlet
-this replaced had neither.
+The named-volume `.volume` unit (glyph 2), the whole firewall arrangement, and
+the reload that loads it all fall out of the typed spec — the hand-rolled
+registry quadlet this replaced had none of them.
 
 ## Derived vs. explicit volumes
 
