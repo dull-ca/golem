@@ -30,6 +30,12 @@
     (pkgs.python3.withPackages (ps: with ps; [ typer rich httpx ]))
   ];
 
+  # Freshly built workspace binaries (emet-lsp for nvim, emetc, golemctl…)
+  # win over any installed copies while inside the shell.
+  enterShell = ''
+    export PATH="$DEVENV_ROOT/target/release:$PATH"
+  '';
+
   scripts.build.exec = "cargo build --workspace";
   scripts.build-static.exec = "nix build .#golemd-static .#golemctl-static --print-build-logs";
   scripts.test.exec = "cargo test --workspace";
