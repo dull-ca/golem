@@ -16,7 +16,9 @@ use crate::journal::{
 /// The set of glyphs currently applied to the host, one [`Outcome`] per glyph
 /// key. For each key, the latest `Done` step that has not since been `Reversed`
 /// wins (so a re-apply's fresh inverse supersedes an older one, and a
-/// reverse-then-reapply is applied again). Only `Apply` steps survive the final
+/// reverse-then-reapply is applied again) — except that a
+/// `bare_reobservation` never displaces a live receipt already standing at the
+/// same applied content id. Only `Apply` steps survive the final
 /// filter: a `Reverse` step's terminal `Done` records that an undo completed, not
 /// that a glyph is present, so it must not appear in the applied set. `Intended`
 /// and `Failed` steps are ignored — neither claims a durable host change.
@@ -31,8 +33,12 @@ pub fn applied_outcomes(steps: &[WalStep]) -> Vec<Outcome> {
         if step.state != WalStepState::Done || cancelled.contains(&step.seq) {
             continue;
         }
-        if !latest.contains_key(&step.glyph_key) {
-            order.push(step.glyph_key.clone());
+        match latest.get(&step.glyph_key) {
+            Some(live) if bare_reobservation(step) && applied_cid(step) == applied_cid(live) => {
+                continue
+            }
+            Some(_) => {}
+            None => order.push(step.glyph_key.clone()),
         }
         latest.insert(step.glyph_key.clone(), step);
     }
@@ -173,6 +179,26 @@ pub(crate) fn cancelled_dones(steps: &[WalStep]) -> std::collections::BTreeSet<u
         }
     }
     cancelled
+}
+
+/// Whether a `Done` step is a *bare re-observation*: it changed nothing and
+/// captured nothing to restore. Two paths write one for a glyph a sibling unit
+/// already put on the host this attempt — the credited bracket
+/// (`foreman::enact_credited`) and, when two units race past the success set
+/// before either seeds it, the loser's own idempotent `apply` short-circuit
+/// (`reconcilers::apply_apt`'s already-installed arm and its peers). Both record
+/// `changed = false` / [`Inverse::Nothing`], which is honest about *that* step
+/// but is not a receipt: the undo for the host change still belongs to the step
+/// that made it. Letting a bare re-observation win the fold would hand
+/// `foreman::prior_outcome` an `Inverse::Nothing` for a glyph golem really did
+/// install, so the next scroll's `Remove` would reverse a no-op and leave the
+/// resource on the host — while still dropping it from the applied set (ADR 0034
+/// §1's "the applied-set fold is unchanged" holds only because of this guard).
+/// Gated on the applied content id matching so this only ever suppresses a
+/// redundant observation of the version already on record: an observation at a
+/// *different* id is real news (the host moved out of band) and still wins.
+fn bare_reobservation(step: &WalStep) -> bool {
+    step.changed == Some(false) && matches!(step.inverse, None | Some(Inverse::Nothing))
 }
 
 fn outcome_of(step: &WalStep) -> Outcome {
@@ -333,6 +359,89 @@ mod tests {
             Inverse::RemoveAptPackage {
                 name: "nginx".into()
             }
+        );
+    }
+
+    fn reobserved(seq: u64, ord: u64, glyph: &Glyph) -> WalStep {
+        WalStep {
+            inverse: Some(Inverse::Nothing),
+            changed: Some(false),
+            ..done_apply(seq, ord, glyph)
+        }
+    }
+
+    /// The exact rows ADR 0034's credited bracket appends. Before the guard the
+    /// later row won on `seq` alone, so the fold handed the next `Remove` an
+    /// `Inverse::Nothing` and the glyph stayed on the host — found on the VM
+    /// fleet, 2026-07-31.
+    #[test]
+    fn a_bare_reobservation_does_not_erase_the_receipt_it_re_observes() {
+        let applied = applied_outcomes(&[
+            done_apply(1, 0, &apt("nginx")),
+            reobserved(2, 7, &apt("nginx")),
+        ]);
+        assert_eq!(
+            applied[0].inverse,
+            Inverse::RemoveAptPackage {
+                name: "nginx".into()
+            },
+            "a sibling's credited bracket leaves the enacting step's undo live"
+        );
+        assert!(
+            applied[0].changed,
+            "and leaves its record that golem changed the host"
+        );
+    }
+
+    /// The guard suppresses a re-observation only against a standing receipt.
+    /// With no receipt to defend, the observation is the whole record of the
+    /// glyph and must still enter the applied set.
+    #[test]
+    fn a_bare_reobservation_alone_is_still_the_applied_outcome() {
+        let applied = applied_outcomes(&[reobserved(1, 0, &apt("nginx"))]);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(
+            applied[0].inverse,
+            Inverse::Nothing,
+            "a package golem found already installed has nothing to undo"
+        );
+    }
+
+    /// The other half of the guard. Suppressing on `changed = false` alone would
+    /// pin the fold to a version the host has since moved off, and the next diff
+    /// would never see it — so an observation at an id golem did not record has
+    /// to displace the receipt.
+    #[test]
+    fn a_reobservation_at_a_different_content_id_still_wins() {
+        let first = done_apply(1, 0, &apt("nginx"));
+        let second = reobserved(2, 7, &apt("pg"));
+        let second = WalStep {
+            glyph_key: "apt:nginx".into(),
+            ..second
+        };
+        let applied = applied_outcomes(&[first, second]);
+        assert_eq!(
+            applied[0].inverse,
+            Inverse::Nothing,
+            "an observation of a version golem did not record is real news, not a duplicate"
+        );
+    }
+
+    /// A protected receipt must not become an immortal one. The undo's own `Done`
+    /// carries a real `Reverse` action, not a bare re-observation, so it passes
+    /// the guard and the key leaves the applied set.
+    #[test]
+    fn a_reverse_done_still_drops_the_key_after_a_reobservation() {
+        let mut removed = done_apply(3, 9, &apt("nginx"));
+        removed.action = WalAction::Reverse;
+        let applied = applied_outcomes(&[
+            done_apply(1, 0, &apt("nginx")),
+            reobserved(2, 7, &apt("nginx")),
+            removed,
+        ]);
+        assert!(
+            applied.is_empty(),
+            "the guard suppresses only bare re-observations, never a completed undo"
         );
     }
 }

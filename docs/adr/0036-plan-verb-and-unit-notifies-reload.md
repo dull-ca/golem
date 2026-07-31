@@ -111,3 +111,42 @@ bumps 3 → 4.
 - **Client-side plan (golemctl computes the diff).** Rejected: the diff
   needs the host's journal (prior outcomes), which lives with golemd; the
   daemon owning it keeps one code path (`reconcile::plan`) authoritative.
+
+## Addendum — the reload set subtracts units this reconcile removed (2026-07-31)
+
+The coalesced reload set now drops any unit whose own definition this reconcile
+took off the host, before anything is journaled.
+
+The decision's rule — "any glyph op in or under that scroll completes `Done` with
+`changed == true`" — is indifferent to *which way* the change went, and a
+teardown is all changes. Decommissioning a scroll that notifies
+`golem-nftables.service` removed the service's unit file and disabled the unit,
+and then ran `systemctl try-reload-or-restart golem-nftables.service` against a
+unit systemd no longer had. `Unit not found` is a failed reload, a failed reload
+is a `GlyphFailure` under `<reloads>`, and a teardown that reversed every glyph
+correctly reported `partial`. Found on the VM fleet applying the ADR 0041
+nftables fixture and then an empty scroll.
+
+A unit is "removed" when a `Done`, un-`Reversed` `Remove` enacted its
+`systemdService` glyph or the file that *defines* it
+(`foreman::removed_units`/`unit_defined_by`). A drop-in under `<unit>.service.d/`
+is deliberately excluded: removing one leaves the unit standing with different
+configuration, which is precisely the case that still wants a reload. The
+subtraction is visible, not silent — each skip logs and records an `Info`
+progress event under the `<reloads>` path — and `foreman::predicted_reloads`
+applies the same rule over planned ops, so `golemctl plan` and the apply it
+predicts still render the same final line.
+
+**Deliberately not changed: a unit whose install was undone by
+`on_exhaust = rollback` still gets poked.** The Consequences reason that a
+rolled-back `Done` is a genuine second movement of a service's inputs and must
+keep its notification — "benign (`try-reload-or-restart` is a no-op on an
+inactive unit, a cheap reload otherwise) and not to be 'fixed' by netting
+installs against their reversals." That reasoning assumes the unit file still
+exists, so the poke lands on a real unit and does nothing. When the rollback
+reversed the unit file itself, it does not: the poke fails `Unit not found`
+exactly as the removal case did, and turns a rollback that behaved correctly into
+a `partial` report. Removal and rollback are not the same case — a removal is the
+authored outcome, a rollback is a failure being contained — so this addendum
+declines to collapse them by reflex. Whether the reload set should also subtract
+units a rollback un-defined is left open for a decision of its own.

@@ -7,8 +7,8 @@
 //! temp-file-and-rename for file writes) and are tested against tempfiles.
 //!
 //! The `filesystem` glyph is one reconciler kind over three entry kinds (ADR
-//! 0019): `apply` dispatches on the [`Entry`] sum to [`apply_file`],
-//! [`apply_directory`], or [`apply_symlink`]. Directory and symlink creation are
+//! 0019): `apply` dispatches on the [`Entry`] sum to `apply_file`,
+//! `apply_directory`, or `apply_symlink`. Directory and symlink creation are
 //! governed by the same "reverse only what golem created" discipline as the rest
 //! of the module — golem removes only empty directories it made (deepest-first,
 //! stopping at any non-empty or pre-existing component) and refuses to clobber a
@@ -51,7 +51,7 @@ use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
 ///   `apt-get` invocations collide. It serializes every apt command (install,
 ///   remove, the ADR 0030 refresh) and the batch pre-pass.
 /// - `line_locks` — one mutex **per target path**, because `lineInFile` is a
-///   read-modify-write ([`apply_line_in_file`]: `file_has_line` then
+///   read-modify-write (`apply_line_in_file`: `file_has_line` then
 ///   `append_line`) that two writers to the same file race. Distinct paths hold
 ///   distinct locks and proceed at once.
 /// - `daemon_reload` — global, but held **only** around `systemctl daemon-reload`,

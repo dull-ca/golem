@@ -362,3 +362,39 @@ scroll { name = "client-2", policy = keep, glyphs = moveClient 2 }
   split for the policy sums and ADR 0019's "illegal states unrepresentable" for
   the strict `Contents` sum. The four-glyph contract is unchanged — grouping is a
   container shape, not a glyph.
+
+## Addendum — directory removes form one trailing wave, deepest first (2026-07-31)
+
+§4 groups every vanished-unit `Remove` under its nearest surviving ancestor plus
+a `<removes>` terminal, and ADR 0029 §6's teardown order — removes last, reverse
+of source order — orders the ops inside each group. That is enough while a
+removed resource belongs to one unit. It is not enough for a directory two units
+put files into.
+
+ADR 0041's drop-in model makes that the ordinary case: several units each carry
+`Nftables.nftablesBase`, so `/etc/nftables.d` and one drop-in per unit come off
+together at decommission. The directory's `rmdir` must follow *every* unit's
+file removes, and those files are spread across per-ancestor groups that resolve
+independently and enact in their own order. No grouping of the removes can
+express "after all of the others" — the constraint is global to the reconcile,
+while a group's order is local to itself. On the fleet the directory was reversed
+while a sibling's drop-in was still inside it and survived as an orphan.
+
+So the removes phase is refined: every `Remove` of a filesystem `Directory`
+entry is diverted out of the per-ancestor groups into a single whole-reconcile
+wave, appended after all of them and sorted by path descending so a child
+directory is reversed before the parent containing it
+(`foreman::plan_vanished_removes`). Content removes keep §4's grouping and
+ordering exactly. Emptiness is still not a precondition: `remove_directory`
+treats `ENOTEMPTY` as a stop rather than a failure, so a directory holding a file
+golem never recorded is left standing and the reconcile settles — golem reverses
+only its own edits.
+
+The wave takes one `unit_path`, so §4's policy attribution loosens for
+directories. The group resolves to the longest prefix its members' surviving
+ancestors share: a wave confined to one vanished subtree still inherits that
+subtree's policy chain, while one spanning subtrees falls back toward the host
+root, the only path every member answers to. The `<directories>` terminal segment
+is a second marker beside `<removes>`, carrying the same disjointness argument
+and the same caveat that it is a naming convention Emet does not yet enforce.
+`golemctl plan` renders the wave where enact will run it, from the same function.
