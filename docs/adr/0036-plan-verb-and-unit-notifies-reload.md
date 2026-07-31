@@ -67,7 +67,22 @@ bumps 3 → 4.
   `notifies` list never forces a spurious file re-write — and the glyph
   kind count stays four: the reload is an *outcome*, not desired state.
 - A rolled-back unit still contributes its notifications: a config flipped
-  back by rollback wants its service reloaded onto the restored file.
+  back by rollback wants its service reloaded onto the restored file. The
+  rule is "any changed row in the unit, reversals included" — deliberately
+  *not* a net-effect test, so it keeps a rolled-back `Done` that ADR 0020's
+  structural restart set drops: the structural pass is about a *unit file*,
+  whose write-then-reverse leaves systemd's view of the definitions exactly
+  where it started, while the notify pass is about a service's *inputs*,
+  which genuinely moved twice. An install undone by rollback therefore still
+  pokes its unit — benign (`try-reload-or-restart` is a no-op on an inactive
+  unit, a cheap reload otherwise) and not to be "fixed" by netting installs
+  against their reversals.
+- A failed reload or restart is a reported outcome, not a silent one: the
+  coalesced set is enacted under a synthetic `<reloads>` unit that appears in
+  the reconcile report, so a failure logs, lands as a `GlyphFailure`, and
+  makes the reconcile `partial` — the service is still running its old
+  configuration, which is not a settled apply. The live report and the
+  reattach-rebuilt one carry that group identically.
 - The v4 bump means emetc and golemd move in lockstep (v3 artifacts fail
   cleanly, per the format's design); glyph cids are untouched, so the
   first v4 apply is a no-op pass, not a replace storm.

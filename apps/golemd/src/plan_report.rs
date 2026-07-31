@@ -94,6 +94,7 @@ impl PlanSummary {
                 GlyphAction::Replace => summary.replace += 1,
                 GlyphAction::Remove => summary.remove += 1,
                 GlyphAction::Noop => summary.noop += 1,
+                GlyphAction::Restart | GlyphAction::Reload => {}
             }
         }
         summary

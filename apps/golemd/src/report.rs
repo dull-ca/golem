@@ -75,7 +75,9 @@ pub struct GlyphFailure {
 }
 
 /// Which `GlyphOp` the diff enacted for a line. Serialized `install` / `replace`
-/// / `remove` / `noop` — the tags the fleet CLI matches on.
+/// / `remove` / `noop` — the tags the fleet CLI matches on — plus `restart` /
+/// `reload`, the end-of-apply propagation steps reported under the synthetic
+/// `<reloads>` unit (ADR 0036).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GlyphAction {
@@ -83,6 +85,8 @@ pub enum GlyphAction {
     Replace,
     Remove,
     Noop,
+    Restart,
+    Reload,
 }
 
 /// How a line's op ended: `Applied` ran and stayed; `Unchanged` is a `Noop` the

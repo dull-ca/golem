@@ -132,11 +132,18 @@ pub fn to_bytes(manifest: &Manifest) -> Vec<u8> {
 // "this build speaks v4, that file is v3". `format_version` is the leading
 // field of `Manifest`, so its varint is the leading varint of the stream.
 pub fn from_bytes(bytes: &[u8]) -> Result<Manifest, FromBytesError> {
-    let (found, _) = postcard::take_from_bytes::<u32>(bytes)
-        .map_err(|e| FromBytesError::Decode(e.to_string()))?;
-    check_format_version(found)?;
+    if let Ok((found, _)) = postcard::take_from_bytes::<u32>(bytes) {
+        if (1..=MAX_PLAUSIBLE_FORMAT_VERSION).contains(&found) {
+            check_format_version(found)?;
+        }
+    }
     postcard::from_bytes(bytes).map_err(|e| FromBytesError::Decode(e.to_string()))
 }
+
+// 31 is the last byte below printable ASCII, so no text file's leading varint
+// can land in the band: garbage reports as undecodable, and only a version this
+// build could plausibly meet reports as a version mismatch.
+const MAX_PLAUSIBLE_FORMAT_VERSION: u32 = 31;
 
 /// Accept a `format_version` only if it matches [`FORMAT_VERSION`]; any other
 /// value is [`FromBytesError::UnsupportedFormatVersion`].

@@ -220,6 +220,19 @@ fn content_id_is_invariant_to_emet_version() {
 }
 
 #[test]
+fn garbage_bytes_are_undecodable_rather_than_a_bogus_format_version() {
+    for garbage in [b"not a manifest".as_slice(), b"".as_slice(), b"{\"a\":1}"] {
+        match from_bytes(garbage) {
+            Err(FromBytesError::Decode(_)) => {}
+            other => panic!(
+                "expected a decode failure for {garbage:?}, got {other:?} — a wrong file piped \
+                 to golemd must not read as a manifest version"
+            ),
+        }
+    }
+}
+
+#[test]
 fn unknown_format_version_is_a_clean_error() {
     let mut manifest = Manifest::from_scrolls(vec![fixed_scroll()], "0.1.0");
     manifest.format_version = FORMAT_VERSION + 1;
