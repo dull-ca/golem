@@ -49,6 +49,7 @@ module Quadlet exposing
   )
 
 import Fleet exposing (internalNetwork)
+import Nftables exposing (nftablesBase, nftablesDropIn)
 
 -- How an image pins its content: a mutable `Tag`, or an immutable `Digest`.
 -- `imageLine` renders the two with different separators — `name:tag` against
@@ -405,11 +406,15 @@ containerUnitGlyphs u =
 
 -- How far a workload's published ports reach, and so which firewall glyphs it
 -- emits under `/etc/nftables.d/`. `Unexposed` writes none — the port is
--- reachable only from the host. `Internal` writes one rule file per port,
--- accepting from `Fleet.internalNetwork` alone. `Public` writes an
--- accept-from-anywhere rule file plus a line in the shared `ingress.nft`.
+-- reachable only from the host. `Internal` writes one complete `<name>-<port>`
+-- drop-in per port, accepting from `Fleet.internalNetwork` alone. `Public`
+-- writes one complete `public-<name>-<port>` drop-in per port, accepting from
+-- anywhere (ADR 0041 — one drop-in file per glyph, never a shared file). Any
+-- workload that writes a drop-in also carries `Nftables.nftablesBase`, so the
+-- table, its entrypoint, and the unit that loads them exist; identical
+-- contributions from sibling workloads collapse by content id (ADR 0034).
 -- Rules are TCP-only, and a scroll that writes them wants
--- `notifies = [ "nftables.service" ]` so the change is loaded (ADR 0036).
+-- `notifies = [ "golem-nftables.service" ]` so the change is loaded (ADR 0036).
 type Expose = Unexposed | Internal | Public
 
 -- What to run, stated without systemd: an image, its ports, volumes, and
@@ -444,56 +449,54 @@ workloadUnit w =
         , wantedBy = [ "multi-user.target", "default.target" ]
         }
 
-firewallPath : String -> Port -> String
-firewallPath name p =
+internalDropInName : String -> Port -> String
+internalDropInName name p =
   case p of
-    Port spec -> "/etc/nftables.d/${name}-${String.fromInt spec.host}.nft"
+    Port spec -> "${name}-${String.fromInt spec.host}"
 
-internalRule : String -> Port -> String
-internalRule name p =
+publicDropInName : String -> Port -> String
+publicDropInName name p =
+  case p of
+    Port spec -> "public-${name}-${String.fromInt spec.host}"
+
+internalAcceptRule : String -> Port -> String
+internalAcceptRule name p =
   case p of
     Port spec ->
-      String.join "\n"
-        [ "table inet filter {"
-        , "  chain input {"
-        , "    tcp dport ${String.fromInt spec.host} ip saddr ${internalNetwork} accept comment \"${name}\""
-        , "  }"
-        , "}"
-        ]
+      "tcp dport ${String.fromInt spec.host} ip saddr ${internalNetwork} accept comment \"${name}\""
 
-publicRule : String -> Port -> String
-publicRule name p =
+publicAcceptRule : String -> Port -> String
+publicAcceptRule name p =
   case p of
     Port spec ->
-      String.join "\n"
-        [ "table inet filter {"
-        , "  chain input {"
-        , "    tcp dport ${String.fromInt spec.host} accept comment \"${name}\""
-        , "  }"
-        , "}"
-        ]
-
-ingressLine : String -> Port -> String
-ingressLine name p =
-  case p of
-    Port spec -> "tcp dport ${String.fromInt spec.host} accept comment \"ingress ${name}\""
+      "tcp dport ${String.fromInt spec.host} accept comment \"${name}\""
 
 portFirewallGlyphs : String -> Expose -> Port -> List Glyph
 portFirewallGlyphs name expose p =
   case expose of
     Unexposed -> []
     Internal ->
-      [ file { path = firewallPath name p, contents = internalRule name p, mode = "0644" } ]
+      [ nftablesDropIn (internalDropInName name p) [ internalAcceptRule name p ] ]
     Public ->
-      [ file { path = firewallPath name p, contents = publicRule name p, mode = "0644" }
-      , lineInFile { path = "/etc/nftables.d/ingress.nft", line = ingressLine name p }
-      ]
+      [ nftablesDropIn (publicDropInName name p) [ publicAcceptRule name p ] ]
+
+-- Prefix the base ahead of the drop-ins it makes loadable, or emit nothing at
+-- all. Order is not cosmetic: `/etc/nftables.d` is a glyph in `nftablesBase`,
+-- and source order is enact order (ADR 0031), so a drop-in placed first would be
+-- written into a directory that does not exist yet. An `Unexposed` workload
+-- contributes no drop-in and so must not drag in the package, the table, and the
+-- service either — hence the empty case.
+withNftablesBase : List Glyph -> List Glyph
+withNftablesBase dropIns =
+  case dropIns of
+    [] -> []
+    _ -> List.concat [ nftablesBase, dropIns ]
 
 firewallGlyphs : Workload -> List Glyph
 firewallGlyphs w =
   case w of
     Workload spec ->
-      List.concatMap (portFirewallGlyphs spec.name spec.expose) spec.ports
+      withNftablesBase (List.concatMap (portFirewallGlyphs spec.name spec.expose) spec.ports)
 
 -- A whole workload as glyphs: its container unit (and everything that unit
 -- needs) followed by the firewall files its `expose` calls for. The one call a

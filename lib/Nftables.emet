@@ -1,0 +1,135 @@
+-- The host firewall as drop-in files (ADR 0041). golem owns exactly one nftables
+-- table, `inet golem`, and never edits a file the distro or another tool wrote.
+-- Each thing that needs a port open contributes one complete `.nft` file to
+-- `/etc/nftables.d/`; nothing merges lines, because `table`/`chain` blocks are
+-- already additive across an atomic `nft -f` load. Two units opening the same
+-- port write two accept rules, and first-match makes the second redundant rather
+-- than wrong.
+--
+-- `/etc/golem-nftables.conf` is the entrypoint that reads them: `add table inet
+-- golem`, `flush table inet golem`, then `include` of the drop-in glob. The
+-- add-then-flush pair is what makes a reload idempotent without a global `flush
+-- ruleset` — the distro's own `nftables.conf` starts with one, and including
+-- from there would wipe the tables podman and netavark own on every reload.
+-- `golem-nftables.service` is a oneshot that loads the entrypoint;
+-- `ExecReload=` re-runs the same load, so a scroll that writes a drop-in reaches
+-- the ruleset through `notifies = [ "golem-nftables.service" ]` (ADR 0036), and
+-- `ExecStop=` deletes the table, so removing the last contributor takes the whole
+-- ruleset with it.
+--
+-- The base chain hooks input at policy drop, which makes `00-base` load-bearing
+-- rather than decorative: every port not declared somewhere is now closed. Its
+-- allowlist is the minimum that keeps a fleet box from orphaning itself —
+-- established/related and loopback so replies and local traffic survive, icmp so
+-- the box stays diagnosable, dhcp so it keeps its lease, ssh so an operator can
+-- reach it, and golemd's 7474 so the next scroll can reach it. Sort order is the
+-- merge order, and `00-` sorts first, so the chain exists before any drop-in
+-- adds a rule to it.
+--
+-- `/etc/nftables.d` is written as an explicit `directory` glyph, not left to the
+-- drop-in files' parents. A parent golem creates on the way to writing a file is
+-- an unrecorded edit — nothing to reverse, so teardown would leave the directory
+-- behind. The glyph gives it its own receipt.
+--
+-- ORDERING. Source order is enact order (ADR 0031), and there is no dependency
+-- graph to say otherwise: a consumer must place `nftablesBase` **before** any
+-- file it writes into `/etc/nftables.d/`, or the drop-in is written into a
+-- directory that does not exist yet. Sibling units repeating the base is the
+-- expected shape — identical contributions collapse by content id (ADR 0034 §1).
+module Nftables exposing
+  ( nftablesUnit
+  , nftablesBase
+  , nftablesDropIn
+  )
+
+dropInDirectory : String
+dropInDirectory = "/etc/nftables.d"
+
+dropInPath : String -> String
+dropInPath name = "${dropInDirectory}/${name}.nft"
+
+golemTableDropIn : List String -> String
+golemTableDropIn rules =
+  String.join "\n"
+    (List.concat
+      [ [ "table inet golem {"
+        , "  chain input {"
+        ]
+      , List.map (\rule -> "    ${rule}") rules
+      , [ "  }"
+        , "}"
+        , ""
+        ]
+      ])
+
+nftablesDropIn : String -> List String -> Filesystem
+nftablesDropIn name rules =
+  file
+    { path = dropInPath name
+    , contents = golemTableDropIn rules
+    , mode = "0644"
+    }
+
+baseChainRules : List String
+baseChainRules =
+  [ "type filter hook input priority 0; policy drop;"
+  , "ct state established,related accept"
+  , "ct state invalid drop"
+  , "iif \"lo\" accept"
+  , "meta l4proto { icmp, ipv6-icmp } accept"
+  , "tcp dport 22 accept comment \"ssh\""
+  , "tcp dport 7474 accept comment \"golemd\""
+  , "udp dport 68 accept comment \"dhcp\""
+  ]
+
+nftablesEntrypointPath : String
+nftablesEntrypointPath = "/etc/golem-nftables.conf"
+
+nftablesUnit : String
+nftablesUnit = "golem-nftables.service"
+
+nftablesEntrypoint : String
+nftablesEntrypoint =
+  String.join "\n"
+    [ "#!/usr/sbin/nft -f"
+    , "add table inet golem"
+    , "flush table inet golem"
+    , "include \"${dropInDirectory}/*.nft\""
+    , ""
+    ]
+
+nftablesUnitFile : String
+nftablesUnitFile =
+  String.join "\n"
+    [ "[Unit]"
+    , "Description=Golem nftables ruleset"
+    , ""
+    , "[Service]"
+    , "Type=oneshot"
+    , "RemainAfterExit=yes"
+    , "ExecStart=/usr/sbin/nft -f ${nftablesEntrypointPath}"
+    , "ExecReload=/usr/sbin/nft -f ${nftablesEntrypointPath}"
+    , "ExecStop=-/usr/sbin/nft delete table inet golem"
+    , ""
+    , "[Install]"
+    , "WantedBy=multi-user.target"
+    , ""
+    ]
+
+nftablesBase : List Glyph
+nftablesBase =
+  [ aptPackage { name = "nftables" }
+  , directory { path = "/etc/nftables.d", mode = "0755" }
+  , file
+      { path = nftablesEntrypointPath
+      , contents = nftablesEntrypoint
+      , mode = "0755"
+      }
+  , nftablesDropIn "00-base" baseChainRules
+  , file
+      { path = "/etc/systemd/system/${nftablesUnit}"
+      , contents = nftablesUnitFile
+      , mode = "0644"
+      }
+  , systemdService { unit = nftablesUnit }
+  ]

@@ -59,4 +59,10 @@ websiteGlyphs =
     ]
 
 main : List Scroll
-main = [ scroll { name = "web", glyphs = websiteGlyphs } ]
+main =
+  [ scroll
+      { name = "web"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = websiteGlyphs
+      }
+  ]

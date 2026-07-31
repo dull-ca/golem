@@ -3,7 +3,8 @@
 -- pulls. One internally-exposed `Workload` — the docker.io registry:2 container
 -- on :5000, backed by a named `golem-registry-data` volume — which lowers to the
 -- podman apt, the `.volume` unit, the `.container` quadlet, its service, and the
--- internal firewall opening.
+-- internal firewall drop-in with the golem-owned nftables base that loads it
+-- (ADR 0041), reloaded by the scroll's `notifies`.
 --
 -- Authored against the shared `Quadlet` library, resolved from `lib/` via the
 -- repo-root `emet.json` (ADR 0024).
@@ -35,4 +36,10 @@ registry =
     }
 
 main : List Scroll
-main = [ scroll { name = "registry", glyphs = workloadGlyphs registry } ]
+main =
+  [ scroll
+      { name = "registry"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = workloadGlyphs registry
+      }
+  ]
