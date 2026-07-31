@@ -137,10 +137,11 @@ fn parse_exposed_list(cursor: &mut Cursor) -> Result<Vec<Exposed>, HeaderError> 
 }
 
 fn parse_exposed(cursor: &mut Cursor) -> Result<Exposed, HeaderError> {
+    let span = cursor.span();
     match cursor.peek().clone() {
         Tok::Ident(name) => {
             cursor.bump();
-            Ok(Exposed::Value(name))
+            Ok(Exposed::Value { name, span })
         }
         Tok::Upper(name) => {
             cursor.bump();
@@ -152,7 +153,7 @@ fn parse_exposed(cursor: &mut Cursor) -> Result<Exposed, HeaderError> {
             } else {
                 false
             };
-            Ok(Exposed::Type { name, open })
+            Ok(Exposed::Type { name, open, span })
         }
         other => Err(HeaderError {
             msg: format!("expected an exposed name, found `{other}`"),

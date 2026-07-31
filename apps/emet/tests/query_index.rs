@@ -151,3 +151,55 @@ fn a_type_declaration_carries_its_doc_comment() {
         .expect("a doc comment above the type");
     assert_eq!(doc, "A shape, round or square.");
 }
+
+const OWN_HEADER: &str = "\
+module Main exposing (greeting, Shape, main)
+
+type Shape = Circle Int
+
+greeting : String
+greeting = \"hi\"
+
+main : List Scroll
+main =
+  []
+";
+
+#[test]
+fn a_value_in_the_modules_own_exposing_list_carries_its_type_and_definition() {
+    let analysis = analyze_source(OWN_HEADER);
+    let header_offset = byte_offset(OWN_HEADER, "greeting", 0);
+    let ty = analysis
+        .index
+        .type_at(header_offset)
+        .expect("a type at the exposed name");
+    assert_eq!(ty.to_string(), "String");
+    let def = analysis
+        .index
+        .definition_at(header_offset)
+        .expect("a definition site at the exposed name");
+    assert_eq!(def.span.start, byte_offset(OWN_HEADER, "greeting = ", 0));
+    assert!(def.module.is_none());
+}
+
+#[test]
+fn a_type_in_the_modules_own_exposing_list_resolves_to_its_declaration() {
+    let analysis = analyze_source(OWN_HEADER);
+    let header_offset = byte_offset(OWN_HEADER, "Shape", 0);
+    let def = analysis
+        .index
+        .definition_at(header_offset)
+        .expect("a definition site at the exposed type");
+    assert_eq!(def.span.start, byte_offset(OWN_HEADER, "type Shape", 0) + 5);
+    assert!(def.module.is_none());
+}
+
+#[test]
+fn a_type_in_an_exposing_list_keeps_its_declaration_hover_rather_than_a_value_type() {
+    let analysis = analyze_source(OWN_HEADER);
+    let header_offset = byte_offset(OWN_HEADER, "Shape", 0);
+    assert!(
+        analysis.index.type_at(header_offset).is_none(),
+        "an exposed type name stays on the type-declaration hover path"
+    );
+}

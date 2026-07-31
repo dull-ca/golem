@@ -251,3 +251,105 @@ fn hover_on_a_builtin_type_name_in_an_annotation_shows_its_shape_and_prose() {
     assert!(text.contains("notifies : List String"), "{text}");
     assert!(text.contains("`notifies` unions"), "{text}");
 }
+
+const EXPOSING_ENTRY: &str = "module Main exposing (unitShape, main)\n\nimport Shapes exposing (Shape(..), describe)\n\nunitShape : Shape\nunitShape = Circle 1\n\nmain : List Scroll\nmain =\n  let _named = describe unitShape\n  in []\n";
+
+#[test]
+fn hover_on_a_value_in_an_import_exposing_list_carries_signature_prose_and_origin() {
+    let project = project("exposing_import_hover", DOCUMENTED_LIBRARY, EXPOSING_ENTRY);
+    let text = hover_text(
+        &project.uri(),
+        EXPOSING_ENTRY,
+        "import Shapes exposing",
+        "describe",
+    );
+    assert!(
+        text.contains("```emet\nShape -> String\n```"),
+        "hover text: {text}"
+    );
+    assert!(
+        text.contains("Names a shape in one word."),
+        "hover text: {text}"
+    );
+    assert!(text.contains("from Shapes"), "hover text: {text}");
+}
+
+#[test]
+fn hover_on_a_value_in_the_modules_own_exposing_list_omits_the_origin() {
+    let project = project("exposing_own_hover", DOCUMENTED_LIBRARY, EXPOSING_ENTRY);
+    let text = hover_text(
+        &project.uri(),
+        EXPOSING_ENTRY,
+        "module Main exposing",
+        "unitShape",
+    );
+    assert_eq!(text, "```emet\nShape\n```");
+}
+
+#[test]
+fn definition_from_a_value_in_an_import_exposing_list_opens_the_library_module() {
+    let project = project("exposing_import_goto", DOCUMENTED_LIBRARY, EXPOSING_ENTRY);
+    let line = EXPOSING_ENTRY
+        .lines()
+        .position(|l| l.starts_with("import Shapes"))
+        .unwrap() as u32;
+    let column = EXPOSING_ENTRY
+        .lines()
+        .nth(line as usize)
+        .unwrap()
+        .rfind("describe")
+        .unwrap() as u32;
+    let location = definition_at(&project.uri(), EXPOSING_ENTRY, Position::new(line, column))
+        .expect("a cross-file definition location");
+    assert!(
+        location.uri.as_str().ends_with("lib/Shapes.emet"),
+        "definition uri: {}",
+        location.uri.as_str()
+    );
+    let definition_line = DOCUMENTED_LIBRARY
+        .lines()
+        .position(|l| l.starts_with("describe shape"))
+        .unwrap() as u32;
+    assert_eq!(location.range.start.line, definition_line);
+}
+
+#[test]
+fn definition_from_a_value_in_the_modules_own_exposing_list_stays_in_this_file() {
+    let project = project("exposing_own_goto", DOCUMENTED_LIBRARY, EXPOSING_ENTRY);
+    let column = EXPOSING_ENTRY
+        .lines()
+        .next()
+        .unwrap()
+        .find("unitShape")
+        .unwrap() as u32;
+    let location = definition_at(&project.uri(), EXPOSING_ENTRY, Position::new(0, column))
+        .expect("a same-file definition location");
+    assert_eq!(location.uri.as_str(), project.uri().as_str());
+    assert_eq!(
+        location.range.start.line,
+        EXPOSING_ENTRY
+            .lines()
+            .position(|l| l.starts_with("unitShape ="))
+            .unwrap() as u32
+    );
+}
+
+#[test]
+fn hover_on_a_type_in_an_import_exposing_list_still_shows_its_declaration() {
+    let project = project(
+        "exposing_import_type_hover",
+        DOCUMENTED_TYPE_LIBRARY,
+        EXPOSING_ENTRY,
+    );
+    let text = hover_text(
+        &project.uri(),
+        EXPOSING_ENTRY,
+        "import Shapes exposing",
+        "Shape",
+    );
+    assert!(
+        text.contains("type Shape\n    = Circle Int\n    | Square Int"),
+        "hover text: {text}"
+    );
+    assert!(text.contains("from Shapes"), "hover text: {text}");
+}

@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{Module, Scheme, Span, Type, TypeDecl};
+use crate::ast::{Exposed, Exposing, ImportExposing, Module, Scheme, Span, Type, TypeDecl};
+use crate::infer::TyEnv;
 
 /// Identifies one lexical scope in `scope_table`. Every `let`/lambda/`case`-arm
 /// body opens one, carrying the names visible inside it.
@@ -122,6 +123,85 @@ pub fn local_type_definitions(module: &Module) -> HashMap<String, TypeDefinition
             )
         })
         .collect()
+}
+
+/// Give every name in an `exposing` list the facts a use site already has, keyed
+/// by the name's own span in the header: its type in `types` and its definition
+/// in `defs`. The module's own list resolves against its declarations, so the
+/// definition stays same-file; an import's list resolves against the exporter,
+/// through the very `TyEnv` and `DefSite` map inference was handed, so the
+/// origin module and doc comment come out identical to a call site's.
+///
+/// A type name contributes a definition only. Leaving it out of `types` is what
+/// keeps hover on the type-declaration path, where `type_definitions` renders
+/// the declaration instead of a value's type.
+pub fn record_exposing_sites(
+    index: &mut QueryIndex,
+    module: &Module,
+    source: &str,
+    imported_env: &TyEnv,
+    imported_defs: &HashMap<String, DefSite>,
+) {
+    let mut types: Vec<(Span, Type)> = Vec::new();
+    let mut defs: Vec<(Span, DefSite)> = Vec::new();
+
+    if let Exposing::Explicit(items) = &module.exposing {
+        for item in items {
+            match item {
+                Exposed::Value { name, span } => {
+                    let Some(declaration) = module.decls.iter().find(|decl| &decl.name == name)
+                    else {
+                        continue;
+                    };
+                    if let Some(ty) = index.type_at(declaration.span.start) {
+                        types.push((span.clone(), ty.clone()));
+                    }
+                    defs.push((
+                        span.clone(),
+                        DefSite {
+                            span: declaration.span.start
+                                ..declaration.span.start + declaration.name.len(),
+                            module: None,
+                        },
+                    ));
+                }
+                Exposed::Type { name, span, .. } => {
+                    let Some(declaration) =
+                        module.type_decls.iter().find(|decl| &decl.name == name)
+                    else {
+                        continue;
+                    };
+                    defs.push((
+                        span.clone(),
+                        DefSite {
+                            span: name_span_within(source, &declaration.span, &declaration.name),
+                            module: None,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    for import in &module.imports {
+        let ImportExposing::Explicit(items) = &import.exposing else {
+            continue;
+        };
+        for item in items {
+            let Some(site) = imported_defs.get(item.name()) else {
+                continue;
+            };
+            defs.push((item.span().clone(), site.clone()));
+            if let Exposed::Value { name, span } = item {
+                if let Some(scheme) = imported_env.scheme(name) {
+                    types.push((span.clone(), scheme.ty));
+                }
+            }
+        }
+    }
+
+    index.types.extend(types);
+    index.defs.extend(defs);
 }
 
 /// A `type` declaration as source-shaped text for hover. `with_constructors` is

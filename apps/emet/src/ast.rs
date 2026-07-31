@@ -374,8 +374,29 @@ pub enum Exposing {
 
 #[derive(Debug, Clone)]
 pub enum Exposed {
-    Value(String),
-    Type { name: String, open: bool },
+    Value {
+        name: String,
+        span: Span,
+    },
+    Type {
+        name: String,
+        open: bool,
+        span: Span,
+    },
+}
+
+impl Exposed {
+    pub fn name(&self) -> &str {
+        match self {
+            Exposed::Value { name, .. } | Exposed::Type { name, .. } => name,
+        }
+    }
+
+    pub fn span(&self) -> &Span {
+        match self {
+            Exposed::Value { span, .. } | Exposed::Type { span, .. } => span,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

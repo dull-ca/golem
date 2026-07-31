@@ -145,10 +145,17 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
             base_ty.clone(),
             &imported_types,
             &imported_ctors,
-            imported_defs,
+            imported_defs.clone(),
             0..loaded_mod.source.len(),
         );
         index.type_definitions = type_definitions(&loaded_mod.module, &loaded, &interfaces);
+        crate::query::record_exposing_sites(
+            &mut index,
+            &loaded_mod.module,
+            &loaded_mod.source,
+            &base_ty,
+            &imported_defs,
+        );
         if let Some(e) = error {
             diagnostics.push(type_error(loaded_mod, e));
         }
@@ -427,7 +434,7 @@ fn bind_import_exposing_ty(
     if let ImportExposing::Explicit(items) = &import.exposing {
         for item in items {
             match item {
-                Exposed::Value(name) => {
+                Exposed::Value { name, .. } => {
                     if !iface.exposed_values.contains(name) {
                         return Err(not_exposed(site, import, name));
                     }
@@ -470,7 +477,7 @@ fn type_definitions(
             continue;
         };
         for item in items {
-            let Exposed::Type { name, open } = item else {
+            let Exposed::Type { name, open, .. } = item else {
                 continue;
             };
             if !iface.exposed_type_arities.contains_key(name) {
@@ -601,13 +608,10 @@ fn import_def_sites(
         }
         if let ImportExposing::Explicit(items) = &import.exposing {
             for item in items {
-                let name = match item {
-                    Exposed::Value(name) => name,
-                    Exposed::Type { name, .. } => name,
-                };
+                let name = item.name();
                 if let Some(span) = iface.exposed_def_spans.get(name) {
                     defs.insert(
-                        name.clone(),
+                        name.to_string(),
                         crate::query::DefSite {
                             span: span.clone(),
                             module: Some(owner.clone()),
@@ -642,7 +646,7 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
         }
         if let ImportExposing::Explicit(items) = &import.exposing {
             for item in items {
-                if let Exposed::Value(name) = item {
+                if let Exposed::Value { name, .. } = item {
                     if let Some(v) = iface.value_env.lookup(name) {
                         env = env.insert(name.clone(), v);
                     }
@@ -717,10 +721,10 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         Exposing::Explicit(items) => {
             for item in items {
                 match item {
-                    Exposed::Value(name) => {
+                    Exposed::Value { name, .. } => {
                         exposed_values.insert(name.clone());
                     }
-                    Exposed::Type { name, open } => {
+                    Exposed::Type { name, open, .. } => {
                         if let Some(arity) = type_arities.get(name) {
                             exposed_type_arities.insert(name.clone(), *arity);
                         }

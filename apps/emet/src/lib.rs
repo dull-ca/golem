@@ -209,6 +209,13 @@ pub fn analyze_source(src: &str) -> Analysis {
         0..src.len(),
     );
     index.type_definitions = query::local_type_definitions(&module);
+    query::record_exposing_sites(
+        &mut index,
+        &module,
+        src,
+        &infer::TyEnv::default(),
+        &std::collections::HashMap::new(),
+    );
     let diagnostics = error
         .map(|e| {
             vec![Error {
