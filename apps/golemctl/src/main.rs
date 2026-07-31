@@ -27,6 +27,18 @@ enum Cmd {
         #[arg(long)]
         reattach: bool,
     },
+    /// Ask golemd what an apply of this manifest would do, changing nothing.
+    /// See [`golemctl::plan`] for the rendering and the color policy.
+    Plan {
+        source: PathBuf,
+        addr: String,
+        /// Emit golemd's plan response verbatim instead of the collapsed view.
+        #[arg(long)]
+        json: bool,
+        /// Expand every group to one glyph per line, with content ids.
+        #[arg(long)]
+        detail: bool,
+    },
     State {
         addr: String,
     },
@@ -56,6 +68,15 @@ async fn main() -> Result<()> {
                 manifest_bytes(&source).await?
             };
             golemctl::apply::run(bytes, &addr, json, reattach).await
+        }
+        Cmd::Plan {
+            source,
+            addr,
+            json,
+            detail,
+        } => {
+            let bytes = manifest_bytes(&source).await?;
+            golemctl::plan::run(bytes, &addr, json, detail).await
         }
         Cmd::State { addr } => fetch_and_print(&addr, "state").await,
         Cmd::History { addr } => fetch_and_print(&addr, "revisions").await,
