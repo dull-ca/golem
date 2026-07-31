@@ -190,14 +190,23 @@ mod tests {
     }
 
     #[test]
-    fn a_predicted_reload_serializes_its_kind_snake_case() {
-        let reload = PredictedReload {
+    fn a_predicted_reload_serializes_its_kind_kebab_case() {
+        let restart = PredictedReload {
             unit: "nginx.service".into(),
             kind: ReloadKind::Restart,
             triggered_by: vec!["file:/etc/systemd/system/nginx.service".into()],
         };
-        let json = serde_json::to_value(&reload).unwrap();
+        let json = serde_json::to_value(&restart).unwrap();
         assert_eq!(json["kind"], "restart");
         assert_eq!(json["unit"], "nginx.service");
+
+        let reload = PredictedReload {
+            kind: ReloadKind::ReloadOrRestart,
+            ..restart
+        };
+        assert_eq!(
+            serde_json::to_value(&reload).unwrap()["kind"],
+            "reload-or-restart"
+        );
     }
 }

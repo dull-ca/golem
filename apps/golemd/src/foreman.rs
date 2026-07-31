@@ -306,15 +306,13 @@ impl Foreman {
             })?;
         let prior = applied_outcomes(&steps);
         let units = desired.scroll.leaf_units();
-        let mut ops: Vec<GlyphOp> = Vec::new();
-        let mut planned: Vec<PlannedOp> = Vec::new();
+        let mut placed: Vec<(Vec<String>, GlyphOp)> = Vec::new();
         for unit in &units {
             for op in plan(&prior, &leaf_as_scroll(unit))
                 .into_iter()
                 .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
             {
-                planned.push(PlannedOp::of(&unit.path, &op));
-                ops.push(op);
+                placed.push((unit.path.clone(), op));
             }
         }
         for group in self
@@ -322,10 +320,13 @@ impl Foreman {
             .map_err(ForemanError::Internal)?
         {
             for op in group.ops {
-                planned.push(PlannedOp::of(&group.unit_path, &op));
-                ops.push(op);
+                placed.push((group.unit_path.clone(), op));
             }
         }
+        let planned: Vec<PlannedOp> = placed
+            .iter()
+            .map(|(unit_path, op)| PlannedOp::of(unit_path, op))
+            .collect();
         let against_revision =
             self.planroom
                 .latest_revision_id()
@@ -338,7 +339,7 @@ impl Foreman {
             against_revision,
             summary: PlanSummary::over(&planned),
             ops: planned,
-            reloads: predicted_restarts(&ops),
+            reloads: predicted_reloads(&desired.scroll, &placed),
         })
     }
 
@@ -2279,33 +2280,22 @@ fn merge_reloads(
     merged
 }
 
-fn predicted_restarts(ops: &[GlyphOp]) -> Vec<PredictedReload> {
-    let mut reloads: Vec<PredictedReload> = Vec::new();
-    for op in ops {
+fn predicted_reloads(desired: &Scroll, placed: &[(Vec<String>, GlyphOp)]) -> Vec<PredictedReload> {
+    let notifies_by_path = desired.notifies_by_path();
+    let mut structural: Vec<(String, String)> = Vec::new();
+    let mut notified: Vec<(String, String)> = Vec::new();
+    for (unit_path, op) in placed {
         if matches!(op, GlyphOp::Noop { .. }) {
             continue;
         }
-        let Some(path) = changed_file_path(op) else {
-            continue;
-        };
-        let Some(unit) = unit_for_config_file(&path) else {
-            continue;
-        };
-        let key = op.key();
-        match reloads.iter_mut().find(|r| r.unit == unit) {
-            Some(reload) => {
-                if !reload.triggered_by.contains(&key) {
-                    reload.triggered_by.push(key);
-                }
-            }
-            None => reloads.push(PredictedReload {
-                unit,
-                kind: ReloadKind::Restart,
-                triggered_by: vec![key],
-            }),
+        if let Some(unit) = changed_file_path(op).and_then(|path| unit_for_config_file(&path)) {
+            structural.push((unit, op.key()));
+        }
+        for unit in notified_units(&notifies_by_path, unit_path) {
+            notified.push((unit, op.key()));
         }
     }
-    reloads
+    merge_reloads(structural, notified)
 }
 
 #[cfg(test)]
@@ -5244,7 +5234,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_predicts_a_restart_for_every_changed_unit_file_and_none_for_a_noop() {
+    fn a_plan_predicts_a_restart_for_every_changed_unit_file_in_unit_name_order() {
         let foreman = foreman_with(ScriptedReconciler::new().ok_default());
         foreman
             .foreman
@@ -5276,16 +5266,78 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (
-                    "loud.service".to_string(),
-                    ReloadKind::Restart,
-                    vec!["file:/etc/systemd/system/loud.service".to_string()]
-                ),
-                (
                     "fresh.service".to_string(),
                     ReloadKind::Restart,
                     vec!["file:/etc/systemd/system/fresh.service".to_string()]
                 ),
-            ]
+                (
+                    "loud.service".to_string(),
+                    ReloadKind::Restart,
+                    vec!["file:/etc/systemd/system/loud.service".to_string()]
+                ),
+            ],
+            "the unchanged unit file predicts nothing, and the rest are ordered by unit name exactly as enactment orders them"
+        );
+    }
+
+    #[test]
+    fn a_plan_predicts_a_reload_or_restart_for_every_notified_unit() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![notifying(
+                leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+                &["nginx.service"],
+            )],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert_eq!(
+            report
+                .reloads
+                .iter()
+                .map(|r| (r.unit.clone(), r.kind, r.triggered_by.clone()))
+                .collect::<Vec<_>>(),
+            vec![(
+                "nginx.service".to_string(),
+                ReloadKind::ReloadOrRestart,
+                vec!["file:/etc/nginx/nginx.conf".to_string()]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_plan_predicts_a_restart_where_a_notify_and_the_heuristic_name_one_unit() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![notifying(
+                leaf_scroll(
+                    "api",
+                    vec![unit_file("/etc/systemd/system/api.service", "v1")],
+                ),
+                &["api.service"],
+            )],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert_eq!(report.reloads.len(), 1);
+        assert_eq!(report.reloads[0].kind, ReloadKind::Restart);
+    }
+
+    #[test]
+    fn a_no_change_plan_predicts_no_reloads() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![notifying(
+                leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+                &["nginx.service"],
+            )],
+        )]);
+        foreman.foreman.apply_manifest(&bytes).unwrap();
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert!(
+            report.reloads.is_empty(),
+            "every op is a Noop, so nothing would change and nothing would be notified"
         );
     }
 

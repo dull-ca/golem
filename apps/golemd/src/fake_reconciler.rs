@@ -53,4 +53,14 @@ impl Reconciler for FakeReconciler {
         self.present.lock().unwrap().remove(&key);
         Ok(())
     }
+
+    fn restart_unit(&self, unit: &str) -> EnactResult<()> {
+        info!(unit = %unit, "try-restart unit");
+        Ok(())
+    }
+
+    fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+        info!(unit = %unit, "try-reload-or-restart unit");
+        Ok(())
+    }
 }

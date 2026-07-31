@@ -192,14 +192,20 @@ fn step_lines(steps: &[Step], options: &RenderOptions) -> Vec<String> {
         .map(|s| s.kind.chars().count())
         .max()
         .unwrap_or(0);
-    let member_column = MARGIN + 2 + VERB_WIDTH + 1 + count_width + 1 + kind_width + KIND_GAP;
+    let verb_width = steps
+        .iter()
+        .map(|s| s.verb.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(VERB_WIDTH);
+    let member_column = MARGIN + 2 + verb_width + 1 + count_width + 1 + kind_width + KIND_GAP;
     let mut lines = Vec::new();
     for step in steps {
         let head = format!(
             "{}{} {} {:>count$} {}{}",
             " ".repeat(MARGIN),
             paint(step.mark, step.accent, options.color),
-            paint(&pad(step.verb, VERB_WIDTH), step.accent, options.color),
+            paint(&pad(step.verb, verb_width), step.accent, options.color),
             step.count,
             paint(&step.kind, BOLD, options.color),
             " ".repeat(kind_width - step.kind.chars().count() + KIND_GAP),
@@ -324,19 +330,15 @@ fn steps_of(plan: &PlanResponse) -> Vec<Step> {
             dim: true,
         });
     }
-    if let Some(reloads) = reload_step(&plan.reloads) {
-        steps.push(reloads);
-    }
+    steps.extend(reload_steps(&plan.reloads));
     steps
 }
 
-fn reload_step(reloads: &[PredictedReload]) -> Option<Step> {
-    if reloads.is_empty() {
-        return None;
-    }
-    let members = reloads
-        .iter()
-        .map(|reload| Element {
+fn reload_steps(reloads: &[PredictedReload]) -> Vec<Step> {
+    let mut steps: Vec<Step> = Vec::new();
+    for reload in reloads {
+        let verb = reload_verb(&reload.kind);
+        let member = Element {
             text: format!(
                 "{} ← {}",
                 reload.unit,
@@ -348,18 +350,35 @@ fn reload_step(reloads: &[PredictedReload]) -> Option<Step> {
                     .join(", ")
             ),
             dim: false,
-        })
-        .collect();
-    Some(Step {
-        mark: "↻",
-        verb: "reload",
-        accent: CYAN,
-        count: reloads.len(),
-        kind: pluralize("unit", reloads.len()),
-        members,
-        one_member_per_line: true,
-        details: Vec::new(),
-    })
+        };
+        match steps.iter_mut().find(|step| step.verb == verb) {
+            Some(step) => {
+                step.count += 1;
+                step.members.push(member);
+            }
+            None => steps.push(Step {
+                mark: "↻",
+                verb,
+                accent: CYAN,
+                count: 1,
+                kind: "unit".to_string(),
+                members: vec![member],
+                one_member_per_line: true,
+                details: Vec::new(),
+            }),
+        }
+    }
+    for step in steps.iter_mut() {
+        step.kind = pluralize("unit", step.count);
+    }
+    steps
+}
+
+fn reload_verb(kind: &str) -> &'static str {
+    match kind {
+        "restart" => "restart",
+        _ => "reload-or-restart",
+    }
 }
 
 fn cap_members(members: &mut Vec<Element>) {
@@ -562,7 +581,48 @@ mod tests {
                 "  + install 1 systemd unit  nginx.service (web/nginx)",
                 "  ~ replace 2 files         /etc/systemd/system/nginx.service /etc/motd (web/nginx, web/base)",
                 "  - remove  1 line-in-file  /etc/hosts: \"10.0.0.3 oldhost\" (web/<removes>)",
-                "  ↻ reload  1 unit          nginx.service ← /etc/systemd/system/nginx.service",
+                "  ↻ restart 1 unit          nginx.service ← /etc/systemd/system/nginx.service",
+                "",
+                "  7 changes · 4 install, 2 replace, 1 remove · 42 unchanged",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn the_two_reload_kinds_render_as_their_own_verbs_and_keep_the_columns_aligned() {
+        let mut plan = mixed_plan();
+        plan.reloads = vec![
+            PredictedReload {
+                unit: "api.service".into(),
+                kind: "restart".into(),
+                triggered_by: vec!["file:/etc/systemd/system/api.service".into()],
+            },
+            PredictedReload {
+                unit: "nginx.service".into(),
+                kind: "reload-or-restart".into(),
+                triggered_by: vec!["file:/etc/nginx/nginx.conf".into()],
+            },
+            PredictedReload {
+                unit: "telegraf.service".into(),
+                kind: "reload-or-restart".into(),
+                triggered_by: vec!["file:/etc/telegraf/telegraf.conf".into()],
+            },
+        ];
+        let rendered = render(&plan, &RenderOptions::default());
+        assert_eq!(
+            rendered,
+            [
+                "Plan for web-01 · against revision 12 · manifest 3f9c1a…",
+                "",
+                "  + install           3 apt packages  nginx curl jq (web/base, web/extra)",
+                "  + install           1 systemd unit  nginx.service (web/nginx)",
+                "  ~ replace           2 files         /etc/systemd/system/nginx.service /etc/motd",
+                "                                      (web/nginx, web/base)",
+                "  - remove            1 line-in-file  /etc/hosts: \"10.0.0.3 oldhost\" (web/<removes>)",
+                "  ↻ restart           1 unit          api.service ← /etc/systemd/system/api.service",
+                "  ↻ reload-or-restart 2 units         nginx.service ← /etc/nginx/nginx.conf",
+                "                                      telegraf.service ← /etc/telegraf/telegraf.conf",
                 "",
                 "  7 changes · 4 install, 2 replace, 1 remove · 42 unchanged",
             ]
@@ -650,7 +710,7 @@ mod tests {
         );
         assert!(
             rendered.contains(
-                "↻ reload  1 unit          nginx.service ← /etc/systemd/system/nginx.service"
+                "↻ restart 1 unit          nginx.service ← /etc/systemd/system/nginx.service"
             ),
             "the reload step has no per-glyph expansion, so it keeps its inline members"
         );
