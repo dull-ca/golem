@@ -175,7 +175,7 @@ fn hover_text(uri: &Uri, source: &str, line_needle: &str, word: &str) -> String 
         .lines()
         .nth(line as usize)
         .unwrap()
-        .find(word)
+        .rfind(word)
         .unwrap() as u32;
     let hover = hover_at(uri, source, Position::new(line, column)).expect("a hover");
     match hover.contents {
@@ -224,4 +224,28 @@ fn document_symbols_list_the_entry_files_top_level_definitions() {
             .position(|l| l.starts_with("unitShape ="))
             .unwrap() as u32
     );
+}
+
+const DOCUMENTED_TYPE_LIBRARY: &str = "module Shapes exposing (Shape(..), describe)\n\n-- A shape, round or square.\ntype Shape = Circle Int | Square Int\n\ndescribe : Shape -> String\ndescribe shape =\n  case shape of\n    Circle _ ->\n      \"round\"\n    Square _ ->\n      \"boxy\"\n";
+
+#[test]
+fn hover_on_an_imported_type_name_carries_its_declaration_doc_and_origin() {
+    let project = project("imported_type_hover", DOCUMENTED_TYPE_LIBRARY, ENTRY);
+    let text = hover_text(&project.uri(), ENTRY, "unitShape : Shape", "Shape");
+    assert!(
+        text.contains("type Shape\n    = Circle Int\n    | Square Int"),
+        "hover text: {text}"
+    );
+    assert!(
+        text.contains("A shape, round or square."),
+        "hover text: {text}"
+    );
+    assert!(text.contains("from Shapes"), "hover text: {text}");
+}
+
+#[test]
+fn hover_on_a_builtin_type_name_in_an_annotation_names_the_type() {
+    let project = project("builtin_type_hover", DOCUMENTED_TYPE_LIBRARY, ENTRY);
+    let text = hover_text(&project.uri(), ENTRY, "main : List Scroll", "Scroll");
+    assert_eq!(text, "```emet\ntype Scroll\n```");
 }

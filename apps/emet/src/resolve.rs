@@ -133,7 +133,7 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
         let imported_ctors = import_constructors(&loaded_mod.module, &interfaces);
         let imported_defs = import_def_sites(&loaded_mod.module, &interfaces);
 
-        let (error, index) = infer::analyze_module(
+        let (error, mut index) = infer::analyze_module(
             &loaded_mod.module,
             base_ty.clone(),
             &imported_types,
@@ -141,6 +141,7 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
             imported_defs,
             0..loaded_mod.source.len(),
         );
+        index.type_definitions = type_definitions(&loaded_mod.module, &loaded, &interfaces);
         if let Some(e) = error {
             diagnostics.push(type_error(loaded_mod, e));
         }
@@ -433,6 +434,56 @@ fn bind_import_exposing_ty(
 /// inference can validate signatures that mention an imported type name (fed to
 /// `check_entry`/`check_library` as `imported_types`). A type is importable only
 /// if the exporting module exposed it.
+fn type_definitions(
+    module: &Module,
+    loaded: &HashMap<String, Loaded>,
+    interfaces: &HashMap<String, Interface>,
+) -> HashMap<String, crate::query::TypeDefinition> {
+    let mut definitions = crate::query::local_type_definitions(module);
+    for import in &module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        let Some(exporter) = loaded.get(&import.module) else {
+            continue;
+        };
+        let ImportExposing::Explicit(items) = &import.exposing else {
+            continue;
+        };
+        for item in items {
+            let Exposed::Type { name, open } = item else {
+                continue;
+            };
+            if !iface.exposed_type_arities.contains_key(name) {
+                continue;
+            }
+            let Some(declaration) = exporter
+                .module
+                .type_decls
+                .iter()
+                .find(|decl| &decl.name == name)
+            else {
+                continue;
+            };
+            let constructors_visible = *open && iface.exposed_sum_ctors.contains_key(name);
+            definitions.insert(
+                name.clone(),
+                crate::query::TypeDefinition {
+                    declaration: crate::query::render_type_declaration(
+                        declaration,
+                        constructors_visible,
+                    ),
+                    site: crate::query::DefSite {
+                        span: declaration.span.clone(),
+                        module: Some(import.module.clone()),
+                    },
+                },
+            );
+        }
+    }
+    definitions
+}
+
 fn import_type_arities(
     module: &Module,
     interfaces: &HashMap<String, Interface>,

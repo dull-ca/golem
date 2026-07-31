@@ -28,19 +28,46 @@ fn document_path(uri: &Uri) -> Option<PathBuf> {
 pub fn hover_at(uri: &Uri, source: &str, position: Position) -> Option<Hover> {
     let analysis = analysis_of(uri, source);
     let offset = offset_at(source, position);
-    let ty = analysis.index.type_at(offset)?;
-    let described = analysis
-        .index
-        .definition_at(offset)
-        .map(|site| describe_definition(uri, source, site))
-        .unwrap_or_default();
-    Some(Hover {
+    match analysis.index.type_at(offset) {
+        Some(ty) => {
+            let described = analysis
+                .index
+                .definition_at(offset)
+                .map(|site| describe_definition(uri, source, site))
+                .unwrap_or_default();
+            Some(markdown_hover(hover_markdown(&ty.to_string(), described)))
+        }
+        None => type_name_hover(uri, source, &analysis, offset),
+    }
+}
+
+fn type_name_hover(
+    uri: &Uri,
+    source: &str,
+    analysis: &emet::Analysis,
+    offset: usize,
+) -> Option<Hover> {
+    let name = emet::query::type_name_at(source, offset)?;
+    match analysis.index.type_definitions.get(&name) {
+        Some(definition) => Some(markdown_hover(hover_markdown(
+            &definition.declaration,
+            describe_definition(uri, source, &definition.site),
+        ))),
+        None => Some(markdown_hover(hover_markdown(
+            &emet::query::builtin_type_declaration(&name)?,
+            Described::default(),
+        ))),
+    }
+}
+
+fn markdown_hover(value: String) -> Hover {
+    Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: hover_markdown(&ty.to_string(), described),
+            value,
         }),
         range: None,
-    })
+    }
 }
 
 #[derive(Default)]

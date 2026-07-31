@@ -200,7 +200,7 @@ pub fn analyze_source(src: &str) -> Analysis {
     };
     let no_imports = std::collections::HashMap::new();
     let no_ctors = infer::ImportedConstructors::default();
-    let (error, index) = infer::analyze_module(
+    let (error, mut index) = infer::analyze_module(
         &module,
         prelude::ty_env(),
         &no_imports,
@@ -208,6 +208,7 @@ pub fn analyze_source(src: &str) -> Analysis {
         std::collections::HashMap::new(),
         0..src.len(),
     );
+    index.type_definitions = query::local_type_definitions(&module);
     let diagnostics = error
         .map(|e| {
             vec![Error {

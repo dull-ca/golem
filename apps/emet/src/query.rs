@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{Module, Scheme, Span, Type};
+use crate::ast::{Module, Scheme, Span, Type, TypeDecl};
 
 /// Identifies one lexical scope in `scope_table`. Every `let`/lambda/`case`-arm
 /// body opens one, carrying the names visible inside it.
@@ -33,6 +33,13 @@ pub struct QueryIndex {
     pub scopes: Vec<(Span, ScopeId)>,
     pub scope_table: HashMap<ScopeId, Vec<(String, Scheme)>>,
     pub defs: Vec<(Span, DefSite)>,
+    pub type_definitions: HashMap<String, TypeDefinition>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeDefinition {
+    pub declaration: String,
+    pub site: DefSite,
 }
 
 impl QueryIndex {
@@ -78,6 +85,99 @@ impl QueryIndex {
 
 pub fn display_scheme(scheme: &Scheme) -> String {
     scheme.ty.to_string()
+}
+
+pub fn type_name_at(source: &str, offset: usize) -> Option<String> {
+    let tokens = crate::lexer::lex(source).ok()?;
+    tokens
+        .iter()
+        .find(|token| token.span.contains(&offset) || token.span.start == offset)
+        .and_then(|token| match &token.tok {
+            crate::lexer::Tok::Upper(name) => Some(name.clone()),
+            _ => None,
+        })
+}
+
+pub fn local_type_definitions(module: &Module) -> HashMap<String, TypeDefinition> {
+    module
+        .type_decls
+        .iter()
+        .map(|declaration| {
+            (
+                declaration.name.clone(),
+                TypeDefinition {
+                    declaration: render_type_declaration(declaration, true),
+                    site: DefSite {
+                        span: declaration.span.clone(),
+                        module: None,
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
+pub fn render_type_declaration(declaration: &TypeDecl, with_constructors: bool) -> String {
+    let mut rendered = format!("type {}", declaration.name);
+    for param in &declaration.params {
+        rendered.push_str(&format!(" {param}"));
+    }
+    if !with_constructors {
+        return rendered;
+    }
+    for (position, variant) in declaration.variants.iter().enumerate() {
+        let bullet = if position == 0 { '=' } else { '|' };
+        let fields: Vec<String> = variant.fields.iter().map(|f| render_field(&f.0)).collect();
+        rendered.push_str(&format!("\n    {bullet} {}", variant.name));
+        for field in fields {
+            rendered.push_str(&format!(" {field}"));
+        }
+    }
+    rendered
+}
+
+pub fn builtin_type_declaration(name: &str) -> Option<String> {
+    let arity = crate::infer::builtin_type_arity(name)?;
+    let mut rendered = format!("type {name}");
+    for param in TYPE_PARAMETER_NAMES.iter().take(arity) {
+        rendered.push_str(&format!(" {param}"));
+    }
+    let members = match crate::prelude::sum_type_constructors(name) {
+        Some(members) if name != "List" => members,
+        _ => return Some(rendered),
+    };
+    for (position, (constructor, _)) in members.iter().enumerate() {
+        let bullet = if position == 0 { '=' } else { '|' };
+        rendered.push_str(&format!("\n    {bullet} {constructor}"));
+        let Some(scheme) = crate::prelude::constructor_scheme(constructor) else {
+            continue;
+        };
+        for argument in constructor_arguments(&scheme.ty) {
+            rendered.push_str(&format!(" {}", render_field(argument)));
+        }
+    }
+    Some(rendered)
+}
+
+const TYPE_PARAMETER_NAMES: [&str; 2] = ["a", "b"];
+
+fn constructor_arguments(ty: &Type) -> Vec<&Type> {
+    let mut arguments = Vec::new();
+    let mut remaining = ty;
+    while let Type::Fun(argument, result) = remaining {
+        arguments.push(argument.as_ref());
+        remaining = result.as_ref();
+    }
+    arguments
+}
+
+fn render_field(ty: &Type) -> String {
+    let rendered = crate::infer::render_type(ty);
+    match ty {
+        Type::Con(_, arguments) if !arguments.is_empty() => format!("({rendered})"),
+        Type::Fun(_, _) => format!("({rendered})"),
+        _ => rendered,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2160,7 +2160,7 @@ fn infer_group(
 /// signature or pattern may name it. `Policy`, `OnExhaust`, and `Contents` are
 /// first-class for the same reason (ADR 0031 §7): a library can compute a policy
 /// or a group tree behind a signature and hand it to `scroll`.
-fn builtin_type_arity(name: &str) -> Option<usize> {
+pub(crate) fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "String" | "Char" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
         | "Glyph" | "Entry" | "Scroll" | "Policy" | "OnExhaust" | "Contents" | "Bool" | "Int"
