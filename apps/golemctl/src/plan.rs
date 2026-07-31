@@ -10,6 +10,7 @@
 //! plan is static and must be byte-stable for snapshots and pipes, and the canvas
 //! pads every row to its width.
 
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 
 use anyhow::{bail, Context, Result};
@@ -38,7 +39,7 @@ pub struct PlannedOp {
     pub describe: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Install,
@@ -107,9 +108,74 @@ enum GlyphKind {
 }
 
 #[derive(Debug, Clone)]
-struct Element {
+struct Span {
     text: String,
     dim: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Element {
+    spans: Vec<Span>,
+}
+
+impl Element {
+    fn bright(text: impl Into<String>) -> Self {
+        Element {
+            spans: vec![Span {
+                text: text.into(),
+                dim: false,
+            }],
+        }
+    }
+
+    fn dim(text: impl Into<String>) -> Self {
+        Element {
+            spans: vec![Span {
+                text: text.into(),
+                dim: true,
+            }],
+        }
+    }
+
+    fn text(&self) -> String {
+        self.spans.iter().map(|span| span.text.as_str()).collect()
+    }
+
+    fn width(&self) -> usize {
+        self.spans
+            .iter()
+            .map(|span| span.text.chars().count())
+            .sum()
+    }
+
+    fn painted(&self, color: bool) -> String {
+        self.spans
+            .iter()
+            .map(|span| paint(&span.text, if span.dim { DIM } else { "" }, color))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Member {
+    element: Element,
+    occurrences: usize,
+}
+
+impl Member {
+    fn marked(self) -> Element {
+        let Member {
+            mut element,
+            occurrences,
+        } = self;
+        if occurrences > 1 {
+            element.spans.push(Span {
+                text: format!(" ×{occurrences}"),
+                dim: true,
+            });
+        }
+        element
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +246,7 @@ pub fn render(plan: &PlanResponse, options: &RenderOptions) -> String {
     if !steps.is_empty() {
         lines.push(String::new());
     }
-    lines.push(footer(&plan.summary, options));
+    lines.push(footer(&distinct_summary(&plan.ops), options));
     lines.join("\n")
 }
 
@@ -199,10 +265,10 @@ fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
     )
 }
 
-/// Lay the steps out into aligned columns. Every width is measured on *unstyled*
-/// text and the accents painted afterwards, because `{:<width}` over an
-/// ANSI-wrapped string counts the escape bytes and silently breaks the alignment
-/// that continuation lines depend on.
+/// Lay the steps out into aligned columns. Every width is measured on the
+/// *unstyled* text of an element's spans and the accents painted afterwards,
+/// because `{:<width}` over an ANSI-wrapped string counts the escape bytes and
+/// silently breaks the alignment that continuation lines depend on.
 ///
 /// The verb column is computed rather than fixed, floored at [`VERB_WIDTH`], so
 /// `reload-or-restart` widens it without disturbing the member column — and a
@@ -265,6 +331,29 @@ fn step_lines(steps: &[Step], options: &RenderOptions) -> Vec<String> {
     lines
 }
 
+/// Distinct (action, glyph key) pairs — what execution dedups (ADR 0034), not ops.
+fn distinct_summary(ops: &[PlannedOp]) -> PlanSummary {
+    let mut summary = PlanSummary {
+        install: 0,
+        replace: 0,
+        remove: 0,
+        noop: 0,
+    };
+    let mut seen: HashSet<(Action, &str)> = HashSet::new();
+    for op in ops {
+        if !seen.insert((op.action, op.glyph_key.as_str())) {
+            continue;
+        }
+        match op.action {
+            Action::Install => summary.install += 1,
+            Action::Replace => summary.replace += 1,
+            Action::Remove => summary.remove += 1,
+            Action::Noop => summary.noop += 1,
+        }
+    }
+    summary
+}
+
 fn footer(summary: &PlanSummary, options: &RenderOptions) -> String {
     let changes = summary.install + summary.replace + summary.remove;
     let mut segments = Vec::new();
@@ -293,71 +382,209 @@ fn footer(summary: &PlanSummary, options: &RenderOptions) -> String {
     paint(&text, DIM, options.color)
 }
 
+#[derive(Debug, Clone)]
+struct GlyphDraft {
+    key: String,
+    element: Element,
+    cids: String,
+    units: Vec<String>,
+    occurrences: usize,
+}
+
+#[derive(Debug, Clone)]
+struct StepDraft {
+    mark: &'static str,
+    verb: &'static str,
+    accent: &'static str,
+    stem: &'static str,
+    glyphs: Vec<GlyphDraft>,
+    units: Vec<String>,
+}
+
+impl StepDraft {
+    fn absorb(&mut self, op: &PlannedOp, unit: String) {
+        match self.glyphs.iter_mut().find(|g| g.key == op.glyph_key) {
+            Some(glyph) => {
+                glyph.occurrences += 1;
+                if !glyph.units.contains(&unit) {
+                    glyph.units.push(unit.clone());
+                }
+            }
+            None => self.glyphs.push(GlyphDraft {
+                key: op.glyph_key.clone(),
+                element: member_element(&op.glyph_key),
+                cids: cid_transition(op),
+                units: vec![unit.clone()],
+                occurrences: 1,
+            }),
+        }
+        if !self.units.contains(&unit) {
+            self.units.push(unit);
+        }
+    }
+
+    fn into_step(self) -> Step {
+        let details = self
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                vec![
+                    glyph.element.clone(),
+                    Element::dim(glyph.cids.clone()),
+                    Element::dim(format!("({})", glyph.units.join(", "))),
+                ]
+            })
+            .collect();
+        let count = self.glyphs.len();
+        let mut distinct: Vec<Member> = self
+            .glyphs
+            .into_iter()
+            .map(|glyph| Member {
+                element: glyph.element,
+                occurrences: glyph.occurrences,
+            })
+            .collect();
+        collapse_numeric_siblings(&mut distinct);
+        let mut members: Vec<Element> = distinct.into_iter().map(Member::marked).collect();
+        cap_members(&mut members);
+        members.push(provenance_element(&self.units));
+        Step {
+            mark: self.mark,
+            verb: self.verb,
+            accent: self.accent,
+            count,
+            kind: pluralize(self.stem, count),
+            members,
+            one_member_per_line: false,
+            details,
+        }
+    }
+}
+
 fn steps_of(plan: &PlanResponse) -> Vec<Step> {
-    let mut steps: Vec<Step> = Vec::new();
-    let mut provenance: Vec<Vec<String>> = Vec::new();
+    let mut drafts: Vec<StepDraft> = Vec::new();
     for op in &plan.ops {
         if op.action == Action::Noop {
             continue;
         }
-        let kind = kind_of(&op.glyph_key);
         let (mark, verb, accent) = action_style(op.action);
+        let stem = kind_stem(kind_of(&op.glyph_key));
         let unit = op.unit_path.join("/");
-        let position = steps
-            .iter()
-            .position(|s| s.verb == verb && s.kind == kind_stem(kind));
+        let position = drafts.iter().position(|d| d.verb == verb && d.stem == stem);
         let index = match position {
             Some(index) => index,
             None => {
-                steps.push(Step {
+                drafts.push(StepDraft {
                     mark,
                     verb,
                     accent,
-                    count: 0,
-                    kind: kind_stem(kind).to_string(),
-                    members: Vec::new(),
-                    one_member_per_line: false,
-                    details: Vec::new(),
+                    stem,
+                    glyphs: Vec::new(),
+                    units: Vec::new(),
                 });
-                provenance.push(Vec::new());
-                steps.len() - 1
+                drafts.len() - 1
             }
         };
-        let step = &mut steps[index];
-        step.count += 1;
-        step.members.push(Element {
-            text: member_of(&op.glyph_key),
-            dim: false,
-        });
-        step.details.push(vec![
-            Element {
-                text: member_of(&op.glyph_key),
-                dim: false,
-            },
-            Element {
-                text: cid_transition(op),
-                dim: true,
-            },
-            Element {
-                text: format!("({unit})"),
-                dim: true,
-            },
-        ]);
-        let units = &mut provenance[index];
-        if !units.contains(&unit) {
-            units.push(unit);
-        }
+        drafts[index].absorb(op, unit);
     }
-    for (step, units) in steps.iter_mut().zip(provenance) {
-        step.kind = pluralize(&step.kind, step.count);
-        cap_members(&mut step.members);
-        step.members.push(Element {
-            text: format!("({})", units.join(", ")),
-            dim: true,
-        });
-    }
+    let mut steps: Vec<Step> = drafts.into_iter().map(StepDraft::into_step).collect();
     steps.extend(reload_steps(&plan.reloads));
     steps
+}
+
+fn provenance_element(units: &[String]) -> Element {
+    let mut entries: Vec<Member> = units
+        .iter()
+        .map(|unit| Member {
+            element: Element::bright(unit.clone()),
+            occurrences: 1,
+        })
+        .collect();
+    collapse_numeric_siblings(&mut entries);
+    let joined = entries
+        .iter()
+        .map(|entry| entry.element.text())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Element::dim(format!("({joined})"))
+}
+
+fn collapse_numeric_siblings(members: &mut Vec<Member>) {
+    let mut group_of: HashMap<(String, String, String), usize> = HashMap::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, member) in members.iter().enumerate() {
+        if member.occurrences != 1 {
+            continue;
+        }
+        let Some(last) = member.element.spans.last() else {
+            continue;
+        };
+        let Some((prefix, _, suffix)) = split_last_digit_run(&last.text) else {
+            continue;
+        };
+        let leading: String = member.element.spans[..member.element.spans.len() - 1]
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect();
+        let key = (leading, prefix.to_string(), suffix.to_string());
+        match group_of.get(&key) {
+            Some(&group) => groups[group].push(index),
+            None => {
+                group_of.insert(key, groups.len());
+                groups.push(vec![index]);
+            }
+        }
+    }
+    let mut absorbed = vec![false; members.len()];
+    for group in groups.iter().filter(|group| group.len() >= 2) {
+        let mut numbers: Vec<String> = group
+            .iter()
+            .map(|&index| digit_run_of(&members[index]).to_string())
+            .collect();
+        numbers.sort_by(|a, b| numeric_order(a).cmp(&numeric_order(b)));
+        let head = &members[group[0]].element;
+        let last = head.spans[head.spans.len() - 1].text.clone();
+        let (prefix, _, suffix) = split_last_digit_run(&last).unwrap_or_default();
+        let collapsed = format!("{prefix}{{{}}}{suffix}", numbers.join(","));
+        let head = &mut members[group[0]].element;
+        let end = head.spans.len() - 1;
+        head.spans[end].text = collapsed;
+        for &index in &group[1..] {
+            absorbed[index] = true;
+        }
+    }
+    let mut kept = Vec::with_capacity(members.len());
+    for (index, member) in members.drain(..).enumerate() {
+        if !absorbed[index] {
+            kept.push(member);
+        }
+    }
+    *members = kept;
+}
+
+fn digit_run_of(member: &Member) -> &str {
+    member
+        .element
+        .spans
+        .last()
+        .and_then(|span| split_last_digit_run(&span.text))
+        .map(|(_, digits, _)| digits)
+        .unwrap_or_default()
+}
+
+fn split_last_digit_run(text: &str) -> Option<(&str, &str, &str)> {
+    let bytes = text.as_bytes();
+    let end = bytes.iter().rposition(u8::is_ascii_digit)? + 1;
+    let start = bytes[..end]
+        .iter()
+        .rposition(|byte| !byte.is_ascii_digit())
+        .map_or(0, |last| last + 1);
+    Some((&text[..start], &text[start..end], &text[end..]))
+}
+
+fn numeric_order(digits: &str) -> (usize, &str) {
+    let significant = digits.trim_start_matches('0');
+    (significant.len(), significant)
 }
 
 /// One step per reload *kind*, reusing the verb-×-kind grouping the ops above
@@ -367,19 +594,7 @@ fn reload_steps(reloads: &[PredictedReload]) -> Vec<Step> {
     let mut steps: Vec<Step> = Vec::new();
     for reload in reloads {
         let verb = reload_verb(&reload.kind);
-        let member = Element {
-            text: format!(
-                "{} ← {}",
-                reload.unit,
-                reload
-                    .triggered_by
-                    .iter()
-                    .map(|key| member_of(key))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            dim: false,
-        };
+        let member = reload_member(reload);
         match steps.iter_mut().find(|step| step.verb == verb) {
             Some(step) => {
                 step.count += 1;
@@ -403,6 +618,23 @@ fn reload_steps(reloads: &[PredictedReload]) -> Vec<Step> {
     steps
 }
 
+fn reload_member(reload: &PredictedReload) -> Element {
+    let mut spans = vec![Span {
+        text: format!("{} ← ", reload.unit),
+        dim: false,
+    }];
+    for (position, key) in reload.triggered_by.iter().enumerate() {
+        if position > 0 {
+            spans.push(Span {
+                text: ", ".to_string(),
+                dim: false,
+            });
+        }
+        spans.extend(member_element(key).spans);
+    }
+    Element { spans }
+}
+
 fn reload_verb(kind: &str) -> &'static str {
     match kind {
         "restart" => "restart",
@@ -416,10 +648,7 @@ fn cap_members(members: &mut Vec<Element>) {
     }
     let hidden = members.len() - VISIBLE_MEMBER_CAP;
     members.truncate(VISIBLE_MEMBER_CAP);
-    members.push(Element {
-        text: format!("… and {hidden} more"),
-        dim: true,
-    });
+    members.push(Element::dim(format!("… and {hidden} more")));
 }
 
 fn action_style(action: Action) -> (&'static str, &'static str, &'static str) {
@@ -469,6 +698,31 @@ fn pluralize(stem: &str, count: usize) -> String {
     }
 }
 
+fn member_element(glyph_key: &str) -> Element {
+    match kind_of(glyph_key) {
+        GlyphKind::File => path_element(glyph_key.trim_start_matches("file:")),
+        _ => Element::bright(member_of(glyph_key)),
+    }
+}
+
+fn path_element(path: &str) -> Element {
+    match path.rfind('/') {
+        Some(cut) if cut + 1 < path.len() => Element {
+            spans: vec![
+                Span {
+                    text: path[..=cut].to_string(),
+                    dim: true,
+                },
+                Span {
+                    text: path[cut + 1..].to_string(),
+                    dim: false,
+                },
+            ],
+        },
+        _ => Element::bright(path),
+    }
+}
+
 fn member_of(glyph_key: &str) -> String {
     match kind_of(glyph_key) {
         GlyphKind::AptPackage => glyph_key.trim_start_matches("apt:").to_string(),
@@ -513,7 +767,7 @@ fn wrap(
     let mut current = String::new();
     let mut column = indent;
     for element in elements {
-        let length = element.text.chars().count();
+        let length = element.width();
         let breaks = !current.is_empty() && (one_per_line || column + 1 + length > width);
         if breaks {
             lines.push(current);
@@ -524,11 +778,7 @@ fn wrap(
             current.push(' ');
             column += 1;
         }
-        current.push_str(&paint(
-            &element.text,
-            if element.dim { DIM } else { "" },
-            color,
-        ));
+        current.push_str(&element.painted(color));
         column += length;
     }
     if !current.is_empty() {
@@ -616,7 +866,7 @@ mod tests {
                 "  - remove  1 line-in-file  /etc/hosts: \"10.0.0.3 oldhost\" (web/<removes>)",
                 "  ↻ restart 1 unit          nginx.service ← /etc/systemd/system/nginx.service",
                 "",
-                "  7 changes · 4 install, 2 replace, 1 remove · 42 unchanged",
+                "  7 changes · 4 install, 2 replace, 1 remove · 1 unchanged",
             ]
             .join("\n")
         );
@@ -657,7 +907,7 @@ mod tests {
                 "  ↻ reload-or-restart 2 units         nginx.service ← /etc/nginx/nginx.conf",
                 "                                      telegraf.service ← /etc/telegraf/telegraf.conf",
                 "",
-                "  7 changes · 4 install, 2 replace, 1 remove · 42 unchanged",
+                "  7 changes · 4 install, 2 replace, 1 remove · 1 unchanged",
             ]
             .join("\n")
         );
@@ -771,6 +1021,261 @@ mod tests {
                 "Plan for web-01 · against no prior revision · manifest 3f9c1a…",
                 "",
                 "  no changes · 1 unchanged",
+            ]
+            .join("\n")
+        );
+    }
+
+    fn install_only(ops: Vec<PlannedOp>) -> PlanResponse {
+        PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: None,
+            ops,
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 0,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn a_glyph_shared_by_several_units_renders_once_with_a_dedup_marker() {
+        let plan = install_only(vec![
+            op(&["farm", "one"], "apt:podman", Action::Install),
+            op(&["farm", "two"], "apt:podman", Action::Install),
+            op(&["farm", "three"], "apt:podman", Action::Install),
+            op(&["farm", "base"], "apt:htop", Action::Install),
+        ]);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(
+            rendered.contains(
+                "+ install 2 apt packages  podman ×3 htop (farm/one, farm/two, farm/three, farm/base)"
+            ),
+            "{rendered}"
+        );
+        assert!(rendered.contains("  2 changes · 2 install"), "{rendered}");
+    }
+
+    #[test]
+    fn the_footer_counts_distinct_glyphs_rather_than_the_server_op_counts() {
+        let mut plan = mixed_plan();
+        plan.ops
+            .push(op(&["web", "spare"], "apt:nginx", Action::Install));
+        plan.ops
+            .push(op(&["web", "spare"], "apt:podman", Action::Noop));
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(
+            rendered.contains("  7 changes · 4 install, 2 replace, 1 remove · 1 unchanged"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn numbered_siblings_collapse_into_braces_and_keep_their_zero_padding() {
+        let plan = install_only(vec![
+            op(&["web"], "systemd:worker-010.service", Action::Install),
+            op(&["web"], "systemd:worker-002.service", Action::Install),
+            op(&["web"], "systemd:worker-001.service", Action::Install),
+            op(&["web"], "systemd:solo-7.service", Action::Install),
+            op(&["web"], "systemd:nginx.service", Action::Install),
+        ]);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(
+            rendered.contains(
+                "+ install 5 systemd units  worker-{001,002,010}.service solo-7.service nginx.service"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_deduped_member_never_collapses_into_a_brace_group() {
+        let plan = install_only(vec![
+            op(&["farm", "one"], "apt:node-1", Action::Install),
+            op(&["farm", "two"], "apt:node-1", Action::Install),
+            op(&["farm", "one"], "apt:node-2", Action::Install),
+        ]);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(
+            rendered.contains("+ install 2 apt packages  node-1 ×2 node-2 (farm/one, farm/two)"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_file_member_dims_its_directory_and_leaves_the_basename_bright() {
+        let plan = install_only(vec![op(
+            &["web"],
+            "file:/etc/containers/systemd/fishnet-canary.container",
+            Action::Install,
+        )]);
+        let colored = render(
+            &plan,
+            &RenderOptions {
+                color: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(
+            colored.contains(&format!(
+                "{DIM}/etc/containers/systemd/{RESET}fishnet-canary.container"
+            )),
+            "{colored:?}"
+        );
+        let plain = render(&plan, &RenderOptions::default());
+        assert!(!plain.contains('\u{1b}'));
+        assert!(plain.contains("/etc/containers/systemd/fishnet-canary.container"));
+    }
+
+    #[test]
+    fn a_reload_trigger_path_is_two_toned_too() {
+        let mut plan = install_only(vec![]);
+        plan.reloads = vec![PredictedReload {
+            unit: "nginx.service".into(),
+            kind: "restart".into(),
+            triggered_by: vec!["file:/etc/nginx/nginx.conf".into()],
+        }];
+        let colored = render(
+            &plan,
+            &RenderOptions {
+                color: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(
+            colored.contains(&format!(
+                "nginx.service ← {DIM}/etc/nginx/{RESET}nginx.conf"
+            )),
+            "{colored:?}"
+        );
+    }
+
+    #[test]
+    fn the_provenance_list_collapses_numbered_units_too() {
+        let plan = install_only(vec![
+            op(
+                &["scaly", "fishnet-move", "client-1"],
+                "apt:podman",
+                Action::Install,
+            ),
+            op(
+                &["scaly", "fishnet-move", "client-2"],
+                "apt:podman",
+                Action::Install,
+            ),
+            op(&["scaly", "solo"], "apt:podman", Action::Install),
+        ]);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(
+            rendered.contains("(scaly/fishnet-move/client-{1,2}, scaly/solo)"),
+            "{rendered}"
+        );
+    }
+
+    fn planned(unit_path: &[&str], glyph_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "unit_path": unit_path,
+            "glyph_key": glyph_key,
+            "action": "install",
+            "new_cid": "bbbbbbbbbbbb",
+            "describe": format!("ensure {glyph_key}"),
+        })
+    }
+
+    fn podman_farm(
+        flavour: &str,
+        unit_path: &[&str],
+    ) -> (Vec<serde_json::Value>, serde_json::Value) {
+        let file = format!("/etc/containers/systemd/fishnet-{flavour}.container");
+        let service = format!("fishnet-{flavour}.service");
+        let ops = vec![
+            planned(unit_path, "apt:podman"),
+            planned(unit_path, &format!("file:{file}")),
+            planned(unit_path, &format!("systemd:{service}")),
+        ];
+        let reload = serde_json::json!({
+            "unit": service,
+            "kind": "restart",
+            "triggered_by": [format!("file:{file}")],
+        });
+        (ops, reload)
+    }
+
+    fn fishnet_body() -> String {
+        let mut ops = Vec::new();
+        let mut reloads = Vec::new();
+        let mut farms: Vec<(String, Vec<String>)> = Vec::new();
+        for n in 1..=3 {
+            farms.push((
+                format!("move-{n}"),
+                vec![
+                    "scaly".to_string(),
+                    "fishnet-move".to_string(),
+                    format!("client-{n}"),
+                ],
+            ));
+        }
+        for n in 1..=2 {
+            farms.push((
+                format!("analysis-{n}"),
+                vec![
+                    "scaly".to_string(),
+                    "fishnet-analysis".to_string(),
+                    format!("client-{n}"),
+                ],
+            ));
+        }
+        for (flavour, unit_path) in &farms {
+            let path: Vec<&str> = unit_path.iter().map(String::as_str).collect();
+            let (farm_ops, reload) = podman_farm(flavour, &path);
+            ops.extend(farm_ops);
+            reloads.push(reload);
+        }
+        ops.push(planned(&["scaly", "base"], "apt:htop"));
+        ops.push(planned(&["scaly", "base"], "file:/etc/motd.d/farm"));
+        let (canary_ops, canary_reload) = podman_farm("canary", &["scaly", "canary"]);
+        ops.extend(canary_ops);
+        reloads.push(canary_reload);
+        serde_json::json!({
+            "host": "scaly-01",
+            "scroll_content_id": "c0ffee1234",
+            "against_revision": null,
+            "ops": ops,
+            "reloads": reloads,
+            "summary": { "install": 20, "replace": 0, "remove": 0, "noop": 0 },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_fishnet_farm_renders_deduped_collapsed_and_distinct_counted() {
+        let rendered = present(&fishnet_body(), false, &RenderOptions::default()).unwrap();
+        assert_eq!(
+            rendered,
+            [
+                "Plan for scaly-01 · against no prior revision · manifest c0ffee…",
+                "",
+                "  + install 2 apt packages   podman ×6 htop",
+                "                             (scaly/fishnet-move/client-{1,2,3}, scaly/fishnet-analysis/client-{1,2}, scaly/base, scaly/canary)",
+                "  + install 7 files          /etc/containers/systemd/fishnet-move-{1,2,3}.container",
+                "                             /etc/containers/systemd/fishnet-analysis-{1,2}.container",
+                "                             /etc/motd.d/farm /etc/containers/systemd/fishnet-canary.container",
+                "                             (scaly/fishnet-move/client-{1,2,3}, scaly/fishnet-analysis/client-{1,2}, scaly/base, scaly/canary)",
+                "  + install 6 systemd units  fishnet-move-{1,2,3}.service fishnet-analysis-{1,2}.service",
+                "                             fishnet-canary.service",
+                "                             (scaly/fishnet-move/client-{1,2,3}, scaly/fishnet-analysis/client-{1,2}, scaly/canary)",
+                "  ↻ restart 6 units          fishnet-move-1.service ← /etc/containers/systemd/fishnet-move-1.container",
+                "                             fishnet-move-2.service ← /etc/containers/systemd/fishnet-move-2.container",
+                "                             fishnet-move-3.service ← /etc/containers/systemd/fishnet-move-3.container",
+                "                             fishnet-analysis-1.service ← /etc/containers/systemd/fishnet-analysis-1.container",
+                "                             fishnet-analysis-2.service ← /etc/containers/systemd/fishnet-analysis-2.container",
+                "                             fishnet-canary.service ← /etc/containers/systemd/fishnet-canary.container",
+                "",
+                "  15 changes · 15 install",
             ]
             .join("\n")
         );
