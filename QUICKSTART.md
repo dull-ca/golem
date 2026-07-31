@@ -5,7 +5,7 @@
 > glyphs (a leaf) or named sub-scrolls (a branch), never both. Glyphs come over
 > four kinds (`aptPackage`, `systemdService`, `file`, `lineInFile`); branches
 > group leaves into named units. `emetc` compiles it to a binary,
-> content-addressed **manifest** (`format_version` 3). A per-host `golemd`
+> content-addressed **manifest** (`format_version` 4). A per-host `golemd`
 > ingests the manifest, selects its own scroll, diffs it by content id, and
 > enacts the difference through reversible reconcilers, journalling what it did
 > so every change can be undone. By default `golemd` runs the **fake**
@@ -93,10 +93,21 @@ A worked, multi-host, multi-module example is in `examples/lichess/` — a share
 `Lichess` abstraction library and `Fleet` fact table, imported by the `fleet.emet`
 entry module. `examples/lichess/run.sh` drives the whole flow end to end.
 
-## Apply and inspect
+## Plan, apply, inspect
 
-`golemctl apply` takes a `.emet` source (it runs `emetc build` for you) or a
-prebuilt `.manifest`, and POSTs the manifest bytes to the node:
+`golemctl plan` shows what an apply *would* do without doing it — the node
+diffs the manifest against its journal and returns the ordered operations,
+collapsed one line per action, with the coalesced reload step last (ADR 0036):
+
+```bash
+./target/release/golemctl plan examples/lichess/fleet.emet http://127.0.0.1:7474
+```
+
+Add `--detail` for per-glyph content ids, `--json` for the raw response. A
+plan never writes anything and is safe to run while an apply is in flight.
+
+`golemctl apply` takes the same `.emet` source (it runs `emetc build` for you)
+or a prebuilt `.manifest`, and POSTs the manifest bytes to the node:
 
 ```bash
 ./target/release/golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
