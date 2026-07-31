@@ -943,6 +943,14 @@ fn comparable_element(t: &Type) -> bool {
     }
 }
 
+fn describe_found(found: &Type) -> String {
+    match found {
+        Type::Var(_, Constraint::None) => "something else".to_string(),
+        Type::Var(_, c) => format!("a `{}`", constraint_name(*c)),
+        concrete => format!("a `{}`", render_type(concrete)),
+    }
+}
+
 fn constraint_name(c: Constraint) -> &'static str {
     match c {
         Constraint::None => "unconstrained",
@@ -1340,6 +1348,7 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
         Expr::Scroll {
             name,
             policy,
+            notifies,
             contents,
         } => {
             let nt = infer_expr(inf, env, name)?;
@@ -1360,6 +1369,37 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                         p.1.clone(),
                     )
                 })?;
+            }
+            if let Some(n) = notifies {
+                match &n.0 {
+                    Expr::List(entries) => {
+                        for entry in entries {
+                            let et = infer_expr(inf, env, entry)?;
+                            inf.unify(&et, &con("String"), &entry.1).map_err(|_| {
+                                TypeError::new(
+                                    format!(
+                                        "every `notifies` entry is a systemd unit name, so it has to be a `String` — this one is {}",
+                                        describe_found(&inf.apply(&et))
+                                    ),
+                                    entry.1.clone(),
+                                )
+                            })?;
+                        }
+                    }
+                    _ => {
+                        let nt = infer_expr(inf, env, n)?;
+                        let unit_list = Type::Con("List".to_string(), vec![con("String")]);
+                        inf.unify(&nt, &unit_list, &n.1).map_err(|_| {
+                            TypeError::new(
+                                format!(
+                                    "the `notifies` field takes a `List String` of systemd unit names, but this is {}",
+                                    describe_found(&inf.apply(&nt))
+                                ),
+                                n.1.clone(),
+                            )
+                        })?;
+                    }
+                }
             }
             match contents {
                 ContentsExpr::Glyphs(glyphs) => {

@@ -125,6 +125,7 @@ fn manifest_bytes() -> Vec<u8> {
     let host = Scroll {
         name: "h1".into(),
         policy: None,
+        notifies: vec![],
         contents: Contents::Glyphs(vec![Glyph::AptPackage {
             name: "nginx".into(),
         }]),

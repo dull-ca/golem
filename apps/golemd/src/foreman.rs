@@ -1792,6 +1792,7 @@ fn leaf_as_scroll(unit: &LeafUnit<'_>) -> Scroll {
     Scroll {
         name: unit.path.last().cloned().unwrap_or_default(),
         policy: None,
+        notifies: unit.notifies.clone(),
         contents: Contents::Glyphs(unit.glyphs.to_vec()),
     }
 }
@@ -2068,6 +2069,7 @@ fn empty_scroll(host: &str) -> Scroll {
     Scroll {
         name: host.to_string(),
         policy: None,
+        notifies: vec![],
         contents: scroll_format::Contents::Glyphs(vec![]),
     }
 }
@@ -2577,6 +2579,7 @@ mod tests {
         Scroll {
             name: host.into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -2585,6 +2588,7 @@ mod tests {
         Scroll {
             name: name.into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -2593,6 +2597,7 @@ mod tests {
         Scroll {
             name: name.into(),
             policy: Some(policy),
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -2601,6 +2606,7 @@ mod tests {
         Scroll {
             name: name.into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Groups(groups),
         }
     }
@@ -2895,6 +2901,7 @@ mod tests {
         let scroll = Scroll {
             name: "host".into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(vec![apt("nginx"), apt("pg")]),
         };
         let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
@@ -2913,6 +2920,7 @@ mod tests {
         let scroll = Scroll {
             name: "host".into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(vec![apt("nginx")]),
         };
         let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));

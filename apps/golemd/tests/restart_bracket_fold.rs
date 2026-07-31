@@ -168,6 +168,7 @@ fn keep_leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
             on_exhaust: Some(scroll_format::OnExhaust::Keep),
             ..Policy::default()
         }),
+        notifies: vec![],
         contents: Contents::Glyphs(glyphs),
     }
 }
@@ -176,6 +177,7 @@ fn leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
     Scroll {
         name: name.into(),
         policy: None,
+        notifies: vec![],
         contents: Contents::Glyphs(glyphs),
     }
 }
@@ -206,6 +208,7 @@ fn a_failed_service_is_not_masked_by_its_config_restart_bracket() {
     let scroll = Scroll {
         name: "h1".into(),
         policy: None,
+        notifies: vec![],
         contents: Contents::Groups(vec![keep_leaf(
             "app",
             vec![

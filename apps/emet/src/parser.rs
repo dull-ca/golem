@@ -1231,6 +1231,7 @@ fn build_constructor(
         "scroll" => {
             let name = Box::new(take_field(ctor, fields, "name", span)?);
             let policy = fields.remove("policy").map(Box::new);
+            let notifies = fields.remove("notifies").map(Box::new);
             let glyphs = fields.remove("glyphs");
             let groups = fields.remove("groups");
             // Leaf-xor-branch enforced at the surface, the same per-arm field
@@ -1257,6 +1258,7 @@ fn build_constructor(
             Expr::Scroll {
                 name,
                 policy,
+                notifies,
                 contents,
             }
         }

@@ -13,12 +13,14 @@ use crate::scroll::{Glyph, Scroll};
 /// reads (ADR 0012 §1). Distinct from `emet_version`, which is provenance and
 /// is never hashed.
 ///
-// NOTE: `3` because the recursive `Scroll { name, policy, contents }` tree
-// (ADR 0031) reshaped the scroll layout, and ADR 0030's enriched `aptPackage`
-// glyph reshaped a glyph's — both land in this one `2 → 3` bump, not two (ADR
-// 0031 §5). A v2 manifest now cleanly fails `check_format_version` rather than
-// misparsing. (v2 itself was the filesystem glyph of ADR 0019.)
-pub const FORMAT_VERSION: u32 = 3;
+// NOTE: `4` because ADR 0036 added `notifies` to `Scroll`, between `policy` and
+// `contents`. Postcard is non-self-describing, so a field addition IS a layout
+// change: v3 bytes would misread the old `contents` tag as the new `notifies`
+// length. No glyph changed shape, so every glyph content id survives the bump
+// untouched and the first v4 apply is a Noop pass, not a Replace storm.
+// (v3 was the recursive `Scroll` tree of ADR 0031 plus ADR 0030's enriched
+// `aptPackage`; v2 was the filesystem glyph of ADR 0019.)
+pub const FORMAT_VERSION: u32 = 4;
 
 /// A scroll paired with its content address. The `content_id` is over the
 /// `scroll` ALONE — never over this wrapper — so a scroll's identity does not
@@ -123,10 +125,10 @@ pub fn to_bytes(manifest: &Manifest) -> Vec<u8> {
 /// Decode a manifest from postcard bytes, rejecting an unknown
 /// `format_version` with a typed [`FromBytesError`] rather than a misparse.
 pub fn from_bytes(bytes: &[u8]) -> Result<Manifest, FromBytesError> {
-    let manifest: Manifest =
-        postcard::from_bytes(bytes).map_err(|e| FromBytesError::Decode(e.to_string()))?;
-    check_format_version(manifest.format_version)?;
-    Ok(manifest)
+    let (found, _) = postcard::take_from_bytes::<u32>(bytes)
+        .map_err(|e| FromBytesError::Decode(e.to_string()))?;
+    check_format_version(found)?;
+    postcard::from_bytes(bytes).map_err(|e| FromBytesError::Decode(e.to_string()))
 }
 
 /// Accept a `format_version` only if it matches [`FORMAT_VERSION`]; any other
@@ -154,7 +156,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_version_is_three() {
-        assert_eq!(FORMAT_VERSION, 3);
+    fn format_version_is_four() {
+        assert_eq!(FORMAT_VERSION, 4);
     }
 }

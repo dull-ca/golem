@@ -623,6 +623,7 @@ mod tests {
         let scroll = Scroll {
             name: "h1".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Glyphs(vec![Glyph::AptPackage {
                 name: "nginx".into(),
             }]),

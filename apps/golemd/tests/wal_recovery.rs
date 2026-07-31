@@ -105,6 +105,7 @@ fn scroll_bytes(glyphs: Vec<Glyph>) -> Vec<u8> {
         vec![Scroll {
             name: "h1".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Glyphs(glyphs),
         }],
         "test",
@@ -116,6 +117,7 @@ fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
         vec![Scroll {
             name: "h1".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Glyphs(glyphs),
         }],
         "test",
@@ -134,6 +136,7 @@ fn leaf(name: &str, glyphs: Vec<Glyph>) -> Scroll {
     Scroll {
         name: name.into(),
         policy: None,
+        notifies: vec![],
         contents: scroll_format::Contents::Glyphs(glyphs),
     }
 }
@@ -143,6 +146,7 @@ fn two_unit_manifest(a: Vec<Glyph>, b: Vec<Glyph>) -> Vec<u8> {
         vec![Scroll {
             name: "h1".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Groups(vec![leaf("a", a), leaf("b", b)]),
         }],
         "test",

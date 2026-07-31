@@ -219,3 +219,48 @@ main =
     assert_eq!(e.phase, Phase::Analyze);
     assert!(e.msg.contains("file:/etc/x"), "got: {}", e.msg);
 }
+
+#[test]
+fn a_leaf_carries_its_own_notifies_and_a_bare_scroll_carries_none() {
+    let src = r#"
+main =
+  [ scroll { name = "plain", glyphs = [ aptPackage { name = "one" } ] }
+  , scroll { name = "wired", notifies = [ "nginx.service", "telegraf.service" ]
+           , glyphs = [ aptPackage { name = "two" } ] }
+  ]
+"#;
+    let ss = scrolls(src);
+    assert!(ss[0].notifies.is_empty());
+    assert_eq!(ss[1].notifies, vec!["nginx.service", "telegraf.service"]);
+}
+
+#[test]
+fn branch_notifies_union_down_to_the_leaves() {
+    let src = r#"
+main =
+  [ scroll { name = "web", notifies = [ "telegraf.service" ], groups =
+      [ scroll { name = "nginx", notifies = [ "nginx.service" ]
+               , glyphs = [ aptPackage { name = "nginx" } ] }
+      , scroll { name = "base", glyphs = [ aptPackage { name = "htop" } ] }
+      ] }
+  ]
+"#;
+    let compiled = scrolls(src);
+    let units = compiled[0].leaf_units();
+    assert_eq!(units[0].notifies, vec!["telegraf.service", "nginx.service"]);
+    assert_eq!(units[1].notifies, vec!["telegraf.service"]);
+}
+
+#[test]
+fn notifies_accepts_a_computed_list() {
+    let src = r#"
+units : List String
+units = List.map (\n -> n ++ ".service") [ "nginx", "telegraf" ]
+
+main = [ scroll { name = "web", notifies = units, glyphs = [ aptPackage { name = "one" } ] } ]
+"#;
+    assert_eq!(
+        scrolls(src)[0].notifies,
+        vec!["nginx.service", "telegraf.service"]
+    );
+}

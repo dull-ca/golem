@@ -98,13 +98,15 @@ pub struct Perms {
 ///
 // NOTE: field order IS the postcard encoding. Reordering or adding a field is a
 // `format_version`-bumping change, not a free refactor — see ADR 0012/0013.
-// Making `Scroll` recursive is what took the manifest from v2 to v3 (ADR 0031 §5).
+// Making `Scroll` recursive is what took the manifest from v2 to v3 (ADR 0031 §5);
+// adding `notifies` is what took it from v3 to v4 (ADR 0036).
 // NOTE: no `Eq` — `Policy` carries `f64` knobs (ADR 0031 §3), which are only
 // `PartialEq`. Don't add `Eq` back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scroll {
     pub name: String,
     pub policy: Option<Policy>,
+    pub notifies: Vec<String>,
     pub contents: Contents,
 }
 
@@ -160,15 +162,26 @@ pub enum OnExhaust {
 }
 
 /// A leaf scroll flattened out for enact: its root-to-leaf name-`path`, its
-/// `glyphs`, and the `policy_chain` of every ancestor policy in the same
-/// root-to-leaf order. This is not a wire type — it is the shape
-/// [`Scroll::leaf_units`] hands a consumer, which resolves the effective policy
-/// nearest-wins over `policy_chain` and reports outcomes under `path`
-/// (ADR 0031 §2/§3/§4).
+/// `glyphs`, the `policy_chain` of every ancestor policy in the same
+/// root-to-leaf order, and the `notifies` union over that same chain. This is
+/// not a wire type — it is the shape [`Scroll::leaf_units`] hands a consumer,
+/// which resolves the effective policy nearest-wins over `policy_chain` and
+/// reports outcomes under `path` (ADR 0031 §2/§3/§4).
 pub struct LeafUnit<'a> {
     pub path: Vec<String>,
     pub glyphs: &'a [Glyph],
     pub policy_chain: Vec<&'a Policy>,
+    pub notifies: Vec<String>,
+}
+
+fn extend_notifies(accumulated: &mut Vec<String>, added: &[String]) -> usize {
+    let before = accumulated.len();
+    for unit in added {
+        if !accumulated.contains(unit) {
+            accumulated.push(unit.clone());
+        }
+    }
+    accumulated.len() - before
 }
 
 impl Scroll {
@@ -214,7 +227,7 @@ impl Scroll {
     /// the effective policy nearest-wins over each unit's chain.
     pub fn leaf_units(&self) -> Vec<LeafUnit<'_>> {
         let mut out = Vec::new();
-        self.collect_leaves(&mut Vec::new(), &mut Vec::new(), &mut out);
+        self.collect_leaves(&mut Vec::new(), &mut Vec::new(), &mut Vec::new(), &mut out);
         out
     }
 
@@ -222,27 +235,55 @@ impl Scroll {
         &'a self,
         path: &mut Vec<String>,
         policy_chain: &mut Vec<&'a Policy>,
+        notifies: &mut Vec<String>,
         out: &mut Vec<LeafUnit<'a>>,
     ) {
         path.push(self.name.clone());
         if let Some(p) = &self.policy {
             policy_chain.push(p);
         }
+        let added = extend_notifies(notifies, &self.notifies);
         match &self.contents {
             Contents::Glyphs(g) => out.push(LeafUnit {
                 path: path.clone(),
                 glyphs: g,
                 policy_chain: policy_chain.clone(),
+                notifies: notifies.clone(),
             }),
             Contents::Groups(children) => {
                 for child in children {
-                    child.collect_leaves(path, policy_chain, out);
+                    child.collect_leaves(path, policy_chain, notifies, out);
                 }
             }
         }
+        notifies.truncate(notifies.len() - added);
         if self.policy.is_some() {
             policy_chain.pop();
         }
+        path.pop();
+    }
+
+    pub fn notifies_by_path(&self) -> Vec<(Vec<String>, Vec<String>)> {
+        let mut out = Vec::new();
+        self.collect_notifies(&mut Vec::new(), &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn collect_notifies(
+        &self,
+        path: &mut Vec<String>,
+        notifies: &mut Vec<String>,
+        out: &mut Vec<(Vec<String>, Vec<String>)>,
+    ) {
+        path.push(self.name.clone());
+        let added = extend_notifies(notifies, &self.notifies);
+        out.push((path.clone(), notifies.clone()));
+        if let Contents::Groups(children) = &self.contents {
+            for child in children {
+                child.collect_notifies(path, notifies, out);
+            }
+        }
+        notifies.truncate(notifies.len() - added);
         path.pop();
     }
 
@@ -313,6 +354,7 @@ mod tests {
         Scroll {
             name: name.to_string(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -321,8 +363,14 @@ mod tests {
         Scroll {
             name: name.to_string(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Groups(groups),
         }
+    }
+
+    fn notifying(mut scroll: Scroll, units: &[&str]) -> Scroll {
+        scroll.notifies = units.iter().map(|u| u.to_string()).collect();
+        scroll
     }
 
     #[test]
@@ -383,6 +431,7 @@ mod tests {
                 on_exhaust: Some(OnExhaust::Keep),
                 ..Policy::default()
             }),
+            notifies: vec![],
             contents: Contents::Glyphs(vec![apt("stockfish")]),
         };
         let host = Scroll {
@@ -391,6 +440,7 @@ mod tests {
                 max_attempts: Some(9),
                 ..Policy::default()
             }),
+            notifies: vec![],
             contents: Contents::Groups(vec![child]),
         };
         let units = host.leaf_units();
@@ -398,6 +448,80 @@ mod tests {
         assert_eq!(units[0].policy_chain.len(), 2);
         assert_eq!(units[0].policy_chain[0].max_attempts, Some(9));
         assert_eq!(units[0].policy_chain[1].on_exhaust, Some(OnExhaust::Keep));
+    }
+
+    #[test]
+    fn branch_notifies_union_down_to_every_leaf() {
+        let host = notifying(
+            branch(
+                "web",
+                vec![
+                    notifying(leaf("nginx", vec![apt("nginx")]), &["nginx.service"]),
+                    leaf("base", vec![apt("htop")]),
+                ],
+            ),
+            &["telegraf.service"],
+        );
+        let units = host.leaf_units();
+        assert_eq!(units[0].notifies, vec!["telegraf.service", "nginx.service"]);
+        assert_eq!(units[1].notifies, vec!["telegraf.service"]);
+    }
+
+    #[test]
+    fn a_unit_repeated_along_the_chain_is_listed_once() {
+        let host = notifying(
+            branch(
+                "web",
+                vec![notifying(
+                    leaf("nginx", vec![apt("nginx")]),
+                    &["nginx.service", "nginx.service"],
+                )],
+            ),
+            &["nginx.service"],
+        );
+        assert_eq!(host.leaf_units()[0].notifies, vec!["nginx.service"]);
+    }
+
+    #[test]
+    fn a_sibling_never_inherits_its_siblings_notifies() {
+        let host = branch(
+            "web",
+            vec![
+                notifying(leaf("a", vec![apt("one")]), &["a.service"]),
+                leaf("b", vec![apt("two")]),
+            ],
+        );
+        let units = host.leaf_units();
+        assert_eq!(units[0].notifies, vec!["a.service"]);
+        assert!(units[1].notifies.is_empty());
+    }
+
+    #[test]
+    fn notifies_by_path_resolves_branches_as_well_as_leaves() {
+        let host = notifying(
+            branch(
+                "web",
+                vec![notifying(
+                    leaf("nginx", vec![apt("nginx")]),
+                    &["nginx.service"],
+                )],
+            ),
+            &["telegraf.service"],
+        );
+        let by_path = host.notifies_by_path();
+        assert_eq!(
+            by_path,
+            vec![
+                (
+                    vec!["web".to_string()],
+                    vec!["telegraf.service".to_string()]
+                ),
+                (
+                    vec!["web".to_string(), "nginx".to_string()],
+                    vec!["telegraf.service".to_string(), "nginx.service".to_string()]
+                ),
+            ]
+        );
     }
 
     #[test]
