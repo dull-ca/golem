@@ -86,7 +86,9 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             let position = params.text_document_position_params;
             let result = documents
                 .get(&position.text_document.uri)
-                .and_then(|source| hover_at(source, position.position));
+                .and_then(|source| {
+                    hover_at(&position.text_document.uri, source, position.position)
+                });
             ok_response(
                 request.id,
                 serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
@@ -100,7 +102,7 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             let position = params.text_document_position;
             let items = documents
                 .get(&position.text_document.uri)
-                .map(|source| completion_at(source, position.position))
+                .map(|source| completion_at(&position.text_document.uri, source, position.position))
                 .unwrap_or_default();
             ok_response(
                 request.id,
@@ -173,9 +175,10 @@ fn publish(
     uri: Uri,
     source: &str,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let diagnostics = diagnostics_for(&uri, source);
     let params = PublishDiagnosticsParams {
         uri,
-        diagnostics: diagnostics_for(source),
+        diagnostics,
         version: None,
     };
     let notification = Notification {

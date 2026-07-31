@@ -222,6 +222,29 @@ pub fn analyze_source(src: &str) -> Analysis {
     Analysis { diagnostics, index }
 }
 
+pub fn analyze_document(path: &Path, buffer: &str) -> Analysis {
+    let resolve::ProjectAnalysis {
+        diagnostics,
+        mut indexes,
+    } = resolve::analyze_entry_source(path, buffer.to_string());
+
+    let own_diagnostics = diagnostics
+        .into_iter()
+        .filter(|error| error.file.as_deref().is_none_or(|file| file == path))
+        .collect();
+
+    match indexes.remove(path) {
+        Some(index) => Analysis {
+            diagnostics: own_diagnostics,
+            index,
+        },
+        None => Analysis {
+            diagnostics: own_diagnostics,
+            index: analyze_source(buffer).index,
+        },
+    }
+}
+
 /// Analyze a multi-module program for the LSP: resolve the import graph over the
 /// same ADR 0024 search path as `compile_file` and return a per-file
 /// `QueryIndex` plus diagnostics, so hover and cross-file go-to-definition work

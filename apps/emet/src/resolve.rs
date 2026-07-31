@@ -83,10 +83,20 @@ pub fn compile_entry(
 }
 
 pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
+    match read_source(entry) {
+        Ok(source) => analyze_entry_source(entry, source),
+        Err(errors) => ProjectAnalysis {
+            diagnostics: errors,
+            indexes: HashMap::new(),
+        },
+    }
+}
+
+pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     let search_path = manifest::search_path_for(entry);
 
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
-    let entry_name = match load_graph(entry, &search_path, &mut loaded) {
+    let entry_name = match load_module(entry, source, &search_path, &mut loaded) {
         Ok(name) => name,
         Err(errors) => {
             return ProjectAnalysis {
@@ -229,7 +239,12 @@ fn load_graph(
     search_path: &SearchPath,
     loaded: &mut HashMap<String, Loaded>,
 ) -> Result<String, Vec<Error>> {
-    let source = std::fs::read_to_string(path).map_err(|e| {
+    let source = read_source(path)?;
+    load_module(path, source, search_path, loaded)
+}
+
+fn read_source(path: &Path) -> Result<String, Vec<Error>> {
+    std::fs::read_to_string(path).map_err(|e| {
         vec![Error {
             phase: Phase::Parse,
             msg: format!("cannot read {}: {e}", path.display()),
@@ -237,7 +252,15 @@ fn load_graph(
             note: None,
             file: Some(path.to_path_buf()),
         }]
-    })?;
+    })
+}
+
+fn load_module(
+    path: &Path,
+    source: String,
+    search_path: &SearchPath,
+    loaded: &mut HashMap<String, Loaded>,
+) -> Result<String, Vec<Error>> {
     let module = crate::parse_source_multi(&source).map_err(|mut errors| {
         for error in &mut errors {
             error.file = Some(path.to_path_buf());
@@ -356,7 +379,9 @@ fn import_ty_env(
 ) -> Result<TyEnv, Error> {
     let mut env = crate::prelude::ty_env();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         let qualifier = import
             .alias
             .clone()
@@ -414,7 +439,9 @@ fn import_type_arities(
 ) -> HashMap<String, usize> {
     let mut arities = HashMap::new();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         if let ImportExposing::Explicit(items) = &import.exposing {
             for item in items {
                 if let Exposed::Type { name, .. } = item {
@@ -442,7 +469,9 @@ fn import_constructors(
     let mut ctor_schemes = HashMap::new();
     let mut sum_ctors = HashMap::new();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         for (name, scheme) in &iface.exposed_ctor_schemes {
             ctor_schemes.insert(name.clone(), scheme.clone());
         }
@@ -470,7 +499,9 @@ fn import_def_sites(
 ) -> HashMap<String, crate::query::DefSite> {
     let mut defs = HashMap::new();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         let owner = import.module.clone();
         let qualifier = import
             .alias
@@ -522,7 +553,9 @@ fn import_def_sites(
 fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) -> Env {
     let mut env = eval::prelude_env();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         let qualifier = import
             .alias
             .clone()

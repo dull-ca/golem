@@ -1,0 +1,165 @@
+use std::fs;
+use std::path::PathBuf;
+
+use emet_lsp::{completion_at, definition_at, diagnostics_for, hover_at};
+use lsp_types::{Position, Uri};
+
+const LIBRARY: &str = "module Shapes exposing (Shape(..), describe)\n\ntype Shape = Circle Int | Square Int\n\ndescribe : Shape -> String\ndescribe shape =\n  case shape of\n    Circle _ ->\n      \"round\"\n    Square _ ->\n      \"boxy\"\n";
+
+const ENTRY: &str = "import Shapes exposing (Shape(..), describe)\n\nunitShape : Shape\nunitShape = Circle 1\n\nmain : List Scroll\nmain =\n  let _named = describe unitShape\n  in []\n";
+
+struct Project {
+    root: PathBuf,
+    entry: PathBuf,
+}
+
+impl Project {
+    fn uri(&self) -> Uri {
+        format!("file://{}", self.entry.display()).parse().unwrap()
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn project_with_library(tag: &str, entry_source: &str) -> Project {
+    project(tag, LIBRARY, entry_source)
+}
+
+fn project(tag: &str, library_source: &str, entry_source: &str) -> Project {
+    let root = std::env::temp_dir().join(format!("emet_lsp_project_{tag}_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let library_dir = root.join("lib");
+    fs::create_dir_all(&library_dir).unwrap();
+    fs::write(
+        root.join("emet.json"),
+        "{ \"source-directories\": [\"lib\"] }",
+    )
+    .unwrap();
+    fs::write(library_dir.join("Shapes.emet"), library_source).unwrap();
+    let entry = root.join("Main.emet");
+    fs::write(&entry, entry_source).unwrap();
+    Project { root, entry }
+}
+
+#[test]
+fn imported_type_in_an_annotation_is_not_an_unknown_constructor() {
+    let project = project_with_library("imported_type", ENTRY);
+    let diagnostics = diagnostics_for(&project.uri(), ENTRY);
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn unsaved_buffer_wins_over_the_file_on_disk() {
+    let project = project_with_library("dirty_buffer", ENTRY);
+    let dirty = ENTRY.replace("Circle 1", "Circle \"one\"");
+    let diagnostics = diagnostics_for(&project.uri(), &dirty);
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "the buffer's type error, not the clean file on disk: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_missing_imported_module_is_diagnosed_at_its_import() {
+    let entry_source = "import Absent exposing (thing)\n\nmain : List Scroll\nmain =\n  []\n";
+    let project = project_with_library("missing_module", entry_source);
+    let diagnostics = diagnostics_for(&project.uri(), entry_source);
+    assert_eq!(diagnostics.len(), 1);
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("cannot find imported module `Absent`"),
+        "message: {}",
+        diagnostics[0].message
+    );
+    assert_eq!(diagnostics[0].range.start.line, 0);
+}
+
+#[test]
+fn a_library_that_fails_to_type_check_leaves_its_importer_analyzable() {
+    let broken_library =
+        "module Shapes exposing (Shape(..), describe)\n\ntype Shape = Circle Int\n\ndescribe : Shape -> String\ndescribe _shape =\n  undefinedInLibrary\n";
+    let project = project("broken_library", broken_library, ENTRY);
+    let diagnostics = diagnostics_for(&project.uri(), ENTRY);
+    let entry_lines = ENTRY.lines().count() as u32;
+    for diagnostic in &diagnostics {
+        assert!(
+            diagnostic.range.start.line < entry_lines,
+            "diagnostic outside the entry file: {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pathless_buffer_still_analyzes_single_file() {
+    let untitled: Uri = "untitled:Untitled-1".parse().unwrap();
+    let source = "main : List Scroll\nmain =\n  undefinedThing\n";
+    let diagnostics = diagnostics_for(&untitled, source);
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("undefinedThing"));
+}
+
+#[test]
+fn hover_reports_the_type_of_an_imported_value() {
+    let project = project_with_library("hover_import", ENTRY);
+    let line = ENTRY.lines().position(|l| l.contains("_named")).unwrap() as u32;
+    let column = ENTRY
+        .lines()
+        .nth(line as usize)
+        .unwrap()
+        .find("describe")
+        .unwrap() as u32;
+    let hover = hover_at(&project.uri(), ENTRY, Position::new(line, column))
+        .expect("hover over the imported `describe`");
+    let text = match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => markup.value,
+        _ => panic!("expected markup contents"),
+    };
+    assert!(text.contains("Shape"), "hover text: {text}");
+}
+
+#[test]
+fn completion_offers_imported_names() {
+    let project = project_with_library("completion_import", ENTRY);
+    let line = ENTRY.lines().position(|l| l.contains("_named")).unwrap() as u32;
+    let items = completion_at(&project.uri(), ENTRY, Position::new(line, 20));
+    assert!(
+        items.iter().any(|item| item.label == "describe"),
+        "completion labels: {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn definition_of_an_imported_name_opens_the_library_module() {
+    let project = project_with_library("definition_import", ENTRY);
+    let line = ENTRY.lines().position(|l| l.contains("_named")).unwrap() as u32;
+    let column = ENTRY
+        .lines()
+        .nth(line as usize)
+        .unwrap()
+        .find("describe")
+        .unwrap() as u32;
+    let location = definition_at(&project.uri(), ENTRY, Position::new(line, column))
+        .expect("a cross-file definition location");
+    assert!(
+        location.uri.as_str().ends_with("lib/Shapes.emet"),
+        "definition uri: {}",
+        location.uri.as_str()
+    );
+    let definition_line = LIBRARY
+        .lines()
+        .position(|l| l.starts_with("describe shape"))
+        .unwrap() as u32;
+    assert_eq!(location.range.start.line, definition_line);
+}

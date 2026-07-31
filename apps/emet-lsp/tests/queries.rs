@@ -1,11 +1,16 @@
 use emet_lsp::{completion_at, definition_at, hover_at};
-use lsp_types::Position;
+use lsp_types::{Position, Uri};
+
+fn scratch_uri() -> Uri {
+    "untitled:scratch.emet".parse().unwrap()
+}
 
 const LET_STRING: &str = "main : List Scroll\nmain =\n  let greeting = \"hi\"\n  in []\n";
 
 #[test]
 fn hover_returns_inferred_type() {
-    let hover = hover_at(LET_STRING, Position::new(2, 6)).expect("hover at greeting binder");
+    let hover = hover_at(&scratch_uri(), LET_STRING, Position::new(2, 6))
+        .expect("hover at greeting binder");
     let text = match hover.contents {
         lsp_types::HoverContents::Markup(m) => m.value,
         _ => panic!("expected markup contents"),
@@ -15,7 +20,7 @@ fn hover_returns_inferred_type() {
 
 #[test]
 fn completion_returns_in_scope_names() {
-    let items = completion_at(LET_STRING, Position::new(3, 5));
+    let items = completion_at(&scratch_uri(), LET_STRING, Position::new(3, 5));
     assert!(
         items.iter().any(|i| i.label == "greeting"),
         "completion includes local binding"

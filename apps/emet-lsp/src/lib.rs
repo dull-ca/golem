@@ -12,10 +12,21 @@ use lsp_types::{
     Location, MarkupContent, MarkupKind, Position, Range, Uri,
 };
 
+fn analysis_of(uri: &Uri, source: &str) -> emet::Analysis {
+    match document_path(uri) {
+        Some(path) => emet::analyze_document(&path, source),
+        None => emet::analyze_source(source),
+    }
+}
+
+fn document_path(uri: &Uri) -> Option<PathBuf> {
+    uri.as_str().strip_prefix("file://").map(PathBuf::from)
+}
+
 /// The inferred type at the cursor, as a Markdown hover. `None` when no
 /// recorded expression covers the position.
-pub fn hover_at(source: &str, position: Position) -> Option<Hover> {
-    let analysis = emet::analyze_source(source);
+pub fn hover_at(uri: &Uri, source: &str, position: Position) -> Option<Hover> {
+    let analysis = analysis_of(uri, source);
     let offset = offset_at(source, position);
     let ty = analysis.index.type_at(offset)?;
     Some(Hover {
@@ -29,8 +40,8 @@ pub fn hover_at(source: &str, position: Position) -> Option<Hover> {
 
 /// The names in scope at the cursor as completion items, each labeled with its
 /// rendered type.
-pub fn completion_at(source: &str, position: Position) -> Vec<CompletionItem> {
-    let analysis = emet::analyze_source(source);
+pub fn completion_at(uri: &Uri, source: &str, position: Position) -> Vec<CompletionItem> {
+    let analysis = analysis_of(uri, source);
     let offset = offset_at(source, position);
     analysis
         .index
@@ -50,7 +61,7 @@ pub fn completion_at(source: &str, position: Position) -> Vec<CompletionItem> {
 /// module, resolved to a sibling `<Module>.emet` file whose own text is read to
 /// map the target span to a range.
 pub fn definition_at(uri: &Uri, source: &str, position: Position) -> Option<Location> {
-    let analysis = emet::analyze_source(source);
+    let analysis = analysis_of(uri, source);
     let offset = offset_at(source, position);
     let site = analysis.index.definition_at(offset)?;
     match &site.module {
@@ -58,22 +69,26 @@ pub fn definition_at(uri: &Uri, source: &str, position: Position) -> Option<Loca
             uri: uri.clone(),
             range: span_to_range(source, &site.span),
         }),
-        Some(module) => sibling_module_location(uri, module, &site.span),
+        Some(module) => imported_module_location(uri, module, &site.span),
     }
 }
 
 /// Locate a cross-file definition: a definition in `module` lives in
-/// `<module>.emet` beside the current file (file path = module name, ADR 0016).
-/// Its source is read so the byte span from the exporter's interface can be
-/// mapped to a UTF-16 range in that file.
-fn sibling_module_location(
+/// `<module>.emet` somewhere on this document's ADR 0024 search path — its own
+/// directory first, then the `emet.json` library directories, exactly where the
+/// compiler's resolver found it. Its source is read so the byte span from the
+/// exporter's interface can be mapped to a UTF-16 range in that file.
+fn imported_module_location(
     uri: &Uri,
     module: &str,
     span: &std::ops::Range<usize>,
 ) -> Option<Location> {
-    let path = PathBuf::from(uri.as_str().strip_prefix("file://")?);
-    let dir = path.parent()?;
-    let target = dir.join(format!("{module}.emet"));
+    let path = document_path(uri)?;
+    let target = emet::manifest::search_path_for(&path)
+        .directories()
+        .iter()
+        .map(|directory| directory.join(format!("{module}.emet")))
+        .find(|candidate| candidate.exists())?;
     let target_source = std::fs::read_to_string(&target).ok()?;
     let target_uri: Uri = format!("file://{}", target.display()).parse().ok()?;
     Some(Location {
@@ -112,8 +127,8 @@ pub fn offset_at(source: &str, position: Position) -> usize {
     source.len()
 }
 
-pub fn diagnostics_for(source: &str) -> Vec<Diagnostic> {
-    emet::analyze_source(source)
+pub fn diagnostics_for(uri: &Uri, source: &str) -> Vec<Diagnostic> {
+    analysis_of(uri, source)
         .diagnostics
         .iter()
         .map(|error| diagnostic_from_error(source, error))
