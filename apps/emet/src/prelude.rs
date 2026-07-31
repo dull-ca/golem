@@ -1956,6 +1956,93 @@ pub fn constructor_scheme(name: &str) -> Option<Scheme> {
         .map(|c| c.scheme)
 }
 
+/// How a builtin type is written and what it means, for the reader hovering its
+/// name.
+pub struct BuiltinTypeDoc {
+    /// The authoring shape, shown where a user type would show its `type`
+    /// declaration.
+    pub shape: &'static str,
+    pub doc: &'static str,
+}
+
+/// Prose and shape for the scroll-side builtin types. They are the ones nothing
+/// else in the compiler can render: `scroll`, `keep`, `rollback`, and `retry`
+/// are reserved words handled in `parser.rs::build_constructor` with their field
+/// sets and typing rules spread across the parser and `infer.rs`, so unlike
+/// `Glyph` or `Maybe` they have no constructor registry to read a declaration
+/// out of. Without this table hover shows the bare name.
+///
+/// NOTE: the shapes restate `build_constructor`'s field sets and `infer_expr`'s
+/// field types by hand. Changing either without changing this table makes hover
+/// lie — `apps/emet/tests/type_definitions.rs` pins only a few anchors.
+pub fn builtin_type_documentation(name: &str) -> Option<&'static BuiltinTypeDoc> {
+    match name {
+        "Scroll" => Some(&SCROLL_DOC),
+        "Policy" => Some(&POLICY_DOC),
+        "Contents" => Some(&CONTENTS_DOC),
+        "OnExhaust" => Some(&ON_EXHAUST_DOC),
+        _ => None,
+    }
+}
+
+static SCROLL_DOC: BuiltinTypeDoc = BuiltinTypeDoc {
+    shape: "type Scroll
+scroll
+    { name : String
+    , policy : Policy         -- optional
+    , notifies : List String  -- optional
+    , glyphs : List Glyph     -- exactly one of
+    , groups : List Scroll    --   `glyphs` or `groups`
+    }",
+    doc: "One host's desired state, or one named part of it. A scroll is either a \
+leaf — `glyphs`, the unit golemd enacts, retries, and rolls back as a whole — or \
+a branch — `groups` of sub-scrolls, enacted in source order; never both. \
+`policy` cascades to the leaves beneath it nearest-wins, while `notifies` unions \
+downward, so the systemd units named anywhere in a subtree reload once at the \
+end of the apply (ADR 0031, ADR 0036).",
+};
+
+static POLICY_DOC: BuiltinTypeDoc = BuiltinTypeDoc {
+    shape: "type Policy
+rollback
+keep
+retry
+    { maxAttempts : Int
+    , baseDelayMs : Int
+    , backoffMultiplier : Float
+    , maxDelayMs : Int
+    , jitterFraction : Float
+    , maxElapsedMs : Int
+    , onExhaust : Policy      -- `rollback` or `keep`
+    }                         -- every field optional",
+    doc: "How a leaf unit spends its failure budget: `retry`'s knobs bound the \
+attempts, and `onExhaust` decides what happens when they run out — `rollback` \
+(the default) returns the unit to its last committed state, `keep` leaves \
+partial progress in place. Every knob is optional; an absent one is inherited \
+nearest-wins from the enclosing scrolls, then from `golemd.toml` (ADR 0031 §3).",
+};
+
+static CONTENTS_DOC: BuiltinTypeDoc = BuiltinTypeDoc {
+    shape: "type Contents
+    = Glyphs (List Glyph)
+    | Groups (List Scroll)",
+    doc: "A scroll level's payload: glyphs xor sub-scrolls, so a mixed level \
+cannot be written down and \"does this glyph run before or after that group?\" \
+cannot arise (ADR 0031 §1). Neither arm has a surface spelling — writing \
+`glyphs =` or `groups =` on `scroll` is what picks one — so the name is useful \
+only in a signature.",
+};
+
+static ON_EXHAUST_DOC: BuiltinTypeDoc = BuiltinTypeDoc {
+    shape: "type OnExhaust
+    = Rollback
+    | Keep",
+    doc: "What a leaf unit does when its retry budget runs out with glyphs still \
+failing, scoped to that unit's subtree and never a sibling. Emet spells the \
+choice with the braceless words `rollback` and `keep`, which build a `Policy` \
+rather than a bare `OnExhaust`; rollback is the default (ADR 0029 §4).",
+};
+
 /// The constructors (name + arity) of a sum type, by result-type name — the
 /// "complete signature" the exhaustiveness checker needs. `List` is treated as
 /// a two-constructor sum (`[]`, `::`) so a `case` on a list is exhaustive

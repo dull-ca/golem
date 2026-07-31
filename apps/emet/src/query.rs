@@ -136,8 +136,17 @@ pub fn render_type_declaration(declaration: &TypeDecl, with_constructors: bool) 
     rendered
 }
 
+/// How a builtin type is shown on hover. Most builtins are rendered from the
+/// prelude's own constructors, so `Glyph` shows its four arms; the scroll-side
+/// types have none to read and come from `prelude::builtin_type_documentation`
+/// instead. `List` is excluded because its `[]`/`::` members are synthetic —
+/// they exist for the exhaustiveness checker, not as constructors an author
+/// writes. Anything left over is its name alone.
 pub fn builtin_type_declaration(name: &str) -> Option<String> {
     let arity = crate::infer::builtin_type_arity(name)?;
+    if let Some(documented) = crate::prelude::builtin_type_documentation(name) {
+        return Some(documented.shape.to_string());
+    }
     let mut rendered = format!("type {name}");
     for param in TYPE_PARAMETER_NAMES.iter().take(arity) {
         rendered.push_str(&format!(" {param}"));
@@ -157,6 +166,13 @@ pub fn builtin_type_declaration(name: &str) -> Option<String> {
         }
     }
     Some(rendered)
+}
+
+/// The prose that accompanies `builtin_type_declaration`, for a hover to place
+/// where an author's `--` block would go. Only the scroll-side builtins carry
+/// one.
+pub fn builtin_type_doc(name: &str) -> Option<String> {
+    crate::prelude::builtin_type_documentation(name).map(|documented| documented.doc.to_string())
 }
 
 const TYPE_PARAMETER_NAMES: [&str; 2] = ["a", "b"];

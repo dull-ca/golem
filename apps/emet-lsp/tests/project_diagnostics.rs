@@ -244,8 +244,10 @@ fn hover_on_an_imported_type_name_carries_its_declaration_doc_and_origin() {
 }
 
 #[test]
-fn hover_on_a_builtin_type_name_in_an_annotation_names_the_type() {
+fn hover_on_a_builtin_type_name_in_an_annotation_shows_its_shape_and_prose() {
     let project = project("builtin_type_hover", DOCUMENTED_TYPE_LIBRARY, ENTRY);
     let text = hover_text(&project.uri(), ENTRY, "main : List Scroll", "Scroll");
-    assert_eq!(text, "```emet\ntype Scroll\n```");
+    assert!(text.starts_with("```emet\ntype Scroll\nscroll\n"), "{text}");
+    assert!(text.contains("notifies : List String"), "{text}");
+    assert!(text.contains("`notifies` unions"), "{text}");
 }

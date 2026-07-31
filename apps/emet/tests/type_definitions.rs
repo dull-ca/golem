@@ -48,10 +48,23 @@ fn a_builtin_sum_type_is_rendered_from_the_preludes_own_constructors() {
 }
 
 #[test]
-fn a_builtin_type_without_constructors_renders_as_its_name() {
+fn a_scroll_of_the_documented_builtins_renders_its_authoring_shape() {
+    let scroll =
+        emet::query::builtin_type_declaration("Scroll").expect("Scroll is a documented builtin");
+    assert!(scroll.starts_with("type Scroll\nscroll\n"), "{scroll}");
+    for field in ["name : String", "policy : Policy", "notifies : List String"] {
+        assert!(scroll.contains(field), "{scroll}");
+    }
+    let doc = emet::query::builtin_type_doc("Scroll").expect("Scroll carries prose");
+    assert!(doc.contains("notifies"), "{doc}");
+}
+
+#[test]
+fn an_undocumented_builtin_renders_as_its_name_and_carries_no_prose() {
     assert_eq!(
-        emet::query::builtin_type_declaration("Scroll").as_deref(),
-        Some("type Scroll")
+        emet::query::builtin_type_declaration("String").as_deref(),
+        Some("type String")
     );
+    assert_eq!(emet::query::builtin_type_doc("String"), None);
     assert_eq!(emet::query::builtin_type_declaration("Nonesuch"), None);
 }

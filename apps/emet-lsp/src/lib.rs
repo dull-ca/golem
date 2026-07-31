@@ -55,7 +55,10 @@ fn type_name_hover(
         ))),
         None => Some(markdown_hover(hover_markdown(
             &emet::query::builtin_type_declaration(&name)?,
-            Described::default(),
+            Described {
+                doc: emet::query::builtin_type_doc(&name),
+                origin: None,
+            },
         ))),
     }
 }
