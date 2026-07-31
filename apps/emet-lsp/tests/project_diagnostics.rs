@@ -209,3 +209,19 @@ fn hover_on_an_undocumented_local_value_is_the_type_alone() {
     let text = hover_text(&project.uri(), ENTRY, "describe unitShape", "unitShape");
     assert_eq!(text, "```emet\nShape\n```");
 }
+#[test]
+fn document_symbols_list_the_entry_files_top_level_definitions() {
+    let project = project("document_symbols", DOCUMENTED_LIBRARY, ENTRY);
+    let symbols = emet_lsp::document_symbols(&project.uri(), ENTRY);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["unitShape", "main"]);
+    let unit_shape = &symbols[0];
+    assert_eq!(unit_shape.detail.as_deref(), Some("Shape"));
+    assert_eq!(
+        unit_shape.selection_range.start.line,
+        ENTRY
+            .lines()
+            .position(|l| l.starts_with("unitShape ="))
+            .unwrap() as u32
+    );
+}

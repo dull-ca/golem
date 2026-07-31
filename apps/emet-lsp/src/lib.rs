@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, Hover, HoverContents,
-    Location, MarkupContent, MarkupKind, Position, Range, Uri,
+    CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentSymbol, Hover,
+    HoverContents, Location, MarkupContent, MarkupKind, Position, Range, SymbolKind, Uri,
 };
 
 fn analysis_of(uri: &Uri, source: &str) -> emet::Analysis {
@@ -72,6 +72,47 @@ fn hover_markdown(declaration: &str, described: Described) -> String {
         markdown.push_str(&format!("\n\n*from {origin}*"));
     }
     markdown
+}
+
+pub fn document_symbols(uri: &Uri, source: &str) -> Vec<DocumentSymbol> {
+    let analysis = analysis_of(uri, source);
+    emet::document_outline(source, &analysis.index)
+        .into_iter()
+        .map(|symbol| document_symbol(source, symbol))
+        .collect()
+}
+
+fn document_symbol(source: &str, symbol: emet::query::Symbol) -> DocumentSymbol {
+    let children: Vec<DocumentSymbol> = symbol
+        .children
+        .into_iter()
+        .map(|child| document_symbol(source, child))
+        .collect();
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name: symbol.name,
+        detail: symbol.detail,
+        kind: lsp_symbol_kind(&symbol.kind),
+        tags: None,
+        deprecated: None,
+        range: span_to_range(source, &symbol.span),
+        selection_range: span_to_range(source, &symbol.name_span),
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
+    }
+}
+
+fn lsp_symbol_kind(kind: &emet::query::SymbolKind) -> SymbolKind {
+    match kind {
+        emet::query::SymbolKind::Module => SymbolKind::MODULE,
+        emet::query::SymbolKind::Value => SymbolKind::CONSTANT,
+        emet::query::SymbolKind::Function => SymbolKind::FUNCTION,
+        emet::query::SymbolKind::Type => SymbolKind::ENUM,
+        emet::query::SymbolKind::Constructor => SymbolKind::ENUM_MEMBER,
+    }
 }
 
 /// The names in scope at the cursor as completion items, each labeled with its

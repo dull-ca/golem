@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{Scheme, Span, Type};
+use crate::ast::{Module, Scheme, Span, Type};
 
 /// Identifies one lexical scope in `scope_table`. Every `let`/lambda/`case`-arm
 /// body opens one, carrying the names visible inside it.
@@ -78,6 +78,128 @@ impl QueryIndex {
 
 pub fn display_scheme(scheme: &Scheme) -> String {
     scheme.ty.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolKind {
+    Module,
+    Value,
+    Function,
+    Type,
+    Constructor,
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub detail: Option<String>,
+    pub span: Span,
+    pub name_span: Span,
+    pub children: Vec<Symbol>,
+}
+
+pub fn outline(module: &Module, source: &str, index: &QueryIndex) -> Vec<Symbol> {
+    let mut symbols: Vec<Symbol> = Vec::new();
+
+    if let Some(name) = &module.name {
+        if let Some(symbol) = module_header_symbol(source, name) {
+            symbols.push(symbol);
+        }
+    }
+
+    for declaration in &module.type_decls {
+        let name_span = name_span_within(source, &declaration.span, &declaration.name);
+        symbols.push(Symbol {
+            name: declaration.name.clone(),
+            kind: SymbolKind::Type,
+            detail: type_parameters(&declaration.params),
+            span: declaration.span.clone(),
+            name_span,
+            children: declaration.variants.iter().map(variant_symbol).collect(),
+        });
+    }
+
+    for declaration in &module.decls {
+        let name_span = declaration.span.start..declaration.span.start + declaration.name.len();
+        let detail = index
+            .type_at(declaration.span.start)
+            .map(|ty| ty.to_string())
+            .or_else(|| declaration.sig.as_ref().map(|sig| sig.0.to_string()));
+        symbols.push(Symbol {
+            name: declaration.name.clone(),
+            kind: if declaration.params.is_empty() {
+                SymbolKind::Value
+            } else {
+                SymbolKind::Function
+            },
+            detail,
+            span: declaration.span.clone(),
+            name_span,
+            children: Vec::new(),
+        });
+    }
+
+    symbols.sort_by_key(|symbol| symbol.span.start);
+    symbols
+}
+
+fn variant_symbol(variant: &crate::ast::Variant) -> Symbol {
+    let fields: Vec<String> = variant
+        .fields
+        .iter()
+        .map(|field| field.0.to_string())
+        .collect();
+    Symbol {
+        name: variant.name.clone(),
+        kind: SymbolKind::Constructor,
+        detail: if fields.is_empty() {
+            None
+        } else {
+            Some(fields.join(" "))
+        },
+        span: variant.span.clone(),
+        name_span: variant.span.start..variant.span.start + variant.name.len(),
+        children: Vec::new(),
+    }
+}
+
+fn type_parameters(params: &[String]) -> Option<String> {
+    if params.is_empty() {
+        None
+    } else {
+        Some(params.join(" "))
+    }
+}
+
+fn name_span_within(source: &str, declaration: &Span, name: &str) -> Span {
+    let text = source.get(declaration.clone()).unwrap_or("");
+    match text.find(name) {
+        Some(at) => declaration.start + at..declaration.start + at + name.len(),
+        None => declaration.clone(),
+    }
+}
+
+fn module_header_symbol(source: &str, name: &str) -> Option<Symbol> {
+    let mut line_start = 0usize;
+    loop {
+        let line = line_at(source, line_start);
+        if line.starts_with("module ") {
+            let at = line_start + line.find(name)?;
+            return Some(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Module,
+                detail: None,
+                span: line_start..line_start + line.len(),
+                name_span: at..at + name.len(),
+                children: Vec::new(),
+            });
+        }
+        line_start += line.len() + 1;
+        if line_start >= source.len() {
+            return None;
+        }
+    }
 }
 
 pub fn doc_comment_above_definition(source: &str, definition: &Span) -> Option<String> {

@@ -245,6 +245,13 @@ pub fn analyze_document(path: &Path, buffer: &str) -> Analysis {
     }
 }
 
+pub fn document_outline(source: &str, index: &QueryIndex) -> Vec<query::Symbol> {
+    match parse_source_multi(source) {
+        Ok(module) => query::outline(&module, source, index),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Analyze a multi-module program for the LSP: resolve the import graph over the
 /// same ADR 0024 search path as `compile_file` and return a per-file
 /// `QueryIndex` plus diagnostics, so hover and cross-file go-to-definition work

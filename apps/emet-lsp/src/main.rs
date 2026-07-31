@@ -6,17 +6,19 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use emet_lsp::{completion_at, definition_at, diagnostics_for, hover_at};
+use emet_lsp::{completion_at, definition_at, diagnostics_for, document_symbols, hover_at};
 use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Completion, GotoDefinition, HoverRequest, Request as _};
+use lsp_types::request::{
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, Request as _,
+};
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, HoverParams, OneOf,
-    PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    Uri,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverParams, OneOf, PublishDiagnosticsParams, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
 /// The latest full text of every open document, keyed by URI. Full-sync
@@ -43,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         hover_provider: Some(true.into()),
         completion_provider: Some(CompletionOptions::default()),
         definition_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
     connection.initialize(serde_json::to_value(capabilities)?)?;
@@ -124,6 +127,21 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             ok_response(
                 request.id,
                 serde_json::to_value(location.map(GotoDefinitionResponse::Scalar))
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        }
+        DocumentSymbolRequest::METHOD => {
+            let params: DocumentSymbolParams = match serde_json::from_value(request.params) {
+                Ok(params) => params,
+                Err(error) => return error_response(request.id, error),
+            };
+            let symbols = documents
+                .get(&params.text_document.uri)
+                .map(|source| document_symbols(&params.text_document.uri, source))
+                .unwrap_or_default();
+            ok_response(
+                request.id,
+                serde_json::to_value(DocumentSymbolResponse::Nested(symbols))
                     .unwrap_or(serde_json::Value::Null),
             )
         }
