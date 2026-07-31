@@ -1,0 +1,7 @@
+f x =
+  case x of
+    1 ->
+      let y = 2 in y
+    _ -> 0
+
+main = f 1

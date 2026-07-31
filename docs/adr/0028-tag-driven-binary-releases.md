@@ -2,27 +2,18 @@
 
 ## Status
 
-Accepted — Dr. Dub ratified the default. **Not yet activated.**
+Superseded by 0035 (2026-07-28).
 
-The decision below is the ratified release policy. The first real publish is
-gated on three **activation prerequisites** (see the checklist at the end of the
-Decision), none of which is met on the branch that carries this ADR:
+Both repositories moved from Codeberg to GitHub, so the **channel** this ADR
+chose no longer exists: there is no Forgejo/Codeberg release object, no
+`ci.codeberg.org` Woodpecker pipeline, and no `FORGEJO_RELEASE_TOKEN` activation
+path. The Decision below is preserved as the record of that choice.
 
-- the repository is pushed to the git host (the release branch is currently
-  local/unpushed);
-- a **`FORGEJO_RELEASE_TOKEN`** secret exists in the Codeberg repo's Woodpecker
-  CI settings; and
-- the repository's licensing is reconciled (a single, coherent `LICENSE` — see
-  §License), which publishing distributable binaries requires. **DONE
-  (2026-07-23):** Dr. Dub chose AGPLv3; `[workspace.package] license` is now
-  `AGPL-3.0-only` (matching the existing `LICENSE` file), and golem's own
-  `tree-sitter-emet` grammar metadata was moved off its scaffolded `MIT` to the
-  same. Only the push and the token remain.
-
-Until all three are met, the CI job in the Implementation plan is written but its
-`when: event: tag` trigger never fires, because no tag can be pushed to a host
-the repo does not yet live on. This ADR is therefore **Accepted policy, pending
-activation** — ready for a CI-scaffold implementation pass.
+The release **policy** — tag-driven versioning off the single shared
+`[workspace.package]` version, the same artifact set (static-musl
+`golemd`/`golemctl`, native `emetc`, optional `emet-lsp`), and crates.io as an
+explicit non-goal — is carried forward by ADR 0035, which leaves the replacement
+publish mechanism an open question rather than swapping one channel for another.
 
 ## Context
 

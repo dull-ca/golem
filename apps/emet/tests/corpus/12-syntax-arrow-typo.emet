@@ -1,0 +1,6 @@
+f x =
+  case x of
+    1 => "a"
+    _ => "b"
+
+main = f 1

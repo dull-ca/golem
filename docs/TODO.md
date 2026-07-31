@@ -3,9 +3,9 @@
 Deferred work and known gaps, with pointers to the design/ADRs that explain the
 context. These are intentional deferrals, not bugs.
 
-Two backlogs: **A** is work inside the Emet language itself; **B** is the
+Three backlogs: **A** is work inside the Emet language itself; **B** is the
 Emet ↔ golem ecosystem integration, now that Emet lives in the golem
-monorepo. B's headline is model reconciliation.
+monorepo; **C** is CI and publishing. B's headline is model reconciliation.
 
 ## A. Emet language backlog
 
@@ -370,8 +370,9 @@ standalone project.
   `emetc` (a cross-unit conflict check the analyze-time model does not have
   today).
 
-- **Publishing.** Decide and set up how Emet (and/or the wider golem toolchain)
-  is published.
+- **Publishing.** The release-publishing mechanism is an open question — see
+  §C and ADR 0035 §5 (ADR 0028's Forgejo/Codeberg channel died with the move to
+  GitHub).
 
 - **Dedup display semantics — OPEN DECISION (2026-07-27).** Under the parallel
   executor, shared-glyph duplicates usually race past the credit check and record
@@ -382,3 +383,35 @@ standalone project.
   (credit on success, real-apply on failure); deterministic credits, makes the
   waiting-dots UI real, un-pins the workers=1 count tests; requires an ADR 0034 §1
   revision (racing → waiting). Controller recommendation: (3).
+
+## C. CI / publishing backlog
+
+CI moved off Codeberg's Woodpecker to a self-hosted nix + cachix gate (ADR 0035;
+`docs/design/ci-cachix-nix.md`). The gate (`nix flake check`) is live on
+`lakin/ci-nix-cachix`; the automation around it is not yet stood up.
+
+- **Stand up the self-hosted CI box, provisioned by golem (dogfood).** The
+  poll-build-push loop in `docs/design/ci-cachix-nix.md` — golem's own four
+  glyphs author the box that runs `nix flake check` on every push and pushes the
+  closure to cachix. ADR 0035 §2. Until then an interim GitHub Actions workflow
+  (`.github/workflows/ci.yml`) runs the same gate (ADR 0035 status amendment);
+  retire it when the box is live.
+
+- ~~**cachix activation.**~~ Done 2026-07-29: cache `dull-ca`, wired repo-scoped
+  in `flake.nix` `nixConfig` and `devenv.nix`; the auth token lives in the
+  `DULL_CA_CACHIX_PRIVATE_KEY` GitHub secret (and later on the CI box at mode
+  `0600`). ADR 0035 §3.
+
+- **Release publishing mechanism — OPEN (ADR 0035 §5).** ADR 0028's
+  Forgejo/Codeberg channel is gone with the move to GitHub. The policy survives
+  (tag-driven, one workspace version, static-musl artifacts, no crates.io); the
+  channel is undecided — GitHub Releases pushed from the self-hosted box, or
+  artifacts served from Dr. Dub's own infrastructure.
+
+- **Sweep remaining `codeberg.org` references → GitHub.** In both repos: golem
+  docs/site (`docs/guide/README.md`, `sites/website/astro.config.mjs`,
+  `sites/website/src/grammars/README.md`,
+  `sites/website/src/content/docs/getting-started/install.mdx`,
+  `packaging/golemd.service`, `LAKIN-TODO.md`) and `emet.nvim`
+  (`README.md`, `plugin/emet.lua`). Accepted ADRs keep their historical
+  codeberg references — they are records, not live links.

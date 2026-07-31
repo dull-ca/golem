@@ -1,0 +1,5 @@
+f x =
+  case x of
+    Just y -> y
+
+main = f (Just 1)

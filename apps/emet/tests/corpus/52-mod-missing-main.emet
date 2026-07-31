@@ -1,0 +1,3 @@
+helper x = x + 1
+
+notMain = helper 3

@@ -1,0 +1,6 @@
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs = [ aptPackage { name = "nginx" }
+  ]

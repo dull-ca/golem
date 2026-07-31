@@ -1,6 +1,7 @@
 //! Promotes the highest-value cases from the diagnostics audit corpus
-//! (`.superpowers/sdd/errmsg/corpus/`, graded in `.superpowers/sdd/errmsg/AUDIT.md`)
-//! into a permanent regression suite. Each test reads one corpus program from
+//! (`apps/emet/tests/corpus/`, tracked in git so a nix flake build sees them;
+//! originally graded in the audit's `AUDIT.md`) into a permanent regression
+//! suite. Each test reads one corpus program from
 //! disk and asserts a *key phrase* of the current `compile()` output — phase
 //! and a message substring, not the full rendered text — so the assertions
 //! survive incidental wording changes while still pinning the correctness
@@ -12,7 +13,7 @@ use std::path::PathBuf;
 
 fn corpus(name: &str) -> String {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("../../.superpowers/sdd/errmsg/corpus");
+    p.push("tests/corpus");
     p.push(name);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }

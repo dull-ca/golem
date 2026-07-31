@@ -1,0 +1,4 @@
+x : String
+x = 42
+
+main = x

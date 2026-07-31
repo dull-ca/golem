@@ -1,0 +1,5 @@
+f xs =
+  case xs of
+    (h :: t) -> h
+
+main = f [ 1, 2 ]

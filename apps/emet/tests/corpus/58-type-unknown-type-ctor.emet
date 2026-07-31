@@ -1,0 +1,4 @@
+f : Strng -> Strng
+f x = x
+
+main = f "hi"

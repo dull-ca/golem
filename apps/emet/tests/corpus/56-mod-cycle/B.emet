@@ -1,0 +1,3 @@
+module B exposing (b)
+import A
+b = A.a

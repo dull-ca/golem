@@ -1,0 +1,10 @@
+main : List Scroll
+main =
+  [ scroll
+      { name = "web"
+      , glyphs =
+          [ file { path = "/etc/motd", contents = "hello", mode = "0644" }
+          , file { path = "/etc/motd", contents = "goodbye", mode = "0644" }
+          ]
+      }
+  ]

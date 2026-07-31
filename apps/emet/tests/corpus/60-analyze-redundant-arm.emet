@@ -1,0 +1,7 @@
+f x =
+  case x of
+    Just y -> y
+    Nothing -> 0
+    Just z -> z
+
+main = f (Just 1)

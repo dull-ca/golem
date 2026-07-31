@@ -510,6 +510,7 @@ dependencies = [
  "scroll-format",
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -520,6 +521,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -724,6 +726,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -748,6 +751,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1714,6 +1718,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2665,6 +2670,41 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "log",
+ "memchr",
+ "mio",
+ "num-traits",
+ "percent-encoding",
+ "proc-macro2",
+ "quote",
+ "regex-automata 0.4.16",
+ "regex-syntax 0.8.11",
+ "rustix",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "slab",
+ "smallvec",
+ "syn 2.0.117",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-core",
+]
 
 [[package]]
 name = "writeable"
