@@ -74,9 +74,17 @@ pub trait Reconciler: Send + Sync {
     fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         Ok(PrepareOutcome::default())
     }
+    /// Poke a unit whose *unit file* golem just changed — a true restart, since
+    /// systemd cannot reload a changed definition into a running service (ADR
+    /// 0020 §5). What the structural config-file heuristic enacts.
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
+    /// Poke a unit an authored `notifies` named (ADR 0036): reload where the unit
+    /// supports it, restart otherwise, do nothing if it is inactive. A
+    /// notification says the unit's *inputs* changed, so the lighter of the two is
+    /// right. Starting an inactive unit is deliberately out of scope — an inactive
+    /// unit's desired state belongs to its `systemdService` glyph.
     fn try_reload_or_restart(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }

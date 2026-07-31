@@ -124,6 +124,13 @@ pub fn to_bytes(manifest: &Manifest) -> Vec<u8> {
 
 /// Decode a manifest from postcard bytes, rejecting an unknown
 /// `format_version` with a typed [`FromBytesError`] rather than a misparse.
+///
+// NOTE: the version is read off the front and checked BEFORE the body is
+// decoded, because postcard is non-self-describing: under a newer layout an
+// older artifact's body is not merely different but unparseable, so decoding
+// first surfaces a stale manifest as an inscrutable serde error instead of
+// "this build speaks v4, that file is v3". `format_version` is the leading
+// field of `Manifest`, so its varint is the leading varint of the stream.
 pub fn from_bytes(bytes: &[u8]) -> Result<Manifest, FromBytesError> {
     let (found, _) = postcard::take_from_bytes::<u32>(bytes)
         .map_err(|e| FromBytesError::Decode(e.to_string()))?;

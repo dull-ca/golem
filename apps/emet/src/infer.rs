@@ -943,6 +943,10 @@ fn comparable_element(t: &Type) -> bool {
     }
 }
 
+/// Name a type the way a diagnostic should say it out loud. An unresolved
+/// variable is named by its constraint bound rather than by `render_type` — the
+/// friendly letter `a` tells an author nothing, so a bare number literal reads as
+/// "a `number`" (ADR 0032 §1).
 fn describe_found(found: &Type) -> String {
     match found {
         Type::Var(_, Constraint::None) => "something else".to_string(),
@@ -1371,6 +1375,12 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 })?;
             }
             if let Some(n) = notifies {
+                // A literal list is checked element-wise rather than unified whole
+                // against `List String`, so one bad entry is underlined where it
+                // was written instead of blaming the whole list, and the entries
+                // are reported in author order. Anything else takes the
+                // whole-expression path. Both messages are framed context-first
+                // for the same reason `policy`'s is, just above.
                 match &n.0 {
                     Expr::List(entries) => {
                         for entry in entries {

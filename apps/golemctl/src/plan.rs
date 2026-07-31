@@ -1,3 +1,15 @@
+//! The dry-run view: `POST /plan`, then the collapsed render (ADR 0036). One
+//! line per (action × glyph kind) in first-occurrence execution order, its
+//! members and contributing units listed, the coalesced reload steps last;
+//! unchanged glyphs appear only as a footer count.
+//!
+//! `plan` always exits 0 — a diff is not an error, and a diff-signalling exit
+//! code waits until something needs it. Color follows the same policy as the
+//! apply view (stdout is a tty and `NO_COLOR` is unset), but the output is
+//! composed as plain strings rather than through `view.rs`'s iocraft canvas: a
+//! plan is static and must be byte-stable for snapshots and pipes, and the canvas
+//! pads every row to its width.
+
 use std::io::IsTerminal;
 
 use anyhow::{bail, Context, Result};
@@ -68,6 +80,8 @@ impl Default for RenderOptions {
 }
 
 pub const DEFAULT_WIDTH: usize = 100;
+/// How many members a step lists before eliding the rest — a reading aid only;
+/// `--detail` and `--json` always carry the complete list.
 const VISIBLE_MEMBER_CAP: usize = 8;
 const MARGIN: usize = 2;
 const VERB_WIDTH: usize = 7;
@@ -146,6 +160,10 @@ pub fn color_is_welcome() -> bool {
     std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
 
+/// The one seam between the response and the terminal, so tests drive the whole
+/// presentation from a body. `--json` re-emits the raw body rather than
+/// re-serializing the parsed struct, so fields a newer golemd added survive the
+/// round trip untouched.
 pub fn present(body: &str, json: bool, options: &RenderOptions) -> Result<String> {
     if json {
         return Ok(body.trim_end().to_string());
@@ -181,6 +199,14 @@ fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
     )
 }
 
+/// Lay the steps out into aligned columns. Every width is measured on *unstyled*
+/// text and the accents painted afterwards, because `{:<width}` over an
+/// ANSI-wrapped string counts the escape bytes and silently breaks the alignment
+/// that continuation lines depend on.
+///
+/// The verb column is computed rather than fixed, floored at [`VERB_WIDTH`], so
+/// `reload-or-restart` widens it without disturbing the member column — and a
+/// plan carrying no such step still renders exactly as it did before.
 fn step_lines(steps: &[Step], options: &RenderOptions) -> Vec<String> {
     let count_width = steps
         .iter()
@@ -334,6 +360,9 @@ fn steps_of(plan: &PlanResponse) -> Vec<Step> {
     steps
 }
 
+/// One step per reload *kind*, reusing the verb-×-kind grouping the ops above
+/// use. The distinction rides in the verb text rather than a dim annotation so
+/// the line stays scannable next to `install` / `replace` / `remove`.
 fn reload_steps(reloads: &[PredictedReload]) -> Vec<Step> {
     let mut steps: Vec<Step> = Vec::new();
     for reload in reloads {
@@ -402,6 +431,10 @@ fn action_style(action: Action) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+// NOTE: this and `member_of` parse `Glyph::key()`'s namespaced form, which is
+// explicitly not part of the wire contract — hence the tolerant `Unrecognized`
+// arm, which renders the raw key rather than failing on a key shape a newer
+// golemd invented.
 fn kind_of(glyph_key: &str) -> GlyphKind {
     if glyph_key.starts_with("apt:") {
         GlyphKind::AptPackage

@@ -1,3 +1,10 @@
+//! The wire response the read-only path returns: the ordered dry run behind
+//! `POST /plan` (ADR 0036), flat where [`report`](crate::report) is tree-shaped
+//! because a plan is a sequence of ops, not a fold over outcomes. `action` reuses
+//! [`GlyphAction`] so the apply and the plan name the same four verbs with one
+//! definition. As in `report.rs` the `serde` tags are load-bearing: `golemctl
+//! plan` parses these exact strings.
+
 use scroll_format::ContentId;
 use serde::Serialize;
 
@@ -26,6 +33,11 @@ pub struct PlannedOp {
     pub describe: String,
 }
 
+/// Which way a predicted unit gets poked, mirroring the two derivations that
+/// produce it: `Restart` from the ADR 0020 structural heuristic (a unit *file*
+/// changed, only a true restart picks that up), `ReloadOrRestart` from an
+/// authored `notifies` (ADR 0036). Where both name one unit, restart wins. The
+/// kebab-case tag is the ADR's own spelling, `reload-or-restart`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReloadKind {
@@ -49,6 +61,10 @@ pub struct PlanSummary {
 }
 
 impl PlannedOp {
+    /// Which content ids an op carries falls out of the diff itself: an
+    /// `Install` has no prior, a `Remove` no successor, a `Noop`'s two are equal
+    /// by definition. They are rendered in `ContentId`'s hex `Display` form — the
+    /// WAL stores the raw digest, hex is the shape a client can read and compare.
     pub fn of(unit_path: &[String], op: &GlyphOp) -> Self {
         let (action, old_cid, new_cid) = match op {
             GlyphOp::Install { cid, .. } => (GlyphAction::Install, None, Some(hex(cid))),

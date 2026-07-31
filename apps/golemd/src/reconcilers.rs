@@ -505,6 +505,11 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
         self.try_restart(unit)
     }
 
+    // NOTE: no `daemon-reload` here, unlike `try_restart` above, and the
+    // `daemon_reload` mutex is not taken. A notification says the unit's *inputs*
+    // changed, never its unit file, so systemd's view of the definitions is
+    // already current; the lock exists only to serialize `daemon-reload`
+    // invocations. The absence is deliberate (ADR 0036).
     fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
         let reloaded = self
             .runner

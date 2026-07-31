@@ -113,10 +113,15 @@ write must survive.
 
 ## Smoke fixtures
 
-Two small scrolls to sanity-check a fresh box:
+Three small scrolls to sanity-check a fresh box:
 
 - `smoke.emet` — one of each host-touching glyph (`aptPackage`, `file`,
   `lineInFile`), the minimum that a reconcile actually changed the host.
 - `reload-proof.emet` — writes a systemd unit file with a `file` glyph, then a
   `systemdService` for it. Proves the `daemon-reload`-before-enable fix: without
   the reload, enabling a just-written unit fails.
+- `notify-proof.emet` — a `service` leaf holding the unit, and a sibling `config`
+  leaf that only `notifies` it. The config lives outside every unit directory, so
+  the structural heuristic cannot see it: the unit is reached solely through the
+  authored notification (ADR 0036). Edit the config, re-apply, and
+  `journalctl -u golem-notify.service` should show the reload.

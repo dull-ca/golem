@@ -176,6 +176,12 @@ const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/syst
 /// reserve names, so this is a naming convention rather than an enforced literal.
 const REMOVES_SEGMENT: &str = "<removes>";
 
+/// The synthetic terminal segment the coalesced end-of-apply reload set reports
+/// under, `[host, "<reloads>"]` — the same naming convention and the same
+/// disjointness argument as [`REMOVES_SEGMENT`], so no present unit shares the
+/// path and no rollback can reach these brackets. Both reload directions land
+/// here so the live apply tree and `golemctl plan` show the same final line
+/// (ADR 0036).
 const RELOADS_SEGMENT: &str = "<reloads>";
 
 impl Foreman {
@@ -293,6 +299,20 @@ impl Foreman {
         Ok((attempt.reconcile_id, selected))
     }
 
+    /// The dry run behind `POST /plan` (ADR 0036): [`ingest`]'s pure prefix and
+    /// none of its writes — no `open_attempt`, no `progress.open`, no in-progress
+    /// gate, no write lock. That is safe because the WAL read is a snapshot and
+    /// the response names the revision it diffed against, so a plan taken during
+    /// a live reconcile is stale rather than wrong, and a caller can tell.
+    ///
+    /// The order of `ops` is the promise: leaf units in source order, each unit's
+    /// ops as [`run_reconcile`] would enact them, vanished-removes last. The
+    /// per-unit `Remove` filter mirrors `run_reconcile`'s for the same reason
+    /// `leaf_as_scroll` documents — a leaf diffed alone would call every glyph
+    /// outside it a removal.
+    ///
+    /// [`ingest`]: Foreman::ingest
+    /// [`run_reconcile`]: Foreman::run_reconcile
     pub fn plan_manifest(&self, bytes: &[u8]) -> Result<PlanReport, ForemanError> {
         let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
             detail: e.to_string(),
@@ -1249,6 +1269,18 @@ impl Foreman {
     /// its config then rolled back under `on_exhaust = rollback` — is excluded via
     /// [`crate::wal::cancelled_dones`], the same pairing the applied-set fold uses,
     /// so a rolled-back unit's service is never spuriously restarted (ADR 0029 §4).
+    ///
+    /// ADR 0036 adds a second, authored source over the same rows: the `notifies`
+    /// union at a step's `unit_path` ([`notified_units`]), enacted as
+    /// `try-reload-or-restart` rather than a restart. [`merge_reloads`] folds the
+    /// two into one coalesced set — restart wins where both name a unit — and both
+    /// are journaled under [`RELOADS_SEGMENT`].
+    ///
+    /// The two sets treat a cancelled `Done` differently, deliberately. The
+    /// structural pass drops it: a unit file rolled back was never really written,
+    /// so nothing wants restarting. The notify pass keeps it: the rollback *did*
+    /// rewrite the file, back to its prior contents, and the service still has to
+    /// pick that up (ADR 0036 Consequences).
     fn propagate_config(&self, reconcile_id: u64, desired: &Scroll) -> Result<()> {
         let steps = self.planroom.wal_steps_for(reconcile_id)?;
         let cancelled = crate::wal::cancelled_dones(&steps);
@@ -2145,9 +2177,11 @@ fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
 /// The latest `Done` step of the attempt not yet `Reversed` — the next one a
 /// rollback should undo. Scanning newest-first reverses in the opposite order to
 /// application (LIFO), and skipping already-`Reversed` steps is what makes
-/// [`Foreman::rollback_attempt`] resumable. [`WalAction::Restart`] steps are
-/// operational records with no reversal (the unit's lifecycle is owned by its
-/// `systemdService` step), so a rollback never picks one up.
+/// [`Foreman::rollback_attempt`] resumable. [`WalAction::Restart`] and
+/// [`WalAction::Reload`] steps are operational records with no reversal (the
+/// unit's lifecycle is owned by its `systemdService` step), so a rollback never
+/// picks one up. Stated as an `Apply | Reverse` allow-list rather than a deny-list
+/// so a future non-fold action cannot become reversible by omission.
 fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
     steps.iter().rev().find(|s| {
         s.state == WalStepState::Done
@@ -2241,6 +2275,10 @@ fn unit_for_config_file(path: &str) -> Option<String> {
     None
 }
 
+/// The units a step's unit path notifies, resolved exact-then-parent. The parent
+/// fallback is what answers for a synthetic group: a `<removes>` path is a
+/// surviving ancestor plus one marker segment ([`REMOVES_SEGMENT`]), so the exact
+/// lookup misses and the ancestor's union is the right answer.
 fn notified_units(by_path: &[(Vec<String>, Vec<String>)], unit_path: &[String]) -> Vec<String> {
     let at = |wanted: &[String]| by_path.iter().find(|(path, _)| path == wanted);
     at(unit_path)
@@ -2249,6 +2287,15 @@ fn notified_units(by_path: &[(Vec<String>, Vec<String>)], unit_path: &[String]) 
         .unwrap_or_default()
 }
 
+/// Coalesce the notified and structural pairs into one reload per unit, restart
+/// winning where both name it (a changed unit file needs more than a reload), and
+/// accumulating every triggering glyph key.
+///
+/// Sorted by unit name, not first occurrence: with `EnactConfig.workers > 1`
+/// sibling units interleave their WAL rows by `seq` nondeterministically, so
+/// first-occurrence order would vary run to run. [`Foreman::propagate_config`]
+/// and [`predicted_reloads`] both go through this one function so enactment and
+/// prediction cannot drift on the merge rule or the ordering.
 fn merge_reloads(
     structural: Vec<(String, String)>,
     notified: Vec<(String, String)>,
@@ -2280,6 +2327,14 @@ fn merge_reloads(
     merged
 }
 
+/// The reload set a plan predicts, derived from would-be-changed ops the same
+/// two ways [`Foreman::propagate_config`] derives it from WAL rows, through the
+/// same [`merge_reloads`].
+///
+/// A prediction, not a promise: enactment fires on `changed == true`, which no
+/// dry run can observe, so a predicted reload may not fire (the file may already
+/// match on the host). Only `Noop` is excluded — a `Remove` counts, because
+/// enactment folds any `Done`+`changed` file step, removals included.
 fn predicted_reloads(desired: &Scroll, placed: &[(Vec<String>, GlyphOp)]) -> Vec<PredictedReload> {
     let notifies_by_path = desired.notifies_by_path();
     let mut structural: Vec<(String, String)> = Vec::new();

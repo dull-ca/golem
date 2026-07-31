@@ -176,6 +176,15 @@ type GroupedUnit<'a> = (Vec<String>, Vec<(String, Vec<&'a WalStep>)>);
 /// is preserved for both units and keys so the projection and the rebuilt report
 /// present glyphs in enact order. Shared by [`project`] and [`rebuild_report`] so
 /// the live view and the reattach-rebuilt report fold the same rows the same way.
+///
+/// Restart and reload rows are no longer skipped: the coalesced end-of-apply set
+/// is visible as its own synthetic `<reloads>` group, so the live apply tree and
+/// `golemctl plan` end on the same line (ADR 0036).
+///
+// NOTE: those rows carry a `GlyphOp::Noop` over a synthetic `SystemdService`
+// glyph, so the fold below lands them on `unchanged`. The group and the keys read
+// correctly; the per-row verb does not. Fixing it needs either a fifth `GlyphOp`
+// shape or a projection special-case keyed on `WalAction`.
 fn group_units<'a>(attempt: &ReconcileAttempt, steps: &'a [WalStep]) -> Vec<GroupedUnit<'a>> {
     let mut order: Vec<Vec<String>> = Vec::new();
     let mut by_unit: BTreeMap<Vec<String>, Vec<String>> = BTreeMap::new();

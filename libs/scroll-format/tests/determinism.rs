@@ -66,6 +66,10 @@ const GOLDEN_SCROLL_BYTES: &[u8] = &[
 
 const GOLDEN_CONTENT_ID: &str = "337a88f5cb8e7672f6965c6940601033000e4d70c7f4031979095f3d3d30a189";
 
+// Captured from the v3 code *before* the bump: ADR 0036's "glyph cids are
+// untouched" promise written down, which is what makes the first v4 apply a
+// Noop pass rather than a Replace storm. A scroll-level change must never move
+// these; only a change to a glyph's own shape may.
 const GLYPH_CONTENT_IDS_AT_V3: &[(&str, &str)] = &[
     (
         "apt:nginx",
@@ -85,6 +89,8 @@ const GLYPH_CONTENT_IDS_AT_V3: &[(&str, &str)] = &[
     ),
 ];
 
+// A real v3 artifact, kept as literal bytes because no v4 build can produce
+// one — the only way to keep proving that a stale manifest fails cleanly.
 const V3_MANIFEST_BYTES: &[u8] = &[
     3, 5, 48, 46, 49, 46, 48, 1, 185, 143, 81, 66, 52, 209, 114, 170, 213, 151, 43, 173, 47, 157,
     227, 170, 217, 192, 190, 150, 18, 112, 45, 120, 136, 87, 37, 221, 178, 134, 97, 240, 3, 119,

@@ -106,6 +106,13 @@ pub struct Perms {
 pub struct Scroll {
     pub name: String,
     pub policy: Option<Policy>,
+    /// Systemd units to reload once any glyph in or under this scroll lands
+    /// changed. Unlike `policy`'s nearest-wins cascade, a branch's list *unions*
+    /// down over every descendant leaf — reload obligations accumulate rather
+    /// than override. Empty is the natural zero, so `Vec` rather than `Option`.
+    /// Lives inside the hashed scroll but outside every glyph, which is the
+    /// whole reason it sits here: rewiring a notification must not perturb a
+    /// glyph's content id and force a spurious re-write (ADR 0036).
     pub notifies: Vec<String>,
     pub contents: Contents,
 }
@@ -167,6 +174,10 @@ pub enum OnExhaust {
 /// not a wire type — it is the shape [`Scroll::leaf_units`] hands a consumer,
 /// which resolves the effective policy nearest-wins over `policy_chain` and
 /// reports outcomes under `path` (ADR 0031 §2/§3/§4).
+///
+/// `policy_chain` arrives unresolved and `notifies` arrives resolved for the
+/// same reason: the effective policy still needs the consumer's own
+/// `golemd.toml` fallback folded in, and a union has no fallback to wait for.
 pub struct LeafUnit<'a> {
     pub path: Vec<String>,
     pub glyphs: &'a [Glyph],
@@ -174,6 +185,11 @@ pub struct LeafUnit<'a> {
     pub notifies: Vec<String>,
 }
 
+/// Union `added` into `accumulated`, append-if-absent so the result keeps
+/// root-to-leaf first-mention order, returning how many entries this scope
+/// actually contributed. The count is what lets a depth-first walk truncate
+/// exactly its own contribution on the way back up, so a sibling never inherits
+/// a sibling's units.
 fn extend_notifies(accumulated: &mut Vec<String>, added: &[String]) -> usize {
     let before = accumulated.len();
     for unit in added {
@@ -263,6 +279,11 @@ impl Scroll {
         path.pop();
     }
 
+    /// The same root-to-leaf `notifies` union [`leaf_units`](Scroll::leaf_units)
+    /// resolves, but recorded at *every* node — branches included — so a consumer
+    /// can answer for a path that is not a leaf of the tree. That is exactly the
+    /// vanished-unit case: a `<removes>` group reports under a surviving
+    /// ancestor's path, which may well be a branch (ADR 0036).
     pub fn notifies_by_path(&self) -> Vec<(Vec<String>, Vec<String>)> {
         let mut out = Vec::new();
         self.collect_notifies(&mut Vec::new(), &mut Vec::new(), &mut out);
