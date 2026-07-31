@@ -50,20 +50,31 @@ module Quadlet exposing
 
 import Fleet exposing (internalNetwork)
 
+-- How an image pins its content: a mutable `Tag`, or an immutable `Digest`.
+-- `imageLine` renders the two with different separators — `name:tag` against
+-- `name@digest`.
 type Ref
   = Tag String
   | Digest String
 
+-- A fully-qualified image: the registry to pull from, the repository name, and
+-- the `Ref` that pins it. Built by `image`, `imageAt`, or `imageRef`; it reaches
+-- the container unit as the `Image=` line.
 type Image = Image
   { registry : String
   , name     : String
   , ref      : Ref
   }
 
+-- An image from its three parts, pinned by tag —
+-- `image "docker.io" "niklasf/fishnet" "latest"`. Nothing is defaulted; for the
+-- one-string spelling with defaults, use `imageRef`.
 image : String -> String -> String -> Image
 image registry name tag =
   Image { registry = registry, name = name, ref = Tag tag }
 
+-- `image`'s immutable sibling: the same three parts, pinned by digest, so the
+-- workload keeps running the exact bytes it was deployed with.
 imageAt : String -> String -> String -> Image
 imageAt registry name digest =
   Image { registry = registry, name = name, ref = Digest digest }
@@ -168,13 +179,21 @@ imageRef reference =
     else
       imageRefTagged reference
 
+-- The transport of a published port. The two differ only in the `/tcp` or
+-- `/udp` suffix on the unit's `PublishPort=` line.
 type Proto = TCP | UDP
 
+-- One published port: `host` is the port on the machine, `container` the port
+-- inside it. Built by `tcp`/`udp`. Only `host` reaches the firewall rules
+-- `Expose` generates.
 type Port = Port { host : Int, container : Int, proto : Proto }
 
+-- `tcp host container` — publish a TCP port, machine side first.
 tcp : Int -> Int -> Port
 tcp host container = Port { host = host, container = container, proto = TCP }
 
+-- `udp host container` — publish a UDP port, machine side first. Note that the
+-- `Expose` firewall rules are TCP-only, so a UDP port stays closed at nftables.
 udp : Int -> Int -> Port
 udp host container = Port { host = host, container = container, proto = UDP }
 
@@ -190,8 +209,11 @@ publishPortLine p =
     Port spec ->
       "PublishPort=${String.fromInt spec.host}:${String.fromInt spec.container}/${protoSuffix spec.proto}"
 
+-- One environment variable for the container — an `Environment=name=value` line
+-- in the unit file, so it is world-readable on the host. Not for secrets.
 type EnvVar = EnvVar { name : String, value : String }
 
+-- `env name value` — one environment variable for the container.
 env : String -> String -> EnvVar
 env name value = EnvVar { name = name, value = value }
 
@@ -200,6 +222,9 @@ environmentLine e =
   case e of
     EnvVar spec -> "Environment=${spec.name}=${spec.value}"
 
+-- The unit's `Restart=` value, as the three systemd words golem writes:
+-- `always`, `on-failure`, `no`. Constructors rather than a string, so a typo is
+-- a compile error instead of a unit systemd refuses at load.
 type Restart = Always | OnFailure | No
 
 restartValue : Restart -> String
@@ -209,8 +234,13 @@ restartValue r =
     OnFailure -> "on-failure"
     No -> "no"
 
+-- Whether the container may write to a mount. `ReadOnly` appends `:ro` to the
+-- `Volume=` line; `ReadWrite` appends nothing, which is podman's default.
 type Access = ReadWrite | ReadOnly
 
+-- SELinux relabeling for a mount: `Shared` appends `:z` (the label is shared
+-- with other containers), `Private` appends `:Z` (this container only),
+-- `NoRelabel` appends nothing and leaves the host's labels alone.
 type Relabel = NoRelabel | Shared | Private
 
 accessSuffix : Access -> String
@@ -226,14 +256,23 @@ relabelSuffix r =
     Shared -> ":z"
     Private -> ":Z"
 
+-- Where a container's data comes from: a named podman volume (`FromVolume`) or
+-- a path on the host (`FromHost`). Only `FromHost` emits a glyph of its own —
+-- the `directory` its bind-mount source needs before the unit starts.
 type Mount
   = FromVolume { volume : String, at : String, access : Access, relabel : Relabel }
   | FromHost { source : String, at : String, access : Access, relabel : Relabel }
 
+-- `fromVolume volume at access relabel` — mount the named volume at the
+-- container path `at`. The matching `.volume` unit is written for you; see
+-- `derivedVolumeUnits`.
 fromVolume : String -> String -> Access -> Relabel -> Mount
 fromVolume volume at access relabel =
   FromVolume { volume = volume, at = at, access = access, relabel = relabel }
 
+-- `fromHost source at access relabel` — bind-mount the host path `source` at
+-- the container path `at`. `source` is created as a `0755` directory, so the
+-- mount never conjures an empty one at start.
 fromHost : String -> String -> Access -> Relabel -> Mount
 fromHost source at access relabel =
   FromHost { source = source, at = at, access = access, relabel = relabel }
@@ -252,11 +291,18 @@ hostSourceGlyphs m =
     FromVolume _ -> []
     FromHost spec -> [ directory { path = spec.source, mode = "0755" } ]
 
+-- A `.volume` quadlet unit — the file that declares a named podman volume, so
+-- the volume exists without anyone running `podman volume create`.
 type VolumeUnit = VolumeUnit { name : String, driver : String }
 
+-- `volumeUnit name` — a volume unit on podman's `local` driver, the only driver
+-- this library writes.
 volumeUnit : String -> VolumeUnit
 volumeUnit name = VolumeUnit { name = name, driver = "local" }
 
+-- The volume units a mount list implies: one per `FromVolume`, none for a
+-- `FromHost`. `workloadUnit` calls this, so declaring a volume mount is all it
+-- takes to get its unit written.
 derivedVolumeUnits : List Mount -> List VolumeUnit
 derivedVolumeUnits mounts =
   List.concatMap derivedVolumeUnit mounts
@@ -276,6 +322,8 @@ volumeUnitContents v =
         , "Driver=${spec.driver}"
         ]
 
+-- A volume unit as glyphs: the one `/etc/containers/systemd/<name>.volume`
+-- file, which podman's quadlet generator turns into a systemd unit.
 volumeUnitGlyphs : VolumeUnit -> List Glyph
 volumeUnitGlyphs v =
   case v of
@@ -287,6 +335,9 @@ volumeUnitGlyphs v =
           }
       ]
 
+-- A `.container` quadlet unit, one field per line of the file it becomes. This
+-- is the systemd-shaped layer: a `Workload` lowers to it through `workloadUnit`,
+-- and `containerUnitGlyphs` writes it out.
 type ContainerUnit = ContainerUnit
   { name         : String
   , image        : Image
@@ -331,6 +382,10 @@ containerUnitContents u =
             ]
           ])
 
+-- A container unit as glyphs, in apply order: podman installed, the host
+-- directories its bind mounts need, its volume units' files, the
+-- `<name>.container` file, then the `<name>.service` systemd glyph that starts
+-- it.
 containerUnitGlyphs : ContainerUnit -> List Glyph
 containerUnitGlyphs u =
   case u of
@@ -348,8 +403,18 @@ containerUnitGlyphs u =
           ]
         ]
 
+-- How far a workload's published ports reach, and so which firewall glyphs it
+-- emits under `/etc/nftables.d/`. `Unexposed` writes none — the port is
+-- reachable only from the host. `Internal` writes one rule file per port,
+-- accepting from `Fleet.internalNetwork` alone. `Public` writes an
+-- accept-from-anywhere rule file plus a line in the shared `ingress.nft`.
+-- Rules are TCP-only, and a scroll that writes them wants
+-- `notifies = [ "nftables.service" ]` so the change is loaded (ADR 0036).
 type Expose = Unexposed | Internal | Public
 
+-- What to run, stated without systemd: an image, its ports, volumes, and
+-- environment, plus how far it is exposed. The authoring surface of this
+-- library — `workloadGlyphs` is the only other thing a scroll needs.
 type Workload = Workload
   { name    : String
   , image   : Image
@@ -360,6 +425,9 @@ type Workload = Workload
   , expose  : Expose
   }
 
+-- The container unit a workload lowers to: volume units derived from its
+-- mounts, no `Exec=` (the image's own entrypoint runs), and `WantedBy` both
+-- `multi-user.target` and `default.target` so it starts on boot.
 workloadUnit : Workload -> ContainerUnit
 workloadUnit w =
   case w of
@@ -427,6 +495,9 @@ firewallGlyphs w =
     Workload spec ->
       List.concatMap (portFirewallGlyphs spec.name spec.expose) spec.ports
 
+-- A whole workload as glyphs: its container unit (and everything that unit
+-- needs) followed by the firewall files its `expose` calls for. The one call a
+-- scroll makes — `glyphs = workloadGlyphs (Workload { … })`.
 workloadGlyphs : Workload -> List Glyph
 workloadGlyphs w =
   List.concat

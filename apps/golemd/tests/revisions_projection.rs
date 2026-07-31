@@ -41,6 +41,7 @@ fn manifest(glyphs: Vec<Glyph>) -> Vec<u8> {
         vec![Scroll {
             name: "h1".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Glyphs(glyphs),
         }],
         "test",

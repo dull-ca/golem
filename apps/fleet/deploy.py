@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import uuid
 import tempfile
 from pathlib import Path
 
@@ -210,8 +211,10 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
     """Install the binary and unit on a guest and (re)start the service. scp to a
     staging path, `install` it into place, write the unit, then daemon-reload and
     `restart` — restart, not just `enable --now`, so a redeployed binary actually
-    replaces the running one instead of leaving the old process up."""
-    staging = "/tmp/golemd"
+    replaces the running one instead of leaving the old process up. The staging
+    name is unique per deploy and lives in golem's home: a fixed /tmp name wedges
+    every later deploy the moment a stale copy survives under other ownership."""
+    staging = f"/home/golem/golemd.staging-{uuid.uuid4().hex[:8]}"
     scp = subprocess.run(_scp_argv(paths, record, binary, f"golem@127.0.0.1:{staging}"), capture_output=True, text=True)
     if scp.returncode != 0:
         raise FleetError(f"{record.name}: scp golemd failed: {scp.stderr.strip()}")
@@ -227,6 +230,7 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
             GOLEMD_REMOTE_PATH,
         ],
     )
+    _ssh_check(paths, record, ["rm", "-f", staging])
     _ssh_check(
         paths,
         record,

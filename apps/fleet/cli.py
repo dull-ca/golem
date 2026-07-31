@@ -231,6 +231,50 @@ def apply(
 
 
 @app.command()
+def plan(
+    source: Path = typer.Argument(..., help="A .emet source or a prebuilt manifest.bin."),
+    hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
+    raw: bool = typer.Option(False, "--json", help="Print the raw plan JSON instead of the collapsed view."),
+    detail: bool = typer.Option(False, "--detail", help="One glyph per line with content ids."),
+) -> None:
+    """Compile a scroll and hand each target to `golemctl plan` — the dry-run
+    diff, nothing applied (ADR 0036). Same orchestration split as `apply`:
+    fleet picks the hosts, golemctl owns the POST and the rendering, exec'd
+    with inherited stdio so its color policy sees the real terminal. A plan
+    always exits 0 per host; only transport/daemon errors aggregate to 1."""
+    p = paths()
+    state = _state()
+    records = _target_records(state, hosts)
+    console.print(f"[bold]Compiling {source}…[/bold]")
+    manifest_path = deploy_ops.compile_manifest(p, source)
+    manifest = manifest_path.read_bytes()
+    console.print(f"  manifest: {manifest_path} ({len(manifest)} bytes)")
+    scroll_names = deploy_ops.manifest_scroll_names(p, source)
+    _render_manifest_context(scroll_names, [record.name for record in records])
+    golemctl = deploy_ops.resolve_golemctl(p)
+    any_failed = False
+    for record in records:
+        argv = [
+            str(golemctl),
+            "plan",
+            str(manifest_path),
+            f"http://127.0.0.1:{record.golemd_port}",
+        ]
+        if raw:
+            argv.append("--json")
+        if detail:
+            argv.append("--detail")
+        result = subprocess.run(argv, cwd=str(p.root))
+        if result.returncode != 0:
+            any_failed = True
+            console.print(
+                f"  [red]{record.name}: golemctl plan exited {result.returncode}[/red]"
+            )
+    if any_failed:
+        raise typer.Exit(1)
+
+
+@app.command()
 def logs(
     host: str = typer.Argument(...),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream new log lines."),

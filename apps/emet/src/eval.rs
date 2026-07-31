@@ -252,6 +252,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::Scroll {
             name: name_expr,
             policy,
+            notifies,
             contents,
         } => {
             let name = as_str(eval(env, name_expr, depth)?);
@@ -259,6 +260,10 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             let policy = match policy {
                 Some(p) => Some(as_policy(eval(env, p, depth)?)),
                 None => None,
+            };
+            let notifies = match notifies {
+                Some(n) => as_strings(eval(env, n, depth)?),
+                None => Vec::new(),
             };
             let contents = match contents {
                 ContentsExpr::Glyphs(glyphs) => {
@@ -271,6 +276,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             Value::Scroll(Scroll {
                 name,
                 policy,
+                notifies,
                 contents,
             })
         }
@@ -833,6 +839,13 @@ fn as_scroll(v: &Value) -> Scroll {
     match v {
         Value::Scroll(s) => s.clone(),
         _ => unreachable!("expected Scroll in main list"),
+    }
+}
+
+fn as_strings(v: Value) -> Vec<String> {
+    match v {
+        Value::List(items) => items.into_iter().map(as_str).collect(),
+        _ => unreachable!("expected List of String"),
     }
 }
 

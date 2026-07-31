@@ -74,7 +74,18 @@ pub trait Reconciler: Send + Sync {
     fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         Ok(PrepareOutcome::default())
     }
+    /// Poke a unit whose *unit file* golem just changed — a true restart, since
+    /// systemd cannot reload a changed definition into a running service (ADR
+    /// 0020 §5). What the structural config-file heuristic enacts.
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
+        Ok(())
+    }
+    /// Poke a unit an authored `notifies` named (ADR 0036): reload where the unit
+    /// supports it, restart otherwise, do nothing if it is inactive. A
+    /// notification says the unit's *inputs* changed, so the lighter of the two is
+    /// right. Starting an inactive unit is deliberately out of scope — an inactive
+    /// unit's desired state belongs to its `systemdService` glyph.
+    fn try_reload_or_restart(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
     /// Best-effort host evidence about why a glyph could not settle, captured at
@@ -107,6 +118,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
     }
+    fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+        (**self).try_reload_or_restart(unit)
+    }
     fn diagnose(&self, glyph: &Glyph) -> Option<String> {
         (**self).diagnose(glyph)
     }
@@ -132,6 +146,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Box<R> {
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
+    }
+    fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+        (**self).try_reload_or_restart(unit)
     }
     fn diagnose(&self, glyph: &Glyph) -> Option<String> {
         (**self).diagnose(glyph)
@@ -197,6 +214,12 @@ impl<R: Reconciler> Reconciler for PanicCatching<R> {
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.inner.restart_unit(unit)
+        }))
+        .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
+    }
+    fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.try_reload_or_restart(unit)
         }))
         .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
     }

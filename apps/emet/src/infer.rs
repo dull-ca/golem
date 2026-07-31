@@ -943,6 +943,18 @@ fn comparable_element(t: &Type) -> bool {
     }
 }
 
+/// Name a type the way a diagnostic should say it out loud. An unresolved
+/// variable is named by its constraint bound rather than by `render_type` — the
+/// friendly letter `a` tells an author nothing, so a bare number literal reads as
+/// "a `number`" (ADR 0032 §1).
+fn describe_found(found: &Type) -> String {
+    match found {
+        Type::Var(_, Constraint::None) => "something else".to_string(),
+        Type::Var(_, c) => format!("a `{}`", constraint_name(*c)),
+        concrete => format!("a `{}`", render_type(concrete)),
+    }
+}
+
 fn constraint_name(c: Constraint) -> &'static str {
     match c {
         Constraint::None => "unconstrained",
@@ -1340,6 +1352,7 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
         Expr::Scroll {
             name,
             policy,
+            notifies,
             contents,
         } => {
             let nt = infer_expr(inf, env, name)?;
@@ -1360,6 +1373,43 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                         p.1.clone(),
                     )
                 })?;
+            }
+            if let Some(n) = notifies {
+                // A literal list is checked element-wise rather than unified whole
+                // against `List String`, so one bad entry is underlined where it
+                // was written instead of blaming the whole list, and the entries
+                // are reported in author order. Anything else takes the
+                // whole-expression path. Both messages are framed context-first
+                // for the same reason `policy`'s is, just above.
+                match &n.0 {
+                    Expr::List(entries) => {
+                        for entry in entries {
+                            let et = infer_expr(inf, env, entry)?;
+                            inf.unify(&et, &con("String"), &entry.1).map_err(|_| {
+                                TypeError::new(
+                                    format!(
+                                        "every `notifies` entry is a systemd unit name, so it has to be a `String` — this one is {}",
+                                        describe_found(&inf.apply(&et))
+                                    ),
+                                    entry.1.clone(),
+                                )
+                            })?;
+                        }
+                    }
+                    _ => {
+                        let nt = infer_expr(inf, env, n)?;
+                        let unit_list = Type::Con("List".to_string(), vec![con("String")]);
+                        inf.unify(&nt, &unit_list, &n.1).map_err(|_| {
+                            TypeError::new(
+                                format!(
+                                    "the `notifies` field takes a `List String` of systemd unit names, but this is {}",
+                                    describe_found(&inf.apply(&nt))
+                                ),
+                                n.1.clone(),
+                            )
+                        })?;
+                    }
+                }
             }
             match contents {
                 ContentsExpr::Glyphs(glyphs) => {
@@ -2110,7 +2160,7 @@ fn infer_group(
 /// signature or pattern may name it. `Policy`, `OnExhaust`, and `Contents` are
 /// first-class for the same reason (ADR 0031 §7): a library can compute a policy
 /// or a group tree behind a signature and hand it to `scroll`.
-fn builtin_type_arity(name: &str) -> Option<usize> {
+pub(crate) fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "String" | "Char" | "AptPackage" | "SystemdService" | "Filesystem" | "LineInFile"
         | "Glyph" | "Entry" | "Scroll" | "Policy" | "OnExhaust" | "Contents" | "Bool" | "Int"

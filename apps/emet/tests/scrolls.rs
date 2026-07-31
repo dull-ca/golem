@@ -29,6 +29,7 @@ main =
         Scroll {
             name: "web".into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(vec![
                 Glyph::AptPackage {
                     name: "nginx".into()
@@ -44,6 +45,7 @@ main =
         Scroll {
             name: "db".into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(vec![Glyph::AptPackage {
                 name: "postgresql".into()
             }]),

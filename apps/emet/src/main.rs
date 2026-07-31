@@ -177,6 +177,15 @@ fn print_text(compiled: &Compiled) {
         for g in glyphs {
             println!("    * {}", g.describe());
         }
+        for unit in s.leaf_units() {
+            if !unit.notifies.is_empty() {
+                println!(
+                    "    ↻ {} notifies {}",
+                    unit.path.join("/"),
+                    unit.notifies.join(", ")
+                );
+            }
+        }
     }
 }
 

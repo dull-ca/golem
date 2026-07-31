@@ -86,3 +86,120 @@ fn use_resolves_to_definition_span_same_file() {
     assert!(def.span.contains(&def_decl_offset) || def.span.start == def_decl_offset);
     assert!(def.module.is_none());
 }
+
+const DOCUMENTED: &str = "\
+-- Greets the world.
+--
+-- Second paragraph.
+greeting : String
+greeting = \"hi\"
+
+plain : String
+plain = \"no docs\"
+
+-- Detached by a blank line.
+
+detached : String
+detached = \"nope\"
+
+main : List Scroll
+main =
+  let local = greeting
+  in []
+";
+
+#[test]
+fn doc_comment_above_a_documented_definition_is_its_comment_block() {
+    let span = byte_offset(DOCUMENTED, "greeting = ", 0);
+    let doc = emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 8))
+        .expect("a doc comment above greeting");
+    assert_eq!(doc, "Greets the world.\n\nSecond paragraph.");
+}
+
+#[test]
+fn an_undocumented_definition_has_no_doc_comment() {
+    let span = byte_offset(DOCUMENTED, "plain = ", 0);
+    assert_eq!(
+        emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 5)),
+        None
+    );
+}
+
+#[test]
+fn a_comment_separated_by_a_blank_line_is_not_a_doc_comment() {
+    let span = byte_offset(DOCUMENTED, "detached = ", 0);
+    assert_eq!(
+        emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 8)),
+        None
+    );
+}
+
+#[test]
+fn a_local_binding_takes_no_doc_comment_from_the_line_above_it() {
+    let span = byte_offset(DOCUMENTED, "local = ", 0);
+    assert_eq!(
+        emet::query::doc_comment_above_definition(DOCUMENTED, &(span..span + 5)),
+        None
+    );
+}
+
+#[test]
+fn a_type_declaration_carries_its_doc_comment() {
+    let src = "-- A shape, round or square.\ntype Shape = Circle Int | Square Int\n";
+    let start = byte_offset(src, "type Shape", 0);
+    let doc = emet::query::doc_comment_above_definition(src, &(start..src.len()))
+        .expect("a doc comment above the type");
+    assert_eq!(doc, "A shape, round or square.");
+}
+
+const OWN_HEADER: &str = "\
+module Main exposing (greeting, Shape, main)
+
+type Shape = Circle Int
+
+greeting : String
+greeting = \"hi\"
+
+main : List Scroll
+main =
+  []
+";
+
+#[test]
+fn a_value_in_the_modules_own_exposing_list_carries_its_type_and_definition() {
+    let analysis = analyze_source(OWN_HEADER);
+    let header_offset = byte_offset(OWN_HEADER, "greeting", 0);
+    let ty = analysis
+        .index
+        .type_at(header_offset)
+        .expect("a type at the exposed name");
+    assert_eq!(ty.to_string(), "String");
+    let def = analysis
+        .index
+        .definition_at(header_offset)
+        .expect("a definition site at the exposed name");
+    assert_eq!(def.span.start, byte_offset(OWN_HEADER, "greeting = ", 0));
+    assert!(def.module.is_none());
+}
+
+#[test]
+fn a_type_in_the_modules_own_exposing_list_resolves_to_its_declaration() {
+    let analysis = analyze_source(OWN_HEADER);
+    let header_offset = byte_offset(OWN_HEADER, "Shape", 0);
+    let def = analysis
+        .index
+        .definition_at(header_offset)
+        .expect("a definition site at the exposed type");
+    assert_eq!(def.span.start, byte_offset(OWN_HEADER, "type Shape", 0) + 5);
+    assert!(def.module.is_none());
+}
+
+#[test]
+fn a_type_in_an_exposing_list_keeps_its_declaration_hover_rather_than_a_value_type() {
+    let analysis = analyze_source(OWN_HEADER);
+    let header_offset = byte_offset(OWN_HEADER, "Shape", 0);
+    assert!(
+        analysis.index.type_at(header_offset).is_none(),
+        "an exposed type name stays on the type-declaration hover path"
+    );
+}

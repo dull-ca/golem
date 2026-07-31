@@ -41,6 +41,7 @@ use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
     WalStep, WalStepState,
 };
+use crate::plan_report::{PlanReport, PlanSummary, PlannedOp, PredictedReload, ReloadKind};
 use crate::planroom::PlanRoom;
 use crate::progress::{EventKind, EventLevel, ProgressRegistry};
 use crate::reconcile::plan;
@@ -175,6 +176,14 @@ const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/syst
 /// reserve names, so this is a naming convention rather than an enforced literal.
 const REMOVES_SEGMENT: &str = "<removes>";
 
+/// The synthetic terminal segment the coalesced end-of-apply reload set reports
+/// under, `[host, "<reloads>"]` — the same naming convention and the same
+/// disjointness argument as [`REMOVES_SEGMENT`], so no present unit shares the
+/// path and no rollback can reach these brackets. Both reload directions land
+/// here so the live apply tree and `golemctl plan` show the same final line
+/// (ADR 0036).
+const RELOADS_SEGMENT: &str = "<reloads>";
+
 impl Foreman {
     pub fn new(host: String, planroom: Box<dyn PlanRoom>, reconciler: Box<dyn Reconciler>) -> Self {
         let foreman = Self {
@@ -288,6 +297,73 @@ impl Foreman {
             .map_err(ForemanError::Internal)?;
         self.progress.open(attempt.reconcile_id);
         Ok((attempt.reconcile_id, selected))
+    }
+
+    /// The dry run behind `POST /plan` (ADR 0036): [`ingest`]'s pure prefix and
+    /// none of its writes — no `open_attempt`, no `progress.open`, no in-progress
+    /// gate, no write lock. The reads are unsynchronised but monotonic — the WAL
+    /// and the revision log only ever gain rows — and `against_revision` is read
+    /// *first*, before the steps it labels, so a reconcile committing underneath
+    /// can only leave the label behind the diff, never ahead of it. A plan taken
+    /// during a live reconcile is therefore stale rather than wrong, and a caller
+    /// can tell.
+    ///
+    /// The order of `ops` is the promise: leaf units in source order, each unit's
+    /// ops as [`run_reconcile`] would enact them, vanished-removes last. The
+    /// per-unit `Remove` filter mirrors `run_reconcile`'s for the same reason
+    /// `leaf_as_scroll` documents — a leaf diffed alone would call every glyph
+    /// outside it a removal.
+    ///
+    /// [`ingest`]: Foreman::ingest
+    /// [`run_reconcile`]: Foreman::run_reconcile
+    pub fn plan_manifest(&self, bytes: &[u8]) -> Result<PlanReport, ForemanError> {
+        let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
+            detail: e.to_string(),
+        })?;
+        let desired = self.select(&manifest.scrolls);
+        let against_revision =
+            self.planroom
+                .latest_revision_id()
+                .map_err(|e| ForemanError::WalUnreadable {
+                    detail: e.to_string(),
+                })?;
+        let steps = self
+            .planroom
+            .wal_steps()
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        let prior = applied_outcomes(&steps);
+        let units = desired.scroll.leaf_units();
+        let mut placed: Vec<(Vec<String>, GlyphOp)> = Vec::new();
+        for unit in &units {
+            for op in plan(&prior, &leaf_as_scroll(unit))
+                .into_iter()
+                .filter(|o| !matches!(o, GlyphOp::Remove { .. }))
+            {
+                placed.push((unit.path.clone(), op));
+            }
+        }
+        for group in self
+            .plan_vanished_removes(&prior, &desired.scroll, &units)
+            .map_err(ForemanError::Internal)?
+        {
+            for op in group.ops {
+                placed.push((group.unit_path.clone(), op));
+            }
+        }
+        let planned: Vec<PlannedOp> = placed
+            .iter()
+            .map(|(unit_path, op)| PlannedOp::of(unit_path, op))
+            .collect();
+        Ok(PlanReport {
+            host: self.host.clone(),
+            scroll_content_id: desired.content_id.to_string(),
+            against_revision,
+            summary: PlanSummary::over(&planned),
+            ops: planned,
+            reloads: predicted_reloads(&desired.scroll, &placed),
+        })
     }
 
     fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
@@ -479,8 +555,12 @@ impl Foreman {
             unit_reports.push(unit_report_from(result));
         }
 
-        self.propagate_config(reconcile_id)
-            .map_err(ForemanError::Internal)?;
+        if let Some(reloads) = self
+            .propagate_config(reconcile_id, &desired.scroll)
+            .map_err(ForemanError::Internal)?
+        {
+            unit_reports.push(reloads);
+        }
         let revision = self
             .settle(reconcile_id, &desired)
             .map_err(ForemanError::Internal)?;
@@ -1196,27 +1276,47 @@ impl Foreman {
     /// its config then rolled back under `on_exhaust = rollback` — is excluded via
     /// [`crate::wal::cancelled_dones`], the same pairing the applied-set fold uses,
     /// so a rolled-back unit's service is never spuriously restarted (ADR 0029 §4).
-    fn propagate_config(&self, reconcile_id: u64) -> Result<()> {
+    ///
+    /// ADR 0036 adds a second, authored source over the same rows: the `notifies`
+    /// union at a step's `unit_path` ([`notified_units`]), enacted as
+    /// `try-reload-or-restart` rather than a restart. [`merge_reloads`] folds the
+    /// two into one coalesced set — restart wins where both name a unit — and both
+    /// are journaled under [`RELOADS_SEGMENT`].
+    ///
+    /// The two sets treat a cancelled `Done` differently, deliberately. The
+    /// structural pass drops it: a unit file rolled back was never really written,
+    /// so nothing wants restarting. The notify pass keeps it: the rollback *did*
+    /// rewrite the file, back to its prior contents, and the service still has to
+    /// pick that up (ADR 0036 Consequences).
+    ///
+    /// Returns the `<reloads>` [`UnitReport`] the enacted set earns — the same
+    /// group `projection::rebuild_report` folds back out of these rows — so a
+    /// failed reload reaches the operator instead of being swallowed, and the live
+    /// report and the reattach-rebuilt one carry the same units.
+    fn propagate_config(&self, reconcile_id: u64, desired: &Scroll) -> Result<Option<UnitReport>> {
         let steps = self.planroom.wal_steps_for(reconcile_id)?;
         let cancelled = crate::wal::cancelled_dones(&steps);
-        let mut units: Vec<String> = Vec::new();
+        let notifies_by_path = desired.notifies_by_path();
+        let mut structural: Vec<(String, String)> = Vec::new();
+        let mut notified: Vec<(String, String)> = Vec::new();
         for step in &steps {
             if step.state != WalStepState::Done || step.changed != Some(true) {
                 continue;
             }
-            if cancelled.contains(&step.seq) {
-                continue;
-            }
-            if let Some(path) = changed_file_path(&step.op) {
-                if let Some(unit) = unit_for_config_file(&path) {
-                    if !units.contains(&unit) {
-                        units.push(unit);
-                    }
+            if !cancelled.contains(&step.seq) {
+                if let Some(unit) =
+                    changed_file_path(&step.op).and_then(|path| unit_for_config_file(&path))
+                {
+                    structural.push((unit, step.glyph_key.clone()));
                 }
             }
+            for unit in notified_units(&notifies_by_path, &step.unit_path) {
+                notified.push((unit, step.glyph_key.clone()));
+            }
         }
-        if units.is_empty() {
-            return Ok(());
+        let reloads = merge_reloads(structural, notified);
+        if reloads.is_empty() {
+            return Ok(None);
         }
         let ord = steps
             .iter()
@@ -1224,45 +1324,95 @@ impl Foreman {
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);
-        // NOTE: same host-root placeholder as `enact` — see the note there.
-        let unit_path = [self.host.clone()];
-        for (n, unit) in units.into_iter().enumerate() {
-            let glyph = Glyph::SystemdService { unit: unit.clone() };
-            let cid = scroll_format::content_id_of_glyph(&glyph);
-            let op = GlyphOp::Noop {
-                cid,
-                glyph: glyph.clone(),
+        let unit_path = [self.host.clone(), RELOADS_SEGMENT.to_string()];
+        let mut lines: Vec<GlyphLine> = Vec::new();
+        let mut failures: Vec<GlyphFailure> = Vec::new();
+        for (n, reload) in reloads.into_iter().enumerate() {
+            let (action, key) = match reload.kind {
+                ReloadKind::Restart => (WalAction::Restart, format!("restart:{}", reload.unit)),
+                ReloadKind::ReloadOrRestart => {
+                    (WalAction::Reload, format!("reload:{}", reload.unit))
+                }
             };
+            let glyph = Glyph::SystemdService {
+                unit: reload.unit.clone(),
+            };
+            let cid = scroll_format::content_id_of_glyph(&glyph);
+            let op = GlyphOp::Noop { cid, glyph };
             let step_ord = ord + n as u64;
             self.planroom.append_wal_step(
                 reconcile_id,
                 step_ord,
-                &format!("restart:{unit}"),
-                WalAction::Restart,
+                &key,
+                action,
                 WalStepState::Intended,
                 &op,
                 Some(&Inverse::Nothing),
                 None,
                 &unit_path,
             )?;
-            let restarted = self.reconciler.restart_unit(&unit);
-            let state = match &restarted {
+            let enacted = match reload.kind {
+                ReloadKind::Restart => self.reconciler.restart_unit(&reload.unit),
+                ReloadKind::ReloadOrRestart => self.reconciler.try_reload_or_restart(&reload.unit),
+            };
+            let reason = match &enacted {
+                Ok(()) => None,
+                Err(EnactError::Fatal(m)) | Err(EnactError::Retryable(m)) => Some(m.clone()),
+            };
+            let state = match &enacted {
                 Ok(()) => WalStepState::Done,
                 Err(_) => WalStepState::Failed,
             };
             self.planroom.append_wal_step(
                 reconcile_id,
                 step_ord,
-                &format!("restart:{unit}"),
-                WalAction::Restart,
+                &key,
+                action,
                 state,
                 &op,
                 Some(&Inverse::Nothing),
                 Some(false),
                 &unit_path,
             )?;
+            lines.push(GlyphLine {
+                glyph_key: key.clone(),
+                action: reload_glyph_action(reload.kind),
+                outcome: match reason {
+                    None => GlyphOutcome::Applied,
+                    Some(_) => GlyphOutcome::Failed,
+                },
+                attempts: 1,
+                message: reason.clone(),
+            });
+            if let Some(reason) = reason {
+                warn!(
+                    unit = %reload.unit,
+                    kind = ?reload.kind,
+                    reason = %reason,
+                    "reload step failed; the unit is still running its previous configuration"
+                );
+                failures.push(GlyphFailure {
+                    glyph_key: key,
+                    unit_path: unit_path.to_vec(),
+                    phase: FailPhase::Enact,
+                    class: FailClassReport::Fatal,
+                    attempts: 1,
+                    message: reason,
+                    rolled_back: false,
+                    details: None,
+                });
+            }
         }
-        Ok(())
+        Ok(Some(UnitReport {
+            unit_path: unit_path.to_vec(),
+            outcome: if failures.is_empty() {
+                UnitOutcome::Settled
+            } else {
+                UnitOutcome::Partial
+            },
+            glyphs: lines,
+            failures,
+        }))
     }
 
     /// Close a successful attempt: mark it `Committed`, refresh the applied-state
@@ -1347,7 +1497,9 @@ impl Foreman {
         let undone = match target.action {
             WalAction::Apply => self.reconciler.reverse(&outcome),
             WalAction::Reverse => self.reconciler.apply(target.op.glyph(), cid).map(|_| ()),
-            WalAction::Restart => unreachable!("a Restart step is never reversible"),
+            WalAction::Restart | WalAction::Reload => {
+                unreachable!("a Restart or Reload step is never reversible")
+            }
         };
         if let Err(e) = undone {
             warn!(glyph_key = %target.glyph_key, phase = "reverse", ?e, "rollback step failed");
@@ -1457,6 +1609,12 @@ impl Foreman {
                     }
                     _ => Ok(None),
                 },
+                WalAction::Reload => match step.op.glyph() {
+                    Glyph::SystemdService { unit } => {
+                        self.reconciler.try_reload_or_restart(unit).map(|_| None)
+                    }
+                    _ => Ok(None),
+                },
             };
             match redriven {
                 Ok(outcome) => {
@@ -1468,7 +1626,7 @@ impl Foreman {
                         WalAction::Reverse => {
                             (step.inverse.clone().unwrap_or(Inverse::Nothing), true)
                         }
-                        WalAction::Restart => (Inverse::Nothing, false),
+                        WalAction::Restart | WalAction::Reload => (Inverse::Nothing, false),
                     };
                     self.planroom.append_wal_step(
                         attempt.reconcile_id,
@@ -1742,6 +1900,7 @@ fn leaf_as_scroll(unit: &LeafUnit<'_>) -> Scroll {
     Scroll {
         name: unit.path.last().cloned().unwrap_or_default(),
         policy: None,
+        notifies: unit.notifies.clone(),
         contents: Contents::Glyphs(unit.glyphs.to_vec()),
     }
 }
@@ -2018,6 +2177,7 @@ fn empty_scroll(host: &str) -> Scroll {
     Scroll {
         name: host.to_string(),
         policy: None,
+        notifies: vec![],
         contents: scroll_format::Contents::Glyphs(vec![]),
     }
 }
@@ -2047,7 +2207,7 @@ fn applied_cid_of(op: &GlyphOp, action: WalAction) -> ContentId {
             new_cid, old_cid, ..
         } => match action {
             WalAction::Reverse => *old_cid,
-            WalAction::Apply | WalAction::Restart => *new_cid,
+            WalAction::Apply | WalAction::Restart | WalAction::Reload => *new_cid,
         },
     }
 }
@@ -2072,12 +2232,16 @@ fn has_terminal(steps: &[WalStep], intended: &WalStep) -> bool {
 /// The latest `Done` step of the attempt not yet `Reversed` — the next one a
 /// rollback should undo. Scanning newest-first reverses in the opposite order to
 /// application (LIFO), and skipping already-`Reversed` steps is what makes
-/// [`Foreman::rollback_attempt`] resumable. [`WalAction::Restart`] steps are
-/// operational records with no reversal (the unit's lifecycle is owned by its
-/// `systemdService` step), so a rollback never picks one up.
+/// [`Foreman::rollback_attempt`] resumable. [`WalAction::Restart`] and
+/// [`WalAction::Reload`] steps are operational records with no reversal (the
+/// unit's lifecycle is owned by its `systemdService` step), so a rollback never
+/// picks one up. Stated as an `Apply | Reverse` allow-list rather than a deny-list
+/// so a future non-fold action cannot become reversible by omission.
 fn next_reversible(steps: &[WalStep]) -> Option<&WalStep> {
     steps.iter().rev().find(|s| {
-        s.state == WalStepState::Done && s.action != WalAction::Restart && !reversed_after(steps, s)
+        s.state == WalStepState::Done
+            && matches!(s.action, WalAction::Apply | WalAction::Reverse)
+            && !reversed_after(steps, s)
     })
 }
 
@@ -2164,6 +2328,94 @@ fn unit_for_config_file(path: &str) -> Option<String> {
         return Some(file.to_string());
     }
     None
+}
+
+/// The units a step's unit path notifies, resolved exact-then-parent. The parent
+/// fallback is what answers for a synthetic group: a `<removes>` path is a
+/// surviving ancestor plus one marker segment ([`REMOVES_SEGMENT`]), so the exact
+/// lookup misses and the ancestor's union is the right answer.
+fn notified_units(by_path: &[(Vec<String>, Vec<String>)], unit_path: &[String]) -> Vec<String> {
+    let at = |wanted: &[String]| by_path.iter().find(|(path, _)| path == wanted);
+    at(unit_path)
+        .or_else(|| unit_path.split_last().and_then(|(_, parent)| at(parent)))
+        .map(|(_, units)| units.clone())
+        .unwrap_or_default()
+}
+
+/// The report verb for an enacted reload step, so the `<reloads>` [`UnitReport`]
+/// names the same action `projection::rebuild_report` folds out of the step's
+/// [`WalAction`].
+fn reload_glyph_action(kind: ReloadKind) -> GlyphAction {
+    match kind {
+        ReloadKind::Restart => GlyphAction::Restart,
+        ReloadKind::ReloadOrRestart => GlyphAction::Reload,
+    }
+}
+
+/// Coalesce the notified and structural pairs into one reload per unit, restart
+/// winning where both name it (a changed unit file needs more than a reload), and
+/// accumulating every triggering glyph key.
+///
+/// Sorted by unit name, not first occurrence: with `EnactConfig.workers > 1`
+/// sibling units interleave their WAL rows by `seq` nondeterministically, so
+/// first-occurrence order would vary run to run. [`Foreman::propagate_config`]
+/// and [`predicted_reloads`] both go through this one function so enactment and
+/// prediction cannot drift on the merge rule or the ordering.
+fn merge_reloads(
+    structural: Vec<(String, String)>,
+    notified: Vec<(String, String)>,
+) -> Vec<PredictedReload> {
+    let mut merged: Vec<PredictedReload> = Vec::new();
+    for (kind, pairs) in [
+        (ReloadKind::ReloadOrRestart, notified),
+        (ReloadKind::Restart, structural),
+    ] {
+        for (unit, trigger) in pairs {
+            match merged.iter_mut().find(|reload| reload.unit == unit) {
+                Some(reload) => {
+                    if kind == ReloadKind::Restart {
+                        reload.kind = ReloadKind::Restart;
+                    }
+                    if !reload.triggered_by.contains(&trigger) {
+                        reload.triggered_by.push(trigger);
+                    }
+                }
+                None => merged.push(PredictedReload {
+                    unit,
+                    kind,
+                    triggered_by: vec![trigger],
+                }),
+            }
+        }
+    }
+    merged.sort_by(|a, b| a.unit.cmp(&b.unit));
+    merged
+}
+
+/// The reload set a plan predicts, derived from would-be-changed ops the same
+/// two ways [`Foreman::propagate_config`] derives it from WAL rows, through the
+/// same [`merge_reloads`].
+///
+/// A prediction, not a promise: enactment fires on `changed == true`, which no
+/// dry run can observe, so a predicted reload may not fire (the file may already
+/// match on the host). Only `Noop` is excluded — a `Remove` counts, because
+/// enactment folds any `Done`+`changed` file step, removals included.
+fn predicted_reloads(desired: &Scroll, placed: &[(Vec<String>, GlyphOp)]) -> Vec<PredictedReload> {
+    let notifies_by_path = desired.notifies_by_path();
+    let mut structural: Vec<(String, String)> = Vec::new();
+    let mut notified: Vec<(String, String)> = Vec::new();
+    for (unit_path, op) in placed {
+        if matches!(op, GlyphOp::Noop { .. }) {
+            continue;
+        }
+        if let Some(unit) = changed_file_path(op).and_then(|path| unit_for_config_file(&path)) {
+            structural.push((unit, op.key()));
+        }
+        for unit in notified_units(&notifies_by_path, unit_path) {
+            notified.push((unit, op.key()));
+        }
+    }
+    merge_reloads(structural, notified)
 }
 
 #[cfg(test)]
@@ -2287,6 +2539,8 @@ mod tests {
         retryable_always: Mutex<Vec<String>>,
         fatal_reverse: Mutex<Vec<String>>,
         restarts: Mutex<Vec<String>>,
+        reloads: Mutex<Vec<String>>,
+        failing_reloads: Mutex<Vec<String>>,
         diagnosis: Mutex<Option<String>>,
         events: Mutex<Vec<String>>,
     }
@@ -2299,9 +2553,15 @@ mod tests {
                 retryable_always: Mutex::new(Vec::new()),
                 fatal_reverse: Mutex::new(Vec::new()),
                 restarts: Mutex::new(Vec::new()),
+                reloads: Mutex::new(Vec::new()),
+                failing_reloads: Mutex::new(Vec::new()),
                 diagnosis: Mutex::new(None),
                 events: Mutex::new(Vec::new()),
             }
+        }
+        fn failing_reload(self, unit: &str) -> Self {
+            self.failing_reloads.lock().unwrap().push(unit.into());
+            self
         }
         fn diagnosis(self, text: &str) -> Self {
             *self.diagnosis.lock().unwrap() = Some(text.into());
@@ -2337,6 +2597,9 @@ mod tests {
         }
         fn restarts(&self) -> Vec<String> {
             self.restarts.lock().unwrap().clone()
+        }
+        fn reloads(&self) -> Vec<String> {
+            self.reloads.lock().unwrap().clone()
         }
     }
     impl Reconciler for ScriptedReconciler {
@@ -2399,6 +2662,21 @@ mod tests {
         }
         fn restart_unit(&self, unit: &str) -> EnactResult<()> {
             self.restarts.lock().unwrap().push(unit.to_string());
+            Ok(())
+        }
+        fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
+            self.reloads.lock().unwrap().push(unit.to_string());
+            if self
+                .failing_reloads
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|u| u == unit)
+            {
+                return Err(EnactError::Retryable(format!(
+                    "systemctl try-reload-or-restart {unit}: Job failed"
+                )));
+            }
             Ok(())
         }
         fn diagnose(&self, glyph: &Glyph) -> Option<String> {
@@ -2498,6 +2776,7 @@ mod tests {
         Scroll {
             name: host.into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -2506,6 +2785,7 @@ mod tests {
         Scroll {
             name: name.into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -2514,6 +2794,7 @@ mod tests {
         Scroll {
             name: name.into(),
             policy: Some(policy),
+            notifies: vec![],
             contents: Contents::Glyphs(glyphs),
         }
     }
@@ -2522,6 +2803,7 @@ mod tests {
         Scroll {
             name: name.into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Groups(groups),
         }
     }
@@ -2816,6 +3098,7 @@ mod tests {
         let scroll = Scroll {
             name: "host".into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(vec![apt("nginx"), apt("pg")]),
         };
         let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
@@ -2834,6 +3117,7 @@ mod tests {
         let scroll = Scroll {
             name: "host".into(),
             policy: None,
+            notifies: vec![],
             contents: Contents::Glyphs(vec![apt("nginx")]),
         };
         let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(vec![scroll], "test"));
@@ -3112,6 +3396,312 @@ mod tests {
             foreman.rec.restarts().is_empty(),
             "a unit whose config rolled back must not restart its service"
         );
+    }
+
+    fn notifying(mut scroll: Scroll, units: &[&str]) -> Scroll {
+        scroll.notifies = units.iter().map(|u| u.to_string()).collect();
+        scroll
+    }
+
+    fn reloads_group(f: &ScriptedForeman) -> Vec<String> {
+        let id = f.foreman.latest_reconcile_id().unwrap().unwrap();
+        let projection = f.foreman.progress_projection(id, 0).unwrap().unwrap();
+        projection
+            .units
+            .iter()
+            .filter(|u| u.unit_path == vec!["host".to_string(), RELOADS_SEGMENT.to_string()])
+            .flat_map(|u| u.glyphs.iter().map(|g| g.glyph_key.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_notifying_leaf_reloads_its_units_once_a_glyph_changed() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let leaf = notifying(
+            leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+            &["nginx.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(foreman.rec.reloads(), vec!["nginx.service".to_string()]);
+        assert!(
+            foreman.rec.restarts().is_empty(),
+            "a file outside a unit directory is nobody's structural restart"
+        );
+    }
+
+    #[test]
+    fn a_notifying_leaf_that_changed_nothing_reloads_nothing() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let leaf = notifying(
+            leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+            &["nginx.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf.clone()]))
+            .unwrap();
+        foreman.rec.reloads.lock().unwrap().clear();
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert!(
+            foreman.rec.reloads().is_empty(),
+            "an all-Noop apply changed nothing, so nothing is notified"
+        );
+    }
+
+    #[test]
+    fn a_branch_notifies_union_down_and_coalesce_to_one_reload() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let branch = notifying(
+            branch_scroll(
+                "web",
+                vec![
+                    leaf_scroll("a", vec![unit_file("/etc/nginx/a.conf", "v1")]),
+                    leaf_scroll("b", vec![unit_file("/etc/nginx/b.conf", "v1")]),
+                ],
+            ),
+            &["nginx.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![branch]))
+            .unwrap();
+        assert_eq!(
+            foreman.rec.reloads(),
+            vec!["nginx.service".to_string()],
+            "two changed leaves under one notifying branch coalesce to one reload"
+        );
+    }
+
+    #[test]
+    fn a_unit_named_by_both_the_heuristic_and_a_notify_is_restarted_not_reloaded() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let leaf = notifying(
+            leaf_scroll(
+                "api",
+                vec![unit_file("/etc/systemd/system/api.service", "v1")],
+            ),
+            &["api.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(foreman.rec.restarts(), vec!["api.service".to_string()]);
+        assert!(
+            foreman.rec.reloads().is_empty(),
+            "a changed unit file needs a true restart, so restart wins the merge"
+        );
+    }
+
+    #[test]
+    fn the_reload_set_is_enacted_in_unit_name_order() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let leaf = notifying(
+            leaf_scroll("app", vec![unit_file("/etc/app/app.conf", "v1")]),
+            &["zebra.service", "middle.service", "alpha.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(
+            foreman.rec.reloads(),
+            vec![
+                "alpha.service".to_string(),
+                "middle.service".to_string(),
+                "zebra.service".to_string()
+            ],
+            "sorting by unit name keeps the coalesced step deterministic under parallel enact"
+        );
+    }
+
+    #[test]
+    fn reload_brackets_are_reported_under_the_reloads_group_and_never_join_the_applied_set() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let leaf = notifying(
+            leaf_scroll(
+                "nginx",
+                vec![unit_file("/etc/systemd/system/api.service", "v1")],
+            ),
+            &["nginx.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(
+            reloads_group(&foreman),
+            vec![
+                "restart:api.service".to_string(),
+                "reload:nginx.service".to_string()
+            ]
+        );
+        let applied = foreman.foreman.applied_state().unwrap().unwrap();
+        assert!(
+            applied
+                .outcomes
+                .iter()
+                .all(|o| !o.op.key().starts_with("reload:")),
+            "a reload is an outcome, never a glyph the next diff sees as applied"
+        );
+    }
+
+    type ReportShape = (
+        TopOutcome,
+        Vec<(
+            Vec<String>,
+            UnitOutcome,
+            Vec<(String, GlyphAction, GlyphOutcome)>,
+        )>,
+    );
+
+    /// The comparable shape of a report: what the cached one and the reattach
+    /// rebuild must agree on. Failure messages and forensics are deliberately
+    /// excluded — the rebuild degrades those honestly (ADR 0033 §2).
+    fn report_shape(report: &ReconcileReport) -> ReportShape {
+        (
+            report.outcome,
+            report
+                .units
+                .iter()
+                .map(|u| {
+                    (
+                        u.unit_path.clone(),
+                        u.outcome,
+                        u.glyphs
+                            .iter()
+                            .map(|g| (g.glyph_key.clone(), g.action, g.outcome))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_failed_reload_is_reported_and_the_cached_and_rebuilt_reports_agree() {
+        let foreman = foreman_with(ScriptedReconciler::new().failing_reload("nginx.service"))
+            .with_enact_config(EnactConfig { workers: 1 });
+        let leaf = notifying(
+            leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+            &["nginx.service"],
+        );
+        let cached = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+
+        let reloads = cached.units.last().unwrap();
+        assert_eq!(
+            reloads.unit_path,
+            vec!["host".to_string(), RELOADS_SEGMENT.to_string()],
+            "the enacted reload set is reported as its own terminal group"
+        );
+        assert_eq!(reloads.glyphs[0].action, GlyphAction::Reload);
+        assert_eq!(reloads.glyphs[0].outcome, GlyphOutcome::Failed);
+        assert!(
+            reloads.failures[0].message.contains("Job failed"),
+            "the reconciler's reason reaches the operator, {:?}",
+            reloads.failures[0].message
+        );
+        assert_eq!(
+            cached.outcome,
+            TopOutcome::Partial,
+            "a service left running its old config did not settle"
+        );
+
+        let id = foreman.foreman.latest_reconcile_id().unwrap().unwrap();
+        foreman.foreman.reports.lock().unwrap().clear();
+        let rebuilt = foreman
+            .foreman
+            .progress_projection(id, 0)
+            .unwrap()
+            .unwrap()
+            .report
+            .unwrap();
+        assert_eq!(
+            report_shape(&cached),
+            report_shape(&rebuilt),
+            "a poll after a daemon restart must not change what the reconcile is said to have done"
+        );
+    }
+
+    #[test]
+    fn a_settled_reload_keeps_the_reconcile_settled_in_both_reports() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default())
+            .with_enact_config(EnactConfig { workers: 1 });
+        let leaf = notifying(
+            leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+            &["nginx.service"],
+        );
+        let cached = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(cached.outcome, TopOutcome::Settled);
+
+        let id = foreman.foreman.latest_reconcile_id().unwrap().unwrap();
+        foreman.foreman.reports.lock().unwrap().clear();
+        let rebuilt = foreman
+            .foreman
+            .progress_projection(id, 0)
+            .unwrap()
+            .unwrap()
+            .report
+            .unwrap();
+        assert_eq!(report_shape(&cached), report_shape(&rebuilt));
+    }
+
+    #[test]
+    fn a_rolled_back_notifying_unit_still_notifies_its_units() {
+        let reconciler = ScriptedReconciler::new().fatal_on("apt:bad").ok_default();
+        let foreman = foreman_with(reconciler);
+        let leaf = notifying(
+            leaf_scroll(
+                "nginx",
+                vec![unit_file("/etc/nginx/nginx.conf", "v1"), apt("bad")],
+            ),
+            &["nginx.service"],
+        );
+        let report = foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+        assert_eq!(report.units[0].outcome, UnitOutcome::RolledBack);
+        assert_eq!(
+            foreman.rec.reloads(),
+            vec!["nginx.service".to_string()],
+            "rollback flipped the config back, which the notified unit still has to pick up"
+        );
+    }
+
+    #[test]
+    fn a_vanished_units_removes_notify_its_surviving_ancestor() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let before = notifying(
+            branch_scroll(
+                "web",
+                vec![leaf_scroll(
+                    "old",
+                    vec![unit_file("/etc/nginx/old.conf", "v1")],
+                )],
+            ),
+            &["nginx.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![before]))
+            .unwrap();
+        foreman.rec.reloads.lock().unwrap().clear();
+        let after = notifying(
+            branch_scroll(
+                "web",
+                vec![leaf_scroll(
+                    "new",
+                    vec![unit_file("/etc/nginx/new.conf", "v1")],
+                )],
+            ),
+            &["nginx.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![after]))
+            .unwrap();
+        assert_eq!(foreman.rec.reloads(), vec!["nginx.service".to_string()]);
     }
 
     // --- existing contract tests (updated to per-unit best-effort) ---
@@ -4788,6 +5378,453 @@ mod tests {
             !host.installed.lock().unwrap().contains("podman"),
             "the batch-installed podman is removed from the host by the rollback, not left \
              permanently untracked"
+        );
+    }
+
+    // --- Task PLAN-1: the read-only dry run behind `POST /plan` ---
+
+    fn actions(report: &PlanReport) -> Vec<(String, GlyphAction)> {
+        report
+            .ops
+            .iter()
+            .map(|op| (op.glyph_key.clone(), op.action))
+            .collect()
+    }
+
+    #[test]
+    fn a_plan_against_an_empty_wal_is_all_installs_in_source_order() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx"), apt("curl")])]);
+
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(report.host, "host");
+        assert_eq!(
+            report.against_revision,
+            Some(1),
+            "a host that has never applied anything still sits on the projected Init revision"
+        );
+        assert_eq!(
+            actions(&report),
+            vec![
+                ("apt:nginx".to_string(), GlyphAction::Install),
+                ("apt:curl".to_string(), GlyphAction::Install),
+            ]
+        );
+        assert_eq!(
+            report.summary,
+            PlanSummary {
+                install: 2,
+                ..Default::default()
+            }
+        );
+        assert_eq!(report.ops[0].unit_path, vec!["host".to_string()]);
+        assert!(report.reloads.is_empty());
+    }
+
+    #[test]
+    fn a_plan_after_a_revision_orders_the_unit_ops_first_and_the_vanished_removes_last() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![branch_scroll(
+                "host",
+                vec![
+                    leaf_scroll("web", vec![apt("nginx"), unit_file("/etc/motd", "old")]),
+                    leaf_scroll("legacy", vec![apt("telnetd")]),
+                ],
+            )]))
+            .unwrap();
+
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![leaf_scroll(
+                "web",
+                vec![apt("nginx"), unit_file("/etc/motd", "new"), apt("curl")],
+            )],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            actions(&report),
+            vec![
+                ("apt:nginx".to_string(), GlyphAction::Noop),
+                ("file:/etc/motd".to_string(), GlyphAction::Replace),
+                ("apt:curl".to_string(), GlyphAction::Install),
+                ("apt:telnetd".to_string(), GlyphAction::Remove),
+            ]
+        );
+        assert_eq!(
+            report.summary,
+            PlanSummary {
+                install: 1,
+                replace: 1,
+                remove: 1,
+                noop: 1,
+            }
+        );
+        assert_eq!(report.against_revision, Some(2));
+        assert_eq!(
+            report.ops[3].unit_path,
+            vec!["host".to_string(), REMOVES_SEGMENT.to_string()],
+            "a vanished unit's remove is grouped under its nearest surviving ancestor"
+        );
+        let replace = &report.ops[1];
+        assert!(replace.old_cid.is_some());
+        assert_ne!(replace.old_cid, replace.new_cid);
+    }
+
+    #[test]
+    fn a_plan_predicts_a_restart_for_every_changed_unit_file_in_unit_name_order() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll(
+                "host",
+                vec![
+                    unit_file("/etc/systemd/system/quiet.service", "same"),
+                    unit_file("/etc/systemd/system/loud.service", "old"),
+                ],
+            )]))
+            .unwrap();
+
+        let bytes = manifest(vec![scroll(
+            "host",
+            vec![
+                unit_file("/etc/systemd/system/quiet.service", "same"),
+                unit_file("/etc/systemd/system/loud.service", "new"),
+                unit_file("/etc/systemd/system/fresh.service", "brand new"),
+                unit_file("/etc/motd", "not a unit file"),
+            ],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            report
+                .reloads
+                .iter()
+                .map(|r| (r.unit.clone(), r.kind, r.triggered_by.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "fresh.service".to_string(),
+                    ReloadKind::Restart,
+                    vec!["file:/etc/systemd/system/fresh.service".to_string()]
+                ),
+                (
+                    "loud.service".to_string(),
+                    ReloadKind::Restart,
+                    vec!["file:/etc/systemd/system/loud.service".to_string()]
+                ),
+            ],
+            "the unchanged unit file predicts nothing, and the rest are ordered by unit name exactly as enactment orders them"
+        );
+    }
+
+    #[test]
+    fn a_plan_predicts_a_reload_or_restart_for_every_notified_unit() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![notifying(
+                leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+                &["nginx.service"],
+            )],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert_eq!(
+            report
+                .reloads
+                .iter()
+                .map(|r| (r.unit.clone(), r.kind, r.triggered_by.clone()))
+                .collect::<Vec<_>>(),
+            vec![(
+                "nginx.service".to_string(),
+                ReloadKind::ReloadOrRestart,
+                vec!["file:/etc/nginx/nginx.conf".to_string()]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_plan_predicts_a_restart_where_a_notify_and_the_heuristic_name_one_unit() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![notifying(
+                leaf_scroll(
+                    "api",
+                    vec![unit_file("/etc/systemd/system/api.service", "v1")],
+                ),
+                &["api.service"],
+            )],
+        )]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert_eq!(report.reloads.len(), 1);
+        assert_eq!(report.reloads[0].kind, ReloadKind::Restart);
+    }
+
+    #[test]
+    fn a_no_change_plan_predicts_no_reloads() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![notifying(
+                leaf_scroll("nginx", vec![unit_file("/etc/nginx/nginx.conf", "v1")]),
+                &["nginx.service"],
+            )],
+        )]);
+        foreman.foreman.apply_manifest(&bytes).unwrap();
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert!(
+            report.reloads.is_empty(),
+            "every op is a Noop, so nothing would change and nothing would be notified"
+        );
+    }
+
+    #[test]
+    fn a_plan_writes_nothing_to_the_journal() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("nginx")])]))
+            .unwrap();
+        let steps_before = foreman.foreman.planroom.wal_steps().unwrap().len();
+        let attempts_before = foreman.foreman.planroom.attempts().unwrap().len();
+        let revisions_before = foreman.foreman.revisions().unwrap().len();
+        let events_before = foreman.rec.events().len();
+
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx"), apt("curl")])]);
+        foreman.foreman.plan_manifest(&bytes).unwrap();
+        foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            foreman.foreman.planroom.wal_steps().unwrap().len(),
+            steps_before
+        );
+        assert_eq!(
+            foreman.foreman.planroom.attempts().unwrap().len(),
+            attempts_before
+        );
+        assert_eq!(foreman.foreman.revisions().unwrap().len(), revisions_before);
+        assert_eq!(
+            foreman.rec.events().len(),
+            events_before,
+            "planning touches no reconciler"
+        );
+    }
+
+    #[test]
+    fn a_plan_runs_while_an_attempt_is_still_open() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("base")])]))
+            .unwrap();
+        let committed_revision = foreman.foreman.latest_revision_id().unwrap();
+
+        let bytes = manifest(vec![scroll(
+            "host",
+            vec![apt("base"), apt("nginx"), apt("curl")],
+        )]);
+        let (reconcile_id, _selected) = foreman.foreman.ingest(&bytes).unwrap();
+
+        let before_any_enact = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert_eq!(
+            actions(&before_any_enact),
+            vec![
+                ("apt:base".to_string(), GlyphAction::Noop),
+                ("apt:nginx".to_string(), GlyphAction::Install),
+                ("apt:curl".to_string(), GlyphAction::Install),
+            ],
+            "an open attempt that has enacted nothing yet leaves the plan on the last \
+             committed set"
+        );
+
+        let glyph = apt("nginx");
+        let cid = scroll_format::content_id_of_glyph(&glyph);
+        let op = GlyphOp::Install {
+            cid,
+            glyph: glyph.clone(),
+        };
+        let unit_path = vec!["host".to_string()];
+        for state in [WalStepState::Intended, WalStepState::Done] {
+            foreman
+                .foreman
+                .planroom
+                .append_wal_step(
+                    reconcile_id,
+                    0,
+                    "apt:nginx",
+                    WalAction::Apply,
+                    state,
+                    &op,
+                    Some(&Inverse::Nothing),
+                    Some(true),
+                    &unit_path,
+                )
+                .unwrap();
+        }
+
+        let mid_reconcile = foreman.foreman.plan_manifest(&bytes).unwrap();
+        assert_eq!(
+            actions(&mid_reconcile),
+            vec![
+                ("apt:base".to_string(), GlyphAction::Noop),
+                ("apt:nginx".to_string(), GlyphAction::Noop),
+                ("apt:curl".to_string(), GlyphAction::Install),
+            ],
+            "applied_outcomes folds any Done row, so a plan taken mid-reconcile sees the \
+             partially enacted state — exactly what an apply would diff against"
+        );
+        assert_eq!(
+            mid_reconcile.against_revision, committed_revision,
+            "the label names the last committed revision, never one the open attempt has \
+             not projected yet"
+        );
+        assert_eq!(
+            foreman.foreman.latest_reconcile_id().unwrap(),
+            Some(reconcile_id),
+            "planning opens no attempt of its own"
+        );
+    }
+
+    /// A planroom that commits one attempt — and so projects one new revision —
+    /// the first time the WAL is read after it is armed. It reproduces a reconcile
+    /// settling underneath a plan, in the one window `plan_manifest`'s
+    /// unsynchronised reads leave open.
+    struct CommitsARevisionOnWalRead {
+        inner: MemoryPlanRoom,
+        armed: Mutex<bool>,
+    }
+    impl CommitsARevisionOnWalRead {
+        fn new() -> Self {
+            Self {
+                inner: MemoryPlanRoom::new(),
+                armed: Mutex::new(false),
+            }
+        }
+        fn arm(&self) {
+            *self.armed.lock().unwrap() = true;
+        }
+    }
+    impl PlanRoom for CommitsARevisionOnWalRead {
+        fn wal_steps(&self) -> Result<Vec<WalStep>> {
+            let fire = std::mem::replace(&mut *self.armed.lock().unwrap(), false);
+            if fire {
+                let attempt = self.inner.open_attempt(None)?;
+                self.inner
+                    .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Committed)?;
+            }
+            self.inner.wal_steps()
+        }
+        fn applied_state(&self) -> Result<Option<AppliedState>> {
+            self.inner.applied_state()
+        }
+        fn put_applied_state(&self, state: &AppliedState) -> Result<()> {
+            self.inner.put_applied_state(state)
+        }
+        fn revisions(&self) -> Result<Vec<Revision>> {
+            self.inner.revisions()
+        }
+        fn revision(&self, id: u64) -> Result<Option<Revision>> {
+            self.inner.revision(id)
+        }
+        fn latest_revision_id(&self) -> Result<Option<u64>> {
+            self.inner.latest_revision_id()
+        }
+        fn open_attempt(&self, scroll_content_id: Option<ContentId>) -> Result<ReconcileAttempt> {
+            self.inner.open_attempt(scroll_content_id)
+        }
+        fn set_attempt_phase(&self, reconcile_id: u64, phase: AttemptPhase) -> Result<()> {
+            self.inner.set_attempt_phase(reconcile_id, phase)
+        }
+        fn latest_attempt(&self) -> Result<Option<ReconcileAttempt>> {
+            self.inner.latest_attempt()
+        }
+        fn attempts(&self) -> Result<Vec<ReconcileAttempt>> {
+            self.inner.attempts()
+        }
+        fn append_wal_step(
+            &self,
+            reconcile_id: u64,
+            step_ord: u64,
+            glyph_key: &str,
+            action: WalAction,
+            state: WalStepState,
+            op: &GlyphOp,
+            inverse: Option<&Inverse>,
+            changed: Option<bool>,
+            unit_path: &[String],
+        ) -> Result<WalStep> {
+            self.inner.append_wal_step(
+                reconcile_id,
+                step_ord,
+                glyph_key,
+                action,
+                state,
+                op,
+                inverse,
+                changed,
+                unit_path,
+            )
+        }
+        fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps_for(reconcile_id)
+        }
+    }
+
+    #[test]
+    fn a_revision_committed_under_a_running_plan_never_overtakes_its_label() {
+        let planroom = Arc::new(CommitsARevisionOnWalRead::new());
+        let foreman = Foreman::new(
+            "host".into(),
+            Box::new(planroom.clone()),
+            Box::new(ScriptedReconciler::new().ok_default()),
+        );
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+        foreman.apply_manifest(&bytes).unwrap();
+        let before = foreman.latest_revision_id().unwrap();
+
+        planroom.arm();
+        let report = foreman.plan_manifest(&bytes).unwrap();
+
+        assert_ne!(
+            foreman.latest_revision_id().unwrap(),
+            before,
+            "the scripted planroom did settle an attempt while the plan ran"
+        );
+        assert_eq!(
+            report.against_revision, before,
+            "the revision is read before the steps, so the label lags the diff rather than \
+             naming state the diff never saw"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_manifest_is_a_typed_plan_error() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let err = foreman
+            .foreman
+            .plan_manifest(b"not a manifest")
+            .unwrap_err();
+        assert_eq!(err.kind(), "manifest-undecodable");
+    }
+
+    #[test]
+    fn a_manifest_without_this_host_plans_the_removal_of_everything_applied() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("nginx")])]))
+            .unwrap();
+
+        let bytes = manifest(vec![scroll("other", vec![apt("nginx")])]);
+        let report = foreman.foreman.plan_manifest(&bytes).unwrap();
+
+        assert_eq!(
+            actions(&report),
+            vec![("apt:nginx".to_string(), GlyphAction::Remove)]
         );
     }
 }

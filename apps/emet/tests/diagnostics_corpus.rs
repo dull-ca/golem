@@ -131,6 +131,32 @@ fn c21_retry_valid_fields() {
 }
 
 #[test]
+fn c65_notifies_element_named_by_position() {
+    let (phase, msg) = err_msg("65-type-notifies-element.emet");
+    assert_eq!(phase, emet::Phase::Type, "{msg}");
+    assert!(msg.contains("notifies"), "{msg}");
+    assert!(msg.contains("String"), "{msg}");
+    assert!(!msg.contains("t1"), "leaked typevar: {msg}");
+    assert!(!msg.contains("` a `"), "leaked bare typevar letter: {msg}");
+}
+
+#[test]
+fn c66_notifies_wants_a_list() {
+    let (phase, msg) = err_msg("66-type-notifies-not-a-list.emet");
+    assert_eq!(phase, emet::Phase::Type, "{msg}");
+    assert!(msg.contains("notifies"), "{msg}");
+    assert!(msg.contains("List String"), "{msg}");
+}
+
+#[test]
+fn c67_notifies_is_not_a_glyph_field() {
+    let (phase, msg) = err_msg("67-syntax-glyph-notifies.emet");
+    assert_eq!(phase, emet::Phase::Parse, "{msg}");
+    assert!(msg.contains("unknown aptPackage field"), "{msg}");
+    assert!(msg.contains("notifies"), "{msg}");
+}
+
+#[test]
 fn c26_let_in_arm_rejected() {
     let src = corpus("26-syntax-let-in-case-arm.emet");
     let e = emet::compile(&src).unwrap_err();

@@ -415,3 +415,33 @@ CI moved off Codeberg's Woodpecker to a self-hosted nix + cachix gate (ADR 0035;
   `packaging/golemd.service`, `LAKIN-TODO.md`) and `emet.nvim`
   (`README.md`, `plugin/emet.lua`). Accepted ADRs keep their historical
   codeberg references — they are records, not live links.
+
+## D. Dogfooding roadmap (2026-07-30)
+
+The order of attack for putting golem in charge of Dr. Dub's real
+infrastructure, on the bare-metal OVH box.
+
+1. **Repeatable Debian wipe-and-reinstall on the OVH box.** Researched and
+   documented: `docs/design/ovh-debian-reinstall.md` — one
+   `POST /dedicated/server/{serviceName}/reinstall` call with inline
+   partitioning, driven from a committed per-box JSON spec
+   (`ovhcloud baremetal reinstall <server> --from-file … --wait`). Next
+   concrete steps: create the OVH service-account credentials, write the
+   box's spec file, do a first throwaway reinstall to burn down the doc's
+   Unverified list (cloud-init user-data on stock Debian, which user gets
+   the SSH key, real install duration).
+2. **Host the personal static site (bacon.ca) via golem.** Currently on
+   Vercel, built and deployed by a GitHub Action. Replace with: golem
+   manifest authoring the web server + site content on the box; a build step
+   producing the static assets. Retires the Vercel dependency and its CI.
+3. **Move CI onto the box, golem-managed.** The §C CI-box item, now with a
+   sharper shape: webhook-triggered (or polled) PR/push builds running
+   `nix flake check` with cachix push, progress visible. Candidate runners
+   to evaluate rather than hand-rolling everything: the poll-loop sketch in
+   `docs/design/ci-cachix-nix.md` vs. an existing nix-friendly runner.
+   Retires the interim GitHub Actions workflow.
+4. **(Parked) Kubernetes.** Two distinct ideas, both explicitly deferred:
+   golem regularly converting machines into k8s cluster nodes (Talos or
+   similar), and a k8s-flavored authoring layer in Emet (e.g. a
+   helm-template-with-parameters glyph, or library abstractions for
+   pods/deployments/statefulsets). Bigger undertaking; not now.

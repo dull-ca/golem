@@ -83,10 +83,27 @@ pub fn compile_entry(
 }
 
 pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
+    match read_source(entry) {
+        Ok(source) => analyze_entry_source(entry, source),
+        Err(errors) => ProjectAnalysis {
+            diagnostics: errors,
+            indexes: HashMap::new(),
+        },
+    }
+}
+
+/// `analyze_entry` for an entry whose text the caller already holds — an unsaved
+/// editor buffer. Only the entry is overlaid; every imported module is still read
+/// from disk, so another dirty buffer in the same project is analyzed as last
+/// saved.
+///
+/// Unlike the compile path this keeps going after a module fails, so the editor
+/// still gets an index for the file in front of the reader.
+pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     let search_path = manifest::search_path_for(entry);
 
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
-    let entry_name = match load_graph(entry, &search_path, &mut loaded) {
+    let entry_name = match load_module(entry, source, &search_path, &mut loaded) {
         Ok(name) => name,
         Err(errors) => {
             return ProjectAnalysis {
@@ -123,13 +140,21 @@ pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {
         let imported_ctors = import_constructors(&loaded_mod.module, &interfaces);
         let imported_defs = import_def_sites(&loaded_mod.module, &interfaces);
 
-        let (error, index) = infer::analyze_module(
+        let (error, mut index) = infer::analyze_module(
             &loaded_mod.module,
             base_ty.clone(),
             &imported_types,
             &imported_ctors,
-            imported_defs,
+            imported_defs.clone(),
             0..loaded_mod.source.len(),
+        );
+        index.type_definitions = type_definitions(&loaded_mod.module, &loaded, &interfaces);
+        crate::query::record_exposing_sites(
+            &mut index,
+            &loaded_mod.module,
+            &loaded_mod.source,
+            &base_ty,
+            &imported_defs,
         );
         if let Some(e) = error {
             diagnostics.push(type_error(loaded_mod, e));
@@ -229,7 +254,12 @@ fn load_graph(
     search_path: &SearchPath,
     loaded: &mut HashMap<String, Loaded>,
 ) -> Result<String, Vec<Error>> {
-    let source = std::fs::read_to_string(path).map_err(|e| {
+    let source = read_source(path)?;
+    load_module(path, source, search_path, loaded)
+}
+
+fn read_source(path: &Path) -> Result<String, Vec<Error>> {
+    std::fs::read_to_string(path).map_err(|e| {
         vec![Error {
             phase: Phase::Parse,
             msg: format!("cannot read {}: {e}", path.display()),
@@ -237,7 +267,18 @@ fn load_graph(
             note: None,
             file: Some(path.to_path_buf()),
         }]
-    })?;
+    })
+}
+
+/// `load_graph` minus the read: parse this module, record it, then walk its
+/// imports over the search path. Split out so a caller holding the source — the
+/// LSP, with a buffer — can enter the graph without the file on disk.
+fn load_module(
+    path: &Path,
+    source: String,
+    search_path: &SearchPath,
+    loaded: &mut HashMap<String, Loaded>,
+) -> Result<String, Vec<Error>> {
     let module = crate::parse_source_multi(&source).map_err(|mut errors| {
         for error in &mut errors {
             error.file = Some(path.to_path_buf());
@@ -356,7 +397,15 @@ fn import_ty_env(
 ) -> Result<TyEnv, Error> {
     let mut env = crate::prelude::ty_env();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        // NOTE: an imported module has no interface when it failed to
+        // type-check and `analyze_entry_source` carried on past it — so every
+        // interface lookup in this file skips a missing one rather than indexing
+        // the map. Indexing here aborted the LSP process on the first broken
+        // library. The compile path never reaches it: `check_and_eval` returns
+        // on the first library error.
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         let qualifier = import
             .alias
             .clone()
@@ -385,7 +434,7 @@ fn bind_import_exposing_ty(
     if let ImportExposing::Explicit(items) = &import.exposing {
         for item in items {
             match item {
-                Exposed::Value(name) => {
+                Exposed::Value { name, .. } => {
                     if !iface.exposed_values.contains(name) {
                         return Err(not_exposed(site, import, name));
                     }
@@ -404,17 +453,72 @@ fn bind_import_exposing_ty(
     Ok(())
 }
 
-/// Collect the arities of types this module imports via `exposing (Type)`, so
-/// inference can validate signatures that mention an imported type name (fed to
-/// `check_entry`/`check_library` as `imported_types`). A type is importable only
-/// if the exporting module exposed it.
+/// Every type name this module can write, rendered for hover: its own
+/// declarations plus the ones it imports through `exposing`. An imported type
+/// shows its constructors only when this module wrote `(..)` *and* the exporter
+/// exposed them — the same visibility the pattern side enforces, so hover never
+/// advertises a constructor a `case` here could not use. Rendering reads the
+/// exporter's own `TypeDecl`, which is why the loaded modules are passed in
+/// alongside their interfaces.
+fn type_definitions(
+    module: &Module,
+    loaded: &HashMap<String, Loaded>,
+    interfaces: &HashMap<String, Interface>,
+) -> HashMap<String, crate::query::TypeDefinition> {
+    let mut definitions = crate::query::local_type_definitions(module);
+    for import in &module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        let Some(exporter) = loaded.get(&import.module) else {
+            continue;
+        };
+        let ImportExposing::Explicit(items) = &import.exposing else {
+            continue;
+        };
+        for item in items {
+            let Exposed::Type { name, open, .. } = item else {
+                continue;
+            };
+            if !iface.exposed_type_arities.contains_key(name) {
+                continue;
+            }
+            let Some(declaration) = exporter
+                .module
+                .type_decls
+                .iter()
+                .find(|decl| &decl.name == name)
+            else {
+                continue;
+            };
+            let constructors_visible = *open && iface.exposed_sum_ctors.contains_key(name);
+            definitions.insert(
+                name.clone(),
+                crate::query::TypeDefinition {
+                    declaration: crate::query::render_type_declaration(
+                        declaration,
+                        constructors_visible,
+                    ),
+                    site: crate::query::DefSite {
+                        span: declaration.span.clone(),
+                        module: Some(import.module.clone()),
+                    },
+                },
+            );
+        }
+    }
+    definitions
+}
+
 fn import_type_arities(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
 ) -> HashMap<String, usize> {
     let mut arities = HashMap::new();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         if let ImportExposing::Explicit(items) = &import.exposing {
             for item in items {
                 if let Exposed::Type { name, .. } = item {
@@ -442,7 +546,9 @@ fn import_constructors(
     let mut ctor_schemes = HashMap::new();
     let mut sum_ctors = HashMap::new();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         for (name, scheme) in &iface.exposed_ctor_schemes {
             ctor_schemes.insert(name.clone(), scheme.clone());
         }
@@ -470,7 +576,9 @@ fn import_def_sites(
 ) -> HashMap<String, crate::query::DefSite> {
     let mut defs = HashMap::new();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         let owner = import.module.clone();
         let qualifier = import
             .alias
@@ -500,13 +608,10 @@ fn import_def_sites(
         }
         if let ImportExposing::Explicit(items) = &import.exposing {
             for item in items {
-                let name = match item {
-                    Exposed::Value(name) => name,
-                    Exposed::Type { name, .. } => name,
-                };
+                let name = item.name();
                 if let Some(span) = iface.exposed_def_spans.get(name) {
                     defs.insert(
-                        name.clone(),
+                        name.to_string(),
                         crate::query::DefSite {
                             span: span.clone(),
                             module: Some(owner.clone()),
@@ -522,7 +627,9 @@ fn import_def_sites(
 fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) -> Env {
     let mut env = eval::prelude_env();
     for import in &module.imports {
-        let iface = &interfaces[&import.module];
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
         let qualifier = import
             .alias
             .clone()
@@ -539,7 +646,7 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
         }
         if let ImportExposing::Explicit(items) = &import.exposing {
             for item in items {
-                if let Exposed::Value(name) = item {
+                if let Exposed::Value { name, .. } = item {
                     if let Some(v) = iface.value_env.lookup(name) {
                         env = env.insert(name.clone(), v);
                     }
@@ -614,10 +721,10 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         Exposing::Explicit(items) => {
             for item in items {
                 match item {
-                    Exposed::Value(name) => {
+                    Exposed::Value { name, .. } => {
                         exposed_values.insert(name.clone());
                     }
-                    Exposed::Type { name, open } => {
+                    Exposed::Type { name, open, .. } => {
                         if let Some(arity) = type_arities.get(name) {
                             exposed_type_arities.insert(name.clone(), *arity);
                         }

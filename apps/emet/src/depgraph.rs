@@ -89,11 +89,15 @@ fn free_vars_expr(
         Expr::Scroll {
             name,
             policy,
+            notifies,
             contents,
         } => {
             free_vars_expr(name, bound, names, refs);
             if let Some(p) = policy {
                 free_vars_expr(p, bound, names, refs);
+            }
+            if let Some(n) = notifies {
+                free_vars_expr(n, bound, names, refs);
             }
             match contents {
                 ContentsExpr::Glyphs(glyphs) => free_vars_expr(glyphs, bound, names, refs),

@@ -39,6 +39,7 @@ fn manifest_bytes() -> Vec<u8> {
     let host = Scroll {
         name: "h1".into(),
         policy: None,
+        notifies: vec![],
         contents: Contents::Glyphs(vec![apt("bad")]),
     };
     scroll_format::to_bytes(&Manifest::from_scrolls(vec![host], "test"))

@@ -22,6 +22,7 @@ fn compiles(entry: &str) {
 fn fleet_smoke_programs_compile() {
     compiles("apps/fleet/smoke.emet");
     compiles("apps/fleet/reload-proof.emet");
+    compiles("apps/fleet/notify-proof.emet");
 }
 
 #[test]

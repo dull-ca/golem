@@ -6,17 +6,19 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use emet_lsp::{completion_at, definition_at, diagnostics_for, hover_at};
+use emet_lsp::{completion_at, definition_at, diagnostics_for, document_symbols, hover_at};
 use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Completion, GotoDefinition, HoverRequest, Request as _};
+use lsp_types::request::{
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, Request as _,
+};
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, HoverParams, OneOf,
-    PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    Uri,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverParams, OneOf, PublishDiagnosticsParams, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
 /// The latest full text of every open document, keyed by URI. Full-sync
@@ -43,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         hover_provider: Some(true.into()),
         completion_provider: Some(CompletionOptions::default()),
         definition_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
     connection.initialize(serde_json::to_value(capabilities)?)?;
@@ -86,7 +89,9 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             let position = params.text_document_position_params;
             let result = documents
                 .get(&position.text_document.uri)
-                .and_then(|source| hover_at(source, position.position));
+                .and_then(|source| {
+                    hover_at(&position.text_document.uri, source, position.position)
+                });
             ok_response(
                 request.id,
                 serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
@@ -100,7 +105,7 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             let position = params.text_document_position;
             let items = documents
                 .get(&position.text_document.uri)
-                .map(|source| completion_at(source, position.position))
+                .map(|source| completion_at(&position.text_document.uri, source, position.position))
                 .unwrap_or_default();
             ok_response(
                 request.id,
@@ -122,6 +127,21 @@ fn handle_request(documents: &Documents, request: Request) -> Response {
             ok_response(
                 request.id,
                 serde_json::to_value(location.map(GotoDefinitionResponse::Scalar))
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        }
+        DocumentSymbolRequest::METHOD => {
+            let params: DocumentSymbolParams = match serde_json::from_value(request.params) {
+                Ok(params) => params,
+                Err(error) => return error_response(request.id, error),
+            };
+            let symbols = documents
+                .get(&params.text_document.uri)
+                .map(|source| document_symbols(&params.text_document.uri, source))
+                .unwrap_or_default();
+            ok_response(
+                request.id,
+                serde_json::to_value(DocumentSymbolResponse::Nested(symbols))
                     .unwrap_or(serde_json::Value::Null),
             )
         }
@@ -173,9 +193,10 @@ fn publish(
     uri: Uri,
     source: &str,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let diagnostics = diagnostics_for(&uri, source);
     let params = PublishDiagnosticsParams {
         uri,
-        diagnostics: diagnostics_for(source),
+        diagnostics,
         version: None,
     };
     let notification = Notification {

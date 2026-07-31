@@ -92,6 +92,7 @@ mod tests {
         Scroll {
             name: "h1".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Glyphs(glyphs),
         }
     }
@@ -100,12 +101,14 @@ mod tests {
         Scroll {
             name: "host".into(),
             policy: None,
+            notifies: vec![],
             contents: scroll_format::Contents::Groups(
                 children
                     .into_iter()
                     .map(|(name, glyphs)| Scroll {
                         name: name.into(),
                         policy: None,
+                        notifies: vec![],
                         contents: scroll_format::Contents::Glyphs(glyphs),
                     })
                     .collect(),

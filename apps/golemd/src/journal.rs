@@ -187,21 +187,32 @@ pub struct AppliedState {
 /// `Reverse` of the old version followed by an `Apply` of the new one; a rollback
 /// is a sequence of steps whose `action` is the opposite of the one it undoes.
 ///
-/// `Restart` is a third, non-fold direction: the config-propagation pass
-/// (`foreman::propagate_config`, ADR 0020 §5) records each `try-restart` of a
-/// unit whose backing file changed as a `Restart` step. It is an operational
-/// record, not a claim on the applied set — a restart of a running unit has no
-/// separate reversal, the unit's lifecycle stays owned by its `systemdService`
-/// step. So `Restart` steps are deliberately excluded from every fold that
-/// derives host truth (`wal::applied_outcomes`) and from rollback
+/// `Restart` and `Reload` are non-fold directions: the config-propagation pass
+/// (`foreman::propagate_config`) records each `try-restart` of a unit whose
+/// backing file changed (ADR 0020 §5) as a `Restart` step, and each
+/// `try-reload-or-restart` of a unit an authored `notifies` named (ADR 0036) as a
+/// `Reload` step. They are operational records, not claims on the applied set — a
+/// restart of a running unit has no separate reversal, the unit's lifecycle stays
+/// owned by its `systemdService` step. So both are deliberately excluded from
+/// every fold that derives host truth (`wal::applied_outcomes`) and from rollback
 /// (`foreman::next_reversible`); a crash mid-propagation re-runs the idempotent
-/// try-restart rather than reversing it (`foreman::redrive_intended`).
+/// systemctl call rather than reversing it (`foreman::redrive_intended`), which is
+/// what keeps the two directions distinct actions rather than one action with a
+/// key prefix — recovery re-drives each through the right reconciler call.
+///
+// NOTE: this enum is persisted as its serde *token string* in the
+// `wal_step.action` column (`planroom::action_token` / `row_to_wal_step`), never
+// as a postcard variant index. So appending a variant cannot misparse an older
+// journal — it simply never holds the new token — but RENAMING or removing one
+// silently breaks every row already written. Same scheme for `AttemptPhase` and
+// `WalStepState`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WalAction {
     Apply,
     Reverse,
     Restart,
+    Reload,
 }
 
 /// The lifecycle of one WAL step (ADR 0020 §1). A step is appended `Intended`

@@ -102,12 +102,16 @@ pub struct ReconcileProgress {
     pub report: Option<ReconcileReport>,
 }
 
-fn action_tag(op: &GlyphOp) -> &'static str {
-    match op {
-        GlyphOp::Install { .. } => "install",
-        GlyphOp::Replace { .. } => "replace",
-        GlyphOp::Remove { .. } => "remove",
-        GlyphOp::Noop { .. } => "noop",
+fn action_tag(step: &WalStep) -> &'static str {
+    match step.action {
+        WalAction::Restart => "restart",
+        WalAction::Reload => "reload",
+        WalAction::Apply | WalAction::Reverse => match step.op {
+            GlyphOp::Install { .. } => "install",
+            GlyphOp::Replace { .. } => "replace",
+            GlyphOp::Remove { .. } => "remove",
+            GlyphOp::Noop { .. } => "noop",
+        },
     }
 }
 
@@ -173,11 +177,19 @@ fn fold_state(rows: &[&WalStep]) -> (GlyphState, u32) {
 /// first-appearance order, that glyph's `wal_step` rows in seq order.
 type GroupedUnit<'a> = (Vec<String>, Vec<(String, Vec<&'a WalStep>)>);
 
-/// Group one attempt's non-`Restart` `wal_step` rows into ordered units, each an
+/// Group one attempt's `wal_step` rows into ordered units, each an
 /// ordered list of `(glyph_key, its rows in seq order)`. First-appearance order
 /// is preserved for both units and keys so the projection and the rebuilt report
 /// present glyphs in enact order. Shared by [`project`] and [`rebuild_report`] so
 /// the live view and the reattach-rebuilt report fold the same rows the same way.
+///
+/// Restart and reload rows are no longer skipped: the coalesced end-of-apply set
+/// is visible as its own synthetic `<reloads>` group, so the live apply tree and
+/// `golemctl plan` end on the same line (ADR 0036). Those rows carry a
+/// `GlyphOp::Noop` over a synthetic `SystemdService` glyph, so their verb comes
+/// from the row's [`WalAction`] rather than its op ([`action_tag`],
+/// [`glyph_action`]) — a fired reload reads `reload`/`applied`, never
+/// `noop`/`unchanged`.
 fn group_units<'a>(attempt: &ReconcileAttempt, steps: &'a [WalStep]) -> Vec<GroupedUnit<'a>> {
     let mut order: Vec<Vec<String>> = Vec::new();
     let mut by_unit: BTreeMap<Vec<String>, Vec<String>> = BTreeMap::new();
@@ -186,9 +198,6 @@ fn group_units<'a>(attempt: &ReconcileAttempt, steps: &'a [WalStep]) -> Vec<Grou
         .iter()
         .filter(|s| s.reconcile_id == attempt.reconcile_id)
     {
-        if step.action == WalAction::Restart {
-            continue;
-        }
         let unit = step.unit_path.clone();
         if !order.contains(&unit) {
             order.push(unit.clone());
@@ -232,7 +241,7 @@ pub fn project(
             let (state, rounds) = fold_state(rows);
             let action = rows
                 .last()
-                .map(|s| action_tag(&s.op).to_string())
+                .map(|s| action_tag(s).to_string())
                 .unwrap_or_else(|| "install".into());
             let state = if action == "noop" && matches!(state, GlyphState::Applied) {
                 GlyphState::Unchanged
@@ -298,7 +307,7 @@ pub fn rebuild_report(
             let (state, rounds) = fold_state(rows);
             let action = rows
                 .last()
-                .map(|s| glyph_action(&s.op))
+                .map(|s| glyph_action(s))
                 .unwrap_or(GlyphAction::Install);
             let (state, action) =
                 if matches!(action, GlyphAction::Noop) && matches!(state, GlyphState::Applied) {
@@ -365,12 +374,16 @@ pub fn rebuild_report(
     ReconcileReport::roll_up(revision, units)
 }
 
-fn glyph_action(op: &GlyphOp) -> GlyphAction {
-    match op {
-        GlyphOp::Install { .. } => GlyphAction::Install,
-        GlyphOp::Replace { .. } => GlyphAction::Replace,
-        GlyphOp::Remove { .. } => GlyphAction::Remove,
-        GlyphOp::Noop { .. } => GlyphAction::Noop,
+fn glyph_action(step: &WalStep) -> GlyphAction {
+    match step.action {
+        WalAction::Restart => GlyphAction::Restart,
+        WalAction::Reload => GlyphAction::Reload,
+        WalAction::Apply | WalAction::Reverse => match step.op {
+            GlyphOp::Install { .. } => GlyphAction::Install,
+            GlyphOp::Replace { .. } => GlyphAction::Replace,
+            GlyphOp::Remove { .. } => GlyphAction::Remove,
+            GlyphOp::Noop { .. } => GlyphAction::Noop,
+        },
     }
 }
 
@@ -453,6 +466,87 @@ mod tests {
     fn committed_phase_serializes_as_settled() {
         let v = serde_json::to_value(phase_view(AttemptPhase::Committed)).unwrap();
         assert_eq!(v, "settled");
+    }
+
+    fn reload_step(seq: u64, unit: &str, state: WalStepState) -> WalStep {
+        let glyph = Glyph::SystemdService { unit: unit.into() };
+        let cid = scroll_format::content_id_of_glyph(&glyph);
+        WalStep {
+            seq,
+            reconcile_id: 1,
+            step_ord: 9,
+            glyph_key: format!("reload:{unit}"),
+            action: WalAction::Reload,
+            state,
+            op: GlyphOp::Noop { cid, glyph },
+            inverse: None,
+            changed: Some(false),
+            unit_path: vec!["h1".into(), "<reloads>".into()],
+            at: Utc::now(),
+        }
+    }
+
+    fn revision() -> Revision {
+        Revision {
+            id: 2,
+            created_at: Utc::now(),
+            kind: crate::journal::RevisionKind::Reconcile,
+            scroll_content_id: None,
+            outcomes: vec![],
+        }
+    }
+
+    #[test]
+    fn a_fired_reload_reads_reload_applied_in_both_the_projection_and_the_rebuilt_report() {
+        let steps = vec![
+            reload_step(1, "nginx.service", WalStepState::Intended),
+            reload_step(2, "nginx.service", WalStepState::Done),
+        ];
+        let settled = attempt(AttemptPhase::Committed);
+
+        let p = project(
+            &settled,
+            &steps,
+            vec![],
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let row = &p.units[0].glyphs[0];
+        assert_eq!(row.action, "reload");
+        assert!(
+            matches!(row.state, GlyphState::Applied),
+            "a reload that ran is not an unchanged noop, {:?}",
+            row.state
+        );
+
+        let report = rebuild_report(&settled, &steps, revision());
+        let line = &report.units[0].glyphs[0];
+        assert_eq!(line.action, GlyphAction::Reload);
+        assert_eq!(line.outcome, GlyphOutcome::Applied);
+    }
+
+    #[test]
+    fn a_failed_reload_reads_failed_in_both_the_projection_and_the_rebuilt_report() {
+        let steps = vec![
+            reload_step(1, "nginx.service", WalStepState::Intended),
+            reload_step(2, "nginx.service", WalStepState::Failed),
+        ];
+        let settled = attempt(AttemptPhase::Committed);
+
+        let p = project(
+            &settled,
+            &steps,
+            vec![],
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert!(matches!(p.units[0].glyphs[0].state, GlyphState::Failed));
+
+        let report = rebuild_report(&settled, &steps, revision());
+        assert_eq!(report.units[0].glyphs[0].outcome, GlyphOutcome::Failed);
+        assert_eq!(report.units[0].outcome, UnitOutcome::Partial);
     }
 
     #[test]

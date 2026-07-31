@@ -13,12 +13,14 @@ use crate::scroll::{Glyph, Scroll};
 /// reads (ADR 0012 §1). Distinct from `emet_version`, which is provenance and
 /// is never hashed.
 ///
-// NOTE: `3` because the recursive `Scroll { name, policy, contents }` tree
-// (ADR 0031) reshaped the scroll layout, and ADR 0030's enriched `aptPackage`
-// glyph reshaped a glyph's — both land in this one `2 → 3` bump, not two (ADR
-// 0031 §5). A v2 manifest now cleanly fails `check_format_version` rather than
-// misparsing. (v2 itself was the filesystem glyph of ADR 0019.)
-pub const FORMAT_VERSION: u32 = 3;
+// NOTE: `4` because ADR 0036 added `notifies` to `Scroll`, between `policy` and
+// `contents`. Postcard is non-self-describing, so a field addition IS a layout
+// change: v3 bytes would misread the old `contents` tag as the new `notifies`
+// length. No glyph changed shape, so every glyph content id survives the bump
+// untouched and the first v4 apply is a Noop pass, not a Replace storm.
+// (v3 was the recursive `Scroll` tree of ADR 0031 plus ADR 0030's enriched
+// `aptPackage`; v2 was the filesystem glyph of ADR 0019.)
+pub const FORMAT_VERSION: u32 = 4;
 
 /// A scroll paired with its content address. The `content_id` is over the
 /// `scroll` ALONE — never over this wrapper — so a scroll's identity does not
@@ -122,12 +124,26 @@ pub fn to_bytes(manifest: &Manifest) -> Vec<u8> {
 
 /// Decode a manifest from postcard bytes, rejecting an unknown
 /// `format_version` with a typed [`FromBytesError`] rather than a misparse.
+///
+// NOTE: the version is read off the front and checked BEFORE the body is
+// decoded, because postcard is non-self-describing: under a newer layout an
+// older artifact's body is not merely different but unparseable, so decoding
+// first surfaces a stale manifest as an inscrutable serde error instead of
+// "this build speaks v4, that file is v3". `format_version` is the leading
+// field of `Manifest`, so its varint is the leading varint of the stream.
 pub fn from_bytes(bytes: &[u8]) -> Result<Manifest, FromBytesError> {
-    let manifest: Manifest =
-        postcard::from_bytes(bytes).map_err(|e| FromBytesError::Decode(e.to_string()))?;
-    check_format_version(manifest.format_version)?;
-    Ok(manifest)
+    if let Ok((found, _)) = postcard::take_from_bytes::<u32>(bytes) {
+        if (1..=MAX_PLAUSIBLE_FORMAT_VERSION).contains(&found) {
+            check_format_version(found)?;
+        }
+    }
+    postcard::from_bytes(bytes).map_err(|e| FromBytesError::Decode(e.to_string()))
 }
+
+// 31 is the last byte below printable ASCII, so no text file's leading varint
+// can land in the band: garbage reports as undecodable, and only a version this
+// build could plausibly meet reports as a version mismatch.
+const MAX_PLAUSIBLE_FORMAT_VERSION: u32 = 31;
 
 /// Accept a `format_version` only if it matches [`FORMAT_VERSION`]; any other
 /// value is [`FromBytesError::UnsupportedFormatVersion`].
@@ -154,7 +170,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_version_is_three() {
-        assert_eq!(FORMAT_VERSION, 3);
+    fn format_version_is_four() {
+        assert_eq!(FORMAT_VERSION, 4);
     }
 }

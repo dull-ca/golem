@@ -200,13 +200,21 @@ pub fn analyze_source(src: &str) -> Analysis {
     };
     let no_imports = std::collections::HashMap::new();
     let no_ctors = infer::ImportedConstructors::default();
-    let (error, index) = infer::analyze_module(
+    let (error, mut index) = infer::analyze_module(
         &module,
         prelude::ty_env(),
         &no_imports,
         &no_ctors,
         std::collections::HashMap::new(),
         0..src.len(),
+    );
+    index.type_definitions = query::local_type_definitions(&module);
+    query::record_exposing_sites(
+        &mut index,
+        &module,
+        src,
+        &infer::TyEnv::default(),
+        &std::collections::HashMap::new(),
     );
     let diagnostics = error
         .map(|e| {
@@ -220,6 +228,48 @@ pub fn analyze_source(src: &str) -> Analysis {
         })
         .unwrap_or_default();
     Analysis { diagnostics, index }
+}
+
+/// Analyze one open document as the entry of its own import graph: `buffer`
+/// stands in for the file at `path`, the imports come from disk. This is what
+/// makes an editor agree with `emetc` about an imported type or value.
+///
+/// Diagnostics from the other modules in the graph are dropped rather than
+/// shown: their spans index into their own file, so rendering them against this
+/// document would underline unrelated text. The reader sees them on opening that
+/// file. A graph that fails to load leaves no index for this path, so hover
+/// falls back to the single-file one — degraded, rather than dead.
+pub fn analyze_document(path: &Path, buffer: &str) -> Analysis {
+    let resolve::ProjectAnalysis {
+        diagnostics,
+        mut indexes,
+    } = resolve::analyze_entry_source(path, buffer.to_string());
+
+    let own_diagnostics = diagnostics
+        .into_iter()
+        .filter(|error| error.file.as_deref().is_none_or(|file| file == path))
+        .collect();
+
+    match indexes.remove(path) {
+        Some(index) => Analysis {
+            diagnostics: own_diagnostics,
+            index,
+        },
+        None => Analysis {
+            diagnostics: own_diagnostics,
+            index: analyze_source(buffer).index,
+        },
+    }
+}
+
+/// The document's symbol outline, re-parsed from `source` because the index
+/// records spans, not structure. A buffer that does not parse yields nothing —
+/// the outline empties mid-edit rather than going stale.
+pub fn document_outline(source: &str, index: &QueryIndex) -> Vec<query::Symbol> {
+    match parse_source_multi(source) {
+        Ok(module) => query::outline(&module, source, index),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Analyze a multi-module program for the LSP: resolve the import graph over the

@@ -183,14 +183,17 @@ pub enum Expr {
         path: Box<Spanned<Expr>>,
         line: Box<Spanned<Expr>>,
     },
-    /// `scroll { name = …, policy = …, glyphs | groups = … }` — a node in the
-    /// recursive scroll tree (ADR 0031 §7). A leaf carries `glyphs`, a branch
-    /// carries named sub-`groups`; `contents` holds exactly one, never both.
-    /// `policy` is optional and cascades to the leaves beneath. Not a glyph; the
-    /// program's output bottom is a `List Scroll` of per-host roots (ADR 0009).
+    /// `scroll { name = …, policy = …, notifies = …, glyphs | groups = … }` — a
+    /// node in the recursive scroll tree (ADR 0031 §7). A leaf carries `glyphs`,
+    /// a branch carries named sub-`groups`; `contents` holds exactly one, never
+    /// both. `policy` is optional and cascades to the leaves beneath; `notifies`
+    /// is optional, a `List String` of systemd units, and unions downward
+    /// instead of cascading (ADR 0036). Not a glyph; the program's output bottom
+    /// is a `List Scroll` of per-host roots (ADR 0009).
     Scroll {
         name: Box<Spanned<Expr>>,
         policy: Option<Box<Spanned<Expr>>>,
+        notifies: Option<Box<Spanned<Expr>>>,
         contents: ContentsExpr,
     },
     /// The braceless policy shorthand `rollback` / `keep` — an `on_exhaust`
@@ -371,8 +374,29 @@ pub enum Exposing {
 
 #[derive(Debug, Clone)]
 pub enum Exposed {
-    Value(String),
-    Type { name: String, open: bool },
+    Value {
+        name: String,
+        span: Span,
+    },
+    Type {
+        name: String,
+        open: bool,
+        span: Span,
+    },
+}
+
+impl Exposed {
+    pub fn name(&self) -> &str {
+        match self {
+            Exposed::Value { name, .. } | Exposed::Type { name, .. } => name,
+        }
+    }
+
+    pub fn span(&self) -> &Span {
+        match self {
+            Exposed::Value { span, .. } | Exposed::Type { span, .. } => span,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
