@@ -68,6 +68,7 @@ pub struct RenderOptions {
     pub detail: bool,
     pub color: bool,
     pub width: usize,
+    pub nested: bool,
 }
 
 impl Default for RenderOptions {
@@ -76,6 +77,7 @@ impl Default for RenderOptions {
             detail: false,
             color: false,
             width: DEFAULT_WIDTH,
+            nested: false,
         }
     }
 }
@@ -91,11 +93,11 @@ const DETAIL_INDENT: usize = 6;
 const SHORT_CID_CHARS: usize = 6;
 
 const RESET: &str = "\u{1b}[0m";
-const BOLD: &str = "\u{1b}[1m";
-const DIM: &str = "\u{1b}[2m";
-const GREEN: &str = "\u{1b}[32m";
+pub const BOLD: &str = "\u{1b}[1m";
+pub const DIM: &str = "\u{1b}[2m";
+pub const GREEN: &str = "\u{1b}[32m";
 const YELLOW: &str = "\u{1b}[33m";
-const RED: &str = "\u{1b}[31m";
+pub const RED: &str = "\u{1b}[31m";
 const CYAN: &str = "\u{1b}[36m";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,7 @@ pub async fn run(bytes: Vec<u8>, addr: &str, json: bool, detail: bool) -> Result
         detail,
         color: color_is_welcome(),
         width: DEFAULT_WIDTH,
+        nested: false,
     };
     println!("{}", present(&body, json, &options)?);
     Ok(())
@@ -241,13 +244,21 @@ pub fn present(body: &str, json: bool, options: &RenderOptions) -> Result<String
 
 pub fn render(plan: &PlanResponse, options: &RenderOptions) -> String {
     let steps = steps_of(plan);
-    let mut lines = vec![headline(plan, options), String::new()];
-    lines.extend(step_lines(&steps, options));
+    let mut blocks = vec![vec![headline(plan, options)]];
     if !steps.is_empty() {
-        lines.push(String::new());
+        blocks.push(step_lines(&steps, options));
     }
-    lines.push(footer(&distinct_summary(&plan.ops), options));
-    lines.join("\n")
+    blocks.push(vec![footer(&distinct_summary(&plan.ops), options)]);
+    stacked(blocks, options)
+}
+
+fn stacked(blocks: Vec<Vec<String>>, options: &RenderOptions) -> String {
+    let between = if options.nested { "\n" } else { "\n\n" };
+    blocks
+        .into_iter()
+        .map(|block| block.join("\n"))
+        .collect::<Vec<_>>()
+        .join(between)
 }
 
 fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
@@ -255,13 +266,17 @@ fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
         Some(id) => format!("against revision {id}"),
         None => "against no prior revision".to_string(),
     };
+    let separator = paint("·", DIM, options.color);
+    let manifest = short_cid(&plan.scroll_content_id);
+    if options.nested {
+        return format!(
+            "{}{against} {separator} manifest {manifest}",
+            " ".repeat(MARGIN)
+        );
+    }
     format!(
-        "Plan for {} {} {} {} manifest {}",
+        "Plan for {} {separator} {against} {separator} manifest {manifest}",
         plan.host,
-        paint("·", DIM, options.color),
-        against,
-        paint("·", DIM, options.color),
-        short_cid(&plan.scroll_content_id),
     )
 }
 
@@ -792,7 +807,7 @@ fn pad(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(width.saturating_sub(length)))
 }
 
-fn paint(text: &str, sgr: &str, color: bool) -> String {
+pub fn paint(text: &str, sgr: &str, color: bool) -> String {
     if !color || sgr.is_empty() {
         return text.to_string();
     }
@@ -908,6 +923,62 @@ mod tests {
                 "                                      telegraf.service ← /etc/telegraf/telegraf.conf",
                 "",
                 "  7 changes · 4 install, 2 replace, 1 remove · 1 unchanged",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn a_nested_render_drops_the_host_indents_its_headline_and_closes_the_gaps() {
+        let rendered = render(
+            &mixed_plan(),
+            &RenderOptions {
+                nested: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(
+            rendered,
+            [
+                "  against revision 12 · manifest 3f9c1a…",
+                "  + install 3 apt packages  nginx curl jq (web/base, web/extra)",
+                "  + install 1 systemd unit  nginx.service (web/nginx)",
+                "  ~ replace 2 files         /etc/systemd/system/nginx.service /etc/motd (web/nginx, web/base)",
+                "  - remove  1 line-in-file  /etc/hosts: \"10.0.0.3 oldhost\" (web/<removes>)",
+                "  ↻ restart 1 unit          nginx.service ← /etc/systemd/system/nginx.service",
+                "  7 changes · 4 install, 2 replace, 1 remove · 1 unchanged",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn a_nested_render_with_nothing_to_do_is_two_lines() {
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: None,
+            ops: vec![op(&["web"], "apt:nginx", Action::Noop)],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 0,
+                replace: 0,
+                remove: 0,
+                noop: 1,
+            },
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                nested: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(
+            rendered,
+            [
+                "  against no prior revision · manifest 3f9c1a…",
+                "  no changes · 1 unchanged",
             ]
             .join("\n")
         );

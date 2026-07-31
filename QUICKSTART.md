@@ -124,6 +124,69 @@ transport/daemon error is non-2xx with an actionable message.
 ./target/release/golemctl show    http://127.0.0.1:7474 3 # one revision by id
 ```
 
+## Apply to a whole fleet
+
+A manifest already carries every host's scroll, so applying it everywhere is one
+command over a declared set of endpoints. That set is a TOML **inventory**
+mapping a host name to the base URL of the golemd that serves it:
+
+```toml
+# fleet.toml
+[hosts]
+scaly = "http://127.0.0.1:8807"
+
+[hosts.manta]
+url = "http://127.0.0.1:8842"
+```
+
+Both value shapes carry the same one fact; the table form is where per-host
+connection options will land later. golemctl looks for the file at
+`--inventory`, then `$GOLEMCTL_INVENTORY`, then `./fleet.toml`, then
+`./.fleet/inventory.toml` (the file the VM harness writes).
+
+```bash
+./target/release/golemctl fleet plan   examples/lichess/fleet.emet
+./target/release/golemctl fleet apply  examples/lichess/fleet.emet
+./target/release/golemctl fleet status
+```
+
+`fleet apply` compiles once, fires every host's `POST /manifest` concurrently,
+and follows them all — on a terminal, one live tree with a branch per host over
+that host's usual unit tree; otherwise host-prefixed plain lines, and with
+`--json` a single `{"hosts": {…}}` object on stdout. `fleet plan` is the same
+fan-out over the dry run, each host's diff indented under its own heading — the
+host name and its address — and so is the summary `fleet apply` closes with.
+`fleet status` gives one marked line per host, columns aligned: `✓` with its
+latest revision and applied content id, `·` where nothing has been applied yet,
+`✗` with the reason where the daemon could not be reached. `--hosts a,b` narrows
+any of them to a subset; an unknown name is an error naming the ones the
+inventory declares.
+
+Each host is isolated: a transport failure, a 409 from a daemon already
+reconciling, or a rolled-back unit stops that host alone, and every other host
+still runs to its terminal phase and is reported.
+
+**Absence is silence.** A host in the inventory that the manifest names no
+scroll for is *skipped* — never POSTed to, reported as skipped, and not counted
+against the exit code. A daemon resolves a missing scroll to the empty one, so
+without this rule a partial manifest would decommission every host it failed to
+mention. Decommissioning a host is therefore an explicitly authored empty scroll
+for it, not its removal from the program. (Single-host `golemctl apply` keeps
+its meaning: naming one daemon is an explicit order.)
+
+Exit codes: `fleet apply` exits 0 only if every host settled or was skipped, 1
+otherwise. `fleet plan` exits 0 unless a host errored — a diff is not a failure.
+`fleet status` always exits 0; an unreachable host is an observation, not an
+assertion.
+
+The local VM harness emits an inventory for its guests, so the same verbs drive
+it unchanged (`apps/fleet/README.md`):
+
+```bash
+fleet inventory                        # writes .fleet/inventory.toml, found automatically
+golemctl fleet apply examples/lichess/fleet.emet
+```
+
 ## The journal
 
 Every apply is a revision. The first is `init` (empty, written when the node
@@ -150,10 +213,17 @@ curl http://127.0.0.1:7474/revisions | jq
 - **Fake by default.** `--reconciler fake` records intent without touching apt,
   systemd, or the filesystem. `--reconciler host` enacts for real, but the
   end-to-end run against a real Debian box is still being exercised.
-- **No signing.** Anyone who can reach the agent's port can apply a manifest.
-  Trust is its own concern.
-- **No multi-node coordination.** One agent per host; each enacts only its own
-  scroll from the shared manifest.
+- **Trust is the infrastructure's.** Anyone who can reach the agent's port can
+  apply a manifest: golemd verifies nothing about a caller and golemctl sends
+  no credentials. That is the decision, not a gap — confidentiality and
+  authenticity belong to the layer below (unix sockets with file permissions,
+  loopback binds, segmentation, ssh tunnels or a mesh VPN), which golem itself
+  can provision like anything else (ADR 0040). Binding `--listen` to a routable
+  interface publishes root-equivalent control of that host.
+- **No daemon-side coordination.** One agent per host, each enacting only its
+  own scroll from the shared manifest. `golemctl fleet` fans out from the
+  operator's machine, so that machine must reach every daemon; golem-to-golem
+  propagation — submit to one, all receive — is designed but unbuilt (ADR 0039).
 - **Four glyph kinds only.** Richer shapes (workloads, services, ingress) are
   Emet library abstractions that compile down to the four glyphs — never new
   golemd resource kinds.

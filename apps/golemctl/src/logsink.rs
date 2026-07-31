@@ -18,27 +18,39 @@ pub struct LogSink {
     all: File,
 }
 
-pub fn apply_dir(reconcile_id: u64) -> PathBuf {
+fn apply_root() -> PathBuf {
     let base = std::env::var_os("TMPDIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("golemctl").join(format!("apply-{reconcile_id}"))
+    base.join("golemctl")
+}
+
+pub fn apply_dir(reconcile_id: u64) -> PathBuf {
+    apply_root().join(format!("apply-{reconcile_id}"))
+}
+
+// One host's dir in a fleet fan-out (ADR 0038). A reconcile id is per-daemon,
+// so hosts applying concurrently routinely draw the same one — the slugged host
+// name is the only thing keeping their transcripts apart.
+pub fn host_apply_dir(host: &str, reconcile_id: u64) -> PathBuf {
+    apply_root().join(format!("apply-{}-{reconcile_id}", slug_of(host)))
 }
 
 // A unit_path is one flat filename: segments joined by `-`, each character
-// outside `[A-Za-z0-9._-]` replaced with `_`, suffixed `.log` (ADR 0033 §3a).
-// `["<removes>"]` becomes `_removes_.log`; the empty (host-root) path becomes
-// `host.log`.
+// outside `[A-Za-z0-9._-]` replaced with `_` (`slug_of`), suffixed `.log`
+// (ADR 0033 §3a). `["<removes>"]` becomes `_removes_.log`; the empty
+// (host-root) path becomes `host.log`.
 pub fn unit_file_name(unit_path: &[String]) -> String {
     if unit_path.is_empty() {
         return "host.log".into();
     }
-    let slug: String = unit_path
-        .join("-")
-        .chars()
+    format!("{}.log", slug_of(&unit_path.join("-")))
+}
+
+fn slug_of(text: &str) -> String {
+    text.chars()
         .map(|c| if is_slug_safe(c) { c } else { '_' })
-        .collect();
-    format!("{slug}.log")
+        .collect()
 }
 
 fn is_slug_safe(c: char) -> bool {
@@ -69,7 +81,10 @@ pub fn event_line(ev: &Event) -> String {
 
 impl LogSink {
     pub fn create(reconcile_id: u64) -> Result<Self, std::io::Error> {
-        let dir = apply_dir(reconcile_id);
+        Self::create_at(apply_dir(reconcile_id))
+    }
+
+    pub fn create_at(dir: PathBuf) -> Result<Self, std::io::Error> {
         fs::create_dir_all(&dir)?;
         let all = OpenOptions::new()
             .create(true)
@@ -96,7 +111,9 @@ impl LogSink {
 
 // Wraps a `LogSink` so a failed create or a failed append never aborts the
 // apply: on the first IO error a single warning goes to stderr and persistence
-// goes quiet for the rest of the run.
+// goes quiet for the rest of the run. `open` derives the dir from a reconcile
+// id; `open_at` takes one the caller chose, which is how a fleet run gets a dir
+// per host (`host_apply_dir`).
 pub struct Persistence {
     sink: Option<LogSink>,
     warned: bool,
@@ -104,7 +121,15 @@ pub struct Persistence {
 
 impl Persistence {
     pub fn open(reconcile_id: u64) -> Self {
-        match LogSink::create(reconcile_id) {
+        Self::from_sink(LogSink::create(reconcile_id))
+    }
+
+    pub fn open_at(dir: PathBuf) -> Self {
+        Self::from_sink(LogSink::create_at(dir))
+    }
+
+    fn from_sink(sink: Result<LogSink, std::io::Error>) -> Self {
+        match sink {
             Ok(sink) => Self {
                 sink: Some(sink),
                 warned: false,

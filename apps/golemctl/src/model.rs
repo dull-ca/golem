@@ -143,7 +143,7 @@ impl ApplyModel {
                         rounds: g.rounds,
                         next_retry_in_ms: g.next_retry_in_ms,
                         shared: g.shared,
-                        owner: g.owner,
+                        owner: g.owner.filter(|owner| owner != &up.unit_path),
                         cmd_tail,
                     }
                 })

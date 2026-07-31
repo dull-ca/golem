@@ -224,12 +224,17 @@ fn glyph_suffix(g: &GlyphRow) -> String {
     if let Some(ms) = g.next_retry_in_ms {
         suffix.push_str(&format!("  (retry in {ms}ms)"));
     }
-    // A waiting shared duplicate names the owner it rides — its last path segment,
-    // enough to place the work without repeating the whole tree path. The suffix
-    // drops once the row credits, since a settled `≡` says the same thing.
+    // A waiting shared duplicate names the owner it rides — its last path
+    // segment, enough to place the work without repeating the whole tree path.
+    // The model blanks the owner when it is this row's own unit (a duplicate
+    // declaration inside one leaf, routine for flat host scrolls), so that case
+    // reads as a bare "(shared)" instead of appearing to name another host.
+    // The suffix drops once the row credits, since a settled `≡` says the same
+    // thing.
     if is_waiting_shared(g) {
-        if let Some(owner) = g.owner.as_ref().and_then(|o| o.last()) {
-            suffix.push_str(&format!("  (shared — {owner})"));
+        match g.owner.as_ref().and_then(|o| o.last()) {
+            Some(owner) => suffix.push_str(&format!("  (shared — {owner})")),
+            None => suffix.push_str("  (shared)"),
         }
     }
     suffix
@@ -454,7 +459,12 @@ fn static_line(l: &Line) -> AnyElement<'static> {
     }
 }
 
-fn animated_line(l: &Line) -> AnyElement<'static> {
+// The animated twin of `static_line`: the same rows, with every active mark
+// driven by the self-animating `StatusIndicator`. Public because the fleet view
+// (ADR 0038) assembles its own line list — a heading per host over that host's
+// unit-tree lines — and renders it through this same function, so the
+// single-host and fleet trees cannot drift.
+pub fn animated_line(l: &Line) -> AnyElement<'static> {
     match l {
         Line::Branch {
             depth,

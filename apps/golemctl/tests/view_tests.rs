@@ -614,6 +614,31 @@ fn a_waiting_shared_row_folds_and_names_its_owner_with_no_logs() {
     );
 }
 
+// A duplicate declaration inside one leaf owns itself: naming the unit would
+// read as another host on a flat host scroll (the "(shared — manta)" confusion,
+// 2026-07-31), so the fold blanks a same-unit owner and the suffix is a bare
+// "(shared)".
+#[test]
+fn a_duplicate_within_its_own_unit_reads_shared_without_naming_a_host() {
+    let m = model(vec![unit(
+        &["manta"],
+        vec![shared_glyph(
+            "apt:podman",
+            GlyphState::InProgress,
+            &["manta"],
+        )],
+    )]);
+    let out = view::render_to_string(&m, 100);
+    assert!(
+        out.contains("(shared)"),
+        "a same-unit duplicate still says it is shared:\n{out}"
+    );
+    assert!(
+        !out.contains("(shared — "),
+        "a same-unit duplicate never names its own unit as if it were another host:\n{out}"
+    );
+}
+
 // Once credited, the row settles to the `≡` mark and drops its suffix — it is
 // satisfied by sharing, distinct from the bright ✓ of real work.
 #[test]

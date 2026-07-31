@@ -14,7 +14,11 @@ tracing-subscriber = { workspace = true }
 clap         = { workspace = true }
 reqwest      = { workspace = true }
 iocraft      = { workspace = true }
+toml         = { workspace = true }
+scroll-format = { workspace = true }
 workspace-hack = { version = "0.1", path = "../../libs/workspace-hack" }
 
 [dev-dependencies]
 tempfile     = { workspace = true }
+golemd       = { path = "../golemd" }
+axum         = { workspace = true }

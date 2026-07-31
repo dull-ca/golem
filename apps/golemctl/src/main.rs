@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -39,6 +39,13 @@ enum Cmd {
         #[arg(long)]
         detail: bool,
     },
+    /// Fan a verb out over every host in a TOML inventory, concurrently. One
+    /// host's failure never stops the others. See [`golemctl::fleet`] for the
+    /// outcome taxonomy and exit codes, [`golemctl::inventory`] for the file.
+    Fleet {
+        #[command(subcommand)]
+        cmd: FleetCmd,
+    },
     State {
         addr: String,
     },
@@ -49,6 +56,61 @@ enum Cmd {
         addr: String,
         id: u64,
     },
+}
+
+#[derive(Args, Debug)]
+struct InventorySelection {
+    /// Inventory path; otherwise $GOLEMCTL_INVENTORY, otherwise ./fleet.toml
+    #[arg(long, global = true)]
+    inventory: Option<PathBuf>,
+    /// Apply to this comma-separated subset of the inventory's hosts
+    #[arg(long, global = true, value_name = "a,b")]
+    hosts: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum FleetCmd {
+    /// Compile once, fire every host's reconcile concurrently, follow them all.
+    /// A host the manifest names no scroll for is skipped untouched. Exits 0
+    /// only if every host settled or was skipped.
+    Apply {
+        source: PathBuf,
+        #[command(flatten)]
+        selection: InventorySelection,
+        /// Emit one aggregate JSON object on stdout, no TUI (also the non-TTY path)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask every host what an apply would do, changing nothing.
+    Plan {
+        source: PathBuf,
+        #[command(flatten)]
+        selection: InventorySelection,
+        /// Emit the per-host plan responses as one JSON object
+        #[arg(long)]
+        json: bool,
+        /// Expand every group to one glyph per line, with content ids
+        #[arg(long)]
+        detail: bool,
+    },
+    /// One marked line per inventory host: latest revision, applied content id.
+    Status {
+        #[command(flatten)]
+        selection: InventorySelection,
+        /// Emit the per-host readings as one JSON object
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl InventorySelection {
+    // Every fleet verb resolves its targets before compiling the source, so a
+    // missing inventory or a typo'd `--hosts` name fails while nothing has been
+    // built and no daemon has been contacted.
+    fn targets(self) -> Result<Vec<golemctl::inventory::Target>> {
+        let path = golemctl::inventory::resolve(self.inventory);
+        golemctl::inventory::load(&path)?.select(self.hosts.as_deref())
+    }
 }
 
 #[tokio::main]
@@ -78,6 +140,31 @@ async fn main() -> Result<()> {
             let bytes = manifest_bytes(&source).await?;
             golemctl::plan::run(bytes, &addr, json, detail).await
         }
+        Cmd::Fleet { cmd } => match cmd {
+            FleetCmd::Apply {
+                source,
+                selection,
+                json,
+            } => {
+                let targets = selection.targets()?;
+                let bytes = manifest_bytes(&source).await?;
+                golemctl::fleet::run_apply(bytes, targets, json).await
+            }
+            FleetCmd::Plan {
+                source,
+                selection,
+                json,
+                detail,
+            } => {
+                let targets = selection.targets()?;
+                let bytes = manifest_bytes(&source).await?;
+                golemctl::fleet::run_plan(bytes, targets, json, detail).await
+            }
+            FleetCmd::Status { selection, json } => {
+                let targets = selection.targets()?;
+                golemctl::fleet::run_status(targets, json).await
+            }
+        },
         Cmd::State { addr } => fetch_and_print(&addr, "state").await,
         Cmd::History { addr } => fetch_and_print(&addr, "revisions").await,
         Cmd::Show { addr, id } => fetch_and_print(&addr, &format!("revisions/{id}")).await,
