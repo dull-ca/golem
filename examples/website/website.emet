@@ -1,9 +1,9 @@
--- The web box of the self-hosted-CI loop (milestone 3): golem provisions the
--- machine that serves the website image the builder pushed. It drops in the
--- insecure-registry fragment marking golem's registry at 10.0.2.2:5000 over
--- plain HTTP, then runs one public `Workload` — the golem-website container
--- pulled from that registry, published on :80. Together with the registry and
--- builder boxes this closes the loop: build and push on one golem-managed box,
+-- The serving box of the self-hosted-CI loop (milestone 3): golem provisions
+-- `remora`, the machine that serves the website image `talos` pushed. It drops
+-- in the insecure-registry fragment marking golem's registry at 10.0.2.2:5000
+-- over plain HTTP, then runs one public `Workload` — the golem-website container
+-- pulled from that registry, published on :80. Together with `kaiju` and
+-- `talos` this closes the loop: build and push on one golem-managed box,
 -- store on another, pull and serve on a third, all fed by golem's own registry.
 --
 -- Authored against the shared `Quadlet` library, resolved from `lib/` via the
@@ -40,7 +40,9 @@ website =
     { name = "golem-website"
     , image = image registryEndpoint "golem-website" "latest"
     , env = []
+    , labels = []
     , ports = [ tcp 80 80 ]
+    , networks = []
     , volumes = []
     , restart = Always
     , expose = Public
@@ -61,7 +63,7 @@ websiteGlyphs =
 main : List Scroll
 main =
   [ scroll
-      { name = "web"
+      { name = "remora"
       , notifies = [ "golem-nftables.service" ]
       , glyphs = websiteGlyphs
       }

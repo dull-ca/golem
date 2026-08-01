@@ -1,8 +1,8 @@
--- The builder box of the self-hosted-CI loop (milestone 3): golem provisions the
--- machine that builds and pushes the website image. It installs podman and drops
--- in a registries.conf.d fragment marking golem's registry at 10.0.2.2:5000
--- insecure, so podman will push over plain HTTP to it. The push itself is a CI
--- step, not a glyph; this scroll only makes the box able to push.
+-- The builder box of the self-hosted-CI loop (milestone 3): golem provisions
+-- `talos`, the machine that builds and pushes the website image. It installs
+-- podman and drops in a registries.conf.d fragment marking golem's registry at
+-- 10.0.2.2:5000 insecure, so podman will push over plain HTTP to it. The push
+-- itself is a CI step, not a glyph; this scroll only makes the box able to push.
 --
 -- The builder scroll here mirrors examples/registry/clients.emet's builder — the
 -- container-service abstraction of ADR 0023 is where that duplication eventually
@@ -35,7 +35,7 @@ builderGlyphs =
   ]
 
 builder : Scroll
-builder = scroll { name = "builder", glyphs = builderGlyphs }
+builder = scroll { name = "talos", glyphs = builderGlyphs }
 
 main : List Scroll
 main = [ builder ]

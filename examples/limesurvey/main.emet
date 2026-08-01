@@ -1,0 +1,26 @@
+module Main exposing (..)
+
+import Ingress
+import Limesurvey
+
+survey =
+  Limesurvey.withAdministratorEmail "bigbeards@lichess.org"
+    (Limesurvey.config
+      { domain = "survey.lichess.app"
+      , databasePassword = "NOT-REAL-THEY-EXAMPLES-dYuhc5QoWgadDN7hwYqWmWSkcF01yHcL"
+      , administratorPassword = "NOT-REAL-THEY-EXAMPLES-u0w93QIjbHNTTI0sa3UNH71EyVfEChus"
+      })
+
+deployment : String -> Scroll
+deployment name =
+  let
+    published =
+      Ingress.publish (Limesurvey.route survey) (Limesurvey.workload survey)
+  in
+  scroll
+    { name = name
+    , groups = List.concat [ Ingress.units, Limesurvey.units survey published ]
+    }
+
+main : List Scroll
+main = [ deployment "manta" ]

@@ -1393,14 +1393,14 @@ mod tests {
                     content_id: None,
                 }),
             ),
-            (target("zulip"), Err("connection refused".to_string())),
+            (target("remora"), Err("connection refused".to_string())),
         ];
         assert_eq!(
             status_lines(&readings, false),
             [
-                "✓ scaly  rev 2  0123456789ab",
-                "· orbit  rev 1  nothing applied",
-                "✗ zulip  unreachable: connection refused",
+                "✓ scaly   rev 2  0123456789ab",
+                "· orbit   rev 1  nothing applied",
+                "✗ remora  unreachable: connection refused",
             ]
         );
     }
@@ -1410,14 +1410,14 @@ mod tests {
         let readings = [
             (target("scaly"), applied("scaly", 9)),
             (target("longhorn"), applied("longhorn", 10)),
-            (target("zulip"), Err("connection refused".to_string())),
+            (target("remora"), Err("connection refused".to_string())),
         ];
         assert_eq!(
             status_lines(&readings, false),
             [
                 "✓ scaly     rev 9   0123456789ab",
                 "✓ longhorn  rev 10  0123456789ab",
-                "✗ zulip     unreachable: connection refused",
+                "✗ remora    unreachable: connection refused",
             ]
         );
     }
@@ -1434,20 +1434,20 @@ mod tests {
                     content_id: None,
                 }),
             ),
-            (target("zulip"), Err("connection refused".to_string())),
+            (target("remora"), Err("connection refused".to_string())),
         ];
         let painted = status_lines(&readings, true);
         assert_eq!(
             painted[0],
-            "\u{1b}[32m✓\u{1b}[0m \u{1b}[1mscaly\u{1b}[0m  rev 2  0123456789ab"
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[1mscaly\u{1b}[0m   rev 2  0123456789ab"
         );
         assert_eq!(
             painted[1],
-            "\u{1b}[2m·\u{1b}[0m \u{1b}[1morbit\u{1b}[0m  rev 1  \u{1b}[2mnothing applied\u{1b}[0m"
+            "\u{1b}[2m·\u{1b}[0m \u{1b}[1morbit\u{1b}[0m   rev 1  \u{1b}[2mnothing applied\u{1b}[0m"
         );
         assert_eq!(
             painted[2],
-            "\u{1b}[31m✗\u{1b}[0m \u{1b}[1mzulip\u{1b}[0m  unreachable: connection refused"
+            "\u{1b}[31m✗\u{1b}[0m \u{1b}[1mremora\u{1b}[0m  unreachable: connection refused"
         );
         assert!(status_lines(&readings, false)
             .iter()

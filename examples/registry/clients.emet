@@ -26,10 +26,10 @@ clientGlyphs =
   ]
 
 builder : Scroll
-builder = scroll { name = "builder", glyphs = clientGlyphs }
+builder = scroll { name = "talos", glyphs = clientGlyphs }
 
 puller : Scroll
-puller = scroll { name = "puller", glyphs = clientGlyphs }
+puller = scroll { name = "orbit", glyphs = clientGlyphs }
 
 main : List Scroll
 main = [ builder, puller ]

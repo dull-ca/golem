@@ -1,0 +1,194 @@
+module Traefik exposing
+  ( Frontend(..)
+  , Ingress(..)
+  , defaultImage
+  , ingress
+  , publish
+  , frontendNetwork
+  , ingressGlyphs
+  , ingressUnit
+  , routeLabels
+  )
+
+import Nftables exposing (nftablesUnit)
+import Routing exposing (Route(..))
+import Quadlet exposing
+  ( Image
+  , image
+  , Label
+  , label
+  , tcp
+  , Network(..)
+  , Restart(..)
+  , Access(..)
+  , Relabel(..)
+  , fromVolume
+  , fromHost
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+
+type Frontend = Frontend
+  { network             : String
+  , certificateResolver : String
+  }
+
+type Ingress = Ingress
+  { image     : Image
+  , acmeEmail : String
+  , frontend  : Frontend
+  }
+
+containerName : String
+containerName = "traefik"
+
+defaultImage : Image
+defaultImage = image "docker.io/library" "traefik" "v3.3"
+
+ingress : String -> Frontend -> Ingress
+ingress acmeEmail frontend =
+  Ingress { image = defaultImage, acmeEmail = acmeEmail, frontend = frontend }
+
+plainEntryPoint : String
+plainEntryPoint = "web"
+
+secureEntryPoint : String
+secureEntryPoint = "websecure"
+
+configDirectory : String
+configDirectory = "/etc/traefik"
+
+configPath : String
+configPath = "${configDirectory}/traefik.yml"
+
+podmanSocketDirectory : String
+podmanSocketDirectory = "/run/podman"
+
+podmanApiSocket : String
+podmanApiSocket = "${podmanSocketDirectory}/podman.sock"
+
+acmeDirectory : String
+acmeDirectory = "/letsencrypt"
+
+acmeVolume : String
+acmeVolume = "traefik-acme"
+
+staticConfig : Ingress -> String
+staticConfig i =
+  case i of
+    Ingress spec ->
+      case spec.frontend of
+        Frontend front ->
+          String.join "\n"
+            [ "entryPoints:"
+            , "  ${plainEntryPoint}:"
+            , "    address: \":80\""
+            , "    http:"
+            , "      redirections:"
+            , "        entryPoint:"
+            , "          to: ${secureEntryPoint}"
+            , "          scheme: https"
+            , "  ${secureEntryPoint}:"
+            , "    address: \":443\""
+            , ""
+            , "providers:"
+            , "  docker:"
+            , "    endpoint: \"unix://${podmanApiSocket}\""
+            , "    exposedByDefault: false"
+            , "    network: \"${front.network}\""
+            , ""
+            , "certificatesResolvers:"
+            , "  ${front.certificateResolver}:"
+            , "    acme:"
+            , "      email: \"${spec.acmeEmail}\""
+            , "      storage: \"${acmeDirectory}/acme.json\""
+            , "      tlsChallenge: {}"
+            , ""
+            ]
+
+podmanApiGlyphs : List Glyph
+podmanApiGlyphs =
+  [ aptPackage { name = "podman" }
+  , systemdService { unit = "podman.socket" }
+  ]
+
+ingressWorkload : Ingress -> Workload
+ingressWorkload i =
+  case i of
+    Ingress spec ->
+      case spec.frontend of
+        Frontend front ->
+          Workload
+            { name = containerName
+            , image = spec.image
+            , env = []
+            , labels = []
+            , ports = [ tcp 80 80, tcp 443 443 ]
+            , networks = [ ManagedNetwork front.network ]
+            , volumes =
+                [ fromHost configDirectory configDirectory ReadOnly NoRelabel
+                , fromHost podmanSocketDirectory podmanSocketDirectory ReadOnly NoRelabel
+                , fromVolume acmeVolume acmeDirectory ReadWrite Private
+                ]
+            , restart = Always
+            , expose = Public
+            }
+
+ingressGlyphs : Ingress -> List Glyph
+ingressGlyphs i =
+  List.concat
+    [ podmanApiGlyphs
+    , [ directory { path = configDirectory, mode = "0755" }
+      , file
+          { path = configPath
+          , contents = staticConfig i
+          , mode = "0644"
+          }
+      ]
+    , workloadGlyphs (ingressWorkload i)
+    ]
+
+ingressUnit : Ingress -> Scroll
+ingressUnit i =
+  scroll
+    { name = containerName
+    , notifies = [ nftablesUnit ]
+    , glyphs = ingressGlyphs i
+    }
+
+publish : Frontend -> Route -> Workload -> Workload
+publish frontend target w =
+  case w of
+    Workload spec ->
+      Workload
+        { name = spec.name
+        , image = spec.image
+        , env = spec.env
+        , labels = spec.labels ++ routeLabels frontend target
+        , ports = spec.ports
+        , networks = spec.networks ++ [ frontendNetwork frontend ]
+        , volumes = spec.volumes
+        , restart = spec.restart
+        , expose = spec.expose
+        }
+
+frontendNetwork : Frontend -> Network
+frontendNetwork f =
+  case f of
+    Frontend spec -> ExistingNetwork spec.network
+
+routeLabels : Frontend -> Route -> List Label
+routeLabels f r =
+  case f of
+    Frontend frontendSpec ->
+      case r of
+        Route routeSpec ->
+          [ label "traefik.enable" "true"
+          , label "traefik.docker.network" frontendSpec.network
+          , label "traefik.http.services.${routeSpec.name}.loadbalancer.server.port" (String.fromInt routeSpec.port)
+          , label "traefik.http.routers.${routeSpec.name}.rule" "Host(`${routeSpec.host}`)"
+          , label "traefik.http.routers.${routeSpec.name}.entrypoints" secureEntryPoint
+          , label "traefik.http.routers.${routeSpec.name}.tls" "true"
+          , label "traefik.http.routers.${routeSpec.name}.tls.certresolver" frontendSpec.certificateResolver
+          ]

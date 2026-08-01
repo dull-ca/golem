@@ -30,9 +30,9 @@ fn fleet_produces_one_scroll_per_host() {
             "kaiju".to_string(),
             "manta".to_string(),
             "orbit".to_string(),
+            "remora".to_string(),
             "scaly".to_string(),
             "talos".to_string(),
-            "zulip".to_string(),
         ]
     );
 }

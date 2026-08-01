@@ -1,0 +1,11 @@
+module Routing exposing (Route(..), route)
+
+type Route = Route
+  { name : String
+  , host : String
+  , port : Int
+  }
+
+route : String -> String -> Int -> Route
+route name host port =
+  Route { name = name, host = host, port = port }

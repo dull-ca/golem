@@ -72,8 +72,8 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
    busy here; any free port works.
 
    ```nushell
-   fleet up --hosts registry,builder,web --publish registry=5000:5000 --publish web=8081:80
-   fleet deploy --hosts registry,builder,web
+   fleet up --hosts kaiju,talos,remora --publish kaiju=5000:5000 --publish remora=8081:80
+   fleet deploy --hosts kaiju,talos,remora
    ```
 
 2. **Apply the registry and builder scrolls.** On cold guests this is the
@@ -82,8 +82,8 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
    a hang.
 
    ```nushell
-   fleet apply examples/registry/registry.emet --hosts registry
-   fleet apply examples/website/builder.emet --hosts builder
+   fleet apply examples/registry/registry.emet --hosts kaiju
+   fleet apply examples/website/builder.emet --hosts talos
    ```
 
    The builder scroll is two glyphs: podman, and a `registries.conf.d` fragment
@@ -94,7 +94,7 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
 
    ```nushell
    curl -s http://127.0.0.1:5000/v2/
-   fleet ssh registry -- systemctl status registry.service
+   fleet ssh kaiju -- systemctl status registry.service
    ```
 
    An empty registry answers `/v2/` with an empty JSON object, and
@@ -108,18 +108,18 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
 ## When it does not come up
 
 **`curl: (7) Failed to connect to 127.0.0.1:5000`**
-The guest was booted without `--publish registry=5000:5000`. Forwards are
-recorded per VM at boot, so re-run `fleet up --hosts registry --publish
+The guest was booted without `--publish kaiju=5000:5000`. Forwards are
+recorded per VM at boot, so re-run `fleet up --hosts kaiju --publish
 registry=5000:5000` — a resume can add forwards the stopped guest lacked.
 
 **The apply reports the registry leaf failed**
-Read the pull error in the forensics block under it, then `fleet ssh registry
+Read the pull error in the forensics block under it, then `fleet ssh kaiju
 -- journalctl -u registry.service -n 50` for what podman said. No `sudo`
 needed: cloud-init put `golem` in `systemd-journal`.
 
 **`registry.service` is `active (running)` but the catalog `curl` hangs**
 The container is up and the ruleset that opens `:5000` is not.
-`fleet ssh registry -- systemctl status golem-nftables.service` says whether
+`fleet ssh kaiju -- systemctl status golem-nftables.service` says whether
 the reload the scroll's `notifies` asked for actually ran.
 
 ## How the builder reaches the registry
@@ -127,7 +127,7 @@ the reload the scroll's `notifies` asked for actually ran.
 Each guest runs behind user-mode (SLIRP) networking and is isolated from the
 others — only ssh is forwarded in by default. Two facts bridge them:
 
-- `up --publish registry=5000:5000` binds your `127.0.0.1:5000` to the registry
+- `up --publish kaiju=5000:5000` binds your `127.0.0.1:5000` to the registry
   guest's `:5000`.
 - In SLIRP, every guest reaches your workstation at `10.0.2.2`.
 
@@ -161,7 +161,7 @@ The mechanics are in [The fleet harness](/explanation/the-fleet-harness/).
 ## Push something to it
 
 ```nushell
-fleet ssh builder -- "sudo podman pull docker.io/library/hello-world:latest && sudo podman tag docker.io/library/hello-world:latest 10.0.2.2:5000/hello:latest && sudo podman push 10.0.2.2:5000/hello:latest"
+fleet ssh talos -- "sudo podman pull docker.io/library/hello-world:latest && sudo podman tag docker.io/library/hello-world:latest 10.0.2.2:5000/hello:latest && sudo podman push 10.0.2.2:5000/hello:latest"
 curl -s http://127.0.0.1:5000/v2/_catalog
 ```
 
@@ -178,8 +178,8 @@ segment with it.
 <Aside type="tip" title="Two clients instead of one">
   `examples/registry/clients.emet` provisions a `builder` and a `puller` with the
   same two glyphs, if you want to watch a third box pull what the second pushed:
-  `fleet up --hosts puller`, then `fleet apply
-  examples/registry/clients.emet --hosts builder,puller`.
+  `fleet up --hosts orbit`, then `fleet apply
+  examples/registry/clients.emet --hosts talos,puller`.
 </Aside>
 
 ## Explore from here
@@ -190,7 +190,7 @@ segment with it.
 - **Reverse it.** Apply a `registry` scroll with an empty `glyphs` list and watch
   golem stop the service, remove the quadlet and `.volume` units, close the
   firewall port, and remove podman — each undone because golem recorded it.
-- **Inspect the volume.** `fleet ssh registry -- sudo ls /var/lib/registry` — the
+- **Inspect the volume.** `fleet ssh kaiju -- sudo ls /var/lib/registry` — the
   named volume that survives a container restart.
 
 ## Where to next
