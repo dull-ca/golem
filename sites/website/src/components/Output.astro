@@ -1,0 +1,17 @@
+---
+import { Code } from "@astrojs/starlight/components";
+import { readExample, sliceScroll } from "./examples";
+
+interface Props {
+  file: string;
+  scroll?: string;
+  title?: string;
+}
+
+const { file, scroll, title } = Astro.props;
+
+const rendered = readExample(file);
+const code = scroll ? sliceScroll(rendered, scroll, file) : rendered.trimEnd();
+---
+
+<Code code={code} lang="text" title={title} />

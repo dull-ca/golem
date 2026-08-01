@@ -4,6 +4,8 @@ description: The smallest end-to-end run — one host, one package, one unit —
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
+import Output from "../../../components/Output.astro";
 
 The smallest useful fleet is one host with two glyphs: install a package and
 enable its unit. This guide takes it from Emet source to a reconciled box
@@ -11,18 +13,7 @@ and back.
 
 ## The whole thing
 
-```emet
-main : List Scroll
-main =
-  [ scroll
-      { name = "web"
-      , glyphs =
-          [ aptPackage { name = "nginx" }
-          , systemdService { unit = "nginx.service" }
-          ]
-      }
-  ]
-```
+<Snippet file="hello-agent.emet" region="program" />
 
 Save it as `web.emet`. That is the deploy: one scroll named `web`, two
 glyphs.
@@ -35,13 +26,7 @@ Look at the plan before shipping anything:
 emetc build web.emet --text
 ```
 
-```
-main : List Scroll
-planned scrolls (1):
-  scroll `web` (2 glyphs):
-    * ensure apt package `nginx` installed
-    * enable + start systemd unit `nginx.service`
-```
+<Output file="hello-agent.text.golden" />
 
 The binary manifest is the default output; `--text` is the readable view.
 

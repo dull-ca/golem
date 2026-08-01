@@ -10,6 +10,7 @@ description: golem deploying golem's own docs — build this site, ship it to a 
 */}
 
 import { Aside, Steps } from "@astrojs/starlight/components";
+import Output from "../../../components/Output.astro";
 
 This is golem deploying golem's own docs. Build this Starlight site into a
 container on one golem-managed box, push it to the golem-hosted registry, run it
@@ -83,23 +84,7 @@ main =
 `expose = Public` opens `:80` to the world with one drop-in file, and pulls in
 the nftables base that loads it, so the web scroll lowers to eleven glyphs:
 
-```
-main : List Scroll
-planned scrolls (1):
-  scroll `web` (11 glyphs):
-    * ensure file `/etc/containers/registries.conf.d/golem-registry.conf` (mode 0644)
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/golem-website.container` (mode 0644)
-    * enable + start systemd unit `golem-website.service`
-    * ensure apt package `nftables` installed
-    * ensure directory `/etc/nftables.d` (mode 0755)
-    * ensure file `/etc/golem-nftables.conf` (mode 0755)
-    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
-    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
-    * enable + start systemd unit `golem-nftables.service`
-    * ensure file `/etc/nftables.d/public-golem-website-80.nft` (mode 0644)
-    ↻ web notifies golem-nftables.service
-```
+<Output file="website.text.golden" />
 
 The last file is the whole opening: a complete `table inet golem` block accepting
 `:80`, dropped into a directory the entrypoint conf includes. The six glyphs

@@ -4,6 +4,7 @@ description: Quadlet — golem's shipped, strongly-typed model of Podman quadlet
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Output from "../../../components/Output.astro";
 
 Running a container on a golem box means writing a Podman **quadlet** — a
 `.container` unit systemd turns into a service, plus any `.volume` units it
@@ -216,23 +217,7 @@ The registry `Workload` — one TCP port, one named volume, internally exposed �
 lowers to eleven glyphs. From
 `cargo run -q -p emet -- build examples/registry/registry.emet --text`:
 
-```
-main : List Scroll
-planned scrolls (1):
-  scroll `registry` (11 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
-    * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
-    * enable + start systemd unit `registry.service`
-    * ensure apt package `nftables` installed
-    * ensure directory `/etc/nftables.d` (mode 0755)
-    * ensure file `/etc/golem-nftables.conf` (mode 0755)
-    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
-    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
-    * enable + start systemd unit `golem-nftables.service`
-    * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
-    ↻ registry notifies golem-nftables.service
-```
+<Output file="registry.text.golden" />
 
 The named-volume `.volume` unit (glyph 2), the whole firewall arrangement, and
 the reload that loads it all fall out of the typed spec — the hand-rolled

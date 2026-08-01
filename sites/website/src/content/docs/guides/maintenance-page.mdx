@@ -4,6 +4,7 @@ description: A parameterized Emet function built from the lowest glyphs — file
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 
 A "down for maintenance" page is a good excuse to work at the lowest level:
 just `aptPackage`, `systemdService`, `file`, and `lineInFile` — no container,
@@ -13,57 +14,7 @@ function is the API surface you build for your fleet.** Once you have
 
 ## The template
 
-```emet
-htmlPath : String -> String
-htmlPath id = "/var/www/maintenance/${id}/index.html"
-
-sitePath : String -> String
-sitePath host = "/etc/nginx/sites-enabled/${host}.conf"
-
-pageHtml : { host : String, reason : String, date : String } -> String
-pageHtml cfg =
-  String.join "\n"
-    [ "<!DOCTYPE html>"
-    , "<html lang=\"en\"><head><meta charset=\"UTF-8\">"
-    , "<title>${cfg.host} — down for maintenance</title></head>"
-    , "<body>"
-    , "  <h1>We'll be back soon</h1>"
-    , "  <p><strong>${cfg.host}</strong> is temporarily unavailable.</p>"
-    , "  <p>${cfg.reason}</p>"
-    , "  <p>Expected back: <strong>${cfg.date}</strong></p>"
-    , "</body></html>"
-    ]
-
-siteConf : { host : String, id : String } -> String
-siteConf cfg =
-  String.join "\n"
-    [ "server {"
-    , "  listen 443 ssl http2;"
-    , "  server_name ${cfg.host};"
-    , "  ssl_certificate     /etc/letsencrypt/live/${cfg.host}/fullchain.pem;"
-    , "  ssl_certificate_key /etc/letsencrypt/live/${cfg.host}/privkey.pem;"
-    , "  root  /var/www/maintenance/${cfg.id};"
-    , "  location / { return 503; }"
-    , "  error_page 503 /index.html;"
-    , "}"
-    ]
-
-siteDownGlyphs : { host : String, reason : String, date : String, id : String } -> List Glyph
-siteDownGlyphs cfg =
-  [ aptPackage { name = "nginx" }
-  , systemdService { unit = "nginx.service" }
-  , file
-      { path = htmlPath cfg.id
-      , contents = pageHtml { host = cfg.host, reason = cfg.reason, date = cfg.date }
-      , mode = "0644"
-      }
-  , file
-      { path = sitePath cfg.host
-      , contents = siteConf { host = cfg.host, id = cfg.id }
-      , mode = "0644"
-      }
-  ]
-```
+<Snippet file="maintenance-page.emet" region="template" />
 
 Four glyphs, one function. Everything below the surface is `String.join` and
 `${…}` — the language renders the HTML and the nginx config; the glyphs carry
@@ -84,21 +35,7 @@ file paths, so two maintenance pages on the same host never collide:
 
 ## Using it
 
-```emet
-main : List Scroll
-main =
-  [ scroll
-      { name = "edge-01"
-      , glyphs =
-          siteDownGlyphs
-            { host   = "lichess.example.com"
-            , reason = "Cleaning out the cobwebs"
-            , date   = "May 22nd, 2026"
-            , id     = "litour-down-2026"
-            }
-      }
-  ]
-```
+<Snippet file="maintenance-page.emet" region="usage" />
 
 Save that as `maintenance.emet`, read the diff, then enact it:
 
@@ -118,14 +55,7 @@ only want to ensure **one line** is present in a file someone else owns —
 that is `lineInFile`. Say the maintenance page's server block must be
 `include`d from an nginx entrypoint the distro shipped:
 
-```emet
-includeLine : String -> LineInFile
-includeLine host =
-  lineInFile
-    { path = "/etc/nginx/conf.d/maintenance.conf"
-    , line = "include /etc/nginx/sites-enabled/${host}.conf;"
-    }
-```
+<Snippet file="maintenance-page.emet" region="include-line" />
 
 Add `includeLine cfg.host` to `siteDownGlyphs` and the agent appends that one
 line if it is missing. On reverse it removes **exactly that line, and only if

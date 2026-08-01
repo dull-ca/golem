@@ -1,0 +1,12 @@
+-- #region shadowed-builtin
+add : Int -> Int -> Int
+add x y = x + y
+-- #endregion
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "host-${String.fromInt (add 1 2)}"
+      , glyphs = []
+      }
+  ]

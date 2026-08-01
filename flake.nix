@@ -37,14 +37,28 @@
           "libs"
         ];
 
+        # The docs-owned example tree (ADR 0043). `apps/emet/tests/docs_examples.rs`
+        # compiles every program in it and asserts its rendered output, so it is
+        # rust test input even though it lives under `sites/`. Filtering it out
+        # would leave the test unable to find a single example — which it fails
+        # loudly on rather than skipping.
+        docsExamplesRoot = "sites/website/examples";
+
         rustSource =
           let repoRoot = toString ./.; in
           lib.cleanSourceWith {
             name = "golem-rust-source";
             src = ./.;
             filter = path: _type:
-              let relative = lib.removePrefix "${repoRoot}/" (toString path);
-              in lib.elem (lib.head (lib.splitString "/" relative)) rustSourceRoots;
+              let
+                relative = lib.removePrefix "${repoRoot}/" (toString path);
+                isRustRoot = lib.elem (lib.head (lib.splitString "/" relative)) rustSourceRoots;
+                # Both directions: the ancestors of the docs example tree have to
+                # survive the filter for the tree itself to be reachable.
+                isDocsExamplesAncestor = lib.hasPrefix "${relative}/" "${docsExamplesRoot}/";
+                isInDocsExamples = lib.hasPrefix "${docsExamplesRoot}/" "${relative}/";
+              in
+              isRustRoot || isDocsExamplesAncestor || isInDocsExamples;
           };
 
         commonArgs = {

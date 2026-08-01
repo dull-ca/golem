@@ -1,0 +1,15 @@
+main : List Scroll
+planned scrolls (1):
+  scroll `registry` (11 glyphs):
+    * ensure apt package `podman` installed
+    * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
+    * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
+    * enable + start systemd unit `registry.service`
+    * ensure apt package `nftables` installed
+    * ensure directory `/etc/nftables.d` (mode 0755)
+    * ensure file `/etc/golem-nftables.conf` (mode 0755)
+    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
+    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
+    * enable + start systemd unit `golem-nftables.service`
+    * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
+    ↻ registry notifies golem-nftables.service

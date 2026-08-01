@@ -4,6 +4,7 @@ description: The real multi-host lichess deploy in Emet — the shipped Quadlet 
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Output from "../../../components/Output.astro";
 
 The capstone example is the [lichess](https://lichess.org) fleet: six hosts
 running dozens of containerized services behind nginx ingress. It lives in
@@ -242,33 +243,15 @@ in the entry directory provides (ADR 0024).
 cargo run -q -p emet -- build examples/lichess/fleet.emet --text
 ```
 
-`scaly`'s single workload lowers to three glyphs; `manta`'s workloads, services,
-and two ingresses to forty-six:
+`scaly`'s single workload lowers to three glyphs:
 
-```
-main : List Scroll
-planned scrolls (6):
-  scroll `scaly` (3 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0644)
-    * enable + start systemd unit `fishnet.service`
-  scroll `manta` (46 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/leroyjenkins-lila.container` (mode 0644)
-    * enable + start systemd unit `leroyjenkins-lila.service`
-    …
-    * ensure apt package `nftables` installed
-    * ensure directory `/etc/nftables.d` (mode 0755)
-    * ensure file `/etc/golem-nftables.conf` (mode 0755)
-    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
-    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
-    * enable + start systemd unit `golem-nftables.service`
-    * ensure file `/etc/nftables.d/lila-9663.nft` (mode 0644)
-    …
-    * ensure file `/etc/nftables.d/ingress-lichess.org.nft` (mode 0644)
-    * enable + start systemd unit `nginx.service`
-    ↻ manta notifies golem-nftables.service
-```
+<Output file="litour.text.golden" scroll="scaly" />
+
+`manta` — the same helpers, but two workloads, two services, and two ingresses
+— lowers to forty-six. Both blocks are the compiler's own output, cut from one
+run over `examples/lichess/fleet.emet`:
+
+<Output file="litour.text.golden" scroll="manta" />
 
 The count is high because the nftables base repeats behind every service and
 ingress that opens a port. On the host it is one set of files: the six base

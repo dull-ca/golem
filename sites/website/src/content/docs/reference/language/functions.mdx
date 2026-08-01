@@ -3,6 +3,9 @@ title: Functions
 description: Emet function declarations, optional signatures, currying and partial application, let bindings, lambdas, and if expressions.
 ---
 
+import Snippet from "../../../../components/Snippet.astro";
+import Output from "../../../../components/Output.astro";
+
 Function declarations, local bindings, and the two branching forms. For
 literals, operators, and types see
 [values and types](/reference/language/values-and-types/); for the built-in
@@ -48,26 +51,28 @@ isOdd n = if n == 0 then False else isEven (n - 1)
 ### Recursing by accident
 
 A top-level declaration shadows the prelude binding of the same name, and every
-operator desugars to a prelude binding. So `add x y = x + y` does not define
-addition: `+` lowers to `add`, the body calls the declaration itself, and the
-program fails with `evaluation exceeded recursion limit`. Every name in the
-Builtin column of the operator table in
+operator desugars to a prelude binding. So this does not define addition:
+
+<Snippet file="functions-shadowed-builtin.emet" region="shadowed-builtin" />
+
+`+` lowers to `add`, the body calls the declaration itself, and the program
+fails to compile:
+
+<Output file="functions-shadowed-builtin.expected-error" />
+
+Every name in the Builtin column of the operator table in
 [the prelude](/reference/language/prelude/#basics) carries the same trap.
 Check a declaration name against that column before taking it; nothing in the
-error points back at the operator that caused it.
+error points back at the operator that caused it. That example is compiled by
+CI and asserted to keep failing this way, so if the language ever removes the
+trap this page fails the build rather than teaching a footgun that is gone.
 
 ## Currying and partial application
 
 Every function of more than one parameter is curried; applying fewer arguments
 than the arity yields a function.
 
-```emet
-plus : Int -> Int -> Int
-plus x y = x + y
-
-addFive : Int -> Int
-addFive = plus 5
-```
+<Snippet file="functions-currying.emet" region="currying" />
 
 Application is by juxtaposition and left-associative: `f a b` is `(f a) b`.
 

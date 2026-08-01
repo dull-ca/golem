@@ -1,0 +1,15 @@
+-- #region currying
+plus : Int -> Int -> Int
+plus x y = x + y
+
+addFive : Int -> Int
+addFive = plus 5
+-- #endregion
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "host-${String.fromInt (addFive 1)}"
+      , glyphs = []
+      }
+  ]

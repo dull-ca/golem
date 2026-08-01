@@ -281,6 +281,32 @@ pub fn analyze_project(entry: &Path) -> resolve::ProjectAnalysis {
     resolve::analyze_entry(entry)
 }
 
+pub fn render_text(compiled: &Compiled) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "main : {}", compiled.main_ty);
+    let _ = writeln!(out, "planned scrolls ({}):", compiled.scrolls.len());
+    for s in &compiled.scrolls {
+        let glyphs = s.all_glyphs();
+        let _ = writeln!(out, "  scroll `{}` ({} glyphs):", s.name, glyphs.len());
+        for g in glyphs {
+            let _ = writeln!(out, "    * {}", g.describe());
+        }
+        for unit in s.leaf_units() {
+            if !unit.notifies.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "    ↻ {} notifies {}",
+                    unit.path.join("/"),
+                    unit.notifies.join(", ")
+                );
+            }
+        }
+    }
+    out
+}
+
 /// Pre-apply analysis over the IR graph. The conflict scope is the leaf unit,
 /// not the whole scroll (ADR 0031 §1): each leaf is one conflict scope, so two
 /// declarations of the same glyph key inside one leaf with differing bodies are

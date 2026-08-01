@@ -1,0 +1,29 @@
+-- #region computed-contents
+renderConfig : Int -> String
+renderConfig port =
+  String.join "\n"
+    [ "[server]"
+    , "listen = ${String.fromInt port}"
+    , "workers = 4"
+    ]
+
+siteFile : Int -> Filesystem
+siteFile port =
+  file
+    { path = "/etc/app/site.conf"
+    , contents = renderConfig port
+    , mode = "0644"
+    }
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "app"
+      , glyphs =
+          [ aptPackage { name = "app" }
+          , siteFile 8080
+          , systemdService { unit = "app.service" }
+          ]
+      }
+  ]
+-- #endregion
