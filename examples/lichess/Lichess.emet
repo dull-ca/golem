@@ -3,7 +3,7 @@
 -- `service` are thin shortcuts over `Workload` for this fleet's common shapes —
 -- a docker.io image, a no-ingress workload, an internally-exposed service.
 --
--- `ingress` stays hand-rolled nginx (its own `aptPackage`/`file`/`lineInFile`/
+-- `ingress` stays hand-rolled nginx (its own `aptPackage`/`file`/
 -- `systemdService` glyphs) because a reverse proxy is a *different* container's
 -- config, not a property of the upstream workload — so it is not a quadlet
 -- `Workload` and does not go through the library (ADR 0023 §7).
@@ -17,6 +17,7 @@ module Lichess exposing
   )
 
 import Fleet exposing (internalNetwork)
+import Nftables exposing (nftablesBase, nftablesDropIn)
 import Quadlet exposing
   ( Image
   , image
@@ -46,24 +47,29 @@ workload name img =
       , expose = Unexposed
       })
 
+-- The workload, then the firewall. `nftablesBase` precedes the drop-in because
+-- it carries the `/etc/nftables.d` directory glyph and source order is enact
+-- order (ADR 0031); the rule itself is internal-only, so the port is reachable
+-- from `Fleet.internalNetwork` and nowhere else.
 service : String -> Image -> Int -> List Glyph
 service name img port =
-  workloadGlyphs
-    (Workload
-      { name = name
-      , image = img
-      , env = []
-      , ports = [ tcp port port ]
-      , volumes = []
-      , restart = Always
-      , expose = Internal
-      })
+  List.concat
+    [ workloadGlyphs
+        (Workload
+          { name = name
+          , image = img
+          , env = []
+          , ports = [ tcp port port ]
+          , volumes = []
+          , restart = Always
+          , expose = Unexposed
+          })
+    , nftablesBase
+    , [ nftablesDropIn "${name}-${String.fromInt port}" [ internalAcceptRule name port ] ]
+    ]
 
 nginxSitePath : String -> String
 nginxSitePath name = "/etc/nginx/sites-enabled/${name}.conf"
-
-nftablesPath : String -> String
-nftablesPath name = "/etc/nftables.d/${name}.nft"
 
 nginxSite : String -> String -> String
 nginxSite name upstream =
@@ -89,39 +95,37 @@ nginxSite name upstream =
     , "}"
     ]
 
-ingressRule : String -> Int -> String
-ingressRule name port =
-  String.join "\n"
-    [ "table inet filter {"
-    , "  chain input {"
-    , "    tcp dport ${String.fromInt port} ip saddr ${internalNetwork} accept comment \"ingress ${name}\""
-    , "  }"
-    , "}"
-    ]
-
-ingressLine : String -> Int -> String
-ingressLine name port =
+publicAcceptRule : String -> Int -> String
+publicAcceptRule name port =
   "tcp dport ${String.fromInt port} accept comment \"ingress ${name}\""
 
+internalAcceptRule : String -> Int -> String
+internalAcceptRule name port =
+  "tcp dport ${String.fromInt port} ip saddr ${internalNetwork} accept comment \"${name}\""
+
+-- nginx plus the one public opening in front of it. `nftablesBase` leads for the
+-- same reason it does in `service` — the drop-in it writes needs
+-- `/etc/nftables.d` to exist first, and nothing but source order sequences them.
+-- Two ingresses on 443 write two accept rules; nftables' first-match makes the
+-- second redundant rather than a conflict (ADR 0041).
 ingress : String -> String -> Int -> List Glyph
 ingress name upstream port =
-  [ aptPackage { name = "nginx" }
-  , file
-      { path = nginxSitePath name
-      , contents = nginxSite name upstream
-      , mode = "0644"
-      }
-  , file
-      { path = nftablesPath "ingress-${name}"
-      , contents = ingressRule name port
-      , mode = "0644"
-      }
-  , lineInFile
-      { path = "/etc/nftables.d/ingress.nft"
-      , line = ingressLine name port
-      }
-  , systemdService { unit = "nginx.service" }
-  ]
+  List.concat
+    [ nftablesBase
+    , [ aptPackage { name = "nginx" }
+      , file
+          { path = nginxSitePath name
+          , contents = nginxSite name upstream
+          , mode = "0644"
+          }
+      , nftablesDropIn "ingress-${name}" [ publicAcceptRule name port ]
+      , systemdService { unit = "nginx.service" }
+      ]
+    ]
 
+-- One host as a flat leaf scroll. No `notifies`, so it suits a host that opens
+-- no ports; a host carrying `service` or `ingress` glyphs writes its own
+-- `scroll` with `notifies = [ "golem-nftables.service" ]` so the drop-ins it
+-- adds are actually loaded (ADR 0036) — see `fleet.emet`.
 host : String -> List Glyph -> Scroll
 host name glyphs = scroll { name = name, glyphs = glyphs }

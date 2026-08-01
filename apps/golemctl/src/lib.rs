@@ -1,4 +1,6 @@
 pub mod apply;
+pub mod fleet;
+pub mod inventory;
 pub mod logsink;
 pub mod model;
 pub mod plan;

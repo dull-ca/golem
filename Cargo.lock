@@ -717,13 +717,17 @@ name = "golemctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
+ "golemd",
  "iocraft",
  "reqwest",
+ "scroll-format",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "workspace-hack",

@@ -52,14 +52,19 @@ free refactor.
 
 ## Skill routing
 
-Match a request to a skill → invoke it via the Skill tool. Don't run gstack
-ceremony (telemetry, gbrain, decision briefs, codex gates) unless asked.
-Auto mode is on; prefer action over planning.
+Match a request to a skill → invoke it via the Skill tool. The correct
+skills and agents are Dr. Dub's own `/lw:*` set — route work through them
+(implementation → `lw:implementer`, prose → `lw:documenter`, decisions →
+`lw:adr`, git → `lw:historian`, …), including when delegating to agents.
+Don't run gstack ceremony (telemetry, gbrain, decision briefs, codex gates)
+unless asked. Auto mode is on; prefer action over planning.
 
 ## Git
 
-Never use git unless explicitly asked — no commits, pushes, branches, or
-resets. The user decides when to commit.
+Commits are allowed without asking, provided the work runs through the
+`/lw:*` skills — invoke `lw:historian` before touching git and follow it
+(branching, commit curation, message style). Pushes, resets, and anything
+that rewrites published history remain Dr. Dub's call.
 
 ## Docs
 

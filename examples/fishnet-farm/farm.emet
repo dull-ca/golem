@@ -12,13 +12,14 @@
 --   fishnet-analysis  — two leaves (client-1..2), same image, unique names
 --                       (fishnet-analysis-1..2).
 --   lila-gif          — one leaf: the lichess GIF renderer, `Public` on 6175,
---                       so its workload also emits the nftables rule files;
---                       `notifies = [ "nftables.service" ]` reloads the
---                       firewall when they change (ADR 0036).
---   firewall          — one leaf: nftables + the base /etc/nftables.conf whose
---                       include picks up /etc/nftables.d/*.nft; also notifies
---                       nftables.service. Both units' notifications coalesce
---                       into a single end-of-apply reload.
+--                       so its workload also emits the nftables drop-in file;
+--                       `notifies = [ "golem-nftables.service" ]` reloads the
+--                       firewall when it changes (ADR 0036).
+--   firewall          — one leaf: `Nftables.nftablesBase`, the golem-owned
+--                       table, its entrypoint conf, and the oneshot unit that
+--                       loads /etc/nftables.d/*.nft (ADR 0041); also notifies
+--                       golem-nftables.service. Both units' notifications
+--                       coalesce into a single end-of-apply reload.
 --   base              — one leaf: the `htop` package plus a one-line motd file.
 --   canary            — one leaf with `policy = keep` whose image is deliberately
 --                       unpullable (`golem-example/does-not-exist:latest`). Its
@@ -47,6 +48,7 @@
 --   fleet apply scaly                       # enact; siblings green, canary partial
 module Main exposing (..)
 
+import Nftables exposing (nftablesBase)
 import Quadlet exposing
   ( Image
   , image
@@ -102,10 +104,10 @@ base =
     }
 
 -- lila-gif renders GIFs of chess positions on port 6175. Its workload is
--- `Public`, so `workloadGlyphs` also writes the `/etc/nftables.d/` rule files
--- for the port — and the leaf's `notifies` asks golemd to reload (or restart)
--- nftables once, at the end of the apply, whenever any of those files change
--- (ADR 0036).
+-- `Public`, so `workloadGlyphs` also writes the `/etc/nftables.d/` drop-in for
+-- the port — and the leaf's `notifies` asks golemd to reload (or restart)
+-- golem-nftables once, at the end of the apply, whenever any of those files
+-- change (ADR 0036).
 lilaGifImage : Image
 lilaGifImage = image "ghcr.io" "lichess-org/lila-gif" "latest"
 
@@ -113,7 +115,7 @@ lilaGif : Scroll
 lilaGif =
   scroll
     { name = "lila-gif"
-    , notifies = [ "nftables.service" ]
+    , notifies = [ "golem-nftables.service" ]
     , glyphs =
         workloadGlyphs
           (Workload
@@ -127,38 +129,17 @@ lilaGif =
             })
     }
 
--- The firewall base the drop-ins above assume: nftables itself, and a main
--- config whose trailing include folds in `/etc/nftables.d/*.nft`. This unit
--- notifies nftables too — both units' notifications coalesce to one reload.
+-- The firewall base the drop-ins above assume: nftables itself, the golem-owned
+-- entrypoint conf that folds in `/etc/nftables.d/*.nft`, and the oneshot unit
+-- that loads it (ADR 0041). This unit notifies golem-nftables too — both units'
+-- notifications coalesce to one reload. The workload leaf carries the very same
+-- base glyphs, so the two contributions collapse by content id (ADR 0034).
 firewall : Scroll
 firewall =
   scroll
     { name = "firewall"
-    , notifies = [ "nftables.service" ]
-    , glyphs =
-        [ aptPackage { name = "nftables" }
-        , file
-            { path = "/etc/nftables.conf"
-            , contents =
-                String.join "\n"
-                  [ "flush ruleset"
-                  , ""
-                  , "table inet filter {"
-                  , "  chain input {"
-                  , "    type filter hook input priority 0; policy drop;"
-                  , "    iif lo accept"
-                  , "    ct state established,related accept"
-                  , "    tcp dport 22 accept comment \"ssh\""
-                  , "  }"
-                  , "}"
-                  , ""
-                  , "include \"/etc/nftables.d/*.nft\""
-                  , ""
-                  ]
-            , mode = "0644"
-            }
-        , systemdService { unit = "nftables.service" }
-        ]
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs = nftablesBase
     }
 
 canaryImage : Image

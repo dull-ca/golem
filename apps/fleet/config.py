@@ -56,7 +56,8 @@ def repo_root() -> Path:
 class Paths:
     """Every path the harness reads or writes, derived from the repo `root`.
     All ephemeral state sits under `.fleet/`: the cached image, the fleet
-    keypair, the state file, and one `vm-<name>/` per booted guest."""
+    keypair, the state file, the rendered golemctl inventory, and one
+    `vm-<name>/` per booted guest."""
 
     root: Path
 
@@ -71,6 +72,10 @@ class Paths:
     @property
     def state_file(self) -> Path:
         return self.fleet_dir / "state.json"
+
+    @property
+    def inventory_file(self) -> Path:
+        return self.fleet_dir / "inventory.toml"
 
     @property
     def ssh_key(self) -> Path:

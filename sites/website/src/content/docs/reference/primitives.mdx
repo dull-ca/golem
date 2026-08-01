@@ -118,12 +118,14 @@ its bind-mount source; you rarely write one by hand.
 
 ## `lineInFile`
 
-Ensure a single line is present in a file.
+Ensure a single line is present in a file **golem does not own** — a file the
+distro, another tool, or a human wrote, which golem needs to amend rather than
+author.
 
 ```emet
 lineInFile
-  { path = "/etc/nftables.d/ingress.nft"
-  , line = "tcp dport 443 accept comment \"ingress lila\""
+  { path = "/etc/hosts"
+  , line = "10.0.0.7 registry.internal"
   }
 ```
 
@@ -144,6 +146,18 @@ never removes a line it did not add.
   glyphs apply in list order and reverse in the exact reverse order — a
   LIFO undo stack recorded in the journal. See
   [Reversible reconcile](/explanation/reversible-reconcile/).
+</Aside>
+
+<Aside type="note" title="Not for composing golem's own files">
+  Config that several golem-authored units contribute to is written as **one
+  complete file per contributor**, in a drop-in directory golem also owns, and
+  merged by the consumer (ADR 0041). The firewall works that way: each opening
+  gets its own `.nft` file under `/etc/nftables.d/`, and the entrypoint conf
+  includes the glob. Composing by appending lines to a shared file leaves the
+  result with no single owner, an order decided by whichever unit ran first, and
+  a removal that means line surgery in a file other units still read. Reach for
+  `lineInFile` when the file is somebody else's; reach for a drop-in when it is
+  golem's.
 </Aside>
 
 ## Conflict rules within a scroll
@@ -175,8 +189,9 @@ registry =
 ```
 
 That lowers to the podman `aptPackage`, the `.container` quadlet `file`, its
-`systemdService`, and one nftables `file` for the internal port opening — four
-glyphs the agent already understands, no fifth kind. See the
+`systemdService`, one nftables drop-in `file` for the internal port opening, and
+the nftables base that loads it — glyph kinds the agent already understands, no
+fifth kind. See the
 [Quadlet reference](/reference/workloads/), the
 [service abstraction guide](/guides/app-and-db/), and the
 [lichess tour](/guides/litour/) for the full pattern.

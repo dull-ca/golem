@@ -45,6 +45,27 @@ cloud-init user data adds it to the `systemd-journal` group. Existing VMs booted
 before this change need a `fleet reset` (cloud-init runs once per instance) or a
 one-off `sudo usermod -aG systemd-journal golem` to pick up the membership.
 
+## Driving the VMs with `golemctl fleet`
+
+`fleet apply` and `fleet plan` loop over the guests one at a time. To hit them
+all at once instead, hand golemctl an inventory of the running VMs:
+
+```bash
+fleet inventory                                   # writes .fleet/inventory.toml
+golemctl fleet plan   examples/lichess/fleet.emet
+golemctl fleet apply  examples/lichess/fleet.emet
+golemctl fleet status
+```
+
+`inventory` renders the `[hosts]` table from the state file — each VM's name
+against `http://127.0.0.1:<its forwarded golemd port>` — with `--hosts` to
+narrow the set and `--output` to write it elsewhere. Because a VM's name is also
+its scroll's name, the inventory matches the manifest directly: a guest the
+manifest names no scroll for is reported skipped and left untouched. Re-run
+`inventory` after any `up`, `down`, or `reset`; it is a snapshot of the state
+file, not a live view. The verbs themselves are documented in `QUICKSTART.md`
+(ADR 0038).
+
 ## Port scheme
 
 Each VM claims a slot derived from its **name**, not its position in the boot
@@ -113,7 +134,7 @@ write must survive.
 
 ## Smoke fixtures
 
-Three small scrolls to sanity-check a fresh box:
+Four small scrolls to sanity-check a fresh box:
 
 - `smoke.emet` — one of each host-touching glyph (`aptPackage`, `file`,
   `lineInFile`), the minimum that a reconcile actually changed the host.
@@ -125,3 +146,9 @@ Three small scrolls to sanity-check a fresh box:
   the structural heuristic cannot see it: the unit is reached solely through the
   authored notification (ADR 0036). Edit the config, re-apply, and
   `journalctl -u golem-notify.service` should show the reload.
+- `nftables-proof.emet` — two ingress units both opening 443 and both carrying
+  the whole nftables base, so applying it exercises duplicate drop-ins and
+  applying an empty scroll afterwards exercises deduped teardown down to the
+  shared `/etc/nftables.d`. The standing probe for the three removal bugs found
+  on 2026-07-31; its header names them. It closes every undeclared port, so run
+  it on a guest you are willing to lose.

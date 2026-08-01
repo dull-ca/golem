@@ -79,14 +79,19 @@ main : List Scroll
 main =
   [ scroll
       { name = "app-01"
+      , notifies = [ "golem-nftables.service" ]
       , glyphs = service "lila" "lichess-org/lila" "latest" 9663
       }
   ]
 ```
 
+`notifies` is what loads the firewall rule the helper writes: when any glyph in
+the scroll actually changes the host, `golem-nftables.service` is reloaded once
+at the end of the apply.
+
 ## What it lowers to
 
-`service "lila" … 9663` produces four glyphs — check with
+`service "lila" … 9663` produces ten glyphs — check with
 `cargo run -q -p emet -- build … --text`:
 
 | Glyph | Key | Comes from |
@@ -94,12 +99,15 @@ main =
 | `aptPackage { name = "podman" }` | `apt:podman` | the runtime |
 | `file /etc/containers/systemd/lila.container` | `file:/etc/containers/systemd/lila.container` | the `.container` quadlet |
 | `systemdService { unit = "lila.service" }` | `systemd:lila.service` | the generated unit |
+| six glyphs of `Nftables.nftablesBase` | `apt:nftables`, `file:/etc/nftables.d`, … | `expose = Internal`, which needs a table to add to |
 | `file /etc/nftables.d/lila-9663.nft` | `file:/etc/nftables.d/lila-9663.nft` | `expose = Internal`, derived from the port |
 
 The quadlet body and the nftables rule are rendered by the library at compile
-time; the agent sees only the final text. The firewall `file` opens exactly the
-port the container publishes — `Expose` is computed from `ports`, so the two
-cannot drift.
+time; the agent sees only the final text. The drop-in opens exactly the port the
+container publishes — `Expose` is computed from `ports`, so the two cannot
+drift — and it is a **complete file** of its own, not a line added to a file
+other services share (ADR 0041). Two services on one box repeat the six base
+glyphs; identical glyphs share content ids, so the host does that work once.
 
 <Aside type="note" title="The agent never learned the word 'service'">
   `golemd` reconciles four glyphs. "Service," "workload," and "firewall opening"
@@ -131,16 +139,23 @@ registry =
     }
 ```
 
-Now five glyphs, the extra one being the named volume's `.volume` unit:
+Now eleven glyphs, the extra one being the named volume's `.volume` unit:
 
 ```
 planned scrolls (1):
-  scroll `registry` (5 glyphs):
+  scroll `registry` (11 glyphs):
     * ensure apt package `podman` installed
     * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
     * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
     * enable + start systemd unit `registry.service`
+    * ensure apt package `nftables` installed
+    * ensure directory `/etc/nftables.d` (mode 0755)
+    * ensure file `/etc/golem-nftables.conf` (mode 0755)
+    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
+    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
+    * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
+    ↻ registry notifies golem-nftables.service
 ```
 
 A `fromHost` mount would instead emit a `directory` glyph for its bind-mount
@@ -172,5 +187,5 @@ content ids and are replaced. See [Applying changes](/getting-started/applying/)
 - Every `Quadlet` type and its lowering: **[The Quadlet library](/reference/workloads/)**
 - The full multi-host version, with a hand-rolled ingress too:
   **[A tour of the lichess fleet](/guides/litour/)**
-- The lowest level — a pattern built from just `file` and `lineInFile`:
+- The lowest level — a pattern built from `file` and `lineInFile` directly:
   **[A maintenance page](/guides/maintenance-page/)**

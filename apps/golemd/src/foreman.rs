@@ -5,9 +5,9 @@
 //! write-ahead log around every side effect.
 //!
 //! **The bracketing invariant.** Every side effect is framed by two durable
-//! writes: an `Intended` [`WalStep`](crate::journal::WalStep) row is committed
+//! writes: an `Intended` [`WalStep`] row is committed
 //! *before* `Reconciler::apply`/`reverse` is called, and a `Done`/`Failed` row
-//! *after* it returns (see [`Foreman::enact_apply`]/[`Foreman::enact_reverse`]).
+//! *after* it returns (see `Foreman::enact_apply`/`Foreman::enact_reverse`).
 //! A crash can therefore land the daemon in "an effect was intended but its
 //! outcome was never recorded" — but never in "an effect happened and golem has
 //! no trace of it." That gap is what recovery closes; it is why the intent row
@@ -17,10 +17,10 @@
 //! reconcile, [`Foreman::recover`] settles any interrupted attempt before a new
 //! manifest is allowed in (ingest is gated on the latest attempt being settled,
 //! so a fresh manifest can never clobber an in-progress reversal). Recovery:
-//! [`Foreman::redrive_intended`] re-drives every `Intended`-without-terminal step
+//! `Foreman::redrive_intended` re-drives every `Intended`-without-terminal step
 //! idempotently (reconcilers observe host state first, so re-running converges
 //! whether or not the interrupted call took effect), then
-//! [`Foreman::rollback_attempt`] reverses the attempt's still-applied steps in
+//! `Foreman::rollback_attempt` reverses the attempt's still-applied steps in
 //! reverse order. Both are resumable: a step already `Reversed` is never reversed
 //! again, so a rollback continues from wherever the log shows it stopped.
 //!
@@ -163,8 +163,10 @@ pub struct SelectedScroll {
 
 const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/systemd"];
 
-/// The synthetic terminal segment every vanished-removes group appends to its
-/// resolved unit path, so the group's `unit_path` is one segment longer than the
+/// The synthetic terminal segment every vanished-removes group of entry removes
+/// appends to its resolved unit path — the directory wave appends
+/// [`DIRECTORY_REMOVES_SEGMENT`] instead — so the group's `unit_path` is one
+/// segment longer than the
 /// surviving ancestor it resolved to and therefore disjoint from that ancestor's
 /// own path. Without it a group resolving to a present unit's path — a flat host
 /// (`[host]`) or a glyph dropped from a still-present unit B (`[host, b]`) — would
@@ -183,6 +185,14 @@ const REMOVES_SEGMENT: &str = "<removes>";
 /// here so the live apply tree and `golemctl plan` show the same final line
 /// (ADR 0036).
 const RELOADS_SEGMENT: &str = "<reloads>";
+
+/// The synthetic terminal segment the trailing directory-removes wave reports
+/// under — the same naming convention and the same disjointness argument as
+/// [`REMOVES_SEGMENT`]. A second marker rather than a reuse of that one because
+/// both groups can resolve to the same surviving ancestor and must still be told
+/// apart: the entry removes run in their per-ancestor groups, the directory wave
+/// runs after every one of them ([`Foreman::plan_vanished_removes`]).
+const DIRECTORY_REMOVES_SEGMENT: &str = "<directories>";
 
 impl Foreman {
     pub fn new(host: String, planroom: Box<dyn PlanRoom>, reconciler: Box<dyn Reconciler>) -> Self {
@@ -583,7 +593,7 @@ impl Foreman {
     /// [`Foreman::recover`] rolls the still-`Enacting` attempt back to its last
     /// committed set exactly as crash recovery does (ADR 0020 §3), leaving the
     /// attempt terminally `RolledBack` and the next apply free to proceed. The
-    /// write lock is poison-tolerant ([`Foreman::write_guard`]), so `recover`
+    /// write lock is poison-tolerant (`Foreman::write_guard`), so `recover`
     /// takes it cleanly even after a panicking holder poisoned it.
     ///
     /// [`PanicCatching`]: crate::reconciler::PanicCatching
@@ -622,6 +632,29 @@ impl Foreman {
     /// plus a [`REMOVES_SEGMENT`] terminal, keeping it disjoint from every present
     /// unit's path so a removes-group rollback never reverses a present unit's
     /// steps; policy resolution still runs on the un-suffixed resolved path.
+    ///
+    /// Directory removes are the exception. Every `Remove` of a directory entry,
+    /// whichever unit declared it, is diverted out of the per-ancestor groups into
+    /// one whole-reconcile wave under [`DIRECTORY_REMOVES_SEGMENT`], appended last
+    /// and sorted by path descending so a child directory is reversed before the
+    /// parent that contains it. A directory only `rmdir`s once every entry beneath
+    /// it is gone, and those entries belong to whichever units happened to declare
+    /// them — two ingress units each dropping a file into one shared
+    /// `/etc/nftables.d`, say. Per-ancestor groups enact in their own order and
+    /// cannot express "after all of them", so the only place a directory is
+    /// reliably empty is behind the whole reconcile's content removes (ADR 0031
+    /// §4, refined by the 2026-07-31 addendum).
+    ///
+    /// Emptiness is still not guaranteed, and deliberately is not enforced:
+    /// `reconcilers::remove_directory` treats `ENOTEMPTY` as a stop, not a
+    /// failure, so a directory still holding a file golem never recorded is left
+    /// standing and the teardown settles.
+    ///
+    /// The wave takes one `unit_path` for the whole set, resolved as the longest
+    /// prefix its members' surviving ancestors share. A wave confined to a single
+    /// vanished subtree therefore keeps that subtree's policy chain; one spanning
+    /// subtrees falls back toward the host root, which is the only path both
+    /// members answer to.
     fn plan_vanished_removes<'a>(
         &self,
         prior: &[Outcome],
@@ -638,10 +671,20 @@ impl Foreman {
         let recorded = self.recorded_unit_paths()?;
         let nodes = node_paths(desired, units);
         let mut groups: Vec<RemoveGroup> = Vec::new();
+        let mut directories: Vec<GlyphOp> = Vec::new();
+        let mut directories_resolved: Option<Vec<String>> = None;
         for op in removes {
             let recorded_path = recorded.get(&op.key()).cloned().unwrap_or_default();
             let resolved =
                 surviving_prefix(&recorded_path, &nodes).unwrap_or_else(|| vec![self.host.clone()]);
+            if removed_directory_path(&op).is_some() {
+                directories_resolved = Some(match directories_resolved {
+                    Some(shared) => common_prefix(&shared, &resolved),
+                    None => resolved,
+                });
+                directories.push(op);
+                continue;
+            }
             let mut unit_path = resolved.clone();
             unit_path.push(REMOVES_SEGMENT.to_string());
             match groups.iter_mut().find(|g| g.unit_path == unit_path) {
@@ -655,6 +698,17 @@ impl Foreman {
                     });
                 }
             }
+        }
+        if let Some(resolved) = directories_resolved {
+            directories.sort_by(|a, b| removed_directory_path(b).cmp(&removed_directory_path(a)));
+            let policy_chain = policy_chain_for_path(desired, &resolved);
+            let mut unit_path = resolved;
+            unit_path.push(DIRECTORY_REMOVES_SEGMENT.to_string());
+            groups.push(RemoveGroup {
+                unit_path,
+                ops: directories,
+                policy_chain,
+            });
         }
         Ok(groups)
     }
@@ -1289,6 +1343,13 @@ impl Foreman {
     /// rewrite the file, back to its prior contents, and the service still has to
     /// pick that up (ADR 0036 Consequences).
     ///
+    /// Whichever source named it, a unit this attempt *removed* ([`removed_units`])
+    /// is subtracted from the coalesced set before anything is journaled: there is
+    /// no unit left to poke, so the step would only ever report `Unit not found`
+    /// and turn a clean teardown `partial`. The subtraction is an `Info` progress
+    /// event rather than a silent drop, and [`predicted_reloads`] applies the same
+    /// rule so a plan and its apply still render the same reload lines.
+    ///
     /// Returns the `<reloads>` [`UnitReport`] the enacted set earns — the same
     /// group `projection::rebuild_report` folds back out of these rows — so a
     /// failed reload reaches the operator instead of being swallowed, and the live
@@ -1314,7 +1375,25 @@ impl Foreman {
                 notified.push((unit, step.glyph_key.clone()));
             }
         }
-        let reloads = merge_reloads(structural, notified);
+        let gone = removed_units(&steps, &cancelled);
+        let (reloads, skipped): (Vec<_>, Vec<_>) = merge_reloads(structural, notified)
+            .into_iter()
+            .partition(|reload| !gone.contains(&reload.unit));
+        let unit_path = [self.host.clone(), RELOADS_SEGMENT.to_string()];
+        for reload in &skipped {
+            info!(
+                unit = %reload.unit,
+                kind = ?reload.kind,
+                "reload step skipped; this reconcile removed the unit"
+            );
+            self.progress.record(
+                reconcile_id,
+                EventLevel::Info,
+                &unit_path,
+                &reload.unit,
+                &format!("skip {}: removed by this reconcile", reload.unit),
+            );
+        }
         if reloads.is_empty() {
             return Ok(None);
         }
@@ -1324,7 +1403,6 @@ impl Foreman {
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);
-        let unit_path = [self.host.clone(), RELOADS_SEGMENT.to_string()];
         let mut lines: Vec<GlyphLine> = Vec::new();
         let mut failures: Vec<GlyphFailure> = Vec::new();
         for (n, reload) in reloads.into_iter().enumerate() {
@@ -1546,7 +1624,7 @@ impl Foreman {
     }
 
     /// Settle any interrupted attempt, under the write lock. Called once at
-    /// startup (from [`Foreman::new`]) and again by [`Foreman::reconcile`] before
+    /// startup (from [`Foreman::new`]) and again by [`Foreman::run_reconcile`] before
     /// each manifest, so recovery is always a precondition of ingest.
     pub fn recover(&self) -> Result<()> {
         let _w = self.write_guard();
@@ -1937,6 +2015,37 @@ fn surviving_prefix(recorded: &[String], nodes: &[Vec<String>]) -> Option<Vec<St
         }
     }
     None
+}
+
+/// The path of a `Remove` of a filesystem `Directory` entry, or `None` for every
+/// other op — the test [`Foreman::plan_vanished_removes`] diverts an op into the
+/// trailing directory wave by, and the sort key that orders that wave deepest
+/// first. Sorting the raw path descending is enough: a child path shares its
+/// parent's prefix and is longer, so it always sorts ahead of it.
+fn removed_directory_path(op: &GlyphOp) -> Option<&str> {
+    match op {
+        GlyphOp::Remove {
+            glyph:
+                Glyph::Filesystem {
+                    path,
+                    entry: Entry::Directory { .. },
+                },
+            ..
+        } => Some(path),
+        _ => None,
+    }
+}
+
+/// The shared leading segments of two unit paths. Folded across the directory
+/// wave's members, this is how one group answers for directories resolved to
+/// different surviving ancestors: the result is the deepest node all of them sit
+/// under, so the policy chain the wave inherits is one no member is outside of.
+fn common_prefix(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .zip(right)
+        .take_while(|(l, r)| l == r)
+        .map(|(l, _)| l.clone())
+        .collect()
 }
 
 /// The ancestor policies along a surviving node path, root-to-leaf — the policy
@@ -2330,6 +2439,44 @@ fn unit_for_config_file(path: &str) -> Option<String> {
     None
 }
 
+/// The units this attempt took off the host: those whose own definition — the
+/// `systemdService` glyph, or the file that *defines* the unit — a `Remove` op
+/// enacted to `Done` and no rollback cancelled. Such a unit is gone by the time
+/// the end-of-apply reload set runs, so restarting or reloading it can only fail
+/// `Unit not found`; [`Foreman::propagate_config`] and [`predicted_reloads`]
+/// both subtract this set (ADR 0020 §5's "restart only if currently active",
+/// carried through to units that no longer exist at all).
+fn removed_units(
+    steps: &[WalStep],
+    cancelled: &std::collections::BTreeSet<u64>,
+) -> std::collections::BTreeSet<String> {
+    steps
+        .iter()
+        .filter(|step| {
+            step.state == WalStepState::Done
+                && !cancelled.contains(&step.seq)
+                && matches!(step.op, GlyphOp::Remove { .. })
+        })
+        .filter_map(|step| unit_defined_by(step.op.glyph()))
+        .collect()
+}
+
+/// The unit a glyph *defines*, as opposed to merely configures. A
+/// `systemdService` names its unit outright; a unit file or a quadlet source
+/// brings one into existence. A drop-in is deliberately excluded — removing it
+/// leaves the unit standing with different config, which still wants the
+/// structural restart.
+fn unit_defined_by(glyph: &Glyph) -> Option<String> {
+    match glyph {
+        Glyph::SystemdService { unit } => Some(unit.clone()),
+        Glyph::Filesystem {
+            path,
+            entry: Entry::File { .. },
+        } if !path.contains(".service.d/") => unit_for_config_file(path),
+        _ => None,
+    }
+}
+
 /// The units a step's unit path notifies, resolved exact-then-parent. The parent
 /// fallback is what answers for a synthetic group: a `<removes>` path is a
 /// surviving ancestor plus one marker segment ([`REMOVES_SEGMENT`]), so the exact
@@ -2398,15 +2545,22 @@ fn merge_reloads(
 ///
 /// A prediction, not a promise: enactment fires on `changed == true`, which no
 /// dry run can observe, so a predicted reload may not fire (the file may already
-/// match on the host). Only `Noop` is excluded — a `Remove` counts, because
-/// enactment folds any `Done`+`changed` file step, removals included.
+/// match on the host). Only `Noop` is excluded — a `Remove` still counts as a
+/// trigger, because enactment folds any `Done`+`changed` file step, removals
+/// included. Units the plan's own removes take off the host ([`removed_units`]'s
+/// rule over planned ops) are subtracted last, exactly as enactment subtracts
+/// them, so a teardown plan never predicts a restart of the unit it is deleting.
 fn predicted_reloads(desired: &Scroll, placed: &[(Vec<String>, GlyphOp)]) -> Vec<PredictedReload> {
     let notifies_by_path = desired.notifies_by_path();
     let mut structural: Vec<(String, String)> = Vec::new();
     let mut notified: Vec<(String, String)> = Vec::new();
+    let mut gone: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (unit_path, op) in placed {
         if matches!(op, GlyphOp::Noop { .. }) {
             continue;
+        }
+        if matches!(op, GlyphOp::Remove { .. }) {
+            gone.extend(unit_defined_by(op.glyph()));
         }
         if let Some(unit) = changed_file_path(op).and_then(|path| unit_for_config_file(&path)) {
             structural.push((unit, op.key()));
@@ -2416,6 +2570,9 @@ fn predicted_reloads(desired: &Scroll, placed: &[(Vec<String>, GlyphOp)]) -> Vec
         }
     }
     merge_reloads(structural, notified)
+        .into_iter()
+        .filter(|reload| !gone.contains(&reload.unit))
+        .collect()
 }
 
 #[cfg(test)]
@@ -2761,6 +2918,19 @@ mod tests {
                 contents: contents.into(),
                 perms: scroll_format::Perms {
                     mode: 0o644,
+                    owner: None,
+                    group: None,
+                },
+            },
+        }
+    }
+
+    fn directory(path: &str) -> Glyph {
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::Directory {
+                perms: scroll_format::Perms {
+                    mode: 0o755,
                     owner: None,
                     group: None,
                 },
@@ -3175,6 +3345,132 @@ mod tests {
         assert_eq!(report.outcome, TopOutcome::Settled);
         assert!(!applied_keys(&foreman).contains(&"apt:removed".to_string()));
         assert!(applied_keys(&foreman).contains(&"apt:stays".to_string()));
+    }
+
+    fn reversed_keys(foreman: &ScriptedForeman) -> Vec<String> {
+        foreman
+            .rec
+            .events()
+            .into_iter()
+            .filter_map(|event| event.strip_prefix("reverse ").map(str::to_string))
+            .collect()
+    }
+
+    /// The cross-unit case per-ancestor grouping cannot order: the file lives in
+    /// the unit that vanished, the directory in the one that survives, so their
+    /// removes resolve to different ancestors. Only the trailing directory wave
+    /// puts them in an order that leaves nothing orphaned.
+    #[test]
+    fn a_directory_remove_waits_for_a_file_another_unit_left_inside_it() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let before = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("extra", vec![unit_file("/etc/app.d/extra.conf", "v1")]),
+                leaf_scroll("base", vec![directory("/etc/app.d")]),
+            ],
+        );
+        foreman.apply_scroll(before).unwrap();
+
+        let after = branch_scroll("host", vec![leaf_scroll("base", vec![])]);
+        let report = foreman.apply_scroll(after).unwrap();
+
+        assert_eq!(
+            reversed_keys(&foreman),
+            vec![
+                "file:/etc/app.d/extra.conf".to_string(),
+                "file:/etc/app.d".to_string(),
+            ],
+            "the directory is rmdir-able only once the vanished unit's file inside it is gone, \
+             so its remove is sequenced after that unit's — grouping does not get to interleave them"
+        );
+        assert_eq!(report.outcome, TopOutcome::Settled);
+    }
+
+    /// The wave's own ordering, with the units declaring parent and child the
+    /// wrong way round: the sort is on path depth, not on the source order the
+    /// directories were declared in.
+    #[test]
+    fn nested_directory_removes_enact_deepest_first_across_units() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let before = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("inner", vec![directory("/etc/app.d/conf.d")]),
+                leaf_scroll("outer", vec![directory("/etc/app.d")]),
+            ],
+        );
+        foreman.apply_scroll(before).unwrap();
+
+        let after = branch_scroll("host", vec![leaf_scroll("outer", vec![])]);
+        foreman.apply_scroll(after).unwrap();
+
+        assert_eq!(
+            reversed_keys(&foreman),
+            vec![
+                "file:/etc/app.d/conf.d".to_string(),
+                "file:/etc/app.d".to_string(),
+            ],
+            "a parent directory comes off after the child directory it contains, \
+             however the two were declared"
+        );
+    }
+
+    /// Plan symmetry (ADR 0036): `plan_manifest` and `run_reconcile` share
+    /// [`Foreman::plan_vanished_removes`], so the dry run must show the directory
+    /// wave in the same place, under the same synthetic path, that the apply
+    /// enacts it — a plan that reordered the teardown would be lying about it.
+    #[test]
+    fn a_plan_renders_removes_in_the_order_enact_will_run_them() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let before = branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("extra", vec![unit_file("/etc/app.d/extra.conf", "v1")]),
+                leaf_scroll("base", vec![directory("/etc/app.d")]),
+            ],
+        );
+        foreman.apply_scroll(before).unwrap();
+
+        let after = manifest(vec![branch_scroll(
+            "host",
+            vec![leaf_scroll("base", vec![])],
+        )]);
+        let planned = foreman.foreman.plan_manifest(&after).unwrap();
+        foreman.foreman.apply_manifest(&after).unwrap();
+
+        assert_eq!(
+            planned
+                .ops
+                .iter()
+                .map(|op| (op.unit_path.clone(), op.glyph_key.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    vec!["host".to_string(), REMOVES_SEGMENT.to_string()],
+                    "file:/etc/app.d/extra.conf".to_string()
+                ),
+                (
+                    vec![
+                        "host".to_string(),
+                        "base".to_string(),
+                        DIRECTORY_REMOVES_SEGMENT.to_string()
+                    ],
+                    "file:/etc/app.d".to_string()
+                ),
+            ],
+            "the directory remove reports under the surviving ancestor whose policy governs it, \
+             in the wave that runs last"
+        );
+        assert_eq!(
+            planned
+                .ops
+                .iter()
+                .map(|op| op.glyph_key.clone())
+                .collect::<Vec<_>>(),
+            reversed_keys(&foreman),
+            "and the plan's order is the order enact ran"
+        );
     }
 
     // --- Review fixes: removes-group path isolation, whole-reconcile budget,
@@ -5562,6 +5858,67 @@ mod tests {
         let report = foreman.foreman.plan_manifest(&bytes).unwrap();
         assert_eq!(report.reloads.len(), 1);
         assert_eq!(report.reloads[0].kind, ReloadKind::Restart);
+    }
+
+    #[test]
+    fn a_plan_that_removes_a_unit_predicts_no_reload_for_it() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        let leaf = notifying(
+            leaf_scroll(
+                "api",
+                vec![
+                    unit_file("/etc/systemd/system/api.service", "v1"),
+                    Glyph::SystemdService {
+                        unit: "api.service".into(),
+                    },
+                ],
+            ),
+            &["api.service"],
+        );
+        foreman
+            .apply_scroll(branch_scroll("host", vec![leaf]))
+            .unwrap();
+
+        let report = foreman
+            .foreman
+            .plan_manifest(&manifest(vec![scroll("host", vec![])]))
+            .unwrap();
+
+        assert!(
+            report
+                .ops
+                .iter()
+                .any(|op| op.glyph_key == "systemd:api.service"),
+            "the plan does remove the unit"
+        );
+        assert!(
+            report.reloads.is_empty(),
+            "and predicts no poke for a unit it is deleting, exactly as enactment now skips it"
+        );
+    }
+
+    #[test]
+    fn removing_a_drop_in_still_restarts_the_unit_it_configures() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .apply_scroll(scroll(
+                "host",
+                vec![unit_file(
+                    "/etc/systemd/system/api.service.d/override.conf",
+                    "v1",
+                )],
+            ))
+            .unwrap();
+        foreman.rec.restarts.lock().unwrap().clear();
+
+        foreman.apply_scroll(scroll("host", vec![])).unwrap();
+
+        assert_eq!(
+            foreman.rec.restarts(),
+            vec!["api.service".to_string()],
+            "a drop-in removal leaves the unit standing with different config, \
+             so it still wants the structural restart"
+        );
     }
 
     #[test]

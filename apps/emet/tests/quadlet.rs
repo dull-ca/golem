@@ -49,7 +49,7 @@ fn file_contents<'a>(s: &'a emet::ir::Scroll, path: &str) -> &'a str {
 }
 
 #[test]
-fn workload_lowers_to_podman_apt_container_volume_service_firewall_and_directory() {
+fn workload_lowers_to_podman_apt_container_volume_service_directory_dropin_and_base() {
     let c = compiled();
     let s = scroll(&c, "registry");
     assert_eq!(
@@ -60,6 +60,12 @@ fn workload_lowers_to_podman_apt_container_volume_service_firewall_and_directory
             "file:/etc/containers/systemd/golem-registry-data.volume".to_string(),
             "file:/etc/containers/systemd/registry.container".to_string(),
             "systemd:registry.service".to_string(),
+            "apt:nftables".to_string(),
+            "file:/etc/nftables.d".to_string(),
+            "file:/etc/golem-nftables.conf".to_string(),
+            "file:/etc/nftables.d/00-base.nft".to_string(),
+            "file:/etc/systemd/system/golem-nftables.service".to_string(),
+            "systemd:golem-nftables.service".to_string(),
             "file:/etc/nftables.d/registry-5000.nft".to_string(),
         ]
     );
@@ -143,23 +149,66 @@ fn each_published_port_gets_its_own_firewall_rule() {
 }
 
 #[test]
-fn public_exposure_opens_each_port_to_the_world_plus_a_shared_chain_line() {
+fn public_exposure_opens_each_port_to_the_world_with_its_own_drop_in() {
     let c = compiled();
     let s = scroll(&c, "web");
     let k = keys(s);
     assert!(
-        k.contains(&"file:/etc/nftables.d/web-443.nft".to_string()),
+        k.contains(&"file:/etc/nftables.d/public-web-443.nft".to_string()),
         "got: {k:?}"
     );
     assert!(
-        k.contains(&"file:/etc/nftables.d/web-80.nft".to_string()),
+        k.contains(&"file:/etc/nftables.d/public-web-80.nft".to_string()),
         "got: {k:?}"
     );
     assert!(
-        k.iter()
-            .any(|key| key.starts_with("fileline:/etc/nftables.d/ingress.nft")),
-        "public exposure appends to the shared ingress chain; got: {k:?}"
+        !k.iter().any(|key| key.starts_with("fileline:")),
+        "public exposure composes drop-in files, never a shared line; got: {k:?}"
     );
+
+    let nft = file_contents(s, "/etc/nftables.d/public-web-443.nft");
+    assert_eq!(
+        nft,
+        "table inet golem {\n  chain input {\n    tcp dport 443 accept comment \"web\"\n  }\n}\n",
+        "the drop-in is a complete, additive golem-table fragment"
+    );
+}
+
+#[test]
+fn a_workload_contributing_a_drop_in_also_carries_the_nftables_base() {
+    let c = compiled();
+    let k = keys(scroll(&c, "web"));
+    for base in [
+        "apt:nftables",
+        "file:/etc/nftables.d",
+        "file:/etc/golem-nftables.conf",
+        "file:/etc/nftables.d/00-base.nft",
+        "file:/etc/systemd/system/golem-nftables.service",
+        "systemd:golem-nftables.service",
+    ] {
+        assert!(k.contains(&base.to_string()), "missing {base}; got: {k:?}");
+    }
+}
+
+#[test]
+fn no_drop_in_declares_a_table_golem_does_not_own() {
+    let c = compiled();
+    for host in ["registry", "web"] {
+        for glyph in scroll(&c, host).glyphs() {
+            if let Glyph::Filesystem {
+                path,
+                entry: Entry::File { contents, .. },
+            } = glyph
+            {
+                if path.starts_with("/etc/nftables.d/") {
+                    assert!(
+                        contents.contains("table inet golem"),
+                        "{path} declares a foreign table; got:\n{contents}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

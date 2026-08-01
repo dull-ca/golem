@@ -1,0 +1,141 @@
+-- Two ingress units on one host, both opening 443, both carrying the whole
+-- nftables base. Self-contained on purpose: it inlines what `lib/Nftables.emet`
+-- provides so the fixture can be applied to a bare guest without a search path.
+--
+-- What it proves, applied and then decommissioned with an empty scroll:
+--
+--   * duplicate contributions are benign — two drop-ins accepting 443 load as
+--     two rules, and nftables' first-match makes the second redundant rather
+--     than a conflict (ADR 0041);
+--   * teardown leaves no trace — every drop-in, the entrypoint conf, the unit
+--     file, the service, and the shared `/etc/nftables.d` directory come off,
+--     and `ExecStop=` takes `table inet golem` with them.
+--
+-- That second half is what makes this the standing regression probe for deduped
+-- teardown. Run against the fleet on 2026-07-31 it caught three golemd bugs at
+-- once: a crediting unit's bare re-observation shadowing the enacting unit's
+-- receipt, so removes reversed nothing and files stayed (ADR 0034 addendum); the
+-- end-of-apply reload poking `golem-nftables.service` after the same reconcile
+-- had removed it, reporting `partial` on a clean teardown (ADR 0036 addendum);
+-- and `/etc/nftables.d` reversed while a sibling's drop-in was still inside it
+-- (ADR 0031 addendum). `apps/golemd/tests/shared_glyph_removal.rs` is this
+-- fixture reproduced in-process.
+--
+-- Applying it closes every port not listed in the base chain, ssh and golemd
+-- included in that list — apply it to a guest you are willing to lose.
+module Main exposing (..)
+
+nftablesEntrypointPath : String
+nftablesEntrypointPath = "/etc/golem-nftables.conf"
+
+nftablesUnit : String
+nftablesUnit = "golem-nftables.service"
+
+golemTableDropIn : List String -> String
+golemTableDropIn rules =
+  String.join "\n"
+    (List.concat
+      [ [ "table inet golem {"
+        , "  chain input {"
+        ]
+      , List.map (\rule -> "    ${rule}") rules
+      , [ "  }"
+        , "}"
+        , ""
+        ]
+      ])
+
+baseChainDropIn : String
+baseChainDropIn =
+  golemTableDropIn
+    [ "type filter hook input priority 0; policy drop;"
+    , "ct state established,related accept"
+    , "ct state invalid drop"
+    , "iif \"lo\" accept"
+    , "meta l4proto { icmp, ipv6-icmp } accept"
+    , "tcp dport 22 accept comment \"ssh\""
+    , "tcp dport 7474 accept comment \"golemd\""
+    , "udp dport 68 accept comment \"dhcp\""
+    ]
+
+nftablesEntrypoint : String
+nftablesEntrypoint =
+  String.join "\n"
+    [ "#!/usr/sbin/nft -f"
+    , "add table inet golem"
+    , "flush table inet golem"
+    , "include \"/etc/nftables.d/*.nft\""
+    , ""
+    ]
+
+nftablesUnitFile : String
+nftablesUnitFile =
+  String.join "\n"
+    [ "[Unit]"
+    , "Description=Golem nftables ruleset"
+    , ""
+    , "[Service]"
+    , "Type=oneshot"
+    , "RemainAfterExit=yes"
+    , "ExecStart=/usr/sbin/nft -f ${nftablesEntrypointPath}"
+    , "ExecReload=/usr/sbin/nft -f ${nftablesEntrypointPath}"
+    , "ExecStop=-/usr/sbin/nft delete table inet golem"
+    , ""
+    , "[Install]"
+    , "WantedBy=multi-user.target"
+    , ""
+    ]
+
+nftablesBase : List Glyph
+nftablesBase =
+  [ aptPackage { name = "nftables" }
+  , directory { path = "/etc/nftables.d", mode = "0755" }
+  , file
+      { path = nftablesEntrypointPath
+      , contents = nftablesEntrypoint
+      , mode = "0755"
+      }
+  , file
+      { path = "/etc/nftables.d/00-base.nft"
+      , contents = baseChainDropIn
+      , mode = "0644"
+      }
+  , file
+      { path = "/etc/systemd/system/${nftablesUnit}"
+      , contents = nftablesUnitFile
+      , mode = "0644"
+      }
+  , systemdService { unit = nftablesUnit }
+  ]
+
+ingressDropIn : String -> Int -> List Glyph
+ingressDropIn name port =
+  [ file
+      { path = "/etc/nftables.d/ingress-${name}.nft"
+      , contents =
+          golemTableDropIn
+            [ "tcp dport ${String.fromInt port} accept comment \"ingress ${name}\"" ]
+      , mode = "0644"
+      }
+  ]
+
+ingressUnit : String -> Int -> Scroll
+ingressUnit name port =
+  scroll
+    { name = name
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs = List.concat [ nftablesBase, ingressDropIn name port ]
+    }
+
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , groups =
+        [ ingressUnit "alpha.example" 443
+        , ingressUnit "bravo.example" 443
+        ]
+    }
+
+main : List Scroll
+main = [ scaly ]

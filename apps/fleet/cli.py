@@ -20,6 +20,7 @@ from rich.table import Table
 
 from . import config, golemd_client, vm
 from . import deploy as deploy_ops
+from . import inventory as inventory_ops
 from .config import paths, plan_hosts
 from .state import FleetState, VmRecord
 
@@ -144,6 +145,25 @@ def deploy(
             console.print(f"  [red]{record.name}: golemd did not answer /status[/red]")
         else:
             console.print(f"  [green]{record.name}: golemd up[/green] {summary}")
+
+
+@app.command()
+def inventory(
+    hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
+    output: Optional[Path] = typer.Option(None, "--output", help="Where to write the TOML inventory."),
+) -> None:
+    """Write the booted VMs as a `[hosts]` TOML inventory and print its path —
+    `.fleet/inventory.toml` unless `--output` says otherwise, `--hosts` to
+    narrow the set. It is the file `golemctl fleet apply|plan|status` reads
+    (ADR 0038), so the local fleet drives those verbs unchanged: pass it as
+    `--inventory` or export `$GOLEMCTL_INVENTORY`."""
+    p = paths()
+    state = _state()
+    records = _target_records(state, hosts)
+    dest = output if output is not None else p.inventory_file
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(inventory_ops.render_hosts_toml(inventory_ops.inventory_entries(records)))
+    console.print(str(dest))
 
 
 def _count_glyphs(scroll: object) -> int:

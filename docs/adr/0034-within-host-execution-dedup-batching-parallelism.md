@@ -454,3 +454,49 @@ loop. Cross-unit removes run after, serially.
   reload-then-enable race for freshly-generated units, the lock window may need to
   extend through the enable of a unit whose file this attempt just wrote. Left to
   the first real concurrent dogfood run to confirm.
+
+## Addendum — the credited bracket did change the fold (field-found 2026-07-31)
+
+§1 promises that every unit still gets a bracket per glyph "so per-unit reports
+and the WAL stay complete — the diff and the applied-set fold are unchanged."
+The first half held; the second was false as written, and the difference cost a
+fleet its teardown.
+
+A credited bracket is `Done`, `changed = false`, `Inverse::Nothing`, appended at
+the crediting unit's own `step_ord` — later in `seq` than the enacting unit's
+real bracket for the same key. `wal::applied_outcomes` picked, per key, the
+latest un-`Reversed` `Done`. So the credited row won, and the applied set carried
+`Inverse::Nothing` for a glyph golem had genuinely installed. The next scroll
+dropped the glyph, the diff emitted `Remove`, `reverse` ran against
+`Inverse::Nothing` — a no-op — and the key left the applied set while the file,
+directory, or package stayed on the host. Golem believed it had cleaned up and
+had not. Found on the VM fleet applying two ingress units that share
+`Nftables.nftablesBase` (ADR 0041) and then decommissioning them: the drop-in
+files and `/etc/nftables.d` survived a teardown that reported settled.
+
+The same rows arrive by a second path, so this is not only the dedup bracket's
+doing. Under `workers > 1` two units can both diff a key to `Install` and both
+reach `apply` before either enters the success set; the loser observes the
+resource already correct and truthfully returns `changed = false` /
+`Inverse::Nothing` from the reconciler itself
+(`reconcilers::apply_apt`'s already-installed arm and its peers). That is the
+pre-dedup behavior §1 describes as the shape dedup reproduces — and it shadowed
+the receipt exactly the same way. Dedup made the rows cheaper and more frequent;
+it did not invent them.
+
+The fix is in the fold, not in the bracket. `wal::applied_outcomes` now refuses
+to let a *bare re-observation* — `changed = false` with `Inverse::Nothing` or no
+inverse — displace a live entry standing at the **same applied content id**
+(`wal::bare_reobservation`). The undo for a host change stays with the step that
+made it, which is what §1's "the unit that did the host work owns the undo"
+always meant. Both halves of the condition are load-bearing: without the
+`changed`/inverse test a real re-apply could not supersede an older receipt;
+without the content-id test an observation of a version golem never recorded — a
+host edited out of band — would be swallowed instead of re-diffed. The credited
+bracket, the per-unit reports, and the rollback semantics of §1 are all
+unchanged; only the fold's tie-break is. With the guard in place, §1's claim
+about the applied-set fold is true.
+
+Regression coverage: `apps/golemd/src/wal.rs`'s fold tests and
+`apps/golemd/tests/shared_glyph_removal.rs`, which reproduces the fleet fixture
+in-process and repeats the parallel case to hit both writers of the row.

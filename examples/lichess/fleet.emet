@@ -38,62 +38,81 @@ scaly = host "scaly" (workload "fishnet" (dockerImage "niklasf/fishnet" "latest"
 
 manta : Scroll
 manta =
-  host "manta"
-    (List.concat
-      [ workload "leroyjenkins-lila" (ghcrImage "lichess-org/leroyjenkins" "latest")
-      , workload "leroyjenkins-nginx" (ghcrImage "lichess-org/leroyjenkins" "latest")
-      , service "lila" (ghcrImage "lichess-org/lila" "latest") 9663
-      , service "redis-server" (dockerImage "redis" "7") 6379
-      , ingress "lichess.org" "lila" 443
-      , ingress "lichess1.org" "lila" 443
-      ])
+  scroll
+    { name = "manta"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs =
+        List.concat
+          [ workload "leroyjenkins-lila" (ghcrImage "lichess-org/leroyjenkins" "latest")
+          , workload "leroyjenkins-nginx" (ghcrImage "lichess-org/leroyjenkins" "latest")
+          , service "lila" (ghcrImage "lichess-org/lila" "latest") 9663
+          , service "redis-server" (dockerImage "redis" "7") 6379
+          , ingress "lichess.org" "lila" 443
+          , ingress "lichess1.org" "lila" 443
+          ]
+    }
 
 orbit : Scroll
 orbit =
-  host "orbit"
-    (List.concat
-      [ service "lila-http" (ghcrImage "lichess-org/lila-http" "latest") 9080
-      , service "lila-engine" (ghcrImage "lichess-org/lila-engine" "latest") 9666
-      , service "lila-gif" (ghcrImage "lichess-org/lila-gif" "latest") 6175
-      , service "lila-fishnet" (ghcrImage "lichess-org/lila-fishnet" "latest") 9665
-      , service "lila-ip2proxy" (ghcrImage "lichess-org/lila-ip2proxy" "latest") 1929
-      , service "lila-push" (ghcrImage "lichess-org/lila-push" "latest") 9054
-      , ingress "http.lichess.org" "lila-http" 443
-      , ingress "engine.lichess.ovh" "lila-engine" 443
-      ])
+  scroll
+    { name = "orbit"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs =
+        List.concat
+          [ service "lila-http" (ghcrImage "lichess-org/lila-http" "latest") 9080
+          , service "lila-engine" (ghcrImage "lichess-org/lila-engine" "latest") 9666
+          , service "lila-gif" (ghcrImage "lichess-org/lila-gif" "latest") 6175
+          , service "lila-fishnet" (ghcrImage "lichess-org/lila-fishnet" "latest") 9665
+          , service "lila-ip2proxy" (ghcrImage "lichess-org/lila-ip2proxy" "latest") 1929
+          , service "lila-push" (ghcrImage "lichess-org/lila-push" "latest") 9054
+          , ingress "http.lichess.org" "lila-http" 443
+          , ingress "engine.lichess.ovh" "lila-engine" 443
+          ]
+    }
 
 talos : Scroll
 talos =
-  host "talos"
-    (List.concat
-      [ workload "fishnet" (dockerImage "niklasf/fishnet" "latest")
-      , service "influxd" (dockerImage "influxdb" "2") 8086
-      , service "alertmanager" (dockerImage "prom/alertmanager" "latest") 9093
-      , service "prometheus" (dockerImage "prom/prometheus" "latest") 9090
-      , service "loki" (dockerImage "grafana/loki" "latest") 3100
-      , service "dns" (dockerImage "dockurr/dnsmasq" "latest") 5353
-      , service "ntpd" (dockerImage "cturra/ntp" "latest") 123
-      , service "rsyslogd" (dockerImage "rsyslog/rsyslog" "latest") 514
-      , ingress "monitor.lichess.ovh" "prometheus" 443
-      , ingress "prom.lichess.ovh" "prometheus" 443
-      , ingress "alertmanager.lichess.ovh" "alertmanager" 443
-      ])
+  scroll
+    { name = "talos"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs =
+        List.concat
+          [ workload "fishnet" (dockerImage "niklasf/fishnet" "latest")
+          , service "influxd" (dockerImage "influxdb" "2") 8086
+          , service "alertmanager" (dockerImage "prom/alertmanager" "latest") 9093
+          , service "prometheus" (dockerImage "prom/prometheus" "latest") 9090
+          , service "loki" (dockerImage "grafana/loki" "latest") 3100
+          , service "dns" (dockerImage "dockurr/dnsmasq" "latest") 5353
+          , service "ntpd" (dockerImage "cturra/ntp" "latest") 123
+          , service "rsyslogd" (dockerImage "rsyslog/rsyslog" "latest") 514
+          , ingress "monitor.lichess.ovh" "prometheus" 443
+          , ingress "prom.lichess.ovh" "prometheus" 443
+          , ingress "alertmanager.lichess.ovh" "alertmanager" 443
+          ]
+    }
 
 kaiju : Scroll
 kaiju =
-  host "kaiju"
-    (service "mongod-lichess-primary" (dockerImage "mongo" "7") 27017)
+  scroll
+    { name = "kaiju"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs = service "mongod-lichess-primary" (dockerImage "mongo" "7") 27017
+    }
 
 zulip : Scroll
 zulip =
-  host "zulip"
-    (List.concat
-      [ service "zulip" (dockerImage "zulip/docker-zulip" "latest") 80
-      , service "zulip-email" (dockerImage "zulip/docker-zulip" "latest") 25
-      , service "postgresql" (dockerImage "zulip/zulip-postgresql" "14") 5432
-      , service "redis" (dockerImage "redis" "7") 6379
-      , ingress "hq.lichess.ovh" "zulip" 443
-      ])
+  scroll
+    { name = "zulip"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs =
+        List.concat
+          [ service "zulip" (dockerImage "zulip/docker-zulip" "latest") 80
+          , service "zulip-email" (dockerImage "zulip/docker-zulip" "latest") 25
+          , service "postgresql" (dockerImage "zulip/zulip-postgresql" "14") 5432
+          , service "redis" (dockerImage "redis" "7") 6379
+          , ingress "hq.lichess.ovh" "zulip" 443
+          ]
+    }
 
 main : List Scroll
 main = [ scaly, manta, orbit, talos, kaiju, zulip ]
