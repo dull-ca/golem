@@ -53,6 +53,10 @@ impl FakeSsh {
         FakeSsh::written(squatter_script)
     }
 
+    fn persisting_the_forward_into_a_background_master() -> FakeSsh {
+        FakeSsh::written(persisted_master_script)
+    }
+
     fn written(body: impl Fn(&Path) -> String) -> FakeSsh {
         let lock = SSH_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -100,6 +104,25 @@ while [ ! -f "{bound}" ]; do :; done
 exit 255"#,
         bound = dir.join("bound").display(),
         squatter = dir.join("squatter").display(),
+        binary = binary.display(),
+    )
+}
+
+// ControlMaster + ControlPersist: this "ssh" leaves a forwarder holding the
+// local port, hands it to a master that outlives the client, and exits 0 — and
+// takes the forward down again when it is asked to `-O cancel` it.
+fn persisted_master_script(dir: &Path) -> String {
+    let binary = std::env::current_exe().unwrap();
+    format!(
+        r#"if [ "$1" = -O ]; then kill $(cat "{pid}"); exit 0; fi
+while [ $# -gt 0 ] && [ "$1" != "-L" ]; do shift; done
+[ $# -lt 2 ] && exit 9
+{FORWARD_SPEC_ENV}="$2" {FORWARD_BOUND_ENV}="{bound}" "{binary}" --exact {FORWARDER_TEST} --ignored --nocapture &
+echo $! > "{pid}"
+while [ ! -f "{bound}" ]; do :; done
+exit 0"#,
+        pid = dir.join("pid").display(),
+        bound = dir.join("bound").display(),
         binary = binary.display(),
     )
 }
@@ -276,6 +299,32 @@ async fn an_ssh_target_reaches_a_loopback_gated_daemon_through_the_forward() {
     assert!(
         await_death(&pid),
         "the forward dies with the conn that opened it"
+    );
+}
+
+#[tokio::test]
+async fn a_verb_crosses_a_forward_whose_ssh_handed_it_to_a_persisted_master() {
+    let ssh = FakeSsh::persisting_the_forward_into_a_background_master();
+    let token_file = ssh.path("token");
+    std::fs::write(&token_file, "secret\n").unwrap();
+    let remote_port = serve_gated("scaly", Some("secret")).await;
+    let targets = ssh_inventory(ssh.dir.path(), "scaly", remote_port, Some(&token_file));
+
+    let conn = Conn::open(&targets[0], &AuthSource::None)
+        .await
+        .unwrap_or_else(|e| panic!("a persisted master's forward was rejected: {e:#}"));
+    let status = conn.get_json("status").await.unwrap();
+    assert_eq!(status["host"], "scaly");
+
+    let pid = forward_pid(&ssh);
+    assert!(
+        lives(&pid),
+        "the persisted forward runs while the verb does"
+    );
+    drop(conn);
+    assert!(
+        await_death(&pid),
+        "the persisted forward is cancelled through the master when the conn drops"
     );
 }
 

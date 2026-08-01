@@ -26,6 +26,18 @@
 //! reported as the stranger it is rather than trusted. It is a narrowing, not a
 //! guarantee.
 //!
+//! **A dead ssh over an answering port is two different events, told apart by
+//! its exit code.** Under `ControlMaster` + `ControlPersist` — the stanza golem's
+//! own docs hand out — an ssh that finds no master forks one into the background
+//! and the foreground `-N` client, left with nothing to do, exits *0* the instant
+//! the forward is up. The forward is real; the process golemctl spawned is simply
+//! no longer the thing holding it. A *lost* bind cannot reach that exit: with
+//! `ExitOnForwardFailure=yes` ssh exits 255 on a refused `-L` bind, whether it
+//! would have become a master, was already talking to one, or was multiplexing
+//! nothing at all. So a zero exit over an answering port is a forward handed to a
+//! persisted master and is used; any other exit over an answering port is still
+//! the squatter above, still reported with ssh's own stderr.
+//!
 //! What survives is a residual window. A local process that reads the port from
 //! `/proc` and binds it while ssh is still authenticating answers every probe
 //! and keeps ssh alive on every one of them, so golemctl cannot tell it from a
@@ -33,7 +45,13 @@
 //! rendezvous only the owner can open — forwarding a unix socket rather than a
 //! TCP port — which ADR 0042 records as the future path; the window is accepted
 //! until then. [`Drop`] kills the child and reaps it, so the forward never
-//! outlives the verb even when the verb exits nonzero.
+//! outlives the verb even when the verb exits nonzero. Killing a child that
+//! already handed its forward to a persisted master would reclaim nothing, so
+//! that forward is instead cancelled through the master — `ssh -O cancel -L`
+//! with the same spec — which frees the port and leaves the master itself up,
+//! the reuse being the whole point of the operator's `ControlPersist`. The
+//! cancel is bounded by `CANCEL_GRACE`: a wedged master delays the verb's exit
+//! by that much, it does not hang it.
 //!
 //! **ssh's stderr** is piped and drained by a thread (`collect`), so its
 //! diagnosis (`No route to host`, a key refusal) can be quoted in the failure.
@@ -61,6 +79,8 @@ pub const CONNECT_INTERVAL: Duration = Duration::from_millis(250);
 pub const CONNECT_BUDGET: Duration = Duration::from_secs(10);
 const STDERR_GRACE: Duration = Duration::from_millis(500);
 const STDERR_POLL: Duration = Duration::from_millis(25);
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+const CANCEL_POLL: Duration = Duration::from_millis(20);
 
 pub fn ssh_bin() -> String {
     std::env::var(SSH_BIN_ENV)
@@ -71,12 +91,39 @@ pub fn ssh_bin() -> String {
 
 type SshSaid = Arc<Mutex<Option<String>>>;
 
-/// A live forward. It exists only while the ssh child does: hold it for as long
-/// as requests must flow, and drop it to take the forward down.
+struct Ssh {
+    bin: String,
+    destination: String,
+    port: Option<u16>,
+    args: Vec<String>,
+}
+
+impl Ssh {
+    fn command(&self, verb: &[&str], forward: &str) -> Command {
+        let mut command = Command::new(&self.bin);
+        command.args(verb).arg("-L").arg(forward);
+        if let Some(port) = self.port {
+            command.arg("-p").arg(port.to_string());
+        }
+        command.args(&self.args).arg(&self.destination);
+        command
+    }
+}
+
+enum HeldBy {
+    TheSshChild,
+    APersistedMaster,
+}
+
+/// A live forward. Hold it for as long as requests must flow, and drop it to
+/// take the forward down — whether the ssh child still carries it or a
+/// persisted master was handed it.
 pub struct Tunnel {
     child: Child,
     said: SshSaid,
-    destination: String,
+    ssh: Ssh,
+    forward: String,
+    held_by: HeldBy,
     pub local_port: u16,
 }
 
@@ -121,19 +168,15 @@ impl Tunnel {
         budget: Duration,
     ) -> Result<Tunnel> {
         let local_port = free_loopback_port()?;
-        let mut command = Command::new(ssh_bin);
-        command
-            .arg("-N")
-            .arg("-o")
-            .arg(EXIT_ON_FORWARD_FAILURE)
-            .arg("-L")
-            .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"));
-        if let Some(port) = ssh_port {
-            command.arg("-p").arg(port.to_string());
-        }
-        let mut child = command
-            .args(ssh_args)
-            .arg(destination)
+        let ssh = Ssh {
+            bin: ssh_bin.to_string(),
+            destination: destination.to_string(),
+            port: ssh_port,
+            args: ssh_args.to_vec(),
+        };
+        let forward = format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}");
+        let mut child = ssh
+            .command(&["-N", "-o", EXIT_ON_FORWARD_FAILURE], &forward)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -146,7 +189,9 @@ impl Tunnel {
         let mut tunnel = Tunnel {
             child,
             said,
-            destination: destination.to_string(),
+            ssh,
+            forward,
+            held_by: HeldBy::TheSshChild,
             local_port,
         };
         tunnel.await_forward(budget)?;
@@ -154,6 +199,9 @@ impl Tunnel {
     }
 
     pub fn confirm_alive(&mut self) -> Result<()> {
+        if let HeldBy::APersistedMaster = self.held_by {
+            return self.confirm_the_master_still_answers();
+        }
         match self
             .child
             .try_wait()
@@ -162,7 +210,7 @@ impl Tunnel {
             None => Ok(()),
             Some(status) => bail!(
                 "ssh to {} {} before the first request crossed its forward, so 127.0.0.1:{} is no longer it{}",
-                self.destination,
+                self.ssh.destination,
                 exited_as(status),
                 self.local_port,
                 self.stderr_tail()
@@ -170,8 +218,20 @@ impl Tunnel {
         }
     }
 
+    fn confirm_the_master_still_answers(&self) -> Result<()> {
+        match TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, self.local_port))) {
+            Ok(_) => Ok(()),
+            Err(_) => bail!(
+                "the ssh master holding the forward to {} stopped answering 127.0.0.1:{} before the first request crossed it{}",
+                self.ssh.destination,
+                self.local_port,
+                self.stderr_tail()
+            ),
+        }
+    }
+
     fn await_forward(&mut self, budget: Duration) -> Result<()> {
-        let destination = self.destination.clone();
+        let destination = self.ssh.destination.clone();
         let deadline = Instant::now() + budget;
         let mut carried_on_the_previous_probe = false;
         loop {
@@ -185,12 +245,19 @@ impl Tunnel {
             match (answering, exited) {
                 (true, None) if carried_on_the_previous_probe => return Ok(()),
                 (true, None) => carried_on_the_previous_probe = true,
+                (true, Some(status)) if status.success() => {
+                    self.held_by = HeldBy::APersistedMaster;
+                    return Ok(());
+                }
                 (true, Some(status)) => bail!(
                     "ssh to {destination} {}, so 127.0.0.1:{} is not its forward — something else took the port{}",
                     exited_as(status),
                     self.local_port,
                     self.stderr_tail()
                 ),
+                (false, Some(status)) if status.success() => {
+                    carried_on_the_previous_probe = false
+                }
                 (false, Some(status)) => bail!(
                     "ssh to {destination} {} before the forward opened{}",
                     exited_as(status),
@@ -232,10 +299,36 @@ impl Tunnel {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+
+    fn cancel_through_the_master(&self) {
+        let Ok(mut cancel) = self
+            .ssh
+            .command(&["-O", "cancel"], &self.forward)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        let deadline = Instant::now() + CANCEL_GRACE;
+        loop {
+            match cancel.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) if Instant::now() >= deadline => break,
+                Ok(None) => std::thread::sleep(CANCEL_POLL),
+            }
+        }
+        let _ = cancel.kill();
+        let _ = cancel.wait();
+    }
 }
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
+        if let HeldBy::APersistedMaster = self.held_by {
+            self.cancel_through_the_master();
+        }
         self.terminate();
     }
 }
@@ -279,6 +372,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     const PORT_LOTTERY_RETRIES: usize = 8;
@@ -458,6 +552,146 @@ mod tests {
         drop(squatter);
     }
 
+    fn keep_the_forwarded_port(
+        argv: PathBuf,
+        bound: PathBuf,
+        stop: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let listener = loop {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                if let Some(port) = recorded_forward_port(&argv) {
+                    if let Ok(listener) =
+                        TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+                    {
+                        break listener;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            listener.set_nonblocking(true).unwrap();
+            std::fs::write(&bound, "").unwrap();
+            while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
+                if listener.accept().is_err() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        })
+    }
+
+    struct HandedOff {
+        ssh: PathBuf,
+        argv: PathBuf,
+        cancelled: PathBuf,
+        stop: Arc<AtomicBool>,
+        holder: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl HandedOff {
+        fn to_a_master_and_then_exiting(dir: &Path, code: i32) -> HandedOff {
+            let argv = dir.join("argv");
+            let bound = dir.join("bound");
+            let cancelled = dir.join("cancelled");
+            let ssh = fake_ssh(
+                dir,
+                "persisted",
+                &format!(
+                    "if [ \"$1\" = -O ]; then printf '%s\\n' \"$@\" > {}; exit 0; fi\n\
+                     printf '%s\\n' \"$@\" > {}\n\
+                     while [ ! -f {} ]; do sleep 0.02; done\n\
+                     exit {code}",
+                    cancelled.display(),
+                    argv.display(),
+                    bound.display(),
+                ),
+            );
+            let stop = Arc::new(AtomicBool::new(false));
+            let holder = keep_the_forwarded_port(argv.clone(), bound, stop.clone());
+            HandedOff {
+                ssh,
+                argv,
+                cancelled,
+                stop,
+                holder: Some(holder),
+            }
+        }
+
+        fn open(&self) -> Result<Tunnel> {
+            Tunnel::open_within(
+                "golem@scaly",
+                None,
+                7474,
+                &[],
+                self.ssh.to_str().unwrap(),
+                Duration::from_secs(5),
+            )
+        }
+    }
+
+    impl Drop for HandedOff {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(holder) = self.holder.take() {
+                let _ = holder.join();
+            }
+        }
+    }
+
+    #[test]
+    fn a_forward_handed_to_a_persisted_master_that_exits_zero_is_used_not_rejected() {
+        let _serial = one_spawn_at_a_time();
+        let dir = tempfile::tempdir().unwrap();
+        let handed_off = HandedOff::to_a_master_and_then_exiting(dir.path(), 0);
+
+        let mut tunnel = handed_off
+            .open()
+            .unwrap_or_else(|e| panic!("a persisted master's forward was rejected: {e:#}"));
+
+        assert!(
+            TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, tunnel.local_port))).is_ok()
+        );
+        tunnel.confirm_alive().unwrap();
+    }
+
+    #[test]
+    fn a_forward_whose_ssh_exits_nonzero_is_a_squatter_however_well_the_port_answers() {
+        let _serial = one_spawn_at_a_time();
+        let dir = tempfile::tempdir().unwrap();
+        let handed_off = HandedOff::to_a_master_and_then_exiting(dir.path(), 255);
+
+        let err = format!("{:#}", handed_off.open().map(|_| ()).unwrap_err());
+
+        assert!(err.contains("golem@scaly"), "{err}");
+        assert!(err.contains("something else took the port"), "{err}");
+    }
+
+    #[test]
+    fn dropping_a_persisted_master_forward_cancels_it_through_the_master() {
+        let _serial = one_spawn_at_a_time();
+        let dir = tempfile::tempdir().unwrap();
+        let handed_off = HandedOff::to_a_master_and_then_exiting(dir.path(), 0);
+        let tunnel = handed_off.open().unwrap();
+        let local_port = tunnel.local_port;
+        let spec = std::fs::read_to_string(&handed_off.argv).unwrap();
+        let spec = spec.lines().nth(4).unwrap().to_string();
+
+        drop(tunnel);
+
+        let cancelled: Vec<String> = std::fs::read_to_string(&handed_off.cancelled)
+            .unwrap_or_else(|e| panic!("the handed-off forward was never cancelled ({e})"))
+            .lines()
+            .map(|line| line.to_string())
+            .collect();
+        assert_eq!(cancelled[..2], ["-O", "cancel"]);
+        assert_eq!(cancelled[2], "-L");
+        assert_eq!(cancelled[3], spec);
+        assert_eq!(cancelled[4], "golem@scaly");
+        assert!(spec.contains(&local_port.to_string()), "{spec}");
+    }
+
     #[test]
     fn a_dead_ssh_is_named_when_liveness_is_confirmed_before_the_first_request() {
         let _serial = one_spawn_at_a_time();
@@ -471,7 +705,14 @@ mod tests {
                 .spawn()
                 .unwrap(),
             said: Arc::new(Mutex::new(Some(String::new()))),
-            destination: "golem@scaly".to_string(),
+            ssh: Ssh {
+                bin: ssh.to_str().unwrap().to_string(),
+                destination: "golem@scaly".to_string(),
+                port: None,
+                args: vec![],
+            },
+            forward: "127.0.0.1:1:127.0.0.1:7474".to_string(),
+            held_by: HeldBy::TheSshChild,
             local_port: 1,
         };
         tunnel.confirm_alive().unwrap();
