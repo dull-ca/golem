@@ -4,7 +4,8 @@
 
 Accepted 2026-07-31 (decision by Dr. Dub). Bears on ADR 0038 (fleet
 fan-out) and ADR 0039 (peer gossip); revises 0039's "signing before
-gossip" consequence.
+gossip" consequence. Refined by ADR 0042: transport stays infra's, but
+golemd gains a single shared-secret authorization check.
 
 ## Context
 
