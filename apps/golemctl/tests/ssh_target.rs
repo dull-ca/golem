@@ -58,10 +58,10 @@ impl Drop for FakeSsh {
 fn forwarder_script(pidfile: &Path) -> String {
     let binary = std::env::current_exe().unwrap();
     format!(
-        r#"echo $$ > {pidfile}
+        r#"echo $$ > "{pidfile}"
 while [ $# -gt 0 ] && [ "$1" != "-L" ]; do shift; done
 [ $# -lt 2 ] && exit 9
-{FORWARD_SPEC_ENV}="$2" exec {binary} --exact {FORWARDER_TEST} --ignored --nocapture"#,
+{FORWARD_SPEC_ENV}="$2" exec "{binary}" --exact {FORWARDER_TEST} --ignored --nocapture"#,
         pidfile = pidfile.display(),
         binary = binary.display(),
     )
