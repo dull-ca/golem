@@ -48,16 +48,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use iocraft::prelude::*;
 use tokio::sync::Notify;
 
 use crate::apply;
+use crate::conn::{AuthSource, Conn};
 use crate::inventory::Target;
 use crate::logsink::{host_apply_dir, Persistence};
 use crate::model::ApplyModel;
 use crate::plan::{self, paint, RenderOptions, BOLD, DIM, GREEN, RED};
-use crate::poll::{get_progress, post_manifest};
 use crate::view::{self, Emphasis, Line};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(1000);
@@ -253,10 +253,11 @@ pub fn apply_json(results: &[(Target, HostOutcome)]) -> serde_json::Value {
 
 pub async fn run_apply(bytes: Vec<u8>, targets: Vec<Target>, json: bool) -> Result<()> {
     let fanout = Fanout::read(&bytes, targets)?;
+    let auth = crate::conn::resolve_auth(None)?;
     let results = if !json && std::io::stdout().is_terminal() {
-        apply_live(bytes, &fanout).await?
+        apply_live(bytes, &fanout, &auth).await?
     } else {
-        apply_plain(bytes, &fanout, json).await
+        apply_plain(bytes, &fanout, &auth, json).await
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&apply_json(&results))?);
@@ -275,6 +276,7 @@ pub async fn run_apply(bytes: Vec<u8>, targets: Vec<Target>, json: bool) -> Resu
 pub async fn apply_plain(
     bytes: Vec<u8>,
     fanout: &Fanout,
+    auth: &AuthSource,
     json: bool,
 ) -> Vec<(Target, HostOutcome)> {
     let mut tasks = Vec::with_capacity(fanout.targets().len());
@@ -286,10 +288,11 @@ pub async fn apply_plain(
         }
         let target = target.clone();
         let bytes = bytes.clone();
+        let auth = auth.clone();
         tasks.push((
             target.clone(),
             HostTask::Running(tokio::spawn(async move {
-                apply_host_plain(&target, bytes, json).await
+                apply_host_plain(&target, bytes, &auth, json).await
             })),
         ));
     }
@@ -315,8 +318,17 @@ async fn join_host_tasks(tasks: Vec<(Target, HostTask)>) -> Vec<(Target, HostOut
     results
 }
 
-async fn apply_host_plain(target: &Target, bytes: Vec<u8>, json: bool) -> HostOutcome {
-    let id = match post_manifest(&target.addr, bytes).await {
+async fn apply_host_plain(
+    target: &Target,
+    bytes: Vec<u8>,
+    auth: &AuthSource,
+    json: bool,
+) -> HostOutcome {
+    let conn = match Conn::open(target, auth).await {
+        Ok(conn) => conn,
+        Err(err) => return transport_failure(err),
+    };
+    let id = match conn.post_manifest(bytes).await {
         Ok(accepted) => accepted.reconcile_id,
         Err(err) => return transport_failure(err),
     };
@@ -329,7 +341,7 @@ async fn apply_host_plain(target: &Target, bytes: Vec<u8>, json: bool) -> HostOu
     }
     let mut cursor = 0u64;
     loop {
-        let progress = match get_progress(&target.addr, id, cursor).await {
+        let progress = match conn.get_progress(id, cursor).await {
             Ok(progress) => progress,
             Err(err) => return transport_failure(err),
         };
@@ -513,7 +525,11 @@ impl FleetLive {
     }
 }
 
-pub async fn apply_live(bytes: Vec<u8>, fanout: &Fanout) -> Result<Vec<(Target, HostOutcome)>> {
+pub async fn apply_live(
+    bytes: Vec<u8>,
+    fanout: &Fanout,
+    auth: &AuthSource,
+) -> Result<Vec<(Target, HostOutcome)>> {
     let live = FleetLive {
         hosts: Arc::new(Mutex::new(
             fanout
@@ -541,10 +557,11 @@ pub async fn apply_live(bytes: Vec<u8>, fanout: &Fanout) -> Result<Vec<(Target, 
         let live = live.clone();
         let target = target.clone();
         let bytes = bytes.clone();
+        let auth = auth.clone();
         tasks.push((
             target.clone(),
             HostTask::Running(tokio::spawn(async move {
-                apply_host_live(live, index, target, bytes).await
+                apply_host_live(live, index, target, bytes, auth).await
             })),
         ));
     }
@@ -576,8 +593,17 @@ async fn apply_host_live(
     index: usize,
     target: Target,
     bytes: Vec<u8>,
+    auth: AuthSource,
 ) -> HostOutcome {
-    let id = match post_manifest(&target.addr, bytes).await {
+    let conn = match Conn::open(&target, &auth).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            let outcome = transport_failure(err);
+            live.settle(index, &outcome);
+            return outcome;
+        }
+    };
+    let id = match conn.post_manifest(bytes).await {
         Ok(accepted) => accepted.reconcile_id,
         Err(err) => {
             let outcome = transport_failure(err);
@@ -594,7 +620,7 @@ async fn apply_host_live(
 
     let mut cursor = 0u64;
     loop {
-        let progress = match get_progress(&target.addr, id, cursor).await {
+        let progress = match conn.get_progress(id, cursor).await {
             Ok(progress) => progress,
             Err(err) => {
                 let outcome = transport_failure(err);
@@ -674,7 +700,8 @@ pub async fn run_plan(
     detail: bool,
 ) -> Result<()> {
     let fanout = Fanout::read(&bytes, targets)?;
-    let results = gather_plans(bytes, &fanout).await;
+    let auth = crate::conn::resolve_auth(None)?;
+    let results = gather_plans(bytes, &fanout, &auth).await;
     if json {
         println!("{}", serde_json::to_string_pretty(&plan_json(&results))?);
     } else {
@@ -697,20 +724,26 @@ pub async fn run_plan(
     Ok(())
 }
 
-pub async fn gather_plans(bytes: Vec<u8>, fanout: &Fanout) -> Vec<(Target, HostPlan)> {
+pub async fn gather_plans(
+    bytes: Vec<u8>,
+    fanout: &Fanout,
+    auth: &AuthSource,
+) -> Vec<(Target, HostPlan)> {
     let mut tasks = Vec::with_capacity(fanout.targets().len());
     for target in fanout.targets() {
         if !fanout.carries_a_scroll_for(target) {
             tasks.push((target.clone(), None));
             continue;
         }
-        let addr = target.addr.clone();
+        let target = target.clone();
         let bytes = bytes.clone();
+        let auth = auth.clone();
         tasks.push((
             target.clone(),
-            Some(tokio::spawn(
-                async move { plan::post_plan(&addr, bytes).await },
-            )),
+            Some(tokio::spawn(async move {
+                let conn = Conn::open(&target, &auth).await?;
+                conn.post_plan(bytes).await
+            })),
         ));
     }
     let mut results = Vec::with_capacity(tasks.len());
@@ -773,7 +806,8 @@ pub struct HostReading {
 }
 
 pub async fn run_status(targets: Vec<Target>, json: bool) -> Result<()> {
-    let readings = gather_status(&targets).await;
+    let auth = crate::conn::resolve_auth(None)?;
+    let readings = gather_status(&targets, &auth).await;
     if json {
         println!("{}", serde_json::to_string_pretty(&status_json(&readings))?);
     } else {
@@ -784,13 +818,17 @@ pub async fn run_status(targets: Vec<Target>, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn gather_status(targets: &[Target]) -> Vec<(Target, Result<HostReading, String>)> {
+pub async fn gather_status(
+    targets: &[Target],
+    auth: &AuthSource,
+) -> Vec<(Target, Result<HostReading, String>)> {
     let mut tasks = Vec::with_capacity(targets.len());
     for target in targets {
-        let addr = target.addr.clone();
+        let target = target.clone();
+        let auth = auth.clone();
         tasks.push((
             target.clone(),
-            tokio::spawn(async move { read_host(&addr).await }),
+            tokio::spawn(async move { read_host(&target, &auth).await }),
         ));
     }
     let mut readings = Vec::with_capacity(tasks.len());
@@ -805,8 +843,9 @@ pub async fn gather_status(targets: &[Target]) -> Vec<(Target, Result<HostReadin
     readings
 }
 
-async fn read_host(addr: &str) -> Result<HostReading> {
-    let (status, state) = tokio::try_join!(get_json(addr, "status"), get_json(addr, "state"))?;
+async fn read_host(target: &Target, auth: &AuthSource) -> Result<HostReading> {
+    let conn = Conn::open(target, auth).await?;
+    let (status, state) = tokio::try_join!(conn.get_json("status"), conn.get_json("state"))?;
     Ok(HostReading {
         host: status
             .get("host")
@@ -818,19 +857,6 @@ async fn read_host(addr: &str) -> Result<HostReading> {
             .and_then(|c| c.as_str())
             .map(|c| c.to_string()),
     })
-}
-
-async fn get_json(addr: &str, path: &str) -> Result<serde_json::Value> {
-    let url = format!("{}/{path}", addr.trim_end_matches('/'));
-    let resp = reqwest::get(&url)
-        .await
-        .with_context(|| format!("GET {url}"))?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if !status.is_success() {
-        bail!("{status}: {text}");
-    }
-    serde_json::from_str(&text).with_context(|| format!("decode {url}"))
 }
 
 pub const NOTHING_APPLIED: &str = "nothing applied";

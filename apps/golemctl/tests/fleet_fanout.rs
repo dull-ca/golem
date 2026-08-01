@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use golemctl::conn::AuthSource;
 use golemctl::fleet::{self, Fanout, HostOutcome, HostPlan};
 use golemctl::inventory::{self, Target};
 use golemd::config::RetryConfig;
@@ -63,6 +64,31 @@ async fn serve(host: &str, state_dir: &Path) -> String {
     });
     let app = http::router(http::AppState {
         foreman: Arc::new(foreman),
+        required_token: None,
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn serve_gated(host: &str, state_dir: &Path, token: &str) -> String {
+    let room = SqlitePlanRoom::open(&state_dir.join(format!("{host}-gated.db"))).unwrap();
+    let foreman = Foreman::new(
+        host.to_string(),
+        Box::new(room),
+        Box::new(FakeReconciler::new()),
+    )
+    .with_retry_config(RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    });
+    let app = http::router(http::AppState {
+        foreman: Arc::new(foreman),
+        required_token: Some(Arc::new(token.to_string())),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -116,7 +142,7 @@ async fn a_fleet_apply_settles_every_host_and_each_daemon_records_its_own_conten
     assert_eq!(targets.len(), 3);
 
     let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
-    let results = fleet::apply_plain(manifest_bytes(), &fanout, false).await;
+    let results = fleet::apply_plain(manifest_bytes(), &fanout, &AuthSource::None, false).await;
 
     assert_eq!(results.len(), 3);
     for (target, outcome) in &results {
@@ -155,7 +181,7 @@ async fn a_downed_daemon_errors_alone_while_its_peers_settle_and_the_fleet_fails
     let targets = write_inventory(dir.path(), &addrs);
 
     let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
-    let results = fleet::apply_plain(manifest_bytes(), &fanout, false).await;
+    let results = fleet::apply_plain(manifest_bytes(), &fanout, &AuthSource::None, false).await;
 
     let by_name: BTreeMap<&str, &HostOutcome> = results
         .iter()
@@ -200,7 +226,7 @@ async fn a_fleet_plan_reports_every_host_and_journals_nothing() {
     let targets = write_inventory(dir.path(), &addrs);
 
     let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
-    let results = fleet::gather_plans(manifest_bytes(), &fanout).await;
+    let results = fleet::gather_plans(manifest_bytes(), &fanout, &AuthSource::None).await;
 
     assert_eq!(results.len(), 3);
     let aggregate = fleet::plan_json(&results);
@@ -258,7 +284,7 @@ async fn a_host_the_manifest_names_no_scroll_for_is_left_untouched() {
     let bytes = manifest_naming(&["h1", "h2"]);
 
     let fanout = Fanout::read(&bytes, targets).unwrap();
-    let results = fleet::apply_plain(bytes.clone(), &fanout, false).await;
+    let results = fleet::apply_plain(bytes.clone(), &fanout, &AuthSource::None, false).await;
 
     assert_eq!(results.len(), 3);
     let by_name: BTreeMap<&str, &HostOutcome> = results
@@ -294,7 +320,7 @@ async fn a_host_the_manifest_names_no_scroll_for_is_left_untouched() {
         }
     }
 
-    let plans = fleet::gather_plans(bytes, &fanout).await;
+    let plans = fleet::gather_plans(bytes, &fanout, &AuthSource::None).await;
     let skipped = plans
         .iter()
         .find(|(target, _)| target.name == "h3")
@@ -322,7 +348,7 @@ async fn a_fleet_status_reads_every_host_reachable_or_not() {
     ];
     let targets = write_inventory(dir.path(), &addrs);
 
-    let readings = fleet::gather_status(&targets).await;
+    let readings = fleet::gather_status(&targets, &AuthSource::None).await;
     assert_eq!(readings.len(), 3);
 
     let lines = fleet::status_lines(&readings, false);
@@ -335,4 +361,26 @@ async fn a_fleet_status_reads_every_host_reachable_or_not() {
     assert_eq!(aggregate["hosts"]["h1"]["latest_revision"], 1);
     assert!(aggregate["hosts"]["h1"]["content_id"].is_null());
     assert!(aggregate["hosts"]["h3"]["error"].is_string());
+}
+
+#[tokio::test]
+async fn a_gated_fleet_apply_authenticates_with_the_right_token_and_names_env_vars_without_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let addr = serve_gated("h1", dir.path(), "secret").await;
+    let bytes = manifest_naming(&["h1"]);
+    let targets = write_inventory(dir.path(), &[("h1", addr)]);
+    let fanout = Fanout::read(&bytes, targets).unwrap();
+
+    let authed = AuthSource::Token("secret".to_string());
+    let results = fleet::apply_plain(bytes.clone(), &fanout, &authed, false).await;
+    assert!(results[0].1.is_settled(), "{:?}", results[0].1);
+
+    let unauthed = AuthSource::None;
+    let results = fleet::apply_plain(bytes, &fanout, &unauthed, false).await;
+    match &results[0].1 {
+        HostOutcome::Error { message } => {
+            assert!(message.contains("GOLEM_AUTH_TOKEN"), "{message}")
+        }
+        other => panic!("expected an unauthorized error, got {other:?}"),
+    }
 }

@@ -13,8 +13,10 @@
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::Deserialize;
+
+use crate::conn::Conn;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanResponse {
@@ -192,8 +194,8 @@ struct Step {
     details: Vec<Vec<Element>>,
 }
 
-pub async fn run(bytes: Vec<u8>, addr: &str, json: bool, detail: bool) -> Result<()> {
-    let body = post_plan(addr, bytes).await?;
+pub async fn run(bytes: Vec<u8>, conn: &Conn, json: bool, detail: bool) -> Result<()> {
+    let body = conn.post_plan(bytes).await?;
     let options = RenderOptions {
         detail,
         color: color_is_welcome(),
@@ -202,27 +204,6 @@ pub async fn run(bytes: Vec<u8>, addr: &str, json: bool, detail: bool) -> Result
     };
     println!("{}", present(&body, json, &options)?);
     Ok(())
-}
-
-pub async fn post_plan(addr: &str, bytes: Vec<u8>) -> Result<String> {
-    let url = format!("{}/plan", addr.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("content-type", "application/octet-stream")
-        .body(bytes)
-        .send()
-        .await?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if !status.is_success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
-                bail!("{status}: {msg}");
-            }
-        }
-        bail!("{status}: {text}");
-    }
-    Ok(text)
 }
 
 pub fn color_is_welcome() -> bool {

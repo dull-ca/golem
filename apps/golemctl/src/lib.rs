@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod conn;
 pub mod fleet;
 pub mod inventory;
 pub mod logsink;
