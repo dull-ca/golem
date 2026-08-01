@@ -123,7 +123,14 @@ no longer a port to knock on — not a dead one, none.
 ### 5. Open a forward yourself, and get refused twice
 
 ```nushell
-ssh -f -N -L 17501:127.0.0.1:7474 -i .fleet/id_ed25519 -p 2259 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ExitOnForwardFailure=yes golem@127.0.0.1
+let ssh_opts = [
+  "-i" ".fleet/id_ed25519"
+  "-p" "2259"
+  "-o" "StrictHostKeyChecking=no"
+  "-o" "UserKnownHostsFile=/dev/null"
+  "-o" "ExitOnForwardFailure=yes"
+]
+ssh -f -N -L 17501:127.0.0.1:7474 ...$ssh_opts golem@127.0.0.1
 curl -s -w ' [%{http_code}]\n' http://127.0.0.1:17501/status
 curl -s -w ' [%{http_code}]\n' -H 'Authorization: Bearer wrong' http://127.0.0.1:17501/status
 curl -s -w ' [%{http_code}]\n' -H $"Authorization: Bearer (open .fleet/golem-token | str trim)" http://127.0.0.1:17501/status
