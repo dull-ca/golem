@@ -162,6 +162,12 @@ fn free_vars_expr(
                 free_vars_expr(v, bound, names, refs);
             }
         }
+        Expr::RecordUpdate { base, fields } => {
+            free_vars_expr(base, bound, names, refs);
+            for (_, v) in fields {
+                free_vars_expr(v, bound, names, refs);
+            }
+        }
         // Recurse into every tuple element, like `List` — a reference inside a
         // tuple expression is a real dependency edge (ADR 0027).
         Expr::Tuple(items) => {

@@ -223,6 +223,10 @@ pub enum Expr {
     /// `{ a = e1, b = e2 }` — a record literal. Infers to a `Closed` record
     /// (ADR 0010).
     Record(BTreeMap<String, Spanned<Expr>>),
+    RecordUpdate {
+        base: Box<Spanned<Expr>>,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
     /// A tuple literal `(a, b)` / `(a, b, c)`, or unit `()` when empty
     /// (ADR 0027).
     Tuple(Vec<Spanned<Expr>>),

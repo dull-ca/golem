@@ -475,18 +475,40 @@ where
             .then_ignore(just(Tok::Equals))
             .then(expr.clone());
 
-        let record = record_field
+        let record_literal = record_field
+            .clone()
             .separated_by(just(Tok::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
-            .delimited_by(just(Tok::LBrace), just(Tok::RBrace))
-            .map_with(|pairs: Vec<(String, Spanned<Expr>)>, e| {
+            .then_ignore(just(Tok::RBrace))
+            .map(|pairs: Vec<(String, Spanned<Expr>)>| {
                 let mut fields = BTreeMap::new();
                 for (k, v) in pairs {
                     fields.insert(k, v);
                 }
-                Spanned(Expr::Record(fields), span_range(e.span()))
+                Expr::Record(fields)
             });
+
+        let record_update = expr
+            .clone()
+            .then_ignore(just(Tok::Op("|".to_string())))
+            .then(
+                record_field
+                    .clone()
+                    .separated_by(just(Tok::Comma))
+                    .allow_trailing()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Tok::RBrace))
+            .map(|(base, fields)| Expr::RecordUpdate {
+                base: Box::new(base),
+                fields,
+            });
+
+        let record = just(Tok::LBrace)
+            .ignore_then(choice((record_literal, record_update)))
+            .map_with(|node, e| Spanned(node, span_range(e.span())));
 
         // The one parenthesized form, read by element count (ADR 0027 §2):
         // `()` (0) is unit, `(e)` (1) is grouping — the inner node itself, NOT a
@@ -556,7 +578,7 @@ where
                 })
             });
 
-        let operator = select! { Tok::Op(s) => s };
+        let operator = select! { Tok::Op(s) if s != "|" => s };
 
         let binary = unary
             .clone()

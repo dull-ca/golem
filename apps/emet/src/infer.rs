@@ -955,6 +955,20 @@ fn describe_found(found: &Type) -> String {
     }
 }
 
+fn absent_update_field(field: &str, known: &BTreeMap<String, Type>, span: &Span) -> TypeError {
+    let mut msg = format!("this record has no `{field}` field to update");
+    if let Some(hint) = did_you_mean(field, known.keys().cloned()) {
+        msg.push_str(&format!(" — did you mean `{hint}`?"));
+    }
+    let listed: Vec<String> = known.keys().map(|k| format!("`{k}`")).collect();
+    let note = if listed.is_empty() {
+        "this record has no fields at all".to_string()
+    } else {
+        format!("it has {}", listed.join(", "))
+    };
+    TypeError::new(msg, span.clone()).note(note)
+}
+
 fn constraint_name(c: Constraint) -> &'static str {
     match c {
         Constraint::None => "unconstrained",
@@ -1509,6 +1523,47 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 tys.insert(k.clone(), infer_expr(inf, env, v)?);
             }
             Ok(Type::Record(tys, Row::Closed))
+        }
+
+        Expr::RecordUpdate { base, fields } => {
+            let base_ty = infer_expr(inf, env, base)?;
+            match inf.prune(&base_ty) {
+                Type::Record(known, Row::Closed) => {
+                    for (name, value) in fields {
+                        if !known.contains_key(name) {
+                            return Err(absent_update_field(name, &known, &value.1));
+                        }
+                    }
+                }
+                Type::Var(_, _) | Type::Record(_, Row::Open(_)) => {}
+                other => {
+                    return Err(TypeError::new(
+                        format!(
+                            "a record update needs a record to update, but this is {}",
+                            describe_found(&inf.apply(&other))
+                        ),
+                        base.1.clone(),
+                    ));
+                }
+            }
+
+            let mut demanded = BTreeMap::new();
+            for (name, _) in fields {
+                demanded.insert(name.clone(), inf.fresh());
+            }
+            let rest = inf.fresh_row();
+            inf.unify(&base_ty, &Type::Record(demanded, rest), span)?;
+
+            let mut replacements = BTreeMap::new();
+            for (name, value) in fields {
+                replacements.insert(name.clone(), infer_expr(inf, env, value)?);
+            }
+
+            let Type::Record(mut updated, row) = inf.apply(&base_ty) else {
+                unreachable!("a record update's base has just been unified with a record")
+            };
+            updated.extend(replacements);
+            Ok(Type::Record(updated, row))
         }
 
         // A tuple literal infers to a `Type::Tuple` of its elements' types,

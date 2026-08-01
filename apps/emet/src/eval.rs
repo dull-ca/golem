@@ -345,6 +345,17 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             }
             Value::Record(m)
         }
+        Expr::RecordUpdate { base, fields } => {
+            let mut m = match eval(env, base, depth)? {
+                Value::Record(m) => m,
+                _ => unreachable!("record update on non-record"),
+            };
+            for (k, v) in fields {
+                let value = eval(env, v, depth)?;
+                m.insert(k.clone(), value);
+            }
+            Value::Record(m)
+        }
         // Evaluate each element left-to-right into a `Value::Tuple`; unit is the
         // empty tuple (ADR 0027).
         Expr::Tuple(items) => {
