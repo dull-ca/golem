@@ -89,8 +89,11 @@ in the client: no `golemd` knows about another. See [CLI](/reference/cli/).
    by content id, producing an ordered list of `GlyphOp`s:
    `Install` / `Remove` / `Replace` / `Noop`. This is a pure fold — desired
    state in, an ordered plan out, no side effects.
-4. **Enact.** Run each op through the **`Reconciler`** port, one leaf unit
-   at a time. Apply captures the prior host state into an `Inverse` receipt;
+4. **Enact.** Run each op through the **`Reconciler`** port. Leaf units drain
+   a bounded worker pool — `workers = 4` by default, `workers = 1` for the
+   fully-serial walk — because the authored model promises no ordering
+   between units; within a unit, glyphs still enact in source order (ADR
+   0034 §3). Apply captures the prior host state into an `Inverse` receipt;
    the port speaks glyph vocabulary, never `apt-get`. A leaf that exhausts
    its retries is rolled back or kept by its own policy, and its siblings
    settle either way.

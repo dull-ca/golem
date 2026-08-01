@@ -119,7 +119,7 @@ that is `lineInFile`. Say the maintenance page's server block must be
 `include`d from an nginx entrypoint the distro shipped:
 
 ```emet
-includeLine : String -> Glyph
+includeLine : String -> LineInFile
 includeLine host =
   lineInFile
     { path = "/etc/nginx/conf.d/maintenance.conf"

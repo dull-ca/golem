@@ -86,6 +86,12 @@ they just pin the fields this fleet always sets the same way and delegate to the
 shipped `workloadGlyphs`. A different fleet would grow different helpers over the
 same library.
 
+`service` is shown simplified. `Lichess.emet` spells it `expose = Unexposed`
+followed by an explicit `List.concat` of `nftablesBase` and its own
+`nftablesDropIn` — the same firewall glyphs `Internal` would have derived,
+assembled by hand from the pieces `ingress` needs anyway. The two spellings
+compile to a byte-identical manifest.
+
 ### Ingress stays hand-rolled
 
 `ingress` is the one shape that does **not** go through `Workload`, on purpose. A
@@ -203,10 +209,10 @@ Any host carrying a `service` or an `ingress` writes its own `scroll` with
 `notifies = [ "golem-nftables.service" ]`, so the drop-ins it adds are
 actually loaded.
 
-`scaly` and `talos` are also the two hosts you can run for real: both sit on
-the public `niklasf/fishnet` image, while the `ghcr.io` refs the other four
-carry are not publicly pullable. This is an illustrative topology, not a
-deployable one.
+`scaly` and `talos` are also the live-tested pair: both sit on the public
+`niklasf/fishnet` image. `manta` and `orbit` are the two hosts you cannot run
+for real — their workloads and services name `ghcr.io/lichess-org` refs that are
+not publicly pullable. This is an illustrative topology, not a deployable one.
 
 ## Cross-host facts are values, not templates
 
@@ -221,9 +227,13 @@ internalNetwork = "10.0.0.0/8"
 ```
 
 `service`'s firewall opening reads `internalNetwork` as imported data, checked by
-the type system — not a placeholder a resolver hopes to fill in later. Both
-`Lichess` and `Fleet` resolve from the search path the repo-root `emet.json`
-names, so the entry directory carries no copy.
+the type system — not a placeholder a resolver hopes to fill in later.
+
+`Lichess` and `Fleet` both live in `examples/lichess/` beside the entry module,
+and resolution is entry-directory-first, so those copies win — the `Fleet` in
+`lib/` is shadowed and never loaded. What the repo-root `emet.json` search path
+supplies here is `Nftables` and `Quadlet`, which `Lichess` imports and no file
+in the entry directory provides (ADR 0024).
 
 ## Compile and inspect
 
@@ -236,6 +246,7 @@ cargo run -q -p emet -- build examples/lichess/fleet.emet --text
 and two ingresses to forty-six:
 
 ```
+main : List Scroll
 planned scrolls (6):
   scroll `scaly` (3 glyphs):
     * ensure apt package `podman` installed

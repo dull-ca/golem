@@ -30,7 +30,7 @@ the roadmap is a design or a deliberate deferral with no code behind it.
   each leaf is the unit of enact, retry, and rollback. One leaf's failure
   never rolls back a sibling. See
   [Reversible reconcile](/explanation/reversible-reconcile/) and
-  [When a unit fails](/tutorials/a-failing-unit/).
+  [A failing unit](/tutorials/a-failing-unit/).
 - **The retry and `on_exhaust` cascade.** A per-leaf retry budget (delay,
   backoff, jitter, attempt cap, wall-clock cap) resolved nearest-wins over
   the scroll's `policy` chain and `golemd.toml`'s `[retry]`, with

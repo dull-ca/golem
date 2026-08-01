@@ -43,6 +43,9 @@ import Quadlet exposing
 registryEndpoint : String
 registryEndpoint = "10.0.2.2:5000"
 
+-- insecureConfPath and insecureConfContents elided: the drop-in's path under
+-- /etc/containers/registries.conf.d, and its [[registry]] … insecure = true body.
+
 website : Workload
 website =
   Workload
@@ -54,6 +57,18 @@ website =
     , restart = Always
     , expose = Public
     }
+
+websiteGlyphs : List Glyph
+websiteGlyphs =
+  List.concat
+    [ [ file
+          { path = insecureConfPath
+          , contents = insecureConfContents
+          , mode = "0644"
+          }
+      ]
+    , workloadGlyphs website
+    ]
 
 main : List Scroll
 main =
@@ -69,6 +84,7 @@ main =
 the nftables base that loads it, so the web scroll lowers to eleven glyphs:
 
 ```
+main : List Scroll
 planned scrolls (1):
   scroll `web` (11 glyphs):
     * ensure file `/etc/containers/registries.conf.d/golem-registry.conf` (mode 0644)

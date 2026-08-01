@@ -45,17 +45,28 @@ isOdd : Int -> Bool
 isOdd n = if n == 0 then False else isEven (n - 1)
 ```
 
+### Recursing by accident
+
+A top-level declaration shadows the prelude binding of the same name, and every
+operator desugars to a prelude binding. So `add x y = x + y` does not define
+addition: `+` lowers to `add`, the body calls the declaration itself, and the
+program fails with `evaluation exceeded recursion limit`. Every name in the
+Builtin column of the operator table in
+[the prelude](/reference/language/prelude/#basics) carries the same trap.
+Check a declaration name against that column before taking it; nothing in the
+error points back at the operator that caused it.
+
 ## Currying and partial application
 
 Every function of more than one parameter is curried; applying fewer arguments
 than the arity yields a function.
 
 ```emet
-add : Int -> Int -> Int
-add x y = x + y
+plus : Int -> Int -> Int
+plus x y = x + y
 
 addFive : Int -> Int
-addFive = add 5
+addFive = plus 5
 ```
 
 Application is by juxtaposition and left-associative: `f a b` is `(f a) b`.

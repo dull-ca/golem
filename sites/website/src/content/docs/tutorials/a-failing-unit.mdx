@@ -132,9 +132,9 @@ The canary's image cannot be pulled, and it carries `policy = keep`.
 
 ## Regroup one host while standing another up
 
-`examples/lichess/fleet.emet` emits six scrolls. Four of them name images that
-are not publicly pullable; `scaly` and `talos` are the live-tested pair, so name
-them explicitly.
+`examples/lichess/fleet.emet` emits six scrolls. Two of them — `manta` and
+`orbit` — name `ghcr.io` images that are not publicly pullable; `scaly` and
+`talos` are the live-tested pair, so name them explicitly.
 
 <Aside type="tip" title="Step 3 is the long one">
   `talos` stands up fishnet, influxd, alertmanager, prometheus, loki, dns, ntpd,

@@ -187,8 +187,8 @@ To reach one guest without the inventory, at a bare `ssh://` target, see
   Point golemctl at a routable address with a token in the environment and it
   warns on stderr before sending: `warning: host X is dialed at Y, which is not
   loopback — the auth token crosses that network in cleartext; use an ssh://
-  target to keep it inside the tunnel`. That warning is the only guard. golem
-  will do it; it just will not do it quietly.
+  target to keep it inside the tunnel (ADR 0042)`. That warning is the only
+  guard. golem will do it; it just will not do it quietly.
 </Aside>
 
 ## Reading the fleet while it works
