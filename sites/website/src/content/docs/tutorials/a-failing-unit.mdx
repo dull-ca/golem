@@ -63,6 +63,13 @@ The canary's image cannot be pulled, and it carries `policy = keep`.
 
 ## Break it
 
+<Aside type="tip" title="A cold guest's first apply is slow">
+  `apt update`, installing podman, pulling fishnet: many minutes. `fleet apply`
+  waits as long as it takes and streams progress while it does. If the
+  connection to your workstation drops, golemd keeps reconciling server-side —
+  `fleet logs scaly -f` shows it, and re-running the apply gets you the report.
+</Aside>
+
 <Steps>
 1. **Read the diff before enacting it.**
 
@@ -123,29 +130,56 @@ The canary's image cannot be pulled, and it carries `policy = keep`.
    boot.
 </Steps>
 
-<Aside type="tip" title="A cold guest's first apply is slow">
-  `apt update`, installing podman, pulling fishnet: many minutes. `fleet apply`
-  waits as long as it takes and streams progress while it does. If the
-  connection to your workstation drops, golemd keeps reconciling server-side —
-  `fleet logs scaly -f` shows it, and re-running the apply gets you the report.
-</Aside>
-
 ## Regroup one host while standing another up
 
 `examples/lichess/fleet.emet` emits six scrolls. Four of them name images that
 are not publicly pullable; `scaly` and `talos` are the live-tested pair, so name
 them explicitly.
 
-```nushell
-fleet up --hosts talos
-fleet deploy --hosts talos
-fleet plan examples/lichess/fleet.emet --hosts scaly,talos
-fleet apply examples/lichess/fleet.emet --hosts scaly,talos
-```
+<Aside type="tip" title="Step 3 is the long one">
+  `talos` stands up fishnet, influxd, alertmanager, prometheus, loki, dns, ntpd,
+  rsyslogd, and the three nginx ingresses — roughly eight images to pull on a
+  cold box. Expect minutes, and read a quiet terminal as work rather than a
+  hang.
+</Aside>
 
-The first two lines are no-ops if you left `talos` running, and are what brings
-it back if you did not. The plan shows both halves of what follows before the
-apply performs them.
+<Steps>
+1. **Bring `talos` back if you let it go.**
+
+   ```nushell
+   fleet up --hosts talos
+   fleet deploy --hosts talos
+   ```
+
+   Both are no-ops if you left it running.
+
+2. **Plan both hosts at once.**
+
+   ```nushell
+   fleet plan examples/lichess/fleet.emet --hosts scaly,talos
+   ```
+
+   Two headings, one per host, each with its own change count — `scaly`
+   mostly removes, `talos` almost entirely installs:
+
+   ```
+   scaly  ssh://golem@127.0.0.1:2259
+     against revision 3 · manifest <id>…
+     N changes · N install, N replace, N remove · N unchanged
+   talos  ssh://golem@127.0.0.1:2219
+     against revision 1 · manifest <id>…
+     N changes · N install, N replace, N remove · N unchanged
+   ```
+
+3. **Apply them.**
+
+   ```nushell
+   fleet apply examples/lichess/fleet.emet --hosts scaly,talos
+   ```
+
+   One live tree across both hosts, then a summary line under each heading.
+   Both settle; the run exits 0.
+</Steps>
 
 `scaly` goes from the nine-leaf farm tree to a single flat scroll holding one
 fishnet workload. Its farm units come down in the reverse of their install
@@ -153,10 +187,8 @@ order, each undone by the inverse golem recorded when it installed them — gole
 removes only what golem put there. See
 [Reversible reconcile](/explanation/reversible-reconcile/).
 
-`talos` stands up fishnet, influxd, alertmanager, prometheus, loki, dns, ntpd,
-rsyslogd, and the three nginx ingresses. dns publishes on 5353 because
-systemd-resolved already owns 53 on the guests. That is roughly eight images to
-pull on a cold box; expect minutes.
+On `talos`, dns publishes on 5353 because systemd-resolved already owns 53 on
+the guests.
 
 <Aside type="caution" title="Absence is silence">
   Drop `--hosts` and `fleet apply` targets every VM in the state file, which is

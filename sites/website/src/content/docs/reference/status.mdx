@@ -5,37 +5,69 @@ description: What is implemented and tested today, and what is roadmap.
 
 import { Aside } from "@astrojs/starlight/components";
 
-An honest split between what the code does and what is still a design.
+Everything in the first list runs today and is under test. Everything under
+the roadmap is a design or a deliberate deferral with no code behind it.
 
 ## Implemented and tested
 
 - **Emet authoring language.** Hindley-Milner types with generics, records,
   `case`/`if` with exhaustiveness checking, numbers with infix operators,
-  string interpolation, and a minimal Elm-modeled module system
-  (`module … exposing`, `import … [as …] [exposing …]`, file = module). A
-  program compiles a fleet: `main : List Scroll`.
-- **The four glyphs.** `aptPackage`, `systemdService`, `file`, `lineInFile`
-  — every field a concrete string. Higher-level shapes are Emet functions
-  that lower to these. See [The four glyphs](/reference/primitives/).
+  string interpolation, recursion and mutual recursion, `Char`, tuples and
+  unit, and a minimal Elm-modeled module system (`module … exposing`,
+  `import … [as …] [exposing …]`, file = module). A program compiles a
+  fleet: `main : List Scroll`. Diagnostics are Elm-style: source spans,
+  did-you-mean, one report per error.
+- **The four glyphs.** `aptPackage`, `systemdService`, the filesystem glyph
+  (`file` / `directory` / `symlink`), `lineInFile` — every field a concrete
+  string. Higher-level shapes are Emet functions that lower to these. See
+  [The four glyphs](/reference/primitives/).
 - **The binary manifest.** `emetc build` emits a content-addressed
-  `Manifest` (postcard bytes, BLAKE3 per-scroll ids, `format_version`
+  `Manifest` (postcard bytes, BLAKE3 per-scroll ids, `format_version` 4
   guard), with `--text` and `--json` views. Determinism is enforced by
   golden-byte and round-trip tests. See
   [Manifest format](/reference/bundle-format/).
+- **Recursive scrolls and per-leaf failure isolation.** A `Scroll` is a tree;
+  each leaf is the unit of enact, retry, and rollback. One leaf's failure
+  never rolls back a sibling. See
+  [Reversible reconcile](/explanation/reversible-reconcile/) and
+  [When a unit fails](/tutorials/a-failing-unit/).
+- **The retry and `on_exhaust` cascade.** A per-leaf retry budget (delay,
+  backoff, jitter, attempt cap, wall-clock cap) resolved nearest-wins over
+  the scroll's `policy` chain and `golemd.toml`'s `[retry]`, with
+  `on_exhaust = rollback` (default) or `keep`.
 - **`golemd` ingest + diff.** Decode a manifest, select this host's scroll,
   and diff it against the journal into ordered `GlyphOp`s by glyph key and
-  content id.
+  content id. Within a host: apt installs batched into one invocation,
+  duplicate glyphs deduplicated, and units enacted in bounded parallel.
 - **Reversible reconcilers.** Each glyph's `apply` captures an `Inverse`
   receipt; `reverse` restores it exactly. Upgrade, removal, and rollback all
   derive from this. See [Reversible reconcile](/explanation/reversible-reconcile/).
-- **`golemctl`.** `apply` (compile-and-ship or ship a prebuilt manifest),
-  `state`, `history`, `show`. HTTP: `POST /manifest`, `GET /state`,
-  `/revisions`, `/revisions/:id`, `/status`.
+- **Async apply with live progress.** `POST /manifest` answers
+  `202 { reconcile_id }` and the reconcile runs detached; `golemctl apply`
+  polls it and renders a live per-unit tree, plain lines under `--json` or a
+  pipe, and `--reattach` resumes an attempt whose connection dropped.
+- **`golemctl plan`.** The same compile, no POST: what an apply would do,
+  plus the systemd reloads it would trigger, changing nothing.
+- **`notifies` reloads.** A scroll declares units to reload once anything in
+  or under it lands changed; a branch's list unions down over every
+  descendant leaf.
+- **Fleet fan-out, client-side.** `golemctl fleet apply|plan|status` fans a
+  verb over a TOML inventory concurrently, one connection per host. One
+  host's failure never stops the others, and a host the manifest names no
+  scroll for is skipped untouched.
+- **`golemctl`.** `apply`, `plan`, `fleet`, `state`, `history`, `show`.
+  HTTP: `POST /manifest`, `POST /plan`, `GET /reconciles/latest`,
+  `/reconciles/:id`, `/state`, `/revisions`, `/revisions/:id`, `/status`.
+  See [the CLI reference](/reference/cli/).
 - **SSH transport and the authorization gate.** The agent binds loopback and
   requires `Authorization: Bearer <token>` against a configured token file;
   `golemctl` takes an `ssh://` target or an inventory `ssh` host, opens the
   forward itself, and carries the secret. See
   [Trust model](/explanation/trust/).
+- **Firewall drop-ins.** An exposed `Quadlet` workload emits one complete
+  `.nft` file per port opening under `/etc/nftables.d/`, plus the base chain
+  and the oneshot unit that loads them — never a line appended to a shared
+  file. See [the Quadlet library](/reference/workloads/).
 - **The lichess fleet in Emet.** A real multi-host deploy authored against a
   shared Emet library (`examples/lichess/`), compiling to scrolls of the
   four glyphs. See [the tour](/guides/litour/).
@@ -53,17 +85,22 @@ An honest split between what the code does and what is still a design.
   replacing the shared secret. Manifest signing is not on the roadmap; the
   tunnel already holds that boundary. See
   [Trust model](/explanation/trust/).
-- **Multi-node orchestration.** A manifest carries the whole fleet, but each
-  `golemd` acts only on its own scroll. There is no coordinator, no ordered
-  drain, no health-gated rollback across hosts.
+- **Daemon-to-daemon propagation.** Fan-out today is client-side: `golemctl
+  fleet` opens one connection per host from the operator's machine. A
+  `golemd` that hands a manifest to its peers — no operator machine in the
+  loop — is designed (ADR 0039) and unbuilt.
+- **Cross-host orchestration.** Each `golemd` acts only on its own scroll and
+  knows nothing of its peers. There is no coordinator, no ordered drain, and
+  no health-gated rollback across hosts: `fleet apply` reports each host's
+  outcome, and one host's failure neither stops nor reverses another's.
 - **Resource kinds beyond the four glyphs.** Containers, ingress, DNS,
   secrets — these are Emet abstractions (or future ones) that lower to the
   four glyphs, not new agent primitives. There is no secrets primitive and
   no DNS provider.
-- **The `host` reconciler on a real box, hardened.** The four reconcilers
-  exist and are tested against the fake in-memory reconciler and a Debian
-  box; treat production hardening (large-file inverse storage, edge cases)
-  as in progress.
+- **Large-file and binary inverses.** A `file` glyph's inverse holds the
+  prior contents inline in the journal. Out-of-line blob storage for large
+  or binary files is deferred, so a very large managed file is not a shape to
+  rely on yet.
 
 ## What is gone
 

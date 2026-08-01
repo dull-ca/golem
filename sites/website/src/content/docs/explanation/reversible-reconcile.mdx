@@ -88,7 +88,7 @@ The journal lives in SQLite (`planroom.db`). Revisions are append-only;
 `RevisionKind` is `Init` or `Reconcile` — a decommission is just reconciling
 toward an empty scroll.
 
-## Ordering and rollback
+## Ordering and idempotency
 
 - **Idempotency.** Every apply observes the host first; re-running a scroll
   at the same content id changes nothing (`changed = false` throughout).
@@ -97,9 +97,31 @@ toward an empty scroll.
   a LIFO undo stack recorded as the ordered `Outcome` list. That is what
   makes composite reversal (a `file` plus a `lineInFile` on the same path)
   exact.
-- **All-or-nothing per reconcile.** If a glyph op fails fatally mid-scroll,
-  golem reverses the outcomes already applied *this reconcile* and journals
-  nothing — the node stays at its last good scroll.
+
+## Failure stops at the leaf
+
+A scroll is a tree, and the **leaf unit** — the level holding glyphs rather
+than sub-scrolls — is the failure boundary. Nothing a leaf does, including
+failing, reaches a sibling.
+
+Each leaf enacts under an effective `policy`. Every knob is optional and an
+absent one is inherited nearest-wins from the enclosing scrolls, then from
+`golemd.toml`: `retry` bounds the attempts (`maxAttempts`, `baseDelayMs`,
+`backoffMultiplier`, `maxDelayMs`, `jitterFraction`, `maxElapsedMs`), and
+`onExhaust` decides what happens when they run out.
+
+- **`rollback`** (the default) reverses the outcomes that leaf applied this
+  reconcile, returning it to its last committed state.
+- **`keep`** leaves that leaf's partial progress on the box, for units that
+  prefer forward progress to atomicity.
+
+Either way the rollback is scoped to the exhausting unit's own subtree, every
+other leaf settles on its own terms, and the attempt **commits as a
+`Reconcile` revision** carrying each unit's outcome. A partial apply is a
+journalled fact with a revision number, not a discarded one — which is what
+lets a kept failure resurface on the next reconcile instead of vanishing into
+"unchanged". Watch it happen in
+[A failing unit](/tutorials/a-failing-unit/).
 
 ## Upgrade and removal, from one mechanism
 

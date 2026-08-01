@@ -25,8 +25,9 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 Golem is a pipeline with two ends and one contract between them.
 
 - **Emet** — a typed, Elm-modeled configuration language. A program
-  evaluates to a **fleet**: `main : List Scroll`, one `Scroll` per host,
-  each a list of **glyphs**. There are exactly four glyph primitives —
+  evaluates to a **fleet**: `main : List Scroll`, one `Scroll` per host. A
+  scroll is a tree: each level holds either **glyphs** — a leaf unit — or
+  named sub-scrolls, never both. There are exactly four glyph primitives —
   `aptPackage`, `systemdService`, `file`, `lineInFile`. Every field is a
   fully-evaluated concrete string; there is no templating layer.
 - **`golemd`** — a per-host agent. It ingests the compiled manifest,
@@ -73,8 +74,12 @@ lower to the four glyphs. The agent never grows a fifth resource kind.
 ## The pipeline in one line
 
 ```
-Emet source ──emetc build──▶ binary manifest ──golemctl apply──▶ golemd ──▶ reversible reconcilers ──▶ the box
+Emet source ──emetc build──▶ binary manifest ──golemctl apply──▶ golemd
+  ──diff by content id──▶ reversible reconcilers ──▶ the box ──▶ journalled revision
 ```
+
+The diff is what keeps an unchanged apply free, and the journal is what makes
+the next one reversible.
 
 See [Architecture](/explanation/architecture/) for each stage.
 
@@ -100,7 +105,7 @@ See [Architecture](/explanation/architecture/) for each stage.
   multi-host lichess deploy: the shipped library, a fleet's helpers on it,
   and the four glyphs it lowers to.
 
-## Deploy a fleet
+## Tutorials
 
 Hands-on walkthroughs against ephemeral Debian VMs — golemd's real
 reconcilers, the way we ran them.
@@ -125,9 +130,10 @@ working today:
   submitted. SSO and an audit trail are designed, not built. Manifest
   signing is not on the roadmap at all. See
   [Trust model](/explanation/trust/).
-- **Multi-node orchestration.** A manifest carries the whole fleet, but
-  each `golemd` acts only on its own scroll. There is no coordinator,
-  no drain, no health-gated rollback.
+- **Server-side fleet coordination.** `golemctl fleet` fans a verb out over
+  an inventory, but the fan-out is entirely client-side: one connection per
+  host, each `golemd` acting only on its own scroll. No coordinator, no
+  ordered drain, no health-gated cross-host rollback.
 - **Any resource kind beyond the four glyphs.** Everything else is an
   Emet abstraction that lowers to them.
 

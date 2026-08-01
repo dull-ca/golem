@@ -82,10 +82,10 @@ Two waits are worth knowing about before you think something has hung:
    fleet status
    ```
 
-   A table, one row per VM: `up`, `golemd reachable`, and dashes under
-   `content-id` and `glyphs` because nothing has been applied. Every one of
-   those `reachable` cells was answered through an ssh forward the harness
-   opened and tore down for that single request.
+   A table, one row per VM: `up`, `golemd reachable`, `last revision` of
+   `#1`, and dashes under `content-id` and `glyphs` because nothing has been
+   applied. Every one of those `reachable` cells was answered through an ssh
+   forward the harness opened and tore down for that single request.
 
 4. **Try the port that used to exist.**
 
@@ -172,40 +172,8 @@ That is the posture proved end to end. Everything from here on rides it.
   use `curl -H @file`.
 </Aside>
 
-## The single-host spelling
-
-`golemctl state ssh://golem-scaly` is the production shape, and a bare `ssh://`
-target carries no ssh options at all — golemctl parses it into a destination and
-a port and hands ssh nothing else. Against a VM that fails with `Host key
-verification failed`, because each fresh guest presents a new key on a reused
-port. Teach ssh about the guest once:
-
-```
-Host golem-scaly
-  HostName 127.0.0.1
-  Port 2259
-  User golem
-  IdentityFile ~/personal-repos/golem/.fleet/id_ed25519
-  StrictHostKeyChecking no
-  UserKnownHostsFile /dev/null
-  ControlMaster auto
-  ControlPath ~/.ssh/cm-%r@%h:%p
-  ControlPersist 10m
-```
-
-then supply the token, since a bare `ssh://` carries no `token_file` either:
-
-```nushell
-$env.GOLEM_AUTH_TOKEN_FILE = ($env.PWD | path join .fleet golem-token)
-golemctl state ssh://golem-scaly
-```
-
-`ControlPersist` is why the second call and every one after it is instant:
-golemctl spawns your `ssh`, so an existing master is reused for free.
-
-If you would rather not touch `~/.ssh/config`, `golemctl fleet status --hosts
-scaly` gets you one host with no configuration at all — the inventory already
-holds the key and the options.
+To reach one guest without the inventory, at a bare `ssh://` target, see
+[the single-host spelling](/explanation/the-fleet-harness/#the-single-host-spelling).
 
 <Aside type="note" title="Rotation is one file">
   Delete `.fleet/golem-token`, run `fleet deploy` again, and every guest gets the

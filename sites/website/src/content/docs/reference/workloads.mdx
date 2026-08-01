@@ -9,12 +9,13 @@ Running a container on a golem box means writing a Podman **quadlet** — a
 `.container` unit systemd turns into a service, plus any `.volume` units it
 mounts. `Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path named
 by the repo-root `emet.json`) models those units as typed Emet
-values so you fill in a record instead of hand-joining `Image=` and
-`PublishPort=` strings. It is Debian + systemd + Podman specific, and it lowers
-entirely to [the four glyphs](/reference/primitives/) — it adds no engine kind.
+values, so a workload is a filled-in record rather than hand-joined `Image=`
+and `PublishPort=` strings. It is Debian + systemd + Podman specific, and it
+lowers entirely to [the four glyphs](/reference/primitives/) — it adds no
+engine kind.
 
 This is the middle of three layers: the four glyphs underneath, this shipped
-library, and your own fleet's helpers on top of it (see the
+library, and a fleet's own helpers on top of it (see the
 [service abstraction guide](/guides/app-and-db/)).
 
 ```emet
@@ -87,7 +88,9 @@ silently-broken unit. Firewall exposure is *derived* from these ports (see
 
 ## `EnvVar` — environment, as a named record
 
-Emet has no tuples, so an environment pair is a record:
+An environment pair is a record rather than a
+[tuple](/reference/language/values-and-types/#tuples-and-unit) so that the
+field names are visible at the call site:
 
 ```emet
 env "RUST_LOG" "info"      -- Environment=RUST_LOG=info

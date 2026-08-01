@@ -30,10 +30,11 @@ Scroll` is the fleet. The compiler's stages:
 lexer  → layout → parser → infer (Algorithm W) → eval → manifest
 ```
 
-`eval` produces `Vec<Scroll>` — one scroll per host, each a list of the
-four glyphs. `emetc build` then content-addresses each scroll and assembles
-a `Manifest`. Its default output is the **binary manifest**; `--text` is a
-readable plan and `--json` a debug view (see [CLI](/reference/cli/)).
+`eval` produces `Vec<Scroll>` — one scroll per host, each a tree whose every
+level holds either a leaf's glyphs or named sub-scrolls. `emetc build` then
+content-addresses each scroll and assembles a `Manifest`. Its default output
+is the **binary manifest**; `--text` is a readable plan and `--json` a debug
+view (see [CLI](/reference/cli/)).
 
 Everything a config computes — a rendered nginx site, a firewall rule, a
 container quadlet — is fully evaluated at this stage. The glyphs that reach
@@ -61,10 +62,19 @@ determinism guarantees.
 1. If `<source>` ends in `.emet`, shell out to `emetc build` and capture
    the binary manifest from stdout. Otherwise read the file as prebuilt
    manifest bytes.
-2. `POST` the bytes to the agent's `/manifest`.
+2. `POST` the bytes to the agent's `/manifest`, which answers `202` with a
+   `reconcile_id`.
+3. Follow that reconcile through `/reconciles/:id`, drawing the units as
+   they settle. `--reattach` skips the POST and picks up the newest attempt
+   instead, so a dropped connection costs the view and not the run.
 
-`golemctl state`, `history`, and `show` read back the agent's applied
-scroll and journal. That is the whole CLI — see [CLI](/reference/cli/).
+`golemctl plan` posts the same bytes to `/plan` and prints the diff without
+writing anything. `state`, `history`, and `show` read back the agent's
+applied scroll and journal.
+
+`golemctl fleet apply|plan|status` are those verbs fanned out over a TOML
+inventory, concurrently, one connection per host. The fan-out lives entirely
+in the client: no `golemd` knows about another. See [CLI](/reference/cli/).
 
 ## `golemd` — the agent (reader)
 
@@ -79,9 +89,11 @@ scroll and journal. That is the whole CLI — see [CLI](/reference/cli/).
    by content id, producing an ordered list of `GlyphOp`s:
    `Install` / `Remove` / `Replace` / `Noop`. This is a pure fold — desired
    state in, an ordered plan out, no side effects.
-4. **Enact.** Run each op through the **`Reconciler`** port. Apply captures
-   the prior host state into an `Inverse` receipt; the port speaks glyph
-   vocabulary, never `apt-get`.
+4. **Enact.** Run each op through the **`Reconciler`** port, one leaf unit
+   at a time. Apply captures the prior host state into an `Inverse` receipt;
+   the port speaks glyph vocabulary, never `apt-get`. A leaf that exhausts
+   its retries is rolled back or kept by its own policy, and its siblings
+   settle either way.
 5. **Journal.** Append a `Reconcile` revision embedding the content id, the
    ordered ops, and the reversal receipts.
 
@@ -97,7 +109,7 @@ contract and the four concrete reconcilers.
 | What runs on the fleet | Emet source | Daily | Compile error, before shipping |
 | How a shape lowers to glyphs | Emet library functions | As you build abstractions | Compile error |
 | The wire bytes | `scroll-format` | Rarely (a `format_version` bump) | Typed decode error on read |
-| What lands on a box | `golemd` reconcilers | Almost never | Reversible; rollback on partial failure |
+| What lands on a box | `golemd` reconcilers | Almost never | Reversible; the failing leaf rolls back, its siblings settle |
 
 The agent is the part that can change a real box, so it is deliberately the
 smallest: four reconcilers over four glyphs, each capturing enough to undo

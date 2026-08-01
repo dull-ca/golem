@@ -100,10 +100,17 @@ reload at the end of the apply, after the drop-in is in place.
    build-site
    ```
 
-   The devenv script that runs `bun run build` in `sites/website`. Output lands
-   in `sites/website/dist`.
+   The devenv script that runs `bun run build` in `sites/website`. It ends on
+   Astro's own summary and leaves the output in `sites/website/dist`:
 
-2. **Ship the build context to the builder and push the image.**
+   ```
+   [build] Complete!
+   ```
+
+2. **Ship the build context to the builder and push the image.** This is the
+   long step: the builder pulls a base image, runs the container build, and
+   pushes every layer over the host gateway. Minutes, and mostly silent
+   between layer lines.
 
    ```nushell
    tar -C sites/website -cf - Containerfile Caddyfile dist | fleet ssh builder -- "mkdir -p site && tar -xf - -C site"
@@ -111,7 +118,12 @@ reload at the end of the apply, after the drop-in is in place.
    ```
 
    The quoted `&&` chains run in the guest's bash over ssh, so nushell never
-   sees them.
+   sees them. `podman build` ends on the image id it just wrote, and the push
+   ends on its digest:
+
+   ```
+   Writing manifest to image destination
+   ```
 
 3. **Check that the registry took it.**
 
@@ -133,6 +145,14 @@ reload at the end of the apply, after the drop-in is in place.
    ```nushell
    fleet plan examples/website/website.emet --hosts web
    fleet apply examples/website/website.emet --hosts web
+   ```
+
+   The plan is eleven installs against revision 1; the apply draws them
+   settling and closes on one line under the host's heading:
+
+   ```
+   web  ssh://golem@127.0.0.1:2252
+     apply settled — revision 2
    ```
 
 5. **Curl the homepage for a 200.** The web box's `:80` is published to your
@@ -166,9 +186,8 @@ markup.
   tag is the same), so pin a new tag or a digest with `imageAt` to make the diff
   replace it.
 - **Reverse the web box.** Apply a `web` scroll with an empty `glyphs` list and
-  watch golem stop the container, remove the quadlet, close `:80`, and remove
-  exactly its ingress line from the shared chain — leaving any other host's line
-  intact.
+  watch golem stop the container, remove the quadlet, and close `:80` by
+  deleting its one drop-in file — leaving every other opening's file untouched.
 - **Add a second served site.** Write another public `Workload` on a different
   port and apply it alongside — two containers, two firewall openings, derived
   from their ports.

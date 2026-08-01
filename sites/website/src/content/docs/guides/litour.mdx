@@ -143,8 +143,9 @@ it, so a reload never disturbs the tables podman keeps next door.
   happens once.
 </Aside>
 
-Each host's scroll then says `notifies = [ "golem-nftables.service" ]`, so a
-changed drop-in earns a reload of the ruleset at the end of the apply. The base
+Every host that opens a port then says `notifies = [ "golem-nftables.service"
+]` on its scroll, so a changed drop-in earns a reload of the ruleset at the
+end of the apply. `scaly` is the one that does not, because it opens none. The base
 chain's policy is `drop`, which makes that allowlist real: a port nothing
 declares is closed. Its standing accepts are the ones that keep a box reachable
 — established traffic, loopback, icmp, dhcp, ssh, and golemd's own `7474`. That
@@ -159,29 +160,53 @@ SSH, so ssh is what keeps the box reachable to golem at all.
 ```emet
 module Main exposing (..)
 
-import Lichess exposing ( dockerImage, workload, service, ingress, host )
+import Lichess exposing
+  ( dockerImage
+  , ghcrImage
+  , workload
+  , service
+  , ingress
+  , host
+  )
+
+scaly : Scroll
+scaly = host "scaly" (workload "fishnet" (dockerImage "niklasf/fishnet" "latest"))
 
 manta : Scroll
 manta =
-  host "manta"
-    (List.concat
-      [ workload "leroyjenkins-lila" (dockerImage "lichess-org/leroyjenkins" "latest")
-      , service "lila" (dockerImage "lichess-org/lila" "latest") 9663
-      , service "redis-server" (dockerImage "redis" "7") 6379
-      , ingress "lichess.org" "lila" 443
-      ])
-
-scaly : Scroll
-scaly = host "scaly" (workload "fishnet" (dockerImage "lichess-org/fishnet" "latest"))
+  scroll
+    { name = "manta"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs =
+        List.concat
+          [ workload "leroyjenkins-lila" (ghcrImage "lichess-org/leroyjenkins" "latest")
+          , workload "leroyjenkins-nginx" (ghcrImage "lichess-org/leroyjenkins" "latest")
+          , service "lila" (ghcrImage "lichess-org/lila" "latest") 9663
+          , service "redis-server" (dockerImage "redis" "7") 6379
+          , ingress "lichess.org" "lila" 443
+          , ingress "lichess1.org" "lila" 443
+          ]
+    }
 
 main : List Scroll
 main = [ scaly, manta, orbit, talos, kaiju, zulip ]
 ```
 
-Six hosts, one `main`. `scaly` runs a single networkless workload; `manta` fronts
-lila with ingress; `kaiju` is one mongo service; `talos` runs the monitoring
-stack. Every host reads as the shapes you care about, and every shape lowers to
-the four glyphs.
+Six hosts, one `main`. `scaly` runs a single networkless workload; `manta`
+fronts lila with two ingresses; `kaiju` is one mongo service; `talos` runs the
+monitoring stack. Every host reads as the shapes you care about, and every
+shape lowers to the four glyphs.
+
+The two hosts are spelled differently on purpose. `host` builds a flat leaf
+scroll with no `notifies`, which suits `scaly` because it opens no ports.
+Any host carrying a `service` or an `ingress` writes its own `scroll` with
+`notifies = [ "golem-nftables.service" ]`, so the drop-ins it adds are
+actually loaded.
+
+`scaly` and `talos` are also the two hosts you can run for real: both sit on
+the public `niklasf/fishnet` image, while the `ghcr.io` refs the other four
+carry are not publicly pullable. This is an illustrative topology, not a
+deployable one.
 
 ## Cross-host facts are values, not templates
 

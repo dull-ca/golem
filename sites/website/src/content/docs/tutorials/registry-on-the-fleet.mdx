@@ -90,7 +90,10 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
    fleet deploy --hosts registry,builder,web
    ```
 
-2. **Apply the registry and builder scrolls.**
+2. **Apply the registry and builder scrolls.** On cold guests this is the
+   long step — `apt update`, installing podman, pulling `registry:2`. Many
+   minutes, streaming progress the whole time; a quiet terminal is work, not
+   a hang.
 
    ```nushell
    fleet apply examples/registry/registry.emet --hosts registry
@@ -107,7 +110,31 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
    curl -s http://127.0.0.1:5000/v2/
    fleet ssh registry -- systemctl status registry.service
    ```
+
+   An empty registry answers `/v2/` with an empty JSON object, and
+   `systemctl` reports `registry.service` as `active (running)`:
+
+   ```
+   {}
+   ```
 </Steps>
+
+## When it does not come up
+
+**`curl: (7) Failed to connect to 127.0.0.1:5000`**
+The guest was booted without `--publish registry=5000:5000`. Forwards are
+recorded per VM at boot, so re-run `fleet up --hosts registry --publish
+registry=5000:5000` — a resume can add forwards the stopped guest lacked.
+
+**The apply reports the registry leaf failed**
+Read the pull error in the forensics block under it, then `fleet ssh registry
+-- journalctl -u registry.service -n 50` for what podman said. No `sudo`
+needed: cloud-init put `golem` in `systemd-journal`.
+
+**`registry.service` is `active (running)` but the catalog `curl` hangs**
+The container is up and the ruleset that opens `:5000` is not.
+`fleet ssh registry -- systemctl status golem-nftables.service` says whether
+the reload the scroll's `notifies` asked for actually ran.
 
 ## How the builder reaches the registry
 

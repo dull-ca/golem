@@ -39,7 +39,7 @@ emetc build web.emet --text
 planned scrolls (1):
   scroll `web` (2 glyphs):
     * ensure apt package `nginx` installed
-    * ensure systemd unit `nginx.service` enabled and started
+    * enable + start systemd unit `nginx.service`
 ```
 
 The binary manifest is the default output; `--text` is the readable view.
@@ -47,11 +47,19 @@ The binary manifest is the default output; `--text` is the readable view.
 ## Apply it
 
 <Steps>
-1. Start the agent as host `web`. Use the `host` reconciler on a Debian box
-   for real effects, or `fake` to see the plan enacted in memory:
+1. Start the agent as host `web`. `fake` enacts the plan in memory and
+   touches nothing:
 
    ```bash
-   golemd --host web --reconciler host --listen 127.0.0.1:7474
+   golemd --host web --reconciler fake --listen 127.0.0.1:7474
+   ```
+
+   On a Debian box you want real effects on, switch to the `host`
+   reconciler — which acts as root, and so never runs without a token file:
+
+   ```bash
+   golemd --host web --reconciler host --listen 127.0.0.1:7474 \
+     --auth-token-file /etc/golem/token
    ```
 
 2. Compile-and-ship in one command:

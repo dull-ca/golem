@@ -17,10 +17,13 @@ export default defineConfig({
         },
       },
       social: {
-        codeberg: "https://codeberg.org/dull/golem",
+        github: "https://github.com/dull-ca/golem",
       },
+      // NOTE: Starlight appends the page's path from the Astro project root
+      // (`src/content/docs/…`), so this must stop at the project directory —
+      // spelling out `src/content/docs/` here doubles it.
       editLink: {
-        baseUrl: "https://codeberg.org/dull/golem/_edit/main/docs/",
+        baseUrl: "https://github.com/dull-ca/golem/edit/main/sites/website/",
       },
       sidebar: [
         {
@@ -42,12 +45,21 @@ export default defineConfig({
           ],
         },
         {
-          label: "Deploy a fleet",
+          label: "Tutorials",
           items: [
             { label: "Bring up the fleet", link: "/tutorials/the-vm-harness/" },
             { label: "A failing unit", link: "/tutorials/a-failing-unit/" },
             { label: "A registry on the fleet", link: "/tutorials/registry-on-the-fleet/" },
             { label: "The website loop", link: "/tutorials/website-loop/" },
+          ],
+        },
+        {
+          label: "Explanation",
+          items: [
+            { label: "Architecture", link: "/explanation/architecture/" },
+            { label: "Reversible reconcile", link: "/explanation/reversible-reconcile/" },
+            { label: "Trust model", link: "/explanation/trust/" },
+            { label: "The fleet harness", link: "/explanation/the-fleet-harness/" },
           ],
         },
         {
@@ -68,15 +80,6 @@ export default defineConfig({
             { label: "The Quadlet library", link: "/reference/workloads/" },
             { label: "Manifest format", link: "/reference/bundle-format/" },
             { label: "Status", link: "/reference/status/" },
-          ],
-        },
-        {
-          label: "Explanation",
-          items: [
-            { label: "Architecture", link: "/explanation/architecture/" },
-            { label: "Reversible reconcile", link: "/explanation/reversible-reconcile/" },
-            { label: "Trust model", link: "/explanation/trust/" },
-            { label: "The fleet harness", link: "/explanation/the-fleet-harness/" },
           ],
         },
       ],

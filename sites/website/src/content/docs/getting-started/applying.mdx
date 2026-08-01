@@ -6,10 +6,11 @@ description: Compile Emet to a binary manifest, ship it with golemctl, and let g
 import { Aside, Steps } from "@astrojs/starlight/components";
 
 Applying is two steps: compile your Emet to a manifest, then ship it to the
-agent. `golemctl apply` does both.
+agent. `golemctl apply` does both — carrying on from the `web.emet` you wrote
+in [The config](/getting-started/the-config/).
 
 ```bash
-golemctl apply fleet.emet http://127.0.0.1:7474
+golemctl apply web.emet http://127.0.0.1:7474
 ```
 
 That address is a local agent. A deployed one binds loopback and is named
@@ -17,6 +18,18 @@ That address is a local agent. A deployed one binds loopback and is named
 carries the shared bearer token from `GOLEM_AUTH_TOKEN` or
 `GOLEM_AUTH_TOKEN_FILE`. Every command on this page takes either shape. See
 [Trust model](/explanation/trust/).
+
+## Read the diff first
+
+`golemctl plan` asks the agent what an apply would do and writes nothing:
+
+```bash
+golemctl plan web.emet http://127.0.0.1:7474
+```
+
+It answers with one collapsed line per action and a change count; `--detail`
+expands every group to one glyph per line with content ids. A plan is safe to
+run while an apply is in flight.
 
 ## What `golemctl apply` does
 
@@ -28,23 +41,37 @@ carries the shared bearer token from `GOLEM_AUTH_TOKEN` or
 
 2. **Posts it.** `POST /manifest` to the agent. The manifest is the whole
    fleet; the agent picks out its own host.
+
+3. **Follows the reconcile.** The POST comes back at once with a
+   `reconcile_id`; `golemctl` then polls that reconcile and draws the units
+   as they settle, ending on the report.
 </Steps>
 
-You can also split the two steps — useful for inspecting the plan first:
+You can also split compile from ship:
 
 ```bash
-emetc build fleet.emet -o fleet.manifest    # compile
-emetc build fleet.emet --text               # eyeball the plan
-golemctl apply fleet.manifest http://127.0.0.1:7474
+emetc build web.emet -o web.manifest    # compile
+emetc build web.emet --text             # eyeball the plan
+golemctl apply web.manifest http://127.0.0.1:7474
 ```
 
 ## What the agent does on receipt
 
-`golemd` reconciles synchronously on `POST /manifest`:
+`POST /manifest` returns `202 Accepted` with `{"reconcile_id": N}` as soon as
+the manifest is ingested; the reconcile runs detached from the request. A
+reconcile can take tens of minutes — an apt update, a cold image pull — and a
+held-open request loses its report the moment the connection drops. Progress
+is read back instead from `GET /reconciles/:id` (or `/reconciles/latest`),
+which takes `?after=<seq>` so a follower resumes where it left off.
+
+On the request itself:
 
 1. **Decode + check** `format_version`.
 2. **Select** the `AddressedScroll` whose `scroll.name` matches its
    `--host`. Every other host's scroll is ignored.
+
+Then, detached:
+
 3. **Diff** the desired scroll's glyphs against its journal, by glyph key
    and content id, into ordered ops: `Install`, `Remove`, `Replace`,
    `Noop`.
@@ -55,6 +82,12 @@ golemctl apply fleet.manifest http://127.0.0.1:7474
 Because the diff is content-addressed, re-applying an unchanged fleet is all
 no-ops. See [Reversible reconcile](/explanation/reversible-reconcile/) for the
 mechanism.
+
+<Aside type="tip" title="A dropped connection is not a lost apply">
+  Because the reconcile is detached, closing your laptop does not stop it.
+  `golemctl apply --reattach` skips the POST and picks up the newest attempt
+  through `/reconciles/latest`.
+</Aside>
 
 ## Inspecting a node
 
@@ -69,6 +102,22 @@ golemctl history http://127.0.0.1:7474
 golemctl show http://127.0.0.1:7474 1
 ```
 
+## More than one host
+
+Naming an address per host stops scaling at about two. `golemctl fleet` reads
+a TOML inventory instead and fans the same verbs out concurrently, one
+connection per host:
+
+```bash
+golemctl fleet status
+golemctl fleet plan  web.emet --hosts web-1,web-2
+golemctl fleet apply web.emet
+```
+
+One host's failure never stops the others, and a host the manifest names no
+scroll for is skipped rather than emptied. The inventory's fields are in the
+[CLI reference](/reference/cli/).
+
 ## Rolling forward
 
 Edit your Emet, re-apply. The changed glyphs get new content ids and are
@@ -78,7 +127,7 @@ axis.
 
 ```bash
 # Bump an image tag in your Emet, then:
-golemctl apply fleet.emet http://127.0.0.1:7474
+golemctl apply web.emet http://127.0.0.1:7474
 ```
 
 ## Taking it back

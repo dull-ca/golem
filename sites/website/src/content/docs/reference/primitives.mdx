@@ -38,10 +38,12 @@ aptPackage { name = "nginx" }
 Glyph key: `apt:<name>`.
 
 **Reversibility.** On apply, `golemd` queries whether the package is
-already installed (`dpkg-query`). If not, it installs it and records
-"installed by us"; on reverse it removes it. If the package was already
-present, apply is a no-op and reverse leaves it alone. Golem never removes
-a package it did not install.
+already installed (`dpkg-query`). If not, it runs `apt-get update` and then
+`apt-get install -y`, recording "installed by us"; on reverse it removes it.
+The refresh is per-glyph: a fresh Debian cloud image ships with an empty
+package list, so an install would fail to resolve without one. If the
+package was already present, apply is a no-op and reverse leaves it alone.
+Golem never removes a package it did not install.
 
 ## `systemdService`
 
@@ -58,9 +60,17 @@ systemdService { unit = "nginx.service" }
 Glyph key: `systemd:<unit>`.
 
 **Reversibility.** On apply, `golemd` records the unit's prior
-enabled/active state, then enables and starts it. On reverse it restores
-the prior state — if golem enabled it, `disable --now`; if it was already
+enabled/active state, runs `systemctl daemon-reload` so a just-written unit
+file is visible, then `systemctl enable --now`. On reverse it restores the
+prior state — if golem enabled it, `disable --now`; if it was already
 enabled, leave it.
+
+A **generated** unit refuses `enable`: a Podman quadlet is already enabled
+by its generator through an `[Install]` section, so `enable --now` rejects
+it as transient or generated. On that specific failure `golemd` falls back
+to `systemctl start` and records that it only started the unit — reverse
+then *stops* it and never disables it. Any other `enable` failure fails the
+glyph.
 
 ## `file`
 
@@ -82,8 +92,14 @@ file
 
 Glyph key: `file:<path>`.
 
-`mode` is a plain string like `"0644"` — the field carries the octal text,
-not a number.
+`mode` is written as a string, with or without a `0o` prefix — `"0644"` and
+`"0o644"` are the same mode. `emetc` parses it as octal into the 12
+permission bits and the wire carries a `u16`, so a non-octal mode or one
+above `0o7777` is a **compile-time** error, not a reconcile-time failure.
+
+The wire `Perms` also carries `owner` and `group` — names, resolved to
+uid/gid at reconcile time. The surface constructors do not expose them, so
+every authored entry leaves them `None` and ownership unmanaged.
 
 **Reversibility.** On apply, `golemd` reads the prior contents and mode
 (or notes the file was absent), then writes the desired contents atomically
@@ -107,7 +123,7 @@ directory with contents cannot be written down. All three share the
 `file:<path>` key, reconcile through the one filesystem reconciler, and
 reverse the same way (restore the prior entry, or remove what golem created).
 A `Quadlet` [`FromHost`](/reference/workloads/) mount emits a `directory` for
-its bind-mount source; you rarely write one by hand.
+its bind-mount source, which is where most of them come from.
 
 <Aside type="tip" title="Contents are built in Emet">
   A config file's body is produced by the language — string interpolation
@@ -142,7 +158,7 @@ that it added the line; on reverse it removes exactly that line. Golem
 never removes a line it did not add.
 
 <Aside type="caution" title="Ordering with file">
-  If a later `file` glyph rewrites the same path, order matters. A scroll's
+  If a later `file` glyph rewrites the same path, order matters. A leaf's
   glyphs apply in list order and reverse in the exact reverse order — a
   LIFO undo stack recorded in the journal. See
   [Reversible reconcile](/explanation/reversible-reconcile/).
@@ -151,28 +167,28 @@ never removes a line it did not add.
 <Aside type="note" title="Not for composing golem's own files">
   Config that several golem-authored units contribute to is written as **one
   complete file per contributor**, in a drop-in directory golem also owns, and
-  merged by the consumer (ADR 0041). The firewall works that way: each opening
-  gets its own `.nft` file under `/etc/nftables.d/`, and the entrypoint conf
-  includes the glob. Composing by appending lines to a shared file leaves the
-  result with no single owner, an order decided by whichever unit ran first, and
-  a removal that means line surgery in a file other units still read. Reach for
-  `lineInFile` when the file is somebody else's; reach for a drop-in when it is
-  golem's.
+  merged by the consumer (ADR 0041) — not by appending lines to a shared file.
+  The firewall works that way: each opening gets its own `.nft` file under
+  `/etc/nftables.d/`, and the entrypoint conf includes the glob. See
+  [the Quadlet library](/reference/workloads/). `lineInFile` is for a file
+  golem does not own.
 </Aside>
 
-## Conflict rules within a scroll
+## Conflict rules within a leaf
 
-Two glyphs with the **same key** in one scroll must be identical, or the
-compiler's per-scroll analysis rejects them. Two *different* scrolls may
-share a key freely — two hosts installing `nginx` is fine. Uniqueness is
-per host, never fleet-wide.
+The conflict scope is the **leaf unit**, not the whole scroll. Two glyphs
+with the same key inside one leaf must be identical, or the compiler's
+pre-apply analysis rejects them at the conflicting glyph's source span.
+Sibling leaves inside one scroll may share a key, and two *different*
+scrolls may share one freely — two hosts installing `nginx` is fine.
+Uniqueness is never fleet-wide.
 
 ## Building abstractions
 
-You rarely write raw glyphs beyond the smallest hosts. Instead you compose
-them — either with your own function returning a `List Glyph`, or with the
-shipped [`Quadlet`](/reference/workloads/) library, whose `Workload` lowers a
-typed container spec down to exactly these glyphs:
+Raw glyphs are rare beyond the smallest hosts. They compose either through a
+function returning a `List Glyph`, or through the shipped
+[`Quadlet`](/reference/workloads/) library, whose `Workload` lowers a typed
+container spec down to exactly these glyphs:
 
 ```emet
 import Quadlet exposing ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )

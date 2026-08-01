@@ -171,6 +171,43 @@ live tree across them. The per-run file is separate from `.fleet/inventory.toml`
 on purpose: that file is yours, written when you ask, and may name a different
 set of guests than the invocation targets.
 
+## The single-host spelling
+
+`golemctl state ssh://golem-scaly` is the production shape, and a bare `ssh://`
+target carries no ssh options at all — golemctl parses it into a destination and
+a port and hands ssh nothing else. Against a guest that fails with `Host key
+verification failed`, because each fresh guest presents a new key on a reused
+port. Teach ssh about the guest once:
+
+```
+Host golem-scaly
+  HostName 127.0.0.1
+  Port 2259
+  User golem
+  IdentityFile ~/personal-repos/golem/.fleet/id_ed25519
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+```
+
+then supply the token, since a bare `ssh://` carries no `token_file` either:
+
+```nushell
+$env.GOLEM_AUTH_TOKEN_FILE = ($env.PWD | path join .fleet golem-token)
+golemctl state ssh://golem-scaly
+```
+
+`ControlPersist` is why the second call and every one after it is instant:
+golemctl spawns your `ssh`, so an existing master is reused for free.
+
+None of that is required to drive one guest. `golemctl fleet status --hosts
+scaly` gets you the same host with no configuration at all, because the
+rendered inventory already holds the key, the port, and the options. The
+`~/.ssh/config` route exists for the case the inventory does not cover: a
+real host you reach by name.
+
 ## A guest's name is its scroll's name
 
 There is no mapping table anywhere, and that is the design. A VM named `scaly`

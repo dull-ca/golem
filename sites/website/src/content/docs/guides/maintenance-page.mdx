@@ -100,9 +100,16 @@ main =
   ]
 ```
 
-Compile, and `emetc build … --text` shows the four glyphs. Apply, and the
-agent ensures nginx is installed and running, the HTML page is written, and
-the site config is in place.
+Save that as `maintenance.emet`, read the diff, then enact it:
+
+```bash
+emetc build maintenance.emet --text                          # the four glyphs
+golemctl plan  maintenance.emet ssh://golem@edge-01          # what would change
+golemctl apply maintenance.emet ssh://golem@edge-01          # change it
+```
+
+The agent ensures nginx is installed and running, the HTML page is written,
+and the site config is in place.
 
 ## Amending a file golem did not write, with `lineInFile`
 
