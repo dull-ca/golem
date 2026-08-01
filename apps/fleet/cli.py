@@ -98,7 +98,7 @@ def up(
         extra = "".join(f", :{h}→:{g}" for h, g in plan.publish)
         console.print(
             f"[bold]Booting {plan.name}[/bold] "
-            f"(ssh {plan.ssh_port}, golemd {plan.golemd_port}{extra})…"
+            f"(ssh {plan.ssh_port}, golemd loopback-only{extra})…"
         )
         record = vm.bring_up(p, state, plan, base_image)
         console.print(f"  [green]{record.name} up[/green] pid={record.pid}")

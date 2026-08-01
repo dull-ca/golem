@@ -239,8 +239,9 @@ def launch_qemu(
 
     Two virtio drives: the copy-on-write overlay disk, and the cloud-init seed
     ISO mounted read-only (the guest only ever reads it). User-mode networking
-    forwards two host ports into the guest — ssh on `plan.ssh_port` → guest 22,
-    and golemd on `plan.golemd_port` → guest 7474.
+    forwards one host port into the guest — ssh on `plan.ssh_port` → guest 22 —
+    plus any `--publish` extra forwards. golemd binds loopback-only inside the
+    guest (ADR 0042), so nothing forwards to guest 7474.
 
     `-display none` (not `-nographic`): under `-daemonize` there is no terminal
     to attach a console to, so `-nographic`'s serial-to-stdin wiring is wrong
@@ -251,7 +252,6 @@ def launch_qemu(
     console_log = vm_dir / "console.log"
     forwards = [
         f"hostfwd=tcp:127.0.0.1:{plan.ssh_port}-:22",
-        f"hostfwd=tcp:127.0.0.1:{plan.golemd_port}-:{config.GOLEMD_GUEST_PORT}",
     ]
     for host_port, guest_port in plan.publish:
         forwards.append(f"hostfwd=tcp:127.0.0.1:{host_port}-:{guest_port}")

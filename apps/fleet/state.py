@@ -14,10 +14,11 @@ from pathlib import Path
 
 @dataclass
 class VmRecord:
-    """One booted guest: its two forwarded ports, the qemu pid, and the paths
-    to its overlay disk, pidfile, and serial-console log. `publish` records the
-    extra host→guest tcp forwards (host_port, guest_port) requested at boot, so
-    a stopped VM brought back up re-forwards the same ports."""
+    """One booted guest: its two ports (ssh forwarded, golemd recorded only),
+    the qemu pid, and the paths to its overlay disk, pidfile, and
+    serial-console log. `publish` records the extra host→guest tcp forwards
+    (host_port, guest_port) requested at boot, so a stopped VM brought back up
+    re-forwards the same ports."""
 
     name: str
     ssh_port: int

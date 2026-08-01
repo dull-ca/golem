@@ -85,21 +85,22 @@ state file, not a live view. The verbs themselves are documented in
 Each VM claims a slot derived from its **name**, not its position in the boot
 list: `slot = blake2b(name) mod 100`, so a given name always lands on the same
 ports no matter what else is booted, and booting one host alone gets the same
-ports it would in the full set. ssh forwards to `2200+slot`, golemd to
-`8800+slot`:
+ports it would in the full set. ssh forwards to `2200+slot`; `8800+slot` is
+golemd's slot-derived port, recorded but never forwarded:
 
-| name     | slot | ssh (host → guest 22) | golemd (host → guest 7474) |
-|----------|------|-----------------------|----------------------------|
-| registry | 65   | 2265                  | 8865                       |
-| builder  | 3    | 2203                  | 8803                       |
-| puller   | 68   | 2268                  | 8868                       |
+| name     | slot | ssh (host → guest 22) | golemd port (recorded, not forwarded) |
+|----------|------|-----------------------|----------------------------------------|
+| registry | 65   | 2265                  | 8865                                    |
+| builder  | 3    | 2203                  | 8803                                    |
+| puller   | 68   | 2268                  | 8868                                    |
 
-golemd listens on `127.0.0.1:7474` inside the guest — loopback only — so the
-`8800+slot` QEMU hostfwd is dead by construction: nothing arriving over the
-guest's virtio NIC can reach a loopback-only socket. It stays in the qemu
-config only because already-booted VMs still carry it; every daemon is in fact
-reached through an ssh forward golemctl opens itself over the ssh port
-(ADR 0042), never over `8800+slot`.
+golemd listens on `127.0.0.1:7474` inside the guest — loopback only — so an
+`8800+slot` QEMU hostfwd would be dead by construction: nothing arriving over
+the guest's virtio NIC can reach a loopback-only socket. The harness no longer
+creates that hostfwd. `golemd_port` is still computed and recorded — it keys
+the name→slot map, and already-booted VMs still carry it in `state.json` — but
+nothing forwards to it. Every daemon is in fact reached through an ssh forward
+golemctl opens itself over the ssh port (ADR 0042), never over `8800+slot`.
 
 The slots are collision-free across the default lichess host set plus the
 `registry`/`builder`/`puller` dogfood names. Ports for an already-created VM are
@@ -109,8 +110,8 @@ keep the ports they were assigned — the name→slot map only governs a fresh b
 ## Extra port forwards and cross-VM traffic
 
 Each guest runs behind user-mode (SLIRP) networking and is isolated from the
-other guests: only ssh and golemd are forwarded to the host. Two facts make
-one guest reach a service on another:
+other guests: only ssh is forwarded to the host. Two facts make one guest
+reach a service on another:
 
 - `up --publish` forwards an extra guest port to the host. `--publish
   registry=5000:5000` binds host `127.0.0.1:5000` to the `registry` guest's
