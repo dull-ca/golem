@@ -1,18 +1,20 @@
-//! The typed client for golemd's fire-then-poll apply protocol (ADR 0033
-//! §1–2). [`post_manifest`] fires the manifest and gets back a `202
-//! { reconcile_id }`; [`get_progress`] then polls `GET
+//! The typed shapes of golemd's fire-then-poll apply protocol (ADR 0033 §1–2).
+//! [`crate::conn::Conn::post_manifest`] fires the manifest and gets back a `202
+//! { reconcile_id }`; [`crate::conn::Conn::get_progress`] then polls `GET
 //! /reconciles/<id>?after=<cursor>` until the projection settles. The
 //! projection — the folded per-glyph [`GlyphState`] under each [`UnitProgress`]
 //! — is the truth; `events` is the ordered log golemd streams alongside it,
-//! rendered as garnish under the active unit. [`get_latest`] hits
-//! `/reconciles/latest` to reattach to the newest attempt when the caller has
-//! lost its id.
+//! rendered as garnish under the active unit.
+//! [`crate::conn::Conn::get_latest`] hits `/reconciles/latest` to reattach to
+//! the newest attempt when the caller has lost its id.
+//!
+//! The requests themselves live on [`crate::conn::Conn`], which is what knows
+//! whether they cross an ssh forward and which token they carry.
 //!
 //! These types mirror golemd's `report`/projection wire shape; `serde` field
 //! and variant names are the contract, so their spelling matches the JSON
 //! exactly (`snake_case` enums).
 
-use anyhow::{bail, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -111,55 +113,6 @@ pub struct Progress {
     // JSON: golemctl only reads `outcome` for its exit code and pretty-prints
     // the rest.
     pub report: Option<serde_json::Value>,
-}
-
-pub async fn post_manifest(addr: &str, bytes: Vec<u8>) -> Result<Reconcile202> {
-    let url = format!("{}/manifest", addr.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("content-type", "application/octet-stream")
-        .body(bytes)
-        .send()
-        .await?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if status.as_u16() != 202 {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
-                bail!("{status}: {msg}");
-            }
-        }
-        bail!("{status}: {text}");
-    }
-    Ok(serde_json::from_str(&text)?)
-}
-
-pub async fn get_progress(addr: &str, id: u64, after: u64) -> Result<Progress> {
-    let url = format!(
-        "{}/reconciles/{id}?after={after}",
-        addr.trim_end_matches('/')
-    );
-    let resp = reqwest::get(&url).await?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if !status.is_success() {
-        bail!("{status}: {text}");
-    }
-    Ok(serde_json::from_str(&text)?)
-}
-
-pub async fn get_latest(addr: &str, after: u64) -> Result<Progress> {
-    let url = format!(
-        "{}/reconciles/latest?after={after}",
-        addr.trim_end_matches('/')
-    );
-    let resp = reqwest::get(&url).await?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if !status.is_success() {
-        bail!("{status}: {text}");
-    }
-    Ok(serde_json::from_str(&text)?)
 }
 
 #[cfg(test)]

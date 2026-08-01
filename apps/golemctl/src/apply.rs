@@ -18,9 +18,10 @@ use anyhow::Result;
 use iocraft::prelude::*;
 use tokio::sync::Notify;
 
+use crate::conn::Conn;
 use crate::logsink::Persistence;
 use crate::model::ApplyModel;
-use crate::poll::{get_latest, get_progress, post_manifest, Event, Progress};
+use crate::poll::{Event, Progress};
 use crate::view::UnitTree;
 
 pub fn plain_line(ev: &Event) -> String {
@@ -147,24 +148,33 @@ fn exit_code(report: Option<&serde_json::Value>) -> i32 {
     }
 }
 
-pub async fn run(bytes: Vec<u8>, addr: &str, json: bool, reattach: bool) -> Result<()> {
-    let id = if reattach {
-        get_latest(addr, 0).await?.reconcile_id
-    } else {
-        post_manifest(addr, bytes).await?.reconcile_id
-    };
-    let code = if !json && std::io::stdout().is_terminal() {
-        run_tui(addr, id).await?
-    } else {
-        run_plain(addr, id, json).await?
-    };
+/// POST-and-follow, then exit with the code the report earned.
+///
+/// NOTE: `follow` owns the `Conn` so that it is dropped before the exit —
+/// `std::process::exit` runs no destructors, and exiting with the connection
+/// still alive would leave its ssh forward running as an orphan (ADR 0042).
+pub async fn run(bytes: Vec<u8>, conn: Conn, json: bool, reattach: bool) -> Result<()> {
+    let code = follow(bytes, conn, json, reattach).await?;
     if code != 0 {
         std::process::exit(code);
     }
     Ok(())
 }
 
-async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
+async fn follow(bytes: Vec<u8>, conn: Conn, json: bool, reattach: bool) -> Result<i32> {
+    let id = if reattach {
+        conn.get_latest(0).await?.reconcile_id
+    } else {
+        conn.post_manifest(bytes).await?.reconcile_id
+    };
+    if !json && std::io::stdout().is_terminal() {
+        run_tui(conn, id).await
+    } else {
+        run_plain(&conn, id, json).await
+    }
+}
+
+async fn run_plain(conn: &Conn, id: u64, json: bool) -> Result<i32> {
     let mut persistence = Persistence::open(id);
     if let Some(dir) = persistence.dir() {
         let line = format!("logs: {}/", dir.display());
@@ -176,7 +186,7 @@ async fn run_plain(addr: &str, id: u64, json: bool) -> Result<i32> {
     }
     let mut cursor = 0u64;
     loop {
-        let p = get_progress(addr, id, cursor).await?;
+        let p = conn.get_progress(id, cursor).await?;
         cursor = p.cursor;
         persistence.persist(&p.events);
         for ev in &p.events {
@@ -234,7 +244,7 @@ struct Live {
 // Smoke-verified against a fake-reconciler golemd (spinner frames change between
 // samples while a glyph is in flight); the fold, `render_to_string`,
 // `plain_line`, `should_stop`, and `exit_code` stay the unit-tested surface.
-async fn run_tui(addr: &str, id: u64) -> Result<i32> {
+async fn run_tui(conn: Conn, id: u64) -> Result<i32> {
     let mut model = ApplyModel::new();
     let persistence = Persistence::open(id);
     model.log_dir = persistence.dir().map(|d| d.to_path_buf());
@@ -249,7 +259,7 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
 
     let poller = tokio::spawn(poll_into(
         live.clone(),
-        addr.to_string(),
+        conn,
         id,
         Arc::new(Mutex::new(persistence)),
     ));
@@ -280,10 +290,10 @@ async fn run_tui(addr: &str, id: u64) -> Result<i32> {
     Ok(exit_code(report.as_ref()))
 }
 
-async fn poll_into(live: Live, addr: String, id: u64, persistence: Arc<Mutex<Persistence>>) {
+async fn poll_into(live: Live, conn: Conn, id: u64, persistence: Arc<Mutex<Persistence>>) {
     let mut cursor = 0u64;
     loop {
-        let p = match get_progress(&addr, id, cursor).await {
+        let p = match conn.get_progress(id, cursor).await {
             Ok(p) => p,
             Err(err) => {
                 if let Ok(mut slot) = live.error.lock() {
@@ -564,14 +574,18 @@ mod tests {
         // Port 0 refuses to connect immediately — a stand-in for golemd vanishing
         // mid-poll, no live server required.
         let persistence = Arc::new(Mutex::new(Persistence::open(0)));
+        let target = crate::inventory::Target {
+            name: "unreachable".into(),
+            endpoint: crate::inventory::Endpoint::Http {
+                url: "http://127.0.0.1:0".into(),
+            },
+            token_file: None,
+        };
+        let conn = Conn::open(&target, &crate::conn::AuthSource::None)
+            .await
+            .unwrap();
 
-        poll_into(
-            live.clone(),
-            "http://127.0.0.1:0".to_string(),
-            1,
-            persistence,
-        )
-        .await;
+        poll_into(live.clone(), conn, 1, persistence).await;
 
         assert!(live.done.load(Ordering::Acquire));
         let err = live.error.lock().unwrap().take();

@@ -4,6 +4,7 @@ description: The real multi-host lichess deploy in Emet — the shipped Quadlet 
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Output from "../../../components/Output.astro";
 
 The capstone example is the [lichess](https://lichess.org) fleet: six hosts
 running dozens of containerized services behind nginx ingress. It lives in
@@ -86,6 +87,12 @@ they just pin the fields this fleet always sets the same way and delegate to the
 shipped `workloadGlyphs`. A different fleet would grow different helpers over the
 same library.
 
+`service` is shown simplified. `Lichess.emet` spells it `expose = Unexposed`
+followed by an explicit `List.concat` of `nftablesBase` and its own
+`nftablesDropIn` — the same firewall glyphs `Internal` would have derived,
+assembled by hand from the pieces `ingress` needs anyway. The two spellings
+compile to a byte-identical manifest.
+
 ### Ingress stays hand-rolled
 
 `ingress` is the one shape that does **not** go through `Workload`, on purpose. A
@@ -143,11 +150,14 @@ it, so a reload never disturbs the tables podman keeps next door.
   happens once.
 </Aside>
 
-Each host's scroll then says `notifies = [ "golem-nftables.service" ]`, so a
-changed drop-in earns a reload of the ruleset at the end of the apply. The base
+Every host that opens a port then says `notifies = [ "golem-nftables.service"
+]` on its scroll, so a changed drop-in earns a reload of the ruleset at the
+end of the apply. `scaly` is the one that does not, because it opens none. The base
 chain's policy is `drop`, which makes that allowlist real: a port nothing
 declares is closed. Its standing accepts are the ones that keep a box reachable
-— established traffic, loopback, icmp, dhcp, ssh, and golemd's own `7474`.
+— established traffic, loopback, icmp, dhcp, ssh, and golemd's own `7474`. That
+last one is vestigial: the agent binds loopback and the next apply arrives over
+SSH, so ssh is what keeps the box reachable to golem at all.
 
 ## The fleet
 
@@ -157,29 +167,53 @@ declares is closed. Its standing accepts are the ones that keep a box reachable
 ```emet
 module Main exposing (..)
 
-import Lichess exposing ( dockerImage, workload, service, ingress, host )
+import Lichess exposing
+  ( dockerImage
+  , ghcrImage
+  , workload
+  , service
+  , ingress
+  , host
+  )
+
+scaly : Scroll
+scaly = host "scaly" (workload "fishnet" (dockerImage "niklasf/fishnet" "latest"))
 
 manta : Scroll
 manta =
-  host "manta"
-    (List.concat
-      [ workload "leroyjenkins-lila" (dockerImage "lichess-org/leroyjenkins" "latest")
-      , service "lila" (dockerImage "lichess-org/lila" "latest") 9663
-      , service "redis-server" (dockerImage "redis" "7") 6379
-      , ingress "lichess.org" "lila" 443
-      ])
-
-scaly : Scroll
-scaly = host "scaly" (workload "fishnet" (dockerImage "lichess-org/fishnet" "latest"))
+  scroll
+    { name = "manta"
+    , notifies = [ "golem-nftables.service" ]
+    , glyphs =
+        List.concat
+          [ workload "leroyjenkins-lila" (ghcrImage "lichess-org/leroyjenkins" "latest")
+          , workload "leroyjenkins-nginx" (ghcrImage "lichess-org/leroyjenkins" "latest")
+          , service "lila" (ghcrImage "lichess-org/lila" "latest") 9663
+          , service "redis-server" (dockerImage "redis" "7") 6379
+          , ingress "lichess.org" "lila" 443
+          , ingress "lichess1.org" "lila" 443
+          ]
+    }
 
 main : List Scroll
 main = [ scaly, manta, orbit, talos, kaiju, zulip ]
 ```
 
-Six hosts, one `main`. `scaly` runs a single networkless workload; `manta` fronts
-lila with ingress; `kaiju` is one mongo service; `talos` runs the monitoring
-stack. Every host reads as the shapes you care about, and every shape lowers to
-the four glyphs.
+Six hosts, one `main`. `scaly` runs a single networkless workload; `manta`
+fronts lila with two ingresses; `kaiju` is one mongo service; `talos` runs the
+monitoring stack. Every host reads as the shapes you care about, and every
+shape lowers to the four glyphs.
+
+The two hosts are spelled differently on purpose. `host` builds a flat leaf
+scroll with no `notifies`, which suits `scaly` because it opens no ports.
+Any host carrying a `service` or an `ingress` writes its own `scroll` with
+`notifies = [ "golem-nftables.service" ]`, so the drop-ins it adds are
+actually loaded.
+
+`scaly` and `talos` are also the live-tested pair: both sit on the public
+`niklasf/fishnet` image. `manta` and `orbit` are the two hosts you cannot run
+for real — their workloads and services name `ghcr.io/lichess-org` refs that are
+not publicly pullable. This is an illustrative topology, not a deployable one.
 
 ## Cross-host facts are values, not templates
 
@@ -194,9 +228,13 @@ internalNetwork = "10.0.0.0/8"
 ```
 
 `service`'s firewall opening reads `internalNetwork` as imported data, checked by
-the type system — not a placeholder a resolver hopes to fill in later. Both
-`Lichess` and `Fleet` resolve from the search path the repo-root `emet.json`
-names, so the entry directory carries no copy.
+the type system — not a placeholder a resolver hopes to fill in later.
+
+`Lichess` and `Fleet` both live in `examples/lichess/` beside the entry module,
+and resolution is entry-directory-first, so those copies win — the `Fleet` in
+`lib/` is shadowed and never loaded. What the repo-root `emet.json` search path
+supplies here is `Nftables` and `Quadlet`, which `Lichess` imports and no file
+in the entry directory provides (ADR 0024).
 
 ## Compile and inspect
 
@@ -205,32 +243,15 @@ names, so the entry directory carries no copy.
 cargo run -q -p emet -- build examples/lichess/fleet.emet --text
 ```
 
-`scaly`'s single workload lowers to three glyphs; `manta`'s workloads, services,
-and two ingresses to forty-six:
+`scaly`'s single workload lowers to three glyphs:
 
-```
-planned scrolls (6):
-  scroll `scaly` (3 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0644)
-    * enable + start systemd unit `fishnet.service`
-  scroll `manta` (46 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/leroyjenkins-lila.container` (mode 0644)
-    * enable + start systemd unit `leroyjenkins-lila.service`
-    …
-    * ensure apt package `nftables` installed
-    * ensure directory `/etc/nftables.d` (mode 0755)
-    * ensure file `/etc/golem-nftables.conf` (mode 0755)
-    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
-    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
-    * enable + start systemd unit `golem-nftables.service`
-    * ensure file `/etc/nftables.d/lila-9663.nft` (mode 0644)
-    …
-    * ensure file `/etc/nftables.d/ingress-lichess.org.nft` (mode 0644)
-    * enable + start systemd unit `nginx.service`
-    ↻ manta notifies golem-nftables.service
-```
+<Output file="litour.text.golden" scroll="scaly" />
+
+`manta` — the same helpers, but two workloads, two services, and two ingresses
+— lowers to forty-six. Both blocks are the compiler's own output, cut from one
+run over `examples/lichess/fleet.emet`:
+
+<Output file="litour.text.golden" scroll="manta" />
 
 The count is high because the nftables base repeats behind every service and
 ingress that opens a port. On the host it is one set of files: the six base
@@ -242,7 +263,7 @@ the end of the apply, after the last drop-in lands.
 The manifest carries all six scrolls; each `golemd` selects its own by `--host`
 name and ignores the rest — see [Manifest format](/reference/bundle-format/). To
 run the whole thing against ephemeral VMs, see
-[Deploy a fleet to VMs](/tutorials/the-vm-harness/).
+[Bring up the fleet](/tutorials/the-vm-harness/).
 
 ## What you just saw
 
@@ -266,5 +287,5 @@ checked by Emet's type system on the way down. The fleet reaches for no
 ## Where to next
 
 - Every `Quadlet` type in detail: **[The Quadlet library](/reference/workloads/)**
-- Run this on real boxes: **[Deploy a fleet to VMs](/tutorials/the-vm-harness/)**
+- Run this on real boxes: **[Bring up the fleet](/tutorials/the-vm-harness/)**
 - The mechanism underneath: **[Reversible reconcile](/explanation/reversible-reconcile/)**

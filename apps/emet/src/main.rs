@@ -169,24 +169,7 @@ fn write_binary(manifest: &Manifest, out: Option<&std::path::Path>) -> ExitCode 
 }
 
 fn print_text(compiled: &Compiled) {
-    println!("main : {}", compiled.main_ty);
-    println!("planned scrolls ({}):", compiled.scrolls.len());
-    for s in &compiled.scrolls {
-        let glyphs = s.all_glyphs();
-        println!("  scroll `{}` ({} glyphs):", s.name, glyphs.len());
-        for g in glyphs {
-            println!("    * {}", g.describe());
-        }
-        for unit in s.leaf_units() {
-            if !unit.notifies.is_empty() {
-                println!(
-                    "    ↻ {} notifies {}",
-                    unit.path.join("/"),
-                    unit.notifies.join(", ")
-                );
-            }
-        }
-    }
+    print!("{}", emet::render_text(compiled));
 }
 
 fn report_errors(entry_name: &str, entry_src: &str, errors: &[Error]) {

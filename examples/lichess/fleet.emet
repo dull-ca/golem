@@ -14,8 +14,9 @@
 --   kaiju — the primary mongod service.
 --   zulip — the zulip stack (app, email, postgres, redis) and its ingress.
 --
--- `Lichess` and `Fleet` are resolved from `lib/` via the repo-root `emet.json`
--- (ADR 0024), so this entry directory carries no copy of the shared library.
+-- `Lichess` and `Fleet` sit in this directory and win on entry-directory-first
+-- precedence, shadowing `lib/Fleet.emet`. The repo-root `emet.json` search path
+-- supplies `Nftables` and `Quadlet`, which `Lichess` imports (ADR 0024).
 --
 -- This fleet is an illustrative topology, not a deployable one: some image
 -- refs (leroyjenkins, lila-ip2proxy, lila:latest) are not publicly pullable,

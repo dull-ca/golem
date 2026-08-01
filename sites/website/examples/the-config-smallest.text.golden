@@ -1,0 +1,4 @@
+main : List Scroll
+planned scrolls (1):
+  scroll `web` (1 glyphs):
+    * ensure apt package `nginx` installed

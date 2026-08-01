@@ -29,7 +29,7 @@ with the harness importable):
 ```bash
 fleet up                                  # boot the six lichess VMs
 fleet deploy                              # build + install golemd on each
-fleet apply examples/lichess/fleet.emet   # compile the scroll, POST to each daemon
+fleet apply examples/lichess/fleet.emet   # compile the scroll, fan it out to every guest
 fleet status                              # who is up, golemd reachable, last revision
 fleet logs scaly -f                       # tail one guest's golemd journal
 fleet reset                               # kill everything, back to a clean slate
@@ -40,6 +40,15 @@ hosts. `deploy`, `apply`, and `logs` take `--hosts` to target a subset; without
 it they hit every VM. `apply` accepts either an `.emet` source (compiled here)
 or a prebuilt `manifest.bin`; relative paths anchor at the repo root.
 
+Every guest's golemd is loopback-bound and requires a bearer token (ADR 0042).
+`deploy` generates that token once into `.fleet/golem-token`, installs it
+root-owned 0600 at `/etc/golem/token` on each guest, and points the daemon at it
+with `--config /etc/golem/golemd.toml`. Everything that reads or drives a guest
+— `status`, `apply`, `plan`, the rendered inventory — opens an ssh forward and
+presents the same secret. The token outlives `reset` and even `reset --purge`,
+which keeps a rebuilt fleet talking to an already-rendered inventory; rotating
+it is deleting `.fleet/golem-token` and running `deploy` again.
+
 On a guest, `journalctl -u <unit>` works as the `golem` user without sudo — the
 cloud-init user data adds it to the `systemd-journal` group. Existing VMs booted
 before this change need a `fleet reset` (cloud-init runs once per instance) or a
@@ -47,8 +56,10 @@ one-off `sudo usermod -aG systemd-journal golem` to pick up the membership.
 
 ## Driving the VMs with `golemctl fleet`
 
-`fleet apply` and `fleet plan` loop over the guests one at a time. To hit them
-all at once instead, hand golemctl an inventory of the running VMs:
+`fleet apply` and `fleet plan` already drive every targeted VM through one
+`golemctl fleet apply`/`plan --inventory` call, rendering a per-run ssh
+inventory behind the scenes (ADR 0042). To do the same by hand — or to run
+`golemctl fleet status` — write the inventory yourself:
 
 ```bash
 fleet inventory                                   # writes .fleet/inventory.toml
@@ -57,31 +68,39 @@ golemctl fleet apply  examples/lichess/fleet.emet
 golemctl fleet status
 ```
 
-`inventory` renders the `[hosts]` table from the state file — each VM's name
-against `http://127.0.0.1:<its forwarded golemd port>` — with `--hosts` to
-narrow the set and `--output` to write it elsewhere. Because a VM's name is also
-its scroll's name, the inventory matches the manifest directly: a guest the
-manifest names no scroll for is reported skipped and left untouched. Re-run
-`inventory` after any `up`, `down`, or `reset`; it is a snapshot of the state
-file, not a live view. The verbs themselves are documented in `QUICKSTART.md`
-(ADR 0038).
+`inventory` renders one `[hosts.<name>]` table per VM from the state file: the
+guest's ssh destination and port, the fleet key and standard host-checking
+options as `ssh_args`, and the shared bearer token's path as `token_file`.
+golemctl opens its own ssh forward to each guest's loopback golemd from these
+fields — there is no directly-dialable golemd URL any more (ADR 0042).
+`--hosts` narrows the set and `--output` writes it elsewhere. Because a VM's
+name is also its scroll's name, the inventory matches the manifest directly: a
+guest the manifest names no scroll for is reported skipped and left untouched.
+Re-run `inventory` after any `up`, `down`, or `reset`; it is a snapshot of the
+state file, not a live view. The verbs themselves are documented in
+`QUICKSTART.md` (ADR 0038, ADR 0042).
 
 ## Port scheme
 
 Each VM claims a slot derived from its **name**, not its position in the boot
 list: `slot = blake2b(name) mod 100`, so a given name always lands on the same
 ports no matter what else is booted, and booting one host alone gets the same
-ports it would in the full set. ssh forwards to `2200+slot`, golemd to
-`8800+slot`:
+ports it would in the full set. ssh forwards to `2200+slot`; `8800+slot` is
+golemd's slot-derived port, recorded but never forwarded:
 
-| name     | slot | ssh (host → guest 22) | golemd (host → guest 7474) |
-|----------|------|-----------------------|----------------------------|
-| registry | 65   | 2265                  | 8865                       |
-| builder  | 3    | 2203                  | 8803                       |
-| puller   | 68   | 2268                  | 8868                       |
+| name     | slot | ssh (host → guest 22) | golemd port (recorded, not forwarded) |
+|----------|------|-----------------------|----------------------------------------|
+| registry | 65   | 2265                  | 8865                                    |
+| builder  | 3    | 2203                  | 8803                                    |
+| puller   | 68   | 2268                  | 8868                                    |
 
-golemd listens on `0.0.0.0:7474` inside the guest; QEMU forwards `8800+slot` on
-localhost to it, so the CLI reaches each daemon over plain HTTP.
+golemd listens on `127.0.0.1:7474` inside the guest — loopback only — so an
+`8800+slot` QEMU hostfwd would be dead by construction: nothing arriving over
+the guest's virtio NIC can reach a loopback-only socket. The harness no longer
+creates that hostfwd. `golemd_port` is still computed and recorded — it keys
+the name→slot map, and already-booted VMs still carry it in `state.json` — but
+nothing forwards to it. Every daemon is in fact reached through an ssh forward
+golemctl opens itself over the ssh port (ADR 0042), never over `8800+slot`.
 
 The slots are collision-free across the default lichess host set plus the
 `registry`/`builder`/`puller` dogfood names. Ports for an already-created VM are
@@ -91,8 +110,8 @@ keep the ports they were assigned — the name→slot map only governs a fresh b
 ## Extra port forwards and cross-VM traffic
 
 Each guest runs behind user-mode (SLIRP) networking and is isolated from the
-other guests: only ssh and golemd are forwarded to the host. Two facts make
-one guest reach a service on another:
+other guests: only ssh is forwarded to the host. Two facts make one guest
+reach a service on another:
 
 - `up --publish` forwards an extra guest port to the host. `--publish
   registry=5000:5000` binds host `127.0.0.1:5000` to the `registry` guest's
@@ -115,6 +134,8 @@ Everything the harness writes lives under `.fleet/` at the repo root:
 
 - `images/` — the cached base image.
 - `id_ed25519[.pub]` — the fleet keypair, injected into every guest.
+- `golem-token` — the shared bearer secret (mode 0600), deployed to every guest
+  and presented on every request.
 - `state.json` — the record of which VMs exist (ports, pid, disk paths).
 - `vm-<name>/` — one per guest: its overlay disk, cloud-init seed, pidfile, and
   serial-console log.

@@ -4,6 +4,8 @@ description: The smallest end-to-end run — one host, one package, one unit —
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
+import Output from "../../../components/Output.astro";
 
 The smallest useful fleet is one host with two glyphs: install a package and
 enable its unit. This guide takes it from Emet source to a reconciled box
@@ -11,18 +13,7 @@ and back.
 
 ## The whole thing
 
-```emet
-main : List Scroll
-main =
-  [ scroll
-      { name = "web"
-      , glyphs =
-          [ aptPackage { name = "nginx" }
-          , systemdService { unit = "nginx.service" }
-          ]
-      }
-  ]
-```
+<Snippet file="hello-agent.emet" region="program" />
 
 Save it as `web.emet`. That is the deploy: one scroll named `web`, two
 glyphs.
@@ -35,30 +26,38 @@ Look at the plan before shipping anything:
 emetc build web.emet --text
 ```
 
-```
-planned scrolls (1):
-  scroll `web` (2 glyphs):
-    * ensure apt package `nginx` installed
-    * ensure systemd unit `nginx.service` enabled and started
-```
+<Output file="hello-agent.text.golden" />
 
 The binary manifest is the default output; `--text` is the readable view.
 
 ## Apply it
 
 <Steps>
-1. Start the agent as host `web`. Use the `host` reconciler on a Debian box
-   for real effects, or `fake` to see the plan enacted in memory:
+1. Start the agent as host `web`. `fake` enacts the plan in memory and
+   touches nothing:
 
    ```bash
-   golemd --host web --reconciler host --listen 127.0.0.1:7474
+   golemd --host web --reconciler fake --listen 127.0.0.1:7474
    ```
 
-2. From your laptop, compile-and-ship in one command:
+   On a Debian box you want real effects on, switch to the `host`
+   reconciler — which acts as root, and so never runs without a token file:
+
+   ```bash
+   golemd --host web --reconciler host --listen 127.0.0.1:7474 \
+     --auth-token-file /etc/golem/token
+   ```
+
+2. Compile-and-ship in one command:
 
    ```bash
    golemctl apply web.emet http://127.0.0.1:7474
    ```
+
+   That address reaches an agent on this machine. For a Debian box across
+   the room, name it `ssh://golem@web` instead: `golemctl` opens the SSH
+   forward to its loopback agent and carries your bearer token
+   ([Trust model](/explanation/trust/)).
 
 3. Inspect what the node applied:
 

@@ -136,6 +136,7 @@ fn manifest_bytes() -> Vec<u8> {
 async fn serve(foreman: Foreman) -> String {
     let app = http::router(http::AppState {
         foreman: Arc::new(foreman),
+        required_token: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -259,6 +260,7 @@ async fn a_manifest_posted_against_an_unsettled_attempt_gets_a_real_http_409() {
 
     let app = http::router(http::AppState {
         foreman: foreman.clone(),
+        required_token: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

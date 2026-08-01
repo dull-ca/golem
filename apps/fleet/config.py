@@ -28,10 +28,11 @@ GUEST_CPUS = 2
 SSH_PORT_BASE = 2200
 GOLEMD_PORT_BASE = 8800
 GOLEMD_GUEST_PORT = 7474
-# A name's slot is `blake2b(name) mod PORT_SLOT_COUNT`, and its two forwarded
-# ports are `SSH_PORT_BASE + slot` and `GOLEMD_PORT_BASE + slot`. The count
-# bounds each range to 2200-2299 / 8800-8899 and caps the fleet at 100 distinct
-# slots.
+# A name's slot is `blake2b(name) mod PORT_SLOT_COUNT`, and its two ports are
+# `SSH_PORT_BASE + slot` (forwarded into the guest) and `GOLEMD_PORT_BASE +
+# slot` (recorded only — golemd binds loopback-only inside the guest, ADR
+# 0042, so this port is never forwarded). The count bounds each range to
+# 2200-2299 / 8800-8899 and caps the fleet at 100 distinct slots.
 PORT_SLOT_COUNT = 100
 
 SSH_READY_TIMEOUT_S = 180
@@ -78,6 +79,10 @@ class Paths:
         return self.fleet_dir / "inventory.toml"
 
     @property
+    def token_file(self) -> Path:
+        return self.fleet_dir / "golem-token"
+
+    @property
     def ssh_key(self) -> Path:
         return self.fleet_dir / "id_ed25519"
 
@@ -107,8 +112,9 @@ def slot_for_name(name: str) -> int:
 
 @dataclass(frozen=True)
 class HostPlan:
-    """A host's name paired with the two forwarded ports its slot earns, plus
-    any extra published host→guest tcp forwards (host_port, guest_port)."""
+    """A host's name paired with the two ports its slot earns — ssh is
+    forwarded into the guest, golemd is recorded only — plus any extra
+    published host→guest tcp forwards (host_port, guest_port)."""
 
     name: str
     ssh_port: int

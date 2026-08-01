@@ -4,9 +4,10 @@ description: The built-in functions every Emet module starts with — Basics, St
 ---
 
 Every Emet module opens with these bindings already in scope; nothing imports
-them. They are Rust primitives, not library source: Emet has no user recursion,
-so the combinators that iterate a list or a string cannot be written in the
-language and are supplied here. Names carrying a `List.` / `Maybe.` /
+them. They are total Rust functions seeded into the type and value environments
+`emetc` starts every module from — not library source. There is no prelude
+module to import, no bootstrap `.emet` file to ship, and no search path to
+resolve before a program can call `List.map`. Names carrying a `List.` / `Maybe.` /
 `String.` / `Char.` prefix are a dotted-name convention, not a module system —
 `List.map` is one identifier resolved by lookup.
 
@@ -21,10 +22,28 @@ named functions and states each one's behavior. For the four glyph constructors
 ## Basics
 
 Numeric, comparison, and boolean functions Elm exposes without a module prefix,
-plus the constructors of the built-in sum types. The arithmetic and comparison
-**operators** (`+` `-` `*` `/` `//` `^` `<` `>` `<=` `>=` `==` `/=` `&&` `||`
-`++` `::`) desugar to primitives that have no callable name; reach them through
-the operator. The named functions below are callable directly.
+plus the constructors of the built-in sum types.
+
+The arithmetic and comparison **operators** (`+` `-` `*` `/` `//` `^` `<` `>`
+`<=` `>=` `==` `/=` `&&` `||` `++` `::`) desugar to applications of ordinary
+prelude builtins, so inference and evaluation see nothing but function
+application: `a + b` is `add a b`, `a == b` is `eq a b`, `a ++ b` is
+`append a b`, `x :: xs` is `cons x xs`.
+
+| Operator | Builtin | Signature |
+| --- | --- | --- |
+| `+` `-` `*` `^` | `add` `sub` `mul` `pow` | `number -> number -> number` |
+| `/` | `fdiv` | `Float -> Float -> Float` |
+| `//` | `idiv` | `Int -> Int -> Int` |
+| `<` `>` `<=` `>=` | `lt` `gt` `le` `ge` | `comparable -> comparable -> Bool` |
+| `==` `/=` | `eq` `neq` | `comparable -> comparable -> Bool` |
+| `&&` `\|\|` | `and` `or` | `Bool -> Bool -> Bool` |
+| `++` | `append` | `appendable -> appendable -> appendable` |
+| `::` | `cons` | `a -> List a -> List a` |
+
+Each desugaring target is a bound name, so `add 1 2` and `cons x xs` compile
+and mean what the operator means. The operator is the idiomatic spelling; the
+name is what a partial application needs — `List.map (add 1) xs`.
 
 ### Numeric
 
@@ -46,8 +65,8 @@ clamp 0 255 300  -- 255
 modBy 3 10       -- 1
 ```
 
-Integer division `//` and exponentiation `^` are operators backed by
-primitives without a callable name — see
+Integer division `//` and exponentiation `^` are the operators for `idiv` and
+`pow` — see
 [Values and types](/reference/language/values-and-types/). Division, `modBy`,
 and `remainderBy` are total: a zero divisor yields `0` rather than trapping.
 
@@ -232,8 +251,8 @@ List.range 1 5                        -- [ 1, 2, 3, 4, 5 ]
 ```
 
 Prepend an element with the `::` operator; concatenate two lists (or two
-strings) with `++`. Both are operators without a callable name — see
-[Values and types](/reference/language/values-and-types/).
+strings) with `++`. Both desugar to the named builtins `cons` and `append` —
+see [Values and types](/reference/language/values-and-types/).
 
 ## Maybe
 

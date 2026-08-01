@@ -1,0 +1,18 @@
+---
+import { Code } from "@astrojs/starlight/components";
+import { readExample, sliceRegion } from "./examples";
+
+interface Props {
+  file: string;
+  region?: string;
+  lang?: string;
+  title?: string;
+}
+
+const { file, region, lang = "emet", title } = Astro.props;
+
+const source = readExample(file);
+const code = region ? sliceRegion(source, region, file) : source.trimEnd();
+---
+
+<Code code={code} lang={lang} title={title} />

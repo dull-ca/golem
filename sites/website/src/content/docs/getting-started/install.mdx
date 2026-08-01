@@ -10,18 +10,17 @@ result; `golemd` runs on each node.
 
 <Aside type="caution" title="What you need">
   - A Rust toolchain (the repo pins it via `devenv` / `direnv`; see
-    `emet/CLAUDE.md`).
+    `apps/emet/CLAUDE.md`).
   - A Debian box (or container) for the agent when you want real host
     effects. The default `fake` reconciler needs no box.
 </Aside>
 
 ## 1 — Build the binaries
 
-From a checkout of the golem workspace:
-
 ```bash
-git clone https://codeberg.org/dull/golem
+git clone https://github.com/dull-ca/golem
 cd golem
+direnv allow            # or: devenv shell
 cargo build --release -p emet -p golemctl -p golemd
 ```
 
@@ -31,9 +30,12 @@ That produces:
 - `golemctl` — the operator CLI.
 - `golemd` — the per-host agent.
 
+The devenv shell prepends `target/release` to `PATH`, so all three are
+callable by name from inside it — the rest of this page assumes you are.
+
 <Aside type="note" title="emetc on PATH">
   `golemctl apply` shells out to `emetc` when you hand it a `.emet` file, so
-  `emetc` must be on `PATH`. Working in-tree before installing, use
+  `emetc` must be on `PATH`. Outside the devenv shell, use
   `cargo run -p emet -- build …` and `cargo run -p golemctl -- …` directly.
 </Aside>
 
@@ -52,24 +54,41 @@ golemd --host web --reconciler fake --listen 127.0.0.1:7474
 
    ```bash
    curl -s http://127.0.0.1:7474/status
-   # → {"host":"web","latest_revision":null}
+   # → {"host":"web","latest_revision":1}
    ```
 
-2. When you want real effects on a Debian box, switch the reconciler:
+   Revision 1 is the `Init` revision golemd writes when it opens its journal.
+   Nothing has been applied yet.
+
+2. When you want real effects on a Debian box, switch the reconciler — and
+   give it a token file in the same breath:
 
    ```bash
-   golemd --host web --reconciler host --listen 127.0.0.1:7474
+   sudo install -d -m 0700 /etc/golem
+   head -c 32 /dev/urandom | base64 | sudo tee /etc/golem/token > /dev/null
+   sudo chmod 0600 /etc/golem/token
+
+   golemd --host web --reconciler host --listen 127.0.0.1:7474 \
+     --auth-token-file /etc/golem/token
    ```
+
+   `--reconciler host` enacts real apt, systemd, and filesystem changes as
+   root, so its port is root-equivalent control of the box. Started without
+   `--auth-token-file` (and without `[auth] token_file`), `golemd` answers
+   anyone who reaches that port. Loopback is the default bind and the
+   deployed posture; operators reach it through an SSH forward `golemctl`
+   opens for them. See [Trust model](/explanation/trust/).
 </Steps>
 
 The agent keeps its journal in `--state-dir` (default `/var/lib/golem`,
 file `planroom.db`). See the [CLI reference](/reference/cli/) for every
 flag.
 
-<Aside type="caution" title="No authentication yet">
-  `golemd` does not verify who sent a manifest. Keep the listener on
-  `127.0.0.1` or behind an SSH forward until signing lands — see
-  [Trust model](/explanation/trust/).
+<Aside type="caution" title="The ungated form is for `fake` only">
+  A tokenless `golemd` is the local-development posture and nothing else.
+  Keep it paired with `--reconciler fake`, which records what it would do
+  and touches nothing. Anything enacting real host state gets a token file,
+  including the VMs on your own workstation.
 </Aside>
 
 ## What's next

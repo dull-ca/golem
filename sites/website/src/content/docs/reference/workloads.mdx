@@ -4,17 +4,19 @@ description: Quadlet — golem's shipped, strongly-typed model of Podman quadlet
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Output from "../../../components/Output.astro";
 
 Running a container on a golem box means writing a Podman **quadlet** — a
 `.container` unit systemd turns into a service, plus any `.volume` units it
 mounts. `Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path named
 by the repo-root `emet.json`) models those units as typed Emet
-values so you fill in a record instead of hand-joining `Image=` and
-`PublishPort=` strings. It is Debian + systemd + Podman specific, and it lowers
-entirely to [the four glyphs](/reference/primitives/) — it adds no engine kind.
+values, so a workload is a filled-in record rather than hand-joined `Image=`
+and `PublishPort=` strings. It is Debian + systemd + Podman specific, and it
+lowers entirely to [the four glyphs](/reference/primitives/) — it adds no
+engine kind.
 
 This is the middle of three layers: the four glyphs underneath, this shipped
-library, and your own fleet's helpers on top of it (see the
+library, and a fleet's own helpers on top of it (see the
 [service abstraction guide](/guides/app-and-db/)).
 
 ```emet
@@ -87,7 +89,9 @@ silently-broken unit. Firewall exposure is *derived* from these ports (see
 
 ## `EnvVar` — environment, as a named record
 
-Emet has no tuples, so an environment pair is a record:
+An environment pair is a record rather than a
+[tuple](/reference/language/values-and-types/#tuples-and-unit) so that the
+field names are visible at the call site:
 
 ```emet
 env "RUST_LOG" "info"      -- Environment=RUST_LOG=info
@@ -179,8 +183,10 @@ reloaded once the files are in place.
 
 <Aside type="caution" title="The base chain drops what nothing declares">
   `00-base` hooks input at `policy drop`, with standing accepts for established
-  traffic, loopback, icmp, dhcp, ssh, and golemd's `7474`. Anything else a box
-  listens on is closed unless a workload declares it through `expose`.
+  traffic, loopback, icmp, dhcp, ssh, and golemd's `7474` — the last of which
+  matches nothing now that the agent binds loopback and applies arrive through
+  an SSH forward. Anything else a box listens on is closed unless a workload
+  declares it through `expose`.
 </Aside>
 
 <Aside type="note" title="The reverse proxy is a different container">
@@ -211,22 +217,7 @@ The registry `Workload` — one TCP port, one named volume, internally exposed �
 lowers to eleven glyphs. From
 `cargo run -q -p emet -- build examples/registry/registry.emet --text`:
 
-```
-planned scrolls (1):
-  scroll `registry` (11 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
-    * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
-    * enable + start systemd unit `registry.service`
-    * ensure apt package `nftables` installed
-    * ensure directory `/etc/nftables.d` (mode 0755)
-    * ensure file `/etc/golem-nftables.conf` (mode 0755)
-    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
-    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
-    * enable + start systemd unit `golem-nftables.service`
-    * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
-    ↻ registry notifies golem-nftables.service
-```
+<Output file="registry.text.golden" />
 
 The named-volume `.volume` unit (glyph 2), the whole firewall arrangement, and
 the reload that loads it all fall out of the typed spec — the hand-rolled

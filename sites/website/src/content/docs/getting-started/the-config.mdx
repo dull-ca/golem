@@ -4,6 +4,8 @@ description: Write a fleet in Emet — a typed functional language. main is a Li
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
+import Output from "../../../components/Output.astro";
 
 You author a fleet in **Emet**, a typed, Elm-modeled functional language. A
 program is a set of top-level declarations; the one that matters is `main :
@@ -12,27 +14,15 @@ of `glyphs`. A glyph is one OS resource.
 
 ## The smallest program
 
-```emet
-main : List Scroll
-main =
-  [ scroll
-      { name = "web"
-      , glyphs = [ aptPackage { name = "nginx" } ]
-      }
-  ]
-```
+<Snippet file="the-config-smallest.emet" region="program" />
 
-Compile it and look at the plan:
+Save it as `web.emet`, compile it, and look at the plan:
 
 ```bash
 emetc build web.emet --text
 ```
 
-```
-planned scrolls (1):
-  scroll `web` (1 glyphs):
-    * ensure apt package `nginx` installed
-```
+<Output file="the-config-smallest.text.golden" />
 
 Add more glyphs; order is kept:
 
@@ -81,35 +71,7 @@ A config file's body is built by the language and fully evaluated before it
 reaches the `contents` field. There is no templating downstream — the glyph
 carries the final string:
 
-```emet
-renderConfig : Int -> String
-renderConfig port =
-  String.join "\n"
-    [ "[server]"
-    , "listen = ${String.fromInt port}"
-    , "workers = 4"
-    ]
-
-siteFile : Int -> File
-siteFile port =
-  file
-    { path = "/etc/app/site.conf"
-    , contents = renderConfig port
-    , mode = "0644"
-    }
-
-main : List Scroll
-main =
-  [ scroll
-      { name = "app"
-      , glyphs =
-          [ aptPackage { name = "app" }
-          , siteFile 8080
-          , systemdService { unit = "app.service" }
-          ]
-      }
-  ]
-```
+<Snippet file="the-config-computed-contents.emet" region="computed-contents" />
 
 `${…}` is Emet string interpolation — it runs at compile time and desugars
 to `String.concat`. The compiled `file` glyph contains `listen = 8080`, not

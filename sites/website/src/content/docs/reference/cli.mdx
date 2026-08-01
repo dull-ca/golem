@@ -10,8 +10,9 @@ manifest to a node and reads its state. `golemd` runs on each node and
 reconciles it.
 
 The `fleet` VM harness wraps these same primitives to compile, ship, and
-inspect against throwaway Debian VMs — see the [Deploy a fleet to
-VMs](/tutorials/the-vm-harness/) tutorial.
+inspect against throwaway Debian VMs — see [Bring up the
+fleet](/tutorials/the-vm-harness/) and [The fleet
+harness](/explanation/the-fleet-harness/).
 
 ## `emetc`
 
@@ -27,13 +28,18 @@ a smoke check). With a `FILE`, it compiles that `.emet` source.
 | Flag | Effect |
 | --- | --- |
 | `-o`, `--out <PATH>` | write output to a file instead of stdout |
+| `--format <binary\|text\|json>` | which view to emit; default `binary` |
 | `--text` (`--human`) | emit the readable plan instead of the binary manifest |
 | `--json` | emit the JSON debug view instead of the binary manifest |
 
 **Default output is the binary, content-addressed manifest** — raw postcard
 bytes to stdout (or `-o PATH`), with diagnostics on stderr so it composes in
-a pipe. `--text`, `--human`, and `--json` are mutually exclusive and each
-opt out of the binary artifact.
+a pipe. `--text`, `--human`, and `--json` are mutually exclusive, each opt
+out of the binary artifact, and each override `--format`.
+
+Bare `emetc` with no subcommand compiles the built-in demo as **text**;
+`emetc build` with no `FILE` compiles the same demo as the **binary**
+manifest.
 
 ```bash
 # Compile the lichess fleet to a manifest file.
@@ -54,13 +60,16 @@ emetc build examples/lichess/fleet.emet --json | jq '.scrolls | length'
 
 ## `golemctl`
 
-The operator CLI. Every command takes the agent's base URL as `<addr>`.
+The operator CLI. Every single-host command takes the agent's address as
+`<addr>`; the `fleet` verbs take an inventory instead and name no address.
 
 ```
 golemctl <COMMAND>
 
 Commands:
   apply    <source> <addr>   Compile-and-ship, or ship a prebuilt manifest
+  plan     <source> <addr>   Ask what an apply would do, changing nothing
+  fleet    <COMMAND>         Fan a verb out over an inventory, concurrently
   state    <addr>            Print the host's applied scroll + content id
   history  <addr>            Print the revision journal
   show     <addr> <id>       Print one revision by id
@@ -73,10 +82,81 @@ If `<source>` ends in `.emet`, `golemctl` shells out to `emetc build
 `<source>` as prebuilt manifest bytes and ships those. Either way it
 `POST`s to `<addr>/manifest`.
 
+The POST returns immediately with `202 { reconcile_id }`; the reconcile runs
+detached on the agent. `golemctl` then polls `GET /reconciles/:id?after=…`
+until the attempt reaches a terminal phase, rendering a live unit tree on a
+TTY and plain per-event lines otherwise.
+
 ```bash
 golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
 golemctl apply fleet.manifest              http://127.0.0.1:7474
 ```
+
+| Flag | Effect |
+| --- | --- |
+| `--json` | emit the final report object on stdout, no TUI; per-event lines and the `logs: <dir>` line go to stderr |
+| `--reattach` | skip the POST and follow the newest attempt via `GET /reconciles/latest` |
+
+`--reattach` is what a dropped connection needs: the reconcile it started
+kept running on the agent, and reattaching resumes reading its progress.
+
+Exit code `0` means the reconcile settled. Any other terminal outcome
+(`partial`, `rolled_back`) exits nonzero and still prints the report — a
+partial reconcile is a result, not a transport error. A stdout that is not a
+TTY takes the plain path even without `--json`.
+
+### `golemctl plan <source> <addr>`
+
+The same compile, and no POST. `golemd` diffs the manifest against what it
+has applied and answers with what an apply would do; nothing is written, so
+a plan is safe to run while an apply is in flight. `--detail` expands every
+group to one glyph per line with content ids; `--json` emits golemd's
+response verbatim.
+
+### `golemctl fleet <apply|plan|status>`
+
+The same three readings, fanned out over every host in a TOML inventory,
+concurrently. One host's failure never stops the others, and a host the
+manifest names no scroll for is **skipped untouched** — never POSTed to and
+not counted against the exit code. `fleet apply` exits 0 only if every host
+settled or was skipped.
+
+```bash
+golemctl fleet status
+golemctl fleet plan examples/lichess/fleet.emet --hosts scaly,talos
+golemctl fleet apply examples/lichess/fleet.emet
+```
+
+`--hosts a,b` narrows the run to a subset, resolved before anything is
+compiled or contacted, so a typo'd name fails while no daemon has been
+touched. The inventory itself comes from the first of `--inventory`,
+`$GOLEMCTL_INVENTORY`, `./fleet.toml`, `./.fleet/inventory.toml`.
+
+Each host is a key under `[hosts]` — a bare URL string, or a table:
+
+```toml
+[hosts.scaly]
+ssh = "golem@127.0.0.1"
+ssh_port = 2259
+remote_port = 7474
+ssh_args = ["-i", ".fleet/id_ed25519", "-o", "StrictHostKeyChecking=no"]
+token_file = ".fleet/golem-token"
+```
+
+| Key | Meaning |
+| --- | --- |
+| `url` | dial this base URL directly |
+| `ssh` | the ssh destination (`[user@]host`); golemctl opens its own forward |
+| `ssh_port` | ssh's own port on that host; default is ssh's |
+| `remote_port` | golemd's loopback port on that host; default `7474` |
+| `ssh_args` | extra flags passed to the `ssh` command |
+| `token_file` | this host's bearer secret |
+
+A table carries `url` **or** `ssh`, never both. A bare string says the same
+thing as `url`. The name is the join key: it matches the scroll of the same
+name in the manifest. See
+[The fleet harness](/explanation/the-fleet-harness/) for the harness that
+writes this file for you.
 
 ### `golemctl state <addr>`
 
@@ -86,13 +166,49 @@ content id (lowercase hex).
 ### `golemctl history <addr>` / `golemctl show <addr> <id>`
 
 `history` reads `GET /revisions` (the append-only journal). `show` reads
-`GET /revisions/:id` for one entry — its kind (`Init` / `Reconcile`), the
+`GET /revisions/:id` for one entry — its kind (`init` / `reconcile`), the
 content id enacted, the ordered glyph ops, and the reversal receipts.
 
-<Aside type="caution" title="No keys yet">
+### Reaching a remote agent
+
+Only the `ssh://` prefix is interpreted. `ssh://[user@]host[:port]` makes
+`golemctl` open its own SSH forward to the agent's loopback port and speak
+HTTP through it; the port there is **ssh's**, not the agent's, which stays
+`7474`. Any other `<addr>` is carried through untouched as a base URL, so
+`http://host:port` dials directly.
+
+```bash
+golemctl apply fleet.emet ssh://golem@scaly
+golemctl apply fleet.emet ssh://golem@scaly:2222
+```
+
+An `ssh://` target that names no host, that begins with `-` (ssh would read
+it as a flag), or whose `:port` does not parse is refused before anything is
+compiled or dialed.
+
+Every request carries `Authorization: Bearer <token>`, taken from the first
+of:
+
+1. the host's inventory `token_file`,
+2. `$GOLEM_AUTH_TOKEN`,
+3. the file named by `$GOLEM_AUTH_TOKEN_FILE`.
+
+A per-host `token_file` therefore overrides the ambient environment for that
+host alone. Absent everywhere is not an error — `golemctl` still talks to
+ungated daemons. A `401` comes back as an error naming those sources. See
+[Trust model](/explanation/trust/).
+
+<Aside type="caution" title="A token over a non-loopback URL crosses the network in cleartext">
+  Dialing a host at an `http://` address that is not loopback while a token
+  is configured prints a warning to stderr and sends the request anyway.
+  golem speaks plain HTTP; the confidentiality is the SSH tunnel's. Use an
+  `ssh://` target, or an inventory `ssh` host, to keep the secret inside it.
+</Aside>
+
+<Aside type="caution" title="No signing, by decision">
   `golemctl` does not sign manifests and `golemd` does not verify a signer.
-  There is no `keygen`, `sign`, or `push` command. Signing is
-  [roadmap](/explanation/trust/).
+  There is no `keygen`, `sign`, or `push` command, and none is planned —
+  the SSH tunnel holds that boundary. The shared secret is what authorizes.
 </Aside>
 
 ## `golemd`
@@ -107,6 +223,8 @@ Options:
       --state-dir <DIR>        Where to keep planroom.db [default: /var/lib/golem]
       --listen <ADDR>          HTTP listen address [default: 127.0.0.1:7474]
       --reconciler <KIND>      host | fake [default: fake] [env: GOLEM_RECONCILER]
+      --config <FILE>          golemd.toml: [retry], [enact], [auth]
+      --auth-token-file <FILE> Shared secret every request must present
 ```
 
 ### `--host <name>` (required)
@@ -131,20 +249,50 @@ Also settable via `GOLEM_RECONCILER`.
 
 `--state-dir` holds the SQLite journal (`planroom.db`), golem's record of
 what it applied and how to reverse it. `--listen` is the HTTP bind address;
-default `127.0.0.1:7474`.
+default `127.0.0.1:7474`. Keep it on loopback — operators reach a deployed
+agent through an SSH forward, and a routable bind publishes root-equivalent
+control of that host.
+
+### `--auth-token-file <file>`
+
+The file holding the shared secret every request must present as
+`Authorization: Bearer <token>`; anything else is a `401`. `[auth]
+token_file` in `golemd.toml` says the same thing and the flag overrides it.
+An unreadable or empty file stops the agent at startup rather than starting
+it open.
+
+**With neither set, the agent answers anyone who reaches the port** — the
+local-development posture, never a deployed one. See
+[Trust model](/explanation/trust/).
 
 ## HTTP endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/manifest` | Accept a binary manifest; select this host's scroll, reconcile, journal. Returns the outcome as JSON. |
+| `POST` | `/manifest` | Accept a binary manifest; select this host's scroll and start a reconcile. Answers `202 { reconcile_id }` — the reconcile runs detached. |
+| `POST` | `/plan` | Accept a binary manifest; answer what an apply would do. Writes nothing. |
+| `GET` | `/reconciles/latest?after=<seq>` | Progress for the newest attempt: its phase, and every event after `after`. |
+| `GET` | `/reconciles/:id?after=<seq>` | The same projection for one attempt by id. |
 | `GET` | `/state` | The current applied scroll and its content id. |
 | `GET` | `/revisions` | The full revision journal. |
 | `GET` | `/revisions/:id` | One revision. |
 | `GET` | `/status` | `{ host, latest_revision }`. |
 
-<Aside type="note" title="No coordination surface">
-  These endpoints are for an operator inspecting one node. There is no
-  fleet-coordination API — a manifest carries the whole fleet, but each node
-  acts only on its own scroll.
+`/manifest` answers before the work is done because a reconcile is not
+short — a cold host runs `apt update`, package installs, and image pulls,
+and tens of minutes is normal. A held-open request would bind the report's
+lifetime to one TCP connection, so a dropped connection would lose an
+outcome the agent had already produced. Firing and polling separates the
+two: the attempt outlives the client that started it, and
+`/reconciles/latest` is how the client finds its way back.
+
+Only a reconcile that actually started yields a `reconcile_id`. Failures in
+the ingest itself — undecodable manifest bytes, an unreadable journal, a
+reconcile already in flight — come back as typed non-2xx on the POST.
+
+<Aside type="note" title="Fan-out is client-side">
+  These endpoints are for one node. `golemctl fleet` fans a verb out from the
+  operator's machine — one connection per host, concurrently — rather than
+  through any server-side coordinator. A manifest carries the whole fleet,
+  but each node acts only on its own scroll and knows nothing of its peers.
 </Aside>

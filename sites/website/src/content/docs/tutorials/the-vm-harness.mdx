@@ -1,153 +1,262 @@
 ---
-title: Deploy a fleet to VMs
-description: Boot ephemeral Debian VMs with the fleet harness, deploy golemd, apply a scroll, read the journal, and reverse it — golemd's real reconcilers against real boxes.
+title: Bring up the fleet
+description: Boot Debian VMs with the fleet harness, deploy golemd, and prove that the only way to reach it is an ssh forward carrying a bearer token.
 ---
+
+{/*
+  COUNTERPART: TUTORIAL-fleet.md at the repo root, "Lesson 1 — Bring the fleet
+  up, and prove nothing else can reach it" plus "Before you start", "Reading the
+  fleet", and "When it breaks". The two are duplicated on purpose for now; edit
+  one and edit the other. The appendix lives at /explanation/the-fleet-harness/.
+*/}
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-golem's unit tests drive the reconcilers through a fake host — that proves the
-logic but never touches apt, systemd, or a real filesystem. The `fleet` harness
-(`apps/fleet/`) closes that gap: it boots throwaway rootless-QEMU Debian VMs,
-deploys a static `golemd` to each, applies a scroll, and lets you read the
-journal and logs. Everything is ephemeral — a VM is a copy-on-write overlay on
-one shared base image, and `reset` wipes the lot.
+By the end of this you will have six Debian trixie VMs on your workstation, each
+running `golemd` against real apt, real systemd, and a real filesystem.
 
-Run everything through the `fleet` devenv script (it puts you at the repo root
-with the harness importable). `fleet` drives the same `emetc`/`golemctl`/`golemd`
-primitives documented in the [CLI reference](/reference/cli/).
+And every byte of that will have crossed an ssh forward carrying a bearer token,
+because there is no other way in. This is where you prove that rather than take
+it on faith.
 
-## The loop
+Commands are nushell, one per line, run from the repo root inside the devenv
+shell. All of them are safe to re-run.
+
+## Before you start
+
+```nushell
+cargo build --workspace
+cargo build --release -p golemctl
+```
+
+The workspace build gives `fleet` its `emetc` compiler and its
+`target/debug/golemctl`. The release build is what puts `golemctl` on the devenv
+shell's `PATH` (`enterShell` prepends `target/release`), which step 7 depends on.
+
+Two waits are worth knowing about before you think something has hung:
+
+- The first `fleet up` on a machine downloads Debian's ~340 MB genericcloud
+  image, then waits out cloud-init on each guest. Minutes.
+- The first `fleet deploy` runs `nix build .#golemd-static`. Minutes again,
+  unless cachix already has it.
+
+## Prove the posture
 
 <Steps>
-1. **Boot a VM.** The lichess host names come predefined; boot one:
+1. **Boot six guests.**
 
-   ```bash
-   fleet up --hosts scaly
+   ```nushell
+   fleet up
    ```
 
-   `up` ensures the cached Debian base image and the fleet keypair, then brings
-   the guest up on ports derived from its name (ssh on `2200+slot`, golemd on
-   `8800+slot`). With no `--hosts` it boots the full lichess set; `--count N`
-   boots the first N.
+   Per host you get two lines:
 
-2. **Deploy golemd.** Build the static `golemd` once and install it on the
-   guest:
-
-   ```bash
-   fleet deploy --hosts scaly
+   ```
+   Booting scaly (ssh 2259, golemd loopback-only)…
+     scaly up pid=482913
    ```
 
-   This builds a musl-static `golemd`, copies it in, starts it as a systemd
-   unit, and polls `/status` until it answers.
+   Read `golemd loopback-only` literally. `2259` is scaly's forwarded ssh port,
+   and for a guest booted this way it is the only port qemu forwards. There is
+   no golemd port in the line because there is no golemd port.
 
-3. **Apply a scroll.** The `smoke.emet` fixture is one of each host-touching
-   glyph, targeting host `scaly`:
+2. **Install the daemon.**
 
-   ```bash
-   fleet apply apps/fleet/smoke.emet --hosts scaly
+   ```nushell
+   fleet deploy
    ```
 
-   `apply` compiles the `.emet` source to a manifest here, then POSTs the same
-   bytes to each target's golemd. The guest selects the `scaly` scroll,
-   reconciles toward it with its **`host`** reconciler, and prints the revision
-   it recorded.
-
-4. **Read what happened.**
-
-   ```bash
-   fleet status               # who is up, golemd reachable, content-id, glyph count, last revision
-   fleet logs scaly -f        # tail golemd's journal on the guest (-f to follow)
    ```
+   Building static golemd (musl)…
+     binary: /home/you/personal-repos/golem/.fleet/result-golemd-static/bin/golemd
+   Deploying golemd to scaly…
+     scaly: golemd up {'host': 'scaly', 'latest_revision': 1}
+   ```
+
+   That `latest_revision: 1` is the `init` revision golemd writes on first
+   boot — an empty scroll, nothing applied yet.
+
+3. **Look at the fleet.**
+
+   ```nushell
+   fleet status
+   ```
+
+   A table, one row per VM: `up`, `golemd reachable`, `last revision` of
+   `#1`, and dashes under `content-id` and `glyphs` because nothing has been
+   applied. Every one of those `reachable` cells was answered through an ssh
+   forward the harness opened and tore down for that single request.
+
+4. **Try the port that used to exist.**
+
+   ```nushell
+   curl -m 5 http://127.0.0.1:8859/status
+   ```
+
+   ```
+   curl: (7) Failed to connect to 127.0.0.1:8859 after 0 ms: Could not connect to server
+   ```
+
+   Exit 7, refused before a packet leaves the machine. Having the fleet up
+   changes nothing. `8859` is the port scaly's name-derived slot earns
+   (`8800 + 59`) and it is still recorded in `.fleet/state.json`, but the only
+   host-to-guest forward qemu creates is ssh — plus whatever you ask for with
+   `--publish`, which has nothing to do with golemd. The forward that once
+   pointed at 8859 was deleted when the loopback bind made it unreachable by
+   construction, so there is no longer a port to knock on — not a dead one,
+   none.
+
+5. **Open a forward yourself, and get refused twice.**
+
+   ```nushell
+   let ssh_opts = [
+     "-i" ".fleet/id_ed25519"
+     "-p" "2259"
+     "-o" "StrictHostKeyChecking=no"
+     "-o" "UserKnownHostsFile=/dev/null"
+     "-o" "ExitOnForwardFailure=yes"
+   ]
+   ssh -f -N -L 17501:127.0.0.1:7474 ...$ssh_opts golem@127.0.0.1
+   curl -s -w ' [%{http_code}]\n' http://127.0.0.1:17501/status
+   curl -s -w ' [%{http_code}]\n' -H 'Authorization: Bearer wrong' http://127.0.0.1:17501/status
+   curl -s -w ' [%{http_code}]\n' -H $"Authorization: Bearer (open .fleet/golem-token | str trim)" http://127.0.0.1:17501/status
+   pkill -f "17501:127.0.0.1:7474"
+   ```
+
+   The three curls, in order:
+
+   ```
+   {"kind":"unauthorized","message":"missing or invalid bearer token — golemd requires Authorization: Bearer <token> (see --auth-token-file)"} [401]
+   {"kind":"unauthorized","message":"missing or invalid bearer token — golemd requires Authorization: Bearer <token> (see --auth-token-file)"} [401]
+   {"host":"scaly","latest_revision":1} [200]
+   ```
+
+   Reaching the socket buys nothing. The tunnel is the confidentiality and the
+   host authentication; the token is the authorization; both are required and
+   neither substitutes for the other. See
+   [Trust model](/explanation/trust/).
+
+6. **Render the inventory.**
+
+   ```nushell
+   fleet inventory
+   ```
+
+   It prints one path: `.fleet/inventory.toml` under your checkout. Open it if
+   you like. Each guest is an `[hosts.<name>]` table carrying `ssh`, `ssh_port`,
+   the fleet key and host-checking options as `ssh_args`, and `token_file`. No
+   `url`, because there is nothing to dial.
+
+7. **Drive it with no flags and no environment.**
+
+   ```nushell
+   golemctl fleet status
+   ```
+
+   ```
+   · kaiju  rev 1  nothing applied
+   · manta  rev 1  nothing applied
+   · orbit  rev 1  nothing applied
+   · scaly  rev 1  nothing applied
+   · talos  rev 1  nothing applied
+   · zulip  rev 1  nothing applied
+   ```
+
+   Six lines, alphabetical, and not one flag or environment variable. golemctl
+   looked at `--inventory`, then `$GOLEMCTL_INVENTORY`, then `./fleet.toml`,
+   then `./.fleet/inventory.toml` — and the harness writes its file at the end
+   of that chain deliberately, so being in the repo root is the whole
+   configuration. Each of those six lines is a separate ssh forward, opened and
+   closed, presenting the token that host's `token_file` named.
 </Steps>
 
-## Poke the box
+That is the posture proved end to end. Everything from here on rides it.
 
-The reconcile above installed `htop`, wrote `/etc/golem-smoke.conf`, and ensured
-a `managed` line in it. Go see it — the guest is a real Debian box:
-
-```bash
-fleet ssh scaly                                   # interactive shell
-fleet ssh scaly cat /etc/golem-smoke.conf         # → ok / managed
-fleet ssh scaly dpkg-query -W htop                # golem installed it
-fleet ssh scaly -- sudo journalctl -u golemd -b   # the daemon's own log
-```
-
-<Aside type="tip" title="Try the daemon-reload proof">
-  Apply `apps/fleet/reload-proof.emet` instead — it writes a systemd unit file
-  with a `file` glyph, then enables it with a `systemdService`. Enabling a
-  just-written unit fails without a `daemon-reload` first; this fixture is how
-  that fix was found on a real box, and it is the kind of bug a fake
-  host never surfaces.
+<Aside type="caution" title="That third curl leaks the token to /proc">
+  Putting the secret in `curl`'s argv makes it world-readable for the life of
+  the process. Tolerable for a token that lives in your own checkout and governs
+  throwaway VMs. Against anything real, write the header to a `0600` file and
+  use `curl -H @file`.
 </Aside>
 
-## Edit, re-apply, watch the diff
+To reach one guest without the inventory, at a bare `ssh://` target, see
+[the single-host spelling](/explanation/the-fleet-harness/#the-single-host-spelling).
 
-The reconcile is content-addressed, so re-applying the same scroll is all
-no-ops — the interesting part is changing it. Copy `smoke.emet`, edit a glyph
-(change the file contents, swap `htop` for another package, add a `file`), and
-re-apply:
+<Aside type="note" title="Rotation is one file">
+  Delete `.fleet/golem-token`, run `fleet deploy` again, and every guest gets the
+  new secret. Deleting the file generates a *new* token on the next command, so
+  the redeploy has to reach every guest before anything else will answer. The
+  token survives `fleet reset` and even `reset --purge` on purpose, so a rebuilt
+  fleet keeps talking to an inventory you already rendered.
+</Aside>
 
-```bash
-fleet apply my-smoke.emet --hosts scaly
-fleet logs scaly            # the new revision reconciled only the changed glyphs
+<Aside type="tip" title="Watch it complain">
+  Point golemctl at a routable address with a token in the environment and it
+  warns on stderr before sending: `warning: host X is dialed at Y, which is not
+  loopback — the auth token crosses that network in cleartext; use an ssh://
+  target to keep it inside the tunnel (ADR 0042)`. That warning is the only
+  guard. golem will do it; it just will not do it quietly.
+</Aside>
+
+## Reading the fleet while it works
+
+```nushell
+fleet status
+fleet logs scaly -f
+fleet ssh scaly
 ```
 
-Only the glyphs whose content id changed are `Replace`d (reverse the old, apply
-the new); everything unchanged is a `Noop`. There is no version number to
-type — content ids are the version axis. See
-[Applying changes](/getting-started/applying/).
-
-## Reverse it
-
-There is no separate "undo" command — reversing is applying a **smaller** scroll.
-golem diffs the new desired state against its journal and turns every glyph no
-longer present into a `Remove`, running each recorded uninstaller. Apply an empty
-scroll to take everything back:
-
-```emet
-main : List Scroll
-main = [ scroll { name = "scaly", glyphs = [] } ]
-```
-
-```bash
-fleet apply empty.emet --hosts scaly
-fleet ssh scaly cat /etc/golem-smoke.conf     # gone — golem created it
-fleet ssh scaly dpkg-query -W htop            # removed — golem installed it
-```
-
-`htop` is removed **only because** golem installed it and recorded
-`InstalledByUs`; a package already on the box is left alone. The `managed` line
-is removed only because golem added it. That is the property worth having:
-removal restores what was there before golem touched the resource. See
-[Reversible reconcile](/explanation/reversible-reconcile/).
+`fleet logs` and `fleet ssh` are plain ssh into the guest and are untouched by
+the auth layer — golemd's token gates golemd's HTTP surface, not your shell.
 
 ## Tear down
 
-```bash
-fleet down scaly       # stop the VM, keep its disk — a later `up scaly` resumes it
-fleet reset            # kill every VM, wipe all per-VM data, back to a clean slate
+```nushell
+fleet down scaly       # stop the VM, keep its disk — a later `up` resumes it
+fleet reset            # kill every VM, wipe all per-VM data
 fleet reset --purge    # also drop the cached image and keypair
 ```
 
-`down` keeps the overlay disk, so `fleet up --hosts scaly` brings the same guest
-back with its data (flush with `sync` in the guest first if a very recent write
-must survive). `reset` is the clean slate.
+`.fleet/golem-token` survives all three. What each verb keeps and drops is laid
+out in [The fleet harness](/explanation/the-fleet-harness/).
 
-## Explore from here
+## When it breaks
 
-- **Break something on purpose.** Hand-edit `/etc/golem-smoke.conf` in the guest,
-  then re-apply — watch the `file` reconciler restore the managed contents.
-- **Inspect the manifest.** `cargo run -q -p emet -- build apps/fleet/smoke.emet
-  --json | jq` shows the content ids the diff keys on.
-- **Read a revision.** golemd's `/revisions/:id` endpoint carries each op and the
-  inverse it recorded to reverse it — the receipts that make removal exact.
-- **Write your own glyph or helper** and apply it: a `directory`, a
-  [`Quadlet.Workload`](/reference/workloads/), an `ingress`. Then reverse it and
-  confirm the box is clean.
+**`✗ HOST unreachable: ssh to golem@127.0.0.1 exited 255 before the forward
+opened — Connection refused`**
+The guest is not running, or `.fleet/inventory.toml` names a port that no longer
+belongs to it. `fleet status` says which; re-run `fleet inventory` after every
+`up`, `down`, or `reset`, because it is a snapshot of the state file rather than
+a live view.
+
+**`✗ HOST unreachable: …` on one host while the others answer**
+That guest's golemd is down or was never deployed. `fleet logs HOST` still
+works — it is plain ssh — so read the journal there. `fleet deploy --hosts HOST`
+reinstalls and restarts it.
+
+**`unauthorized — set GOLEM_AUTH_TOKEN or GOLEM_AUTH_TOKEN_FILE (or an inventory
+host's token_file) to golemd's configured secret`**
+The guests hold a different secret than `.fleet/golem-token`. Almost always a
+half-finished rotation: run `fleet deploy` against every host, not just the one
+that failed.
+
+**A verb hangs about ten seconds per host, then reports an ssh error**
+The forward never came up. The message carries ssh's own stderr. Stopped VM or
+stale inventory, same fixes as above.
+
+**`no inventory at … — golemctl looks at --inventory, then $GOLEMCTL_INVENTORY,
+then ./fleet.toml, then ./.fleet/inventory.toml`**
+You are outside the repo root, or you never ran `fleet inventory`.
+
+**`error: the fleet token file … is empty`**
+Delete it and redeploy everywhere. A truncated secret is refused rather than
+silently degraded into an unauthenticated request.
 
 ## Where to next
 
-- **[A registry on the fleet](/tutorials/registry-on-the-fleet/)** — run a real
-  container registry on a VM with golem.
-- **[The website loop](/tutorials/website-loop/)** — golem building and serving
-  golem's own docs.
+- **[A failing unit](/tutorials/a-failing-unit/)** — break one leaf of a
+  nine-unit tree on purpose and watch its siblings settle anyway.
+- **[A registry on the fleet](/tutorials/registry-on-the-fleet/)** — a real
+  container registry on a VM, reachable from the others.
+- **[The fleet harness](/explanation/the-fleet-harness/)** — QEMU, cloud-init,
+  name-derived ports, and what is inside `.fleet/`.

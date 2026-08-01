@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .config import GOLEMD_GUEST_PORT, Paths
 from .state import VmRecord
+from .token import ensure_token
 from .vm import FleetError, ssh_argv
 
 
@@ -26,6 +27,10 @@ GOLEMD_STATIC_FLAKE_OUTPUT = ".#golemd-static"
 GOLEMD_REMOTE_PATH = "/usr/local/bin/golemd"
 GOLEMD_STATE_DIR = "/var/lib/golem"
 SERVICE_REMOTE_PATH = "/etc/systemd/system/golemd.service"
+GOLEMD_CONFIG_DIR = "/etc/golem"
+CONFIG_REMOTE_PATH = "/etc/golem/golemd.toml"
+TOKEN_REMOTE_PATH = "/etc/golem/token"
+SECRET_FILE_MODE = "0600"
 
 
 def build_static_golemd(paths: Paths, force: bool = False) -> Path:
@@ -135,11 +140,29 @@ def resolve_golemctl(paths: Paths) -> Path:
     )
 
 
+def golemd_config_toml() -> str:
+    """The guest's `golemd.toml`: nothing but where the bearer secret lives. The
+    retry and enact defaults are left to golemd, so this file says only what the
+    harness had to decide (ADR 0042)."""
+    return "\n".join(
+        [
+            "[auth]",
+            f'token_file = "{TOKEN_REMOTE_PATH}"',
+            "",
+        ]
+    )
+
+
 def service_unit(host: str) -> str:
-    """The golemd systemd unit for a guest: runs as root, listens on
-    `0.0.0.0:7474` (reachable via the forwarded port), and drives the real
-    `host` reconciler — `--reconciler host` is what makes it enact glyphs on the
-    guest rather than merely bookkeep them."""
+    """The golemd systemd unit for a guest: runs as root, binds
+    `127.0.0.1:7474`, reads its token file through `--config`, and drives the
+    real `host` reconciler — `--reconciler host` is what makes it enact glyphs on
+    the guest rather than merely bookkeep them.
+
+    Loopback is not a hardening detail but the rehearsal (ADR 0042): the guests
+    are reached exactly as production hosts are, through an ssh forward, so the
+    QEMU golemd hostfwd reaches nothing and no path exists that production would
+    not also have."""
     return "\n".join(
         [
             "[Unit]",
@@ -158,7 +181,9 @@ def service_unit(host: str) -> str:
                     "--state-dir",
                     GOLEMD_STATE_DIR,
                     "--listen",
-                    f"0.0.0.0:{GOLEMD_GUEST_PORT}",
+                    f"127.0.0.1:{GOLEMD_GUEST_PORT}",
+                    "--config",
+                    CONFIG_REMOTE_PATH,
                     "--reconciler",
                     "host",
                 ]
@@ -207,13 +232,70 @@ def _ssh_check(paths: Paths, record: VmRecord, remote: list[str], input_text: st
     return result.stdout
 
 
+def _ssh_write_secret(paths: Paths, record: VmRecord, remote_path: str, contents: str) -> None:
+    """Write a secret to a remote path: 0600 before it holds anything, and out of
+    every error path.
+
+    `install -m 0600 /dev/null` creates the file empty, root-owned and readable
+    only by root, and the write then fills a file that was never anything else.
+    Creating it with `tee` and narrowing afterwards would publish the secret to
+    every account on the guest for the length of one ssh round trip — the same
+    create-then-narrow window the local token file closes with `O_EXCL` and 0600.
+
+    Neither step may put the secret on screen. `tee` echoes its stdin whether or
+    not the destination write succeeds, so the token comes back on the remote
+    command's stdout; `_ssh_check` folds stdout into its `FleetError` when stderr
+    is empty, and `cli.py` prints that message to the console — a full disk or a
+    permission denial on `/etc/golem` would have put the fleet's secret there.
+    Hence neither step goes through `_ssh_check`: the remote stdout is redirected
+    to `/dev/null`, and both failure messages are built from stderr alone."""
+    _ssh_run_quietly(
+        paths,
+        record,
+        ["sudo", "install", "-m", SECRET_FILE_MODE, "/dev/null", remote_path],
+        None,
+        f"{record.name}: create {remote_path} failed",
+    )
+    _ssh_run_quietly(
+        paths,
+        record,
+        ["sudo", "tee", remote_path, ">", "/dev/null"],
+        contents,
+        f"{record.name}: write {remote_path} failed",
+    )
+
+
+def _ssh_run_quietly(
+    paths: Paths,
+    record: VmRecord,
+    remote: list[str],
+    input_text: str | None,
+    failure: str,
+) -> None:
+    result = subprocess.run(
+        ssh_argv(paths, record, remote),
+        input=input_text,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise FleetError(f"{failure}: {detail}" if detail else failure)
+
+
 def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
-    """Install the binary and unit on a guest and (re)start the service. scp to a
-    staging path, `install` it into place, write the unit, then daemon-reload and
-    `restart` — restart, not just `enable --now`, so a redeployed binary actually
-    replaces the running one instead of leaving the old process up. The staging
-    name is unique per deploy and lives in golem's home: a fixed /tmp name wedges
-    every later deploy the moment a stale copy survives under other ownership."""
+    """Install the binary, config, and token on a guest and (re)start the
+    service. scp to a staging path, `install` it into place, provision
+    `/etc/golem` (token root-owned 0600, config beside it), write the unit, then
+    daemon-reload and `restart` — restart, not just `enable --now`, so a
+    redeployed binary actually replaces the running one instead of leaving the
+    old process up. The staging name is unique per deploy and lives in golem's
+    home: a fixed /tmp name wedges every later deploy the moment a stale copy
+    survives under other ownership.
+
+    The token is the fleet's, not this guest's: every guest is deployed the same
+    secret, which is what lets one `golemctl fleet` run span them (ADR 0042)."""
+    token = ensure_token(paths)
     staging = f"/home/golem/golemd.staging-{uuid.uuid4().hex[:8]}"
     scp = subprocess.run(_scp_argv(paths, record, binary, f"golem@127.0.0.1:{staging}"), capture_output=True, text=True)
     if scp.returncode != 0:
@@ -231,6 +313,16 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
         ],
     )
     _ssh_check(paths, record, ["rm", "-f", staging])
+    _ssh_check(paths, record, ["sudo", "install", "-d", "-m", "0755", GOLEMD_CONFIG_DIR])
+    _ssh_write_secret(paths, record, TOKEN_REMOTE_PATH, token)
+    _ssh_check(paths, record, ["sudo", "chown", "root:root", TOKEN_REMOTE_PATH])
+    _ssh_check(paths, record, ["sudo", "chmod", "0600", TOKEN_REMOTE_PATH])
+    _ssh_check(
+        paths,
+        record,
+        ["sudo", "tee", CONFIG_REMOTE_PATH],
+        input_text=golemd_config_toml(),
+    )
     _ssh_check(
         paths,
         record,

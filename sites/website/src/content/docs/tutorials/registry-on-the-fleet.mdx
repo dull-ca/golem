@@ -1,15 +1,25 @@
 ---
 title: A registry on the fleet
-description: Deploy a container registry to a VM with golem, then push and pull from other VMs — one golem-hosted registry shared across machines.
+description: Deploy a container registry to a VM with golem, then push to it from another VM over the QEMU host gateway — one golem-hosted registry shared across machines.
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+{/*
+  COUNTERPART: TUTORIAL-fleet.md at the repo root, "Lesson 4 — Build, store, and
+  serve golem's own docs", steps 1–4. Duplicated on purpose for now; edit one and
+  edit the other. Step 5 lives at /tutorials/website-loop/.
+*/}
 
-`examples/registry/` runs a real Podman registry on a golem-managed box, and
-uses it from two others. It is the first half of golem's dogfood loop: one VM
-*hosts* a registry, another *pushes* to it, a third *pulls* — no shared L2
-segment, just golem and QEMU's host-gateway. Start with the
-[VM harness](/tutorials/the-vm-harness/) loop; this builds on it.
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Output from "../../../components/Output.astro";
+
+`examples/registry/` runs a real Podman registry on a golem-managed box, and uses
+it from another. It is the first half of golem's dogfood loop: one VM *hosts* a
+registry, another *pushes* to it — no shared L2 segment, just golem and QEMU's
+host gateway.
+
+Start from [Bring up the fleet](/tutorials/the-vm-harness/); this needs the same
+harness and the same ssh-plus-token posture. Commands are nushell, from the repo
+root.
 
 ## The registry, as one `Workload`
 
@@ -49,109 +59,98 @@ It lowers to eleven glyphs — the podman package, the
 `golem-registry-data.volume` unit, the `.container` quadlet, its service, the
 nftables base, and the drop-in that opens `:5000` to the internal network:
 
-```
-planned scrolls (1):
-  scroll `registry` (11 glyphs):
-    * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/golem-registry-data.volume` (mode 0644)
-    * ensure file `/etc/containers/systemd/registry.container` (mode 0644)
-    * enable + start systemd unit `registry.service`
-    * ensure apt package `nftables` installed
-    * ensure directory `/etc/nftables.d` (mode 0755)
-    * ensure file `/etc/golem-nftables.conf` (mode 0755)
-    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
-    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
-    * enable + start systemd unit `golem-nftables.service`
-    * ensure file `/etc/nftables.d/registry-5000.nft` (mode 0644)
-    ↻ registry notifies golem-nftables.service
-```
+<Output file="registry.text.golden" />
 
-## Deploy it to a box
+## Boot the three boxes
+
+The registry is only useful with something to push to it and something to serve
+from it, so bring up all three now. `--publish` adds a host-to-guest forward,
+which is unrelated to golemd — golemd is still loopback-only on every guest.
 
 <Steps>
-1. **Boot the registry VM, publishing its port to the host.** `--publish` forwards
-   an extra guest port so other guests can reach it:
+1. **Boot and deploy.** The `web` box publishes on 8081 only because 8080 was
+   busy here; any free port works.
 
-   ```bash
-   fleet up --hosts registry --publish registry=5000:5000
+   ```nushell
+   fleet up --hosts registry,builder,web --publish registry=5000:5000 --publish web=8081:80
+   fleet deploy --hosts registry,builder,web
    ```
 
-2. **Deploy golemd and apply the scroll:**
+2. **Apply the registry and builder scrolls.** On cold guests this is the
+   long step — `apt update`, installing podman, pulling `registry:2`. Many
+   minutes, streaming progress the whole time; a quiet terminal is work, not
+   a hang.
 
-   ```bash
-   fleet deploy --hosts registry
+   ```nushell
    fleet apply examples/registry/registry.emet --hosts registry
+   fleet apply examples/website/builder.emet --hosts builder
    ```
 
-3. **Confirm the registry is serving.** The port is published to the host, so
-   curl it from your laptop:
+   The builder scroll is two glyphs: podman, and a `registries.conf.d` fragment
+   marking `10.0.2.2:5000` insecure so podman will push to it over plain HTTP.
 
-   ```bash
-   curl -s http://127.0.0.1:5000/v2/ && echo OK
-   fleet ssh registry systemctl status registry.service
+3. **Confirm the registry is serving.** Its `:5000` is published to your
+   workstation:
+
+   ```nushell
+   curl -s http://127.0.0.1:5000/v2/
+   fleet ssh registry -- systemctl status registry.service
+   ```
+
+   An empty registry answers `/v2/` with an empty JSON object, and
+   `systemctl` reports `registry.service` as `active (running)`:
+
+   ```
+   {}
    ```
 </Steps>
 
-## Reach it from another machine
+## When it does not come up
+
+**`curl: (7) Failed to connect to 127.0.0.1:5000`**
+The guest was booted without `--publish registry=5000:5000`. Forwards are
+recorded per VM at boot, so re-run `fleet up --hosts registry --publish
+registry=5000:5000` — a resume can add forwards the stopped guest lacked.
+
+**The apply reports the registry leaf failed**
+Read the pull error in the forensics block under it, then `fleet ssh registry
+-- journalctl -u registry.service -n 50` for what podman said. No `sudo`
+needed: cloud-init put `golem` in `systemd-journal`.
+
+**`registry.service` is `active (running)` but the catalog `curl` hangs**
+The container is up and the ruleset that opens `:5000` is not.
+`fleet ssh registry -- systemctl status golem-nftables.service` says whether
+the reload the scroll's `notifies` asked for actually ran.
+
+## How the builder reaches the registry
 
 Each guest runs behind user-mode (SLIRP) networking and is isolated from the
-others — only ssh and golemd are forwarded by default. Two facts bridge them:
+others — only ssh is forwarded in by default. Two facts bridge them:
 
-- `up --publish registry=5000:5000` binds the host's `127.0.0.1:5000` to the
-  registry guest's `:5000`.
-- In SLIRP, every guest reaches the host at `10.0.2.2`.
+- `up --publish registry=5000:5000` binds your `127.0.0.1:5000` to the registry
+  guest's `:5000`.
+- In SLIRP, every guest reaches your workstation at `10.0.2.2`.
 
 So any guest reaches the registry's *published* port at **`10.0.2.2:5000`** — the
-connection lands on the host loopback, which QEMU forwards into the registry
-guest. That is the rendezvous `clients.emet` uses. It provisions `builder` and
-`puller` boxes with podman and an insecure-registry drop-in pointing at
-`10.0.2.2:5000`:
+connection lands on your loopback, which QEMU forwards into the registry guest.
+That rendezvous is the whole reason the builder scroll names `10.0.2.2:5000`:
 
 ```emet
 registryEndpoint : String
 registryEndpoint = "10.0.2.2:5000"
 
-clientGlyphs : List Glyph
-clientGlyphs =
+builderGlyphs : List Glyph
+builderGlyphs =
   [ aptPackage { name = "podman" }
   , file
       { path = "/etc/containers/registries.conf.d/golem-registry.conf"
-      , contents = insecureConfContents      -- marks 10.0.2.2:5000 insecure (plain HTTP)
+      , contents = insecureConfContents      -- marks 10.0.2.2:5000 insecure
       , mode = "0644"
       }
   ]
-
-main : List Scroll
-main = [ builder, puller ]     -- both scrolls are clientGlyphs
 ```
 
-<Steps>
-1. **Boot the two client VMs and provision them:**
-
-   ```bash
-   fleet up --hosts builder,puller
-   fleet deploy --hosts builder,puller
-   fleet apply examples/registry/clients.emet --hosts builder,puller
-   ```
-
-2. **Push from the builder** — tag any image at the golem registry and push over
-   the host gateway:
-
-   ```bash
-   fleet ssh builder -- podman pull docker.io/library/hello-world:latest
-   fleet ssh builder -- podman tag docker.io/library/hello-world:latest 10.0.2.2:5000/hello:latest
-   fleet ssh builder -- podman push 10.0.2.2:5000/hello:latest
-   ```
-
-3. **Pull from the puller** — a different machine, same registry:
-
-   ```bash
-   fleet ssh puller -- podman pull 10.0.2.2:5000/hello:latest
-   ```
-</Steps>
-
-One golem-hosted registry, shared across three machines, no shared network
-segment required.
+The mechanics are in [The fleet harness](/explanation/the-fleet-harness/).
 
 <Aside type="note" title="Insecure on purpose">
   The drop-in marks the registry insecure so podman pushes over plain HTTP —
@@ -159,20 +158,44 @@ segment required.
   are their own concern, out of scope for the dogfood loop.
 </Aside>
 
+## Push something to it
+
+```nushell
+fleet ssh builder -- "sudo podman pull docker.io/library/hello-world:latest && sudo podman tag docker.io/library/hello-world:latest 10.0.2.2:5000/hello:latest && sudo podman push 10.0.2.2:5000/hello:latest"
+curl -s http://127.0.0.1:5000/v2/_catalog
+```
+
+```
+{"repositories":["hello"]}
+```
+
+The quoted `&&` chain runs in the guest's bash over ssh, so nushell never sees
+it.
+
+One golem-hosted registry, reachable from a machine that shares no network
+segment with it.
+
+<Aside type="tip" title="Two clients instead of one">
+  `examples/registry/clients.emet` provisions a `builder` and a `puller` with the
+  same two glyphs, if you want to watch a third box pull what the second pushed:
+  `fleet up --hosts puller`, then `fleet apply
+  examples/registry/clients.emet --hosts builder,puller`.
+</Aside>
+
 ## Explore from here
 
-- **Watch the diff.** Re-apply `registry.emet` after bumping the image tag to
-  `registry:3` — only the `.container` glyph's content id changes, so only that
-  glyph is replaced.
-- **Reverse it.** Apply an empty scroll to `registry` and watch golem stop the
-  service, remove the quadlet and `.volume` units, close the firewall port, and
-  remove podman — each undone because golem recorded it.
-- **Inspect the volume.** `fleet ssh registry -- ls /var/lib/registry` — the
+- **Watch the diff.** Re-apply `registry.emet` after bumping the image tag —
+  only the `.container` glyph's content id changes, so only that glyph is
+  replaced.
+- **Reverse it.** Apply a `registry` scroll with an empty `glyphs` list and watch
+  golem stop the service, remove the quadlet and `.volume` units, close the
+  firewall port, and remove podman — each undone because golem recorded it.
+- **Inspect the volume.** `fleet ssh registry -- sudo ls /var/lib/registry` — the
   named volume that survives a container restart.
 
 ## Where to next
 
-- **[The website loop](/tutorials/website-loop/)** — build the docs into an image,
-  push it to this registry, and serve it from a third box.
+- **[The website loop](/tutorials/website-loop/)** — build the docs into an
+  image, push it to this registry, and serve it from the `web` box.
 - **[The Quadlet library](/reference/workloads/)** — every field of the
   `Workload` this registry is.

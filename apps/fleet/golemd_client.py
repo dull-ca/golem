@@ -1,7 +1,10 @@
-"""HTTP client for a guest's golemd, reached over its forwarded port on the host.
+"""The two read-only views of a guest's golemd the harness shows.
 
-`status` and `state` return `None` on any failure — the daemon may not be up
-yet, so callers poll.
+Both go through an ssh forward (`tunnel`) bearing the fleet token, and both
+return `None` on any failure — an unbooted guest, a daemon not up yet, a refused
+token — because callers poll and tabulate rather than diagnose. `fleet status`
+prints a dash; `deploy` retries until an answer arrives or the attempts run out.
+An operator chasing *why* gets it from `journalctl -u golemd` on the guest.
 """
 
 from __future__ import annotations
@@ -10,29 +13,22 @@ from typing import Any
 
 import httpx
 
+from . import tunnel
+from .config import Paths
 from .state import VmRecord
 
 
-def _base_url(record: VmRecord) -> str:
-    # The guest's golemd is reachable on the host at its forwarded port.
-    return f"http://127.0.0.1:{record.golemd_port}"
-
-
-def status(record: VmRecord, timeout: float = 5.0) -> dict[str, Any] | None:
+def status(paths: Paths, record: VmRecord, token: str, timeout: float = 5.0) -> dict[str, Any] | None:
     """The daemon's `/status` summary, or `None` if it does not answer."""
     try:
-        response = httpx.get(_base_url(record) + "/status", timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-    except (httpx.HTTPError, ValueError):
+        return tunnel.get_json(paths, record, "status", token, request_timeout=timeout)
+    except (httpx.HTTPError, ValueError, tunnel.TunnelError):
         return None
 
 
-def state(record: VmRecord, timeout: float = 5.0) -> dict[str, Any] | None:
+def state(paths: Paths, record: VmRecord, token: str, timeout: float = 5.0) -> dict[str, Any] | None:
     """The daemon's resolved `/state` view, or `None` if it does not answer."""
     try:
-        response = httpx.get(_base_url(record) + "/state", timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-    except (httpx.HTTPError, ValueError):
+        return tunnel.get_json(paths, record, "state", token, request_timeout=timeout)
+    except (httpx.HTTPError, ValueError, tunnel.TunnelError):
         return None

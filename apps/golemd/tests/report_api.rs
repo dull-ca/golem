@@ -48,6 +48,7 @@ fn manifest_bytes() -> Vec<u8> {
 async fn serve(foreman: Foreman) -> String {
     let app = http::router(http::AppState {
         foreman: Arc::new(foreman),
+        required_token: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

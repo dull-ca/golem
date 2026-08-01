@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod conn;
 pub mod fleet;
 pub mod inventory;
 pub mod logsink;
@@ -6,4 +7,5 @@ pub mod model;
 pub mod plan;
 pub mod poll;
 pub mod tree;
+pub mod tunnel;
 pub mod view;

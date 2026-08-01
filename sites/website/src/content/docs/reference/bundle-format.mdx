@@ -23,15 +23,42 @@ Manifest {
 
 AddressedScroll {
   content_id : ContentId,     // BLAKE3 over the scroll's bytes
-  scroll     : Scroll,        // one host's glyphs
+  scroll     : Scroll,        // one host's desired state
 }
 
-Scroll { name : String, glyphs : [ Glyph ] }
+Scroll {
+  name     : String,
+  policy   : Option<Policy>,
+  notifies : [ String ],
+  contents : Glyphs [ Glyph ] | Groups [ Scroll ],
+}
+
+Policy {
+  base_delay_ms      : Option<u64>,
+  backoff_multiplier : Option<f64>,
+  max_delay_ms       : Option<u64>,
+  jitter_fraction    : Option<f64>,
+  max_attempts       : Option<u32>,
+  max_elapsed_ms     : Option<u64>,
+  on_exhaust         : Option<Rollback | Keep>,
+}
 ```
 
 A manifest carries the **whole fleet** — every host's scroll. Each
 `golemd` selects the one `AddressedScroll` whose `scroll.name` matches its
 own `--host` and ignores the rest.
+
+A `Scroll` is a recursive tree. Every level holds *either* glyphs (a leaf)
+*or* named sub-scrolls (a branch), never both — `contents` is a sum, so a
+level mixing loose glyphs with sub-scrolls is unrepresentable. A **leaf** is
+the unit of enact, retry, and rollback; a branch only groups.
+
+`policy` is optional at every level and resolves nearest-wins down the
+root-to-leaf chain; `notifies` **unions** down instead, so reload
+obligations accumulate rather than override. Both sit inside the hashed
+scroll and outside every glyph: rewiring a notification or changing a retry
+budget yields a new scroll content id while every glyph content id stays
+what it was.
 
 ## Content addressing
 
@@ -53,7 +80,7 @@ re-applies only that glyph, not the whole scroll — see
 `ContentId` is a 32-byte digest. Its string form is lowercase hex (64
 characters); `golemctl state` prints it that way.
 
-## Determinism is the correctness property
+## Determinism
 
 Postcard is **non-self-describing**: a type's field order and enum variant
 order *are* the encoding. There are no field names on the wire. That makes
@@ -75,7 +102,10 @@ Two version fields, two jobs:
   shape, any `Scroll`/`Glyph` field or variant, the postcard format, the
   BLAKE3 hash. It is checked on read: `from_bytes` rejects an unknown
   `format_version` with a typed error rather than a misparse. It is
-  currently `1`.
+  currently `4`: `2` added the filesystem glyph, `3` made `Scroll`
+  recursive, `4` added `notifies` between `policy` and `contents`. Adding
+  that one field was a layout change because v3 bytes would misread the old
+  `contents` tag as the new `notifies` length.
 - **`emet_version`** (`String`) records which compiler build wrote the
   manifest. It is provenance only, sits deliberately **outside every
   hash**, and is never checked. Rebuilding an unchanged fleet with a newer
@@ -88,11 +118,14 @@ artifact. Two other views exist for humans and never leave the trust path:
 
 - **default** — the binary manifest (postcard bytes), to `-o PATH` or
   stdout. This is what `golemctl apply` ships.
-- **`--text`** — a readable plan (`Scroll::describe` / `Glyph::describe`).
-  Eyeball view only.
+- **`--text`** (`--human`) — a readable plan (`Scroll::describe` /
+  `Glyph::describe`). Eyeball view only.
 - **`--json`** — a self-describing JSON rendering of the same manifest, for
   ad-hoc tooling. **Not** content-addressed; never the artifact `golemd`
   consumes.
+
+`--format <binary|text|json>` selects the same three views by name; the
+boolean flags override it.
 
 See the [CLI reference](/reference/cli/) for the exact flags.
 
@@ -103,11 +136,15 @@ See the [CLI reference](/reference/cli/) for the exact flags.
 ```
 on POST /manifest:
   manifest = scroll_format::from_bytes(body)   // checks format_version
-  scroll   = manifest.select(this host's name) // by scroll.name
-  ops      = diff(last applied outcomes, scroll's glyphs)  // by glyph key + CID
+  scroll   = foreman selects by scroll.name == this host's --host
+  answer 202 { reconcile_id }                  // the enact runs detached
+  ops      = diff(last applied outcomes, the scroll's leaf units)  // by glyph key + CID
   enact each op through the Reconciler, capturing an Inverse per glyph
   journal the ordered outcomes as a Reconcile revision
 ```
+
+A manifest that names no scroll for this host selects an empty scroll — the
+host reconciles toward nothing rather than erroring.
 
 The diff, the enact, and the journalled reversal records are the subject of
 [Reversible reconcile](/explanation/reversible-reconcile/).

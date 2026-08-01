@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
+use golemctl::conn::Conn;
+use golemctl::inventory::{Endpoint, Target};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -129,7 +131,8 @@ async fn main() -> Result<()> {
             } else {
                 manifest_bytes(&source).await?
             };
-            golemctl::apply::run(bytes, &addr, json, reattach).await
+            let conn = connect(&addr).await?;
+            golemctl::apply::run(bytes, conn, json, reattach).await
         }
         Cmd::Plan {
             source,
@@ -138,7 +141,8 @@ async fn main() -> Result<()> {
             detail,
         } => {
             let bytes = manifest_bytes(&source).await?;
-            golemctl::plan::run(bytes, &addr, json, detail).await
+            let conn = connect(&addr).await?;
+            golemctl::plan::run(bytes, &conn, json, detail).await
         }
         Cmd::Fleet { cmd } => match cmd {
             FleetCmd::Apply {
@@ -195,22 +199,18 @@ async fn compile_emet(source: &Path) -> Result<Vec<u8>> {
 }
 
 async fn fetch_and_print(addr: &str, path: &str) -> Result<()> {
-    let url = format!("{}/{}", addr.trim_end_matches('/'), path);
-    let resp = reqwest::get(&url)
-        .await
-        .with_context(|| format!("GET {url}"))?;
-    print_response(resp).await
+    let conn = connect(addr).await?;
+    let value = conn.get_json(path).await?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 
-async fn print_response(resp: reqwest::Response) -> Result<()> {
-    let status = resp.status();
-    let body = resp.text().await?;
-    if !status.is_success() {
-        bail!("{}: {}", status, body);
-    }
-    match serde_json::from_str::<serde_json::Value>(&body) {
-        Ok(v) => println!("{}", serde_json::to_string_pretty(&v)?),
-        Err(_) => println!("{body}"),
-    }
-    Ok(())
+async fn connect(addr: &str) -> Result<Conn> {
+    let auth = golemctl::conn::resolve_auth(None)?;
+    let target = Target {
+        name: addr.to_string(),
+        endpoint: Endpoint::parse(addr)?,
+        token_file: None,
+    };
+    Conn::open(&target, &auth).await
 }
