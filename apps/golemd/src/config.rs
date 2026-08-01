@@ -30,7 +30,7 @@
 //! ADR 0029 §3, ADR 0031 §3). `[enact]` has no per-scroll override — it is a
 //! host-wide knob.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use scroll_format::OnExhaust;
 use serde::Deserialize;
@@ -108,23 +108,35 @@ impl Default for EnactConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AuthConfig {
+    pub token_file: Option<PathBuf>,
+}
+
 /// The whole resolved `golemd.toml`: the fleet-default retry pace and the
 /// host-wide enact width.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GolemdConfig {
     pub retry: RetryConfig,
     pub enact: EnactConfig,
+    pub auth: AuthConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct FileShape {
     retry: Option<RetryTable>,
     enact: Option<EnactTable>,
+    auth: Option<AuthTable>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct EnactTable {
     workers: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AuthTable {
+    token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -166,6 +178,7 @@ pub fn load(path: Option<&Path>) -> Result<GolemdConfig, ConfigError> {
         return Ok(GolemdConfig {
             retry: RetryConfig::default(),
             enact: EnactConfig::default(),
+            auth: AuthConfig::default(),
         });
     };
     let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Read(e.to_string()))?;
@@ -200,7 +213,13 @@ pub fn load(path: Option<&Path>) -> Result<GolemdConfig, ConfigError> {
             enact.workers = w;
         }
     }
-    Ok(GolemdConfig { retry, enact })
+    let mut auth = AuthConfig::default();
+    if let Some(t) = shape.auth {
+        if let Some(f) = t.token_file {
+            auth.token_file = Some(f);
+        }
+    }
+    Ok(GolemdConfig { retry, enact, auth })
 }
 
 #[cfg(test)]
@@ -213,6 +232,16 @@ mod tests {
         assert_eq!(cfg.retry, RetryConfig::default());
         assert_eq!(cfg.retry.max_attempts, 5);
         assert_eq!(cfg.retry.on_exhaust, OnExhaustConfig::Rollback);
+        assert_eq!(cfg.auth.token_file, None);
+    }
+
+    #[test]
+    fn auth_token_file_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("golemd.toml");
+        std::fs::write(&path, "[auth]\ntoken_file = \"/etc/golem/token\"\n").unwrap();
+        let cfg = load(Some(&path)).unwrap();
+        assert_eq!(cfg.auth.token_file, Some(PathBuf::from("/etc/golem/token")));
     }
 
     #[test]

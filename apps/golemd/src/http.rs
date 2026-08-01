@@ -10,8 +10,9 @@
 
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State as AxState},
-    http::StatusCode,
+    extract::{Path, Query, Request, State as AxState},
+    http::{header::AUTHORIZATION, StatusCode},
+    middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -25,12 +26,14 @@ use crate::journal::AppliedState;
 #[derive(Clone)]
 pub struct AppState {
     pub foreman: Arc<Foreman>,
+    pub required_token: Option<Arc<String>>,
 }
 
 /// Wire the routes to the shared foreman state. `/reconciles/latest` is
 /// registered before `/reconciles/:id` so `latest` is not captured as an id.
 pub fn router(app: AppState) -> Router {
-    Router::new()
+    let gate_state = app.clone();
+    let router = Router::new()
         .route("/manifest", post(apply_manifest))
         .route("/plan", post(plan_manifest))
         .route("/reconciles/latest", get(reconcile_latest))
@@ -39,7 +42,39 @@ pub fn router(app: AppState) -> Router {
         .route("/revisions", get(revisions))
         .route("/revisions/:id", get(revision))
         .route("/status", get(status))
-        .with_state(app)
+        .with_state(app);
+    if gate_state.required_token.is_some() {
+        router.layer(from_fn_with_state(gate_state, require_bearer))
+    } else {
+        router
+    }
+}
+
+fn token_matches(presented: &str, required: &str) -> bool {
+    let (p, r) = (presented.as_bytes(), required.as_bytes());
+    if p.len() != r.len() {
+        return false;
+    }
+    p.iter().zip(r).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+async fn require_bearer(
+    AxState(state): AxState<AppState>,
+    req: Request,
+    next: Next,
+) -> axum::response::Response {
+    let Some(required) = &state.required_token else {
+        return next.run(req).await;
+    };
+    let presented = req
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match presented {
+        Some(token) if token_matches(token, required) => next.run(req).await,
+        _ => ApiError::unauthorized().into_response(),
+    }
 }
 
 /// Run a blocking foreman call off the async runtime and map its errors to an
@@ -227,6 +262,14 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             kind: "not-found".to_string(),
             message,
+            reconcile_id: None,
+        }
+    }
+    fn unauthorized() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            kind: "unauthorized".to_string(),
+            message: "missing or invalid bearer token — golemd requires Authorization: Bearer <token> (see --auth-token-file)".to_string(),
             reconcile_id: None,
         }
     }

@@ -1,7 +1,7 @@
 //! The golemd binary: parse the CLI, open the plan room, pick a reconciler, and
 //! serve the HTTP API until shut down.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use golemd::fake_reconciler::FakeReconciler;
 use golemd::foreman::Foreman;
@@ -41,6 +41,21 @@ struct Cli {
     /// apply (`config::load`).
     #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long)]
+    auth_token_file: Option<PathBuf>,
+}
+
+fn load_required_token(path: Option<PathBuf>) -> Result<Option<Arc<String>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("read auth token file {}", path.display()))?;
+    let trimmed = contents.trim_end();
+    if trimmed.is_empty() {
+        bail!("auth token file {} is empty", path.display());
+    }
+    Ok(Some(Arc::new(trimmed.to_string())))
 }
 
 #[tokio::main]
@@ -72,11 +87,51 @@ async fn main() -> Result<()> {
             .with_enact_config(config.enact),
     );
 
-    let app = http::router(http::AppState { foreman });
+    let required_token = load_required_token(cli.auth_token_file.or(config.auth.token_file))?;
+
+    let app = http::router(http::AppState {
+        foreman,
+        required_token,
+    });
     let listener = TcpListener::bind(cli.listen)
         .await
         .with_context(|| format!("bind {}", cli.listen))?;
     info!(host = %cli.host, listen = %cli.listen, "golemd ready");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn none_path_gives_no_required_token() {
+        assert!(load_required_token(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn token_is_read_and_trailing_whitespace_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "s3cret\n").unwrap();
+        let token = load_required_token(Some(path)).unwrap().unwrap();
+        assert_eq!(*token, "s3cret");
+    }
+
+    #[test]
+    fn an_empty_token_file_is_a_startup_error_mentioning_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "\n").unwrap();
+        let err = load_required_token(Some(path.clone())).unwrap_err();
+        assert!(err.to_string().contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn an_unreadable_token_file_is_a_startup_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-token");
+        assert!(load_required_token(Some(path)).is_err());
+    }
 }
