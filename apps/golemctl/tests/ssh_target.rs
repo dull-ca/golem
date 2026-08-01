@@ -16,6 +16,7 @@ use golemd::planroom::MemoryPlanRoom;
 
 const FORWARD_SPEC_ENV: &str = "GOLEMCTL_FAKE_SSH_FORWARD";
 const FORWARD_REMOTE_ENV: &str = "GOLEMCTL_FAKE_SSH_REMOTE";
+const FORWARD_BOUND_ENV: &str = "GOLEMCTL_FAKE_SSH_BOUND";
 const FORWARDER_TEST: &str = "the_fake_ssh_forwarder_re_exec_of_this_test_binary";
 
 static SSH_BIN_LOCK: Mutex<()> = Mutex::new(());
@@ -32,6 +33,10 @@ impl FakeSsh {
 
     fn forwarding() -> FakeSsh {
         FakeSsh::written(|dir| forwarder_script(&dir.join("pid")))
+    }
+
+    fn losing_the_port_to_a_squatter() -> FakeSsh {
+        FakeSsh::written(squatter_script)
     }
 
     fn written(body: impl Fn(&Path) -> String) -> FakeSsh {
@@ -67,6 +72,20 @@ while [ $# -gt 0 ] && [ "$1" != "-L" ]; do shift; done
     )
 }
 
+fn squatter_script(dir: &Path) -> String {
+    let binary = std::env::current_exe().unwrap();
+    format!(
+        r#"while [ $# -gt 0 ] && [ "$1" != "-L" ]; do shift; done
+{FORWARD_SPEC_ENV}="$2" {FORWARD_BOUND_ENV}="{bound}" "{binary}" --exact {FORWARDER_TEST} --ignored --nocapture &
+echo $! > "{squatter}"
+while [ ! -f "{bound}" ]; do :; done
+exit 255"#,
+        bound = dir.join("bound").display(),
+        squatter = dir.join("squatter").display(),
+        binary = binary.display(),
+    )
+}
+
 #[test]
 #[ignore = "not a test — the fake ssh forwarder the ssh targets re-exec"]
 fn the_fake_ssh_forwarder_re_exec_of_this_test_binary() {
@@ -80,6 +99,9 @@ fn the_fake_ssh_forwarder_re_exec_of_this_test_binary() {
         Err(_) => ports[3].parse().unwrap(),
     };
     let server = TcpListener::bind(("127.0.0.1", local)).unwrap();
+    if let Ok(bound) = std::env::var(FORWARD_BOUND_ENV) {
+        std::fs::write(bound, "bound").unwrap();
+    }
     for downstream in server.incoming() {
         let Ok(downstream) = downstream else { continue };
         let Ok(upstream) = TcpStream::connect(("127.0.0.1", remote)) else {
@@ -179,6 +201,33 @@ fn the_forward_is_open_while_the_tunnel_lives_and_gone_once_it_drops() {
     drop(tunnel);
     assert!(await_death(&pid), "the forward dies with the tunnel");
     assert!(TcpStream::connect(("127.0.0.1", local_port)).is_err());
+}
+
+#[test]
+fn a_port_answering_after_ssh_died_is_a_squatter_not_the_forward() {
+    let ssh = FakeSsh::losing_the_port_to_a_squatter();
+    let err = Tunnel::open(
+        "golem@scaly",
+        None,
+        7474,
+        &[],
+        ssh.path("ssh").to_str().unwrap(),
+    )
+    .unwrap_err()
+    .to_string();
+    kill(&std::fs::read_to_string(ssh.path("squatter")).unwrap());
+
+    assert!(err.contains("golem@scaly"), "{err}");
+    assert!(err.contains("exited 255"), "{err}");
+    assert!(err.contains("took the port"), "{err}");
+}
+
+fn kill(pid: &str) {
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("kill {}", pid.trim()))
+        .status()
+        .unwrap();
 }
 
 #[tokio::test]

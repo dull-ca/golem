@@ -98,20 +98,27 @@ impl Tunnel {
     fn await_forward(&mut self, destination: &str, budget: Duration) -> Result<()> {
         let deadline = Instant::now() + budget;
         loop {
-            if TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, self.local_port))).is_ok()
-            {
-                return Ok(());
-            }
-            if let Some(status) = self
+            let answering =
+                TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, self.local_port)))
+                    .is_ok();
+            let exited = self
                 .child
                 .try_wait()
-                .context("wait on the ssh forward process")?
-            {
-                bail!(
+                .context("wait on the ssh forward process")?;
+            match (answering, exited) {
+                (true, None) => return Ok(()),
+                (true, Some(status)) => bail!(
+                    "ssh to {destination} {}, so 127.0.0.1:{} is not its forward — something else took the port{}",
+                    exited_as(status),
+                    self.local_port,
+                    self.stderr_tail()
+                ),
+                (false, Some(status)) => bail!(
                     "ssh to {destination} {} before the forward opened{}",
                     exited_as(status),
                     self.stderr_tail()
-                );
+                ),
+                (false, None) => {}
             }
             if Instant::now() >= deadline {
                 self.terminate();
@@ -190,6 +197,16 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
+    const PORT_LOTTERY_RETRIES: usize = 8;
+
+    static ONE_SPAWN_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    fn one_spawn_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        ONE_SPAWN_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     fn fake_ssh(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -197,8 +214,19 @@ mod tests {
         path
     }
 
+    fn failure_of(mut open: impl FnMut() -> Result<Tunnel>) -> String {
+        for _ in 0..PORT_LOTTERY_RETRIES {
+            match open() {
+                Err(err) => return format!("{err:#}"),
+                Ok(tunnel) => drop(tunnel),
+            }
+        }
+        panic!("this ssh never reported a failure in {PORT_LOTTERY_RETRIES} tries")
+    }
+
     #[test]
     fn the_forward_is_spawned_with_the_local_and_remote_loopback_ports() {
+        let _serial = one_spawn_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let argv = dir.path().join("argv");
         let ssh = fake_ssh(
@@ -206,16 +234,17 @@ mod tests {
             "record",
             &format!("printf '%s\\n' \"$@\" > {}\nexit 3", argv.display()),
         );
-        let err = Tunnel::open(
-            "golem@scaly",
-            Some(2222),
-            7474,
-            &["-i".to_string(), "/keys/id".to_string()],
-            ssh.to_str().unwrap(),
-        )
-        .unwrap_err();
+        let err = failure_of(|| {
+            Tunnel::open(
+                "golem@scaly",
+                Some(2222),
+                7474,
+                &["-i".to_string(), "/keys/id".to_string()],
+                ssh.to_str().unwrap(),
+            )
+        });
         let recorded: Vec<String> = std::fs::read_to_string(&argv)
-            .unwrap()
+            .unwrap_or_else(|e| panic!("no argv recorded ({e}); ssh failed with: {err}"))
             .lines()
             .map(|line| line.to_string())
             .collect();
@@ -231,47 +260,47 @@ mod tests {
             recorded[5..],
             ["-p", "2222", "-i", "/keys/id", "golem@scaly"]
         );
-        assert!(format!("{err:#}").contains("golem@scaly"), "{err:#}");
+        assert!(err.contains("golem@scaly"), "{err}");
     }
 
     #[test]
     fn an_ssh_that_dies_before_the_forward_opens_carries_its_stderr() {
+        let _serial = one_spawn_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let ssh = fake_ssh(
             dir.path(),
             "refuse",
             "echo 'ssh: connect to host scaly port 22: No route to host' >&2\nexit 255",
         );
-        let err = Tunnel::open("golem@scaly", None, 7474, &[], ssh.to_str().unwrap())
-            .unwrap_err()
-            .to_string();
+        let err =
+            failure_of(|| Tunnel::open("golem@scaly", None, 7474, &[], ssh.to_str().unwrap()));
         assert!(err.contains("No route to host"), "{err}");
         assert!(err.contains("golem@scaly"), "{err}");
     }
 
     #[test]
     fn an_ssh_that_never_opens_the_port_fails_when_the_budget_runs_out() {
+        let _serial = one_spawn_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let ssh = fake_ssh(dir.path(), "hang", "sleep 30");
-        let err = Tunnel::open_within(
-            "golem@scaly",
-            None,
-            7474,
-            &[],
-            ssh.to_str().unwrap(),
-            Duration::from_millis(600),
-        )
-        .unwrap_err()
-        .to_string();
+        let err = failure_of(|| {
+            Tunnel::open_within(
+                "golem@scaly",
+                None,
+                7474,
+                &[],
+                ssh.to_str().unwrap(),
+                Duration::from_millis(600),
+            )
+        });
         assert!(err.contains("golem@scaly"), "{err}");
         assert!(err.contains("forward"), "{err}");
     }
 
     #[test]
     fn a_missing_ssh_binary_names_the_binary_it_could_not_spawn() {
-        let err = Tunnel::open("golem@scaly", None, 7474, &[], "/nonexistent/ssh")
-            .unwrap_err()
-            .to_string();
+        let _serial = one_spawn_at_a_time();
+        let err = failure_of(|| Tunnel::open("golem@scaly", None, 7474, &[], "/nonexistent/ssh"));
         assert!(err.contains("/nonexistent/ssh"), "{err}");
     }
 }
