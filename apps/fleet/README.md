@@ -47,8 +47,10 @@ one-off `sudo usermod -aG systemd-journal golem` to pick up the membership.
 
 ## Driving the VMs with `golemctl fleet`
 
-`fleet apply` and `fleet plan` loop over the guests one at a time. To hit them
-all at once instead, hand golemctl an inventory of the running VMs:
+`fleet apply` and `fleet plan` already drive every targeted VM through one
+`golemctl fleet apply`/`plan --inventory` call, rendering a per-run ssh
+inventory behind the scenes (ADR 0042). To do the same by hand — or to run
+`golemctl fleet status` — write the inventory yourself:
 
 ```bash
 fleet inventory                                   # writes .fleet/inventory.toml
@@ -57,14 +59,17 @@ golemctl fleet apply  examples/lichess/fleet.emet
 golemctl fleet status
 ```
 
-`inventory` renders the `[hosts]` table from the state file — each VM's name
-against `http://127.0.0.1:<its forwarded golemd port>` — with `--hosts` to
-narrow the set and `--output` to write it elsewhere. Because a VM's name is also
-its scroll's name, the inventory matches the manifest directly: a guest the
-manifest names no scroll for is reported skipped and left untouched. Re-run
-`inventory` after any `up`, `down`, or `reset`; it is a snapshot of the state
-file, not a live view. The verbs themselves are documented in `QUICKSTART.md`
-(ADR 0038).
+`inventory` renders one `[hosts.<name>]` table per VM from the state file: the
+guest's ssh destination and port, the fleet key and standard host-checking
+options as `ssh_args`, and the shared bearer token's path as `token_file`.
+golemctl opens its own ssh forward to each guest's loopback golemd from these
+fields — there is no directly-dialable golemd URL any more (ADR 0042).
+`--hosts` narrows the set and `--output` writes it elsewhere. Because a VM's
+name is also its scroll's name, the inventory matches the manifest directly: a
+guest the manifest names no scroll for is reported skipped and left untouched.
+Re-run `inventory` after any `up`, `down`, or `reset`; it is a snapshot of the
+state file, not a live view. The verbs themselves are documented in
+`QUICKSTART.md` (ADR 0038, ADR 0042).
 
 ## Port scheme
 
@@ -80,8 +85,12 @@ ports it would in the full set. ssh forwards to `2200+slot`, golemd to
 | builder  | 3    | 2203                  | 8803                       |
 | puller   | 68   | 2268                  | 8868                       |
 
-golemd listens on `0.0.0.0:7474` inside the guest; QEMU forwards `8800+slot` on
-localhost to it, so the CLI reaches each daemon over plain HTTP.
+golemd listens on `127.0.0.1:7474` inside the guest — loopback only — so the
+`8800+slot` QEMU hostfwd is dead by construction: nothing arriving over the
+guest's virtio NIC can reach a loopback-only socket. It stays in the qemu
+config only because already-booted VMs still carry it; every daemon is in fact
+reached through an ssh forward golemctl opens itself over the ssh port
+(ADR 0042), never over `8800+slot`.
 
 The slots are collision-free across the default lichess host set plus the
 `registry`/`builder`/`puller` dogfood names. Ports for an already-created VM are

@@ -1,8 +1,3 @@
-"""The rendered file is golemctl's contract, not the harness's: what these
-assert about keys, quoting, and order is what `golemctl fleet` must be able to
-parse back (ADR 0038).
-"""
-
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,10 +10,10 @@ from fleet.config import Paths
 from fleet.state import FleetState, VmRecord
 
 
-def _record(name: str, golemd_port: int) -> VmRecord:
+def _record(name: str, ssh_port: int = 2200, golemd_port: int = 8800) -> VmRecord:
     return VmRecord(
         name=name,
-        ssh_port=2200,
+        ssh_port=ssh_port,
         golemd_port=golemd_port,
         pid=1,
         disk="/dev/null",
@@ -27,59 +22,124 @@ def _record(name: str, golemd_port: int) -> VmRecord:
     )
 
 
-class GolemdUrlTests(unittest.TestCase):
-    def test_builds_a_loopback_url_for_the_forwarded_port(self) -> None:
-        self.assertEqual(inventory.golemd_url(8807), "http://127.0.0.1:8807")
+class HostEntryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.paths = Paths(root=Path(self._tmp.name))
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_ssh_destination_is_the_golem_user_on_loopback(self) -> None:
+        entry = inventory.host_entry(self.paths, _record("scaly", ssh_port=2245))
+        self.assertEqual(entry.ssh, "golem@127.0.0.1")
+        self.assertEqual(entry.ssh_port, 2245)
+
+    def test_ssh_args_carry_the_fleet_key_as_an_absolute_path(self) -> None:
+        entry = inventory.host_entry(self.paths, _record("scaly"))
+        self.assertEqual(entry.ssh_args[0], "-i")
+        self.assertEqual(Path(entry.ssh_args[1]), self.paths.ssh_key.resolve())
+        self.assertTrue(Path(entry.ssh_args[1]).is_absolute())
+
+    def test_ssh_args_carry_the_standard_host_checking_options(self) -> None:
+        entry = inventory.host_entry(self.paths, _record("scaly"))
+        self.assertEqual(
+            entry.ssh_args[2:],
+            [
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+            ],
+        )
+
+    def test_token_file_is_the_absolute_fleet_token_path(self) -> None:
+        entry = inventory.host_entry(self.paths, _record("scaly"))
+        self.assertEqual(Path(entry.token_file), self.paths.token_file.resolve())
+        self.assertTrue(Path(entry.token_file).is_absolute())
+
+    def test_remote_port_is_unset_by_default(self) -> None:
+        entry = inventory.host_entry(self.paths, _record("scaly"))
+        self.assertIsNone(entry.remote_port)
 
 
 class InventoryEntriesTests(unittest.TestCase):
-    def test_maps_each_record_to_its_name_and_golemd_url(self) -> None:
-        records = [_record("scaly", 8807), _record("manta", 8842)]
-        self.assertEqual(
-            inventory.inventory_entries(records),
-            [("scaly", "http://127.0.0.1:8807"), ("manta", "http://127.0.0.1:8842")],
-        )
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.paths = Paths(root=Path(self._tmp.name))
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_maps_each_record_to_its_own_entry(self) -> None:
+        records = [_record("scaly", ssh_port=2201), _record("manta", ssh_port=2202)]
+        entries = inventory.inventory_entries(self.paths, records)
+        self.assertEqual([entry.name for entry in entries], ["scaly", "manta"])
+        self.assertEqual(entries[0].ssh_port, 2201)
+        self.assertEqual(entries[1].ssh_port, 2202)
 
     def test_preserves_the_given_record_order(self) -> None:
-        records = [_record("zulip", 8801), _record("kaiju", 8802)]
-        entries = inventory.inventory_entries(records)
-        self.assertEqual([name for name, _ in entries], ["zulip", "kaiju"])
+        records = [_record("zulip"), _record("kaiju")]
+        entries = inventory.inventory_entries(self.paths, records)
+        self.assertEqual([entry.name for entry in entries], ["zulip", "kaiju"])
 
 
 class RenderHostsTomlTests(unittest.TestCase):
-    def test_renders_the_hosts_table_header(self) -> None:
-        toml = inventory.render_hosts_toml([("scaly", "http://127.0.0.1:8807")])
-        self.assertEqual(toml.splitlines()[0], "[hosts]")
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.paths = Paths(root=Path(self._tmp.name))
+        self.addCleanup(self._tmp.cleanup)
 
-    def test_renders_one_line_per_entry(self) -> None:
-        toml = inventory.render_hosts_toml(
-            [("scaly", "http://127.0.0.1:8807"), ("manta", "http://127.0.0.1:8842")]
+    def _entries(self, names: list[str]) -> list[inventory.HostEntry]:
+        return inventory.inventory_entries(
+            self.paths, [_record(name, ssh_port=2200 + i) for i, name in enumerate(names)]
         )
-        self.assertEqual(
+
+    def test_renders_one_table_header_per_entry(self) -> None:
+        toml = inventory.render_hosts_toml(self._entries(["scaly"]))
+        self.assertEqual(toml.splitlines()[0], "[hosts.scaly]")
+
+    def test_renders_the_ssh_destination_and_port(self) -> None:
+        toml = inventory.render_hosts_toml(self._entries(["scaly"]))
+        self.assertIn('ssh = "golem@127.0.0.1"', toml)
+        self.assertIn("ssh_port = 2200", toml)
+
+    def test_renders_the_ssh_args_as_a_quoted_array(self) -> None:
+        toml = inventory.render_hosts_toml(self._entries(["scaly"]))
+        key_path = str(self.paths.ssh_key.resolve())
+        self.assertIn(
+            f'ssh_args = ["-i", "{key_path}", '
+            '"-o", "StrictHostKeyChecking=no", '
+            '"-o", "UserKnownHostsFile=/dev/null", '
+            '"-o", "LogLevel=ERROR"]',
             toml,
-            "[hosts]\n"
-            'scaly = "http://127.0.0.1:8807"\n'
-            'manta = "http://127.0.0.1:8842"\n',
         )
 
-    def test_preserves_input_order_rather_than_sorting(self) -> None:
-        toml = inventory.render_hosts_toml(
-            [("zulip", "http://127.0.0.1:8801"), ("kaiju", "http://127.0.0.1:8802")]
-        )
-        lines = toml.splitlines()
-        self.assertEqual(lines[1], 'zulip = "http://127.0.0.1:8801"')
-        self.assertEqual(lines[2], 'kaiju = "http://127.0.0.1:8802"')
+    def test_renders_the_token_file_path(self) -> None:
+        toml = inventory.render_hosts_toml(self._entries(["scaly"]))
+        token_path = str(self.paths.token_file.resolve())
+        self.assertIn(f'token_file = "{token_path}"', toml)
 
-    def test_empty_entries_renders_just_the_header(self) -> None:
-        self.assertEqual(inventory.render_hosts_toml([]), "[hosts]\n")
+    def test_omits_remote_port_when_it_is_the_default(self) -> None:
+        toml = inventory.render_hosts_toml(self._entries(["scaly"]))
+        self.assertNotIn("remote_port", toml)
 
-    def test_quotes_a_key_that_is_not_a_bare_toml_key(self) -> None:
-        toml = inventory.render_hosts_toml([("has space", "http://127.0.0.1:8807")])
-        self.assertIn('"has space" = "http://127.0.0.1:8807"', toml)
+    def test_includes_remote_port_when_it_departs_from_the_default(self) -> None:
+        entry = inventory.host_entry(self.paths, _record("scaly"))
+        entry.remote_port = 9000
+        toml = inventory.render_hosts_toml([entry])
+        self.assertIn("remote_port = 9000", toml)
 
-    def test_escapes_backslashes_and_quotes_in_the_value(self) -> None:
-        toml = inventory.render_hosts_toml([("scaly", 'http://127.0.0.1:8807/"x"\\y')])
-        self.assertIn('"http://127.0.0.1:8807/\\"x\\"\\\\y"', toml)
+    def test_renders_one_block_per_entry_in_order(self) -> None:
+        toml = inventory.render_hosts_toml(self._entries(["zulip", "kaiju"]))
+        headers = [line for line in toml.splitlines() if line.startswith("[hosts.")]
+        self.assertEqual(headers, ["[hosts.zulip]", "[hosts.kaiju]"])
+
+    def test_empty_entries_renders_an_empty_string(self) -> None:
+        self.assertEqual(inventory.render_hosts_toml([]), "")
+
+    def test_quotes_a_name_that_is_not_a_bare_toml_key(self) -> None:
+        entries = inventory.inventory_entries(self.paths, [_record("has space")])
+        toml = inventory.render_hosts_toml(entries)
+        self.assertIn('[hosts."has space"]', toml)
 
 
 class InventoryCommandTests(unittest.TestCase):
@@ -103,31 +163,38 @@ class InventoryCommandTests(unittest.TestCase):
             return runner.invoke(cli.app, ["inventory", *args])
 
     def test_writes_the_default_inventory_file_and_prints_its_path(self) -> None:
-        fleet_paths = self._write_state([_record("scaly", 8807), _record("manta", 8842)])
+        fleet_paths = self._write_state([_record("scaly", ssh_port=2245), _record("manta", ssh_port=2246)])
 
         result = self._invoke(fleet_paths, [])
 
         self.assertEqual(result.exit_code, 0, result.output)
         dest = fleet_paths.inventory_file
         self.assertIn(str(dest), result.output)
-        self.assertEqual(
-            dest.read_text(),
-            '[hosts]\nscaly = "http://127.0.0.1:8807"\nmanta = "http://127.0.0.1:8842"\n',
-        )
+        written = dest.read_text()
+        self.assertIn("[hosts.scaly]", written)
+        self.assertIn("[hosts.manta]", written)
+        self.assertIn("ssh_port = 2245", written)
+        self.assertIn("ssh_port = 2246", written)
+
+    def test_ensures_the_shared_token_exists(self) -> None:
+        fleet_paths = self._write_state([_record("scaly")])
+
+        self._invoke(fleet_paths, [])
+
+        self.assertTrue(fleet_paths.token_file.exists())
 
     def test_hosts_option_filters_to_the_named_subset(self) -> None:
-        fleet_paths = self._write_state([_record("scaly", 8807), _record("manta", 8842)])
+        fleet_paths = self._write_state([_record("scaly", ssh_port=2245), _record("manta", ssh_port=2246)])
 
         result = self._invoke(fleet_paths, ["--hosts", "manta"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(
-            fleet_paths.inventory_file.read_text(),
-            '[hosts]\nmanta = "http://127.0.0.1:8842"\n',
-        )
+        written = fleet_paths.inventory_file.read_text()
+        self.assertIn("[hosts.manta]", written)
+        self.assertNotIn("[hosts.scaly]", written)
 
     def test_unknown_host_name_errors_clearly(self) -> None:
-        fleet_paths = self._write_state([_record("scaly", 8807)])
+        fleet_paths = self._write_state([_record("scaly")])
 
         result = self._invoke(fleet_paths, ["--hosts", "nope"])
 
@@ -136,14 +203,14 @@ class InventoryCommandTests(unittest.TestCase):
         self.assertFalse(fleet_paths.inventory_file.exists())
 
     def test_output_option_writes_to_the_given_path(self) -> None:
-        fleet_paths = self._write_state([_record("scaly", 8807)])
+        fleet_paths = self._write_state([_record("scaly")])
         dest = self.root / "custom" / "fleet.toml"
 
         result = self._invoke(fleet_paths, ["--output", str(dest)])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn(str(dest), result.output)
-        self.assertEqual(dest.read_text(), '[hosts]\nscaly = "http://127.0.0.1:8807"\n')
+        self.assertIn("[hosts.scaly]", dest.read_text())
 
 
 if __name__ == "__main__":

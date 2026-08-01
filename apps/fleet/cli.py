@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,7 +22,8 @@ from rich.table import Table
 from . import config, golemd_client, vm
 from . import deploy as deploy_ops
 from . import inventory as inventory_ops
-from .config import paths, plan_hosts
+from . import token as token_ops
+from .config import Paths, paths, plan_hosts
 from .state import FleetState, VmRecord
 
 app = typer.Typer(add_completion=False, help="Ephemeral local Debian-trixie VM fleet.")
@@ -132,12 +134,13 @@ def deploy(
     console.print("[bold]Building static golemd (musl)…[/bold]")
     binary = deploy_ops.build_static_golemd(p, force=rebuild)
     console.print(f"  binary: {binary}")
+    token = token_ops.ensure_token(p)
     for record in records:
         console.print(f"[bold]Deploying golemd to {record.name}[/bold]…")
         deploy_ops.deploy_golemd(p, record, binary)
         summary = None
         for _ in range(30):
-            summary = golemd_client.status(record)
+            summary = golemd_client.status(p, record, token)
             if summary is not None:
                 break
             time.sleep(1)
@@ -160,9 +163,10 @@ def inventory(
     p = paths()
     state = _state()
     records = _target_records(state, hosts)
+    token_ops.ensure_token(p)
     dest = output if output is not None else p.inventory_file
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(inventory_ops.render_hosts_toml(inventory_ops.inventory_entries(records)))
+    dest.write_text(inventory_ops.render_hosts_toml(inventory_ops.inventory_entries(p, records)))
     console.print(str(dest))
 
 
@@ -202,22 +206,20 @@ def _render_manifest_context(scroll_names: list[str], applying: list[str]) -> No
     console.print(line)
 
 
+def _ssh_inventory_file(p: Paths, records: list[VmRecord]) -> Path:
+    token_ops.ensure_token(p)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="fleet-inventory-"))
+    dest = tmp_dir / "inventory.toml"
+    dest.write_text(inventory_ops.render_hosts_toml(inventory_ops.inventory_entries(p, records)))
+    return dest
+
+
 @app.command()
 def apply(
     source: Path = typer.Argument(..., help="A .emet source or a prebuilt manifest.bin."),
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
     raw: bool = typer.Option(False, "--json", help="Print the raw revision JSON instead of a summary."),
 ) -> None:
-    """Compile a scroll and hand each target to `golemctl apply`. `source` is an
-    `.emet` file (compiled to a manifest here) or a prebuilt `manifest.bin`; the
-    same bytes go to every host.
-
-    fleet owns orchestration (which hosts, in what order); golemctl owns the
-    apply itself — the POST, the live-progress TUI, and the report (ADR 0033 §5,
-    one TUI, two surfaces). So fleet execs it per host with inherited stdio: the
-    TUI must own the terminal to draw its frames, which piping its output would
-    break. Exit is aggregated — any host's nonzero `golemctl` exit makes `apply`
-    exit 1, but every remaining host is still attempted first."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)
@@ -228,26 +230,27 @@ def apply(
     scroll_names = deploy_ops.manifest_scroll_names(p, source)
     _render_manifest_context(scroll_names, [record.name for record in records])
     golemctl = deploy_ops.resolve_golemctl(p)
-    any_failed = False
-    for record in records:
-        console.print(f"[bold]Applying to {record.name}[/bold]…")
-        argv = [
-            str(golemctl),
-            "apply",
-            str(manifest_path),
-            f"http://127.0.0.1:{record.golemd_port}",
-        ]
-        if raw:
-            argv.append("--json")
-        result = subprocess.run(argv, cwd=str(p.root))
-        if result.returncode != 0:
-            any_failed = True
-            console.print(
-                f"  [red]{record.name}: golemctl apply exited {result.returncode}[/red]"
-            )
-            continue
-    if any_failed:
-        raise typer.Exit(1)
+    inventory_file = _ssh_inventory_file(p, records)
+    console.print(
+        f"[bold]Applying to {len(records)} "
+        f"host{'s' if len(records) != 1 else ''}[/bold]…"
+    )
+    argv = [
+        str(golemctl),
+        "fleet",
+        "apply",
+        str(manifest_path),
+        "--inventory",
+        str(inventory_file),
+        "--hosts",
+        ",".join(record.name for record in records),
+    ]
+    if raw:
+        argv.append("--json")
+    result = subprocess.run(argv, cwd=str(p.root))
+    if result.returncode != 0:
+        console.print(f"  [red]golemctl fleet apply exited {result.returncode}[/red]")
+        raise typer.Exit(result.returncode)
 
 
 @app.command()
@@ -257,11 +260,6 @@ def plan(
     raw: bool = typer.Option(False, "--json", help="Print the raw plan JSON instead of the collapsed view."),
     detail: bool = typer.Option(False, "--detail", help="One glyph per line with content ids."),
 ) -> None:
-    """Compile a scroll and hand each target to `golemctl plan` — the dry-run
-    diff, nothing applied (ADR 0036). Same orchestration split as `apply`:
-    fleet picks the hosts, golemctl owns the POST and the rendering, exec'd
-    with inherited stdio so its color policy sees the real terminal. A plan
-    always exits 0 per host; only transport/daemon errors aggregate to 1."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)
@@ -272,26 +270,25 @@ def plan(
     scroll_names = deploy_ops.manifest_scroll_names(p, source)
     _render_manifest_context(scroll_names, [record.name for record in records])
     golemctl = deploy_ops.resolve_golemctl(p)
-    any_failed = False
-    for record in records:
-        argv = [
-            str(golemctl),
-            "plan",
-            str(manifest_path),
-            f"http://127.0.0.1:{record.golemd_port}",
-        ]
-        if raw:
-            argv.append("--json")
-        if detail:
-            argv.append("--detail")
-        result = subprocess.run(argv, cwd=str(p.root))
-        if result.returncode != 0:
-            any_failed = True
-            console.print(
-                f"  [red]{record.name}: golemctl plan exited {result.returncode}[/red]"
-            )
-    if any_failed:
-        raise typer.Exit(1)
+    inventory_file = _ssh_inventory_file(p, records)
+    argv = [
+        str(golemctl),
+        "fleet",
+        "plan",
+        str(manifest_path),
+        "--inventory",
+        str(inventory_file),
+        "--hosts",
+        ",".join(record.name for record in records),
+    ]
+    if raw:
+        argv.append("--json")
+    if detail:
+        argv.append("--detail")
+    result = subprocess.run(argv, cwd=str(p.root))
+    if result.returncode != 0:
+        console.print(f"  [red]golemctl fleet plan exited {result.returncode}[/red]")
+        raise typer.Exit(result.returncode)
 
 
 @app.command()
@@ -353,10 +350,11 @@ def status() -> None:
         "glyphs",
         "last revision",
     )
+    token = token_ops.ensure_token(p)
     for record in records:
         running = vm.is_running(record)
-        summary = golemd_client.status(record) if running else None
-        view = golemd_client.state(record) if summary is not None else None
+        summary = golemd_client.status(p, record, token) if running else None
+        view = golemd_client.state(p, record, token) if summary is not None else None
         content_id = "—"
         glyph_count = "—"
         if view is not None:

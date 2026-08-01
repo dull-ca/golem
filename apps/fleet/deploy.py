@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .config import GOLEMD_GUEST_PORT, Paths
 from .state import VmRecord
+from .token import ensure_token
 from .vm import FleetError, ssh_argv
 
 
@@ -26,6 +27,9 @@ GOLEMD_STATIC_FLAKE_OUTPUT = ".#golemd-static"
 GOLEMD_REMOTE_PATH = "/usr/local/bin/golemd"
 GOLEMD_STATE_DIR = "/var/lib/golem"
 SERVICE_REMOTE_PATH = "/etc/systemd/system/golemd.service"
+GOLEMD_CONFIG_DIR = "/etc/golem"
+CONFIG_REMOTE_PATH = "/etc/golem/golemd.toml"
+TOKEN_REMOTE_PATH = "/etc/golem/token"
 
 
 def build_static_golemd(paths: Paths, force: bool = False) -> Path:
@@ -135,11 +139,17 @@ def resolve_golemctl(paths: Paths) -> Path:
     )
 
 
+def golemd_config_toml() -> str:
+    return "\n".join(
+        [
+            "[auth]",
+            f'token_file = "{TOKEN_REMOTE_PATH}"',
+            "",
+        ]
+    )
+
+
 def service_unit(host: str) -> str:
-    """The golemd systemd unit for a guest: runs as root, listens on
-    `0.0.0.0:7474` (reachable via the forwarded port), and drives the real
-    `host` reconciler — `--reconciler host` is what makes it enact glyphs on the
-    guest rather than merely bookkeep them."""
     return "\n".join(
         [
             "[Unit]",
@@ -158,7 +168,9 @@ def service_unit(host: str) -> str:
                     "--state-dir",
                     GOLEMD_STATE_DIR,
                     "--listen",
-                    f"0.0.0.0:{GOLEMD_GUEST_PORT}",
+                    f"127.0.0.1:{GOLEMD_GUEST_PORT}",
+                    "--config",
+                    CONFIG_REMOTE_PATH,
                     "--reconciler",
                     "host",
                 ]
@@ -208,12 +220,7 @@ def _ssh_check(paths: Paths, record: VmRecord, remote: list[str], input_text: st
 
 
 def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
-    """Install the binary and unit on a guest and (re)start the service. scp to a
-    staging path, `install` it into place, write the unit, then daemon-reload and
-    `restart` — restart, not just `enable --now`, so a redeployed binary actually
-    replaces the running one instead of leaving the old process up. The staging
-    name is unique per deploy and lives in golem's home: a fixed /tmp name wedges
-    every later deploy the moment a stale copy survives under other ownership."""
+    token = ensure_token(paths)
     staging = f"/home/golem/golemd.staging-{uuid.uuid4().hex[:8]}"
     scp = subprocess.run(_scp_argv(paths, record, binary, f"golem@127.0.0.1:{staging}"), capture_output=True, text=True)
     if scp.returncode != 0:
@@ -231,6 +238,16 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
         ],
     )
     _ssh_check(paths, record, ["rm", "-f", staging])
+    _ssh_check(paths, record, ["sudo", "install", "-d", "-m", "0755", GOLEMD_CONFIG_DIR])
+    _ssh_check(paths, record, ["sudo", "tee", TOKEN_REMOTE_PATH], input_text=token)
+    _ssh_check(paths, record, ["sudo", "chown", "root:root", TOKEN_REMOTE_PATH])
+    _ssh_check(paths, record, ["sudo", "chmod", "0600", TOKEN_REMOTE_PATH])
+    _ssh_check(
+        paths,
+        record,
+        ["sudo", "tee", CONFIG_REMOTE_PATH],
+        input_text=golemd_config_toml(),
+    )
     _ssh_check(
         paths,
         record,
