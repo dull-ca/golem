@@ -93,6 +93,19 @@ class DeployGolemdTests(unittest.TestCase):
             any(r == ["sudo", "chown", "root:root", deploy.TOKEN_REMOTE_PATH] for r in remotes)
         )
 
+    def test_the_remote_token_is_created_0600_before_a_byte_reaches_it(self) -> None:
+        _, subprocess_calls = self._run_deploy()
+        touching_the_token = [
+            argv for argv, _ in subprocess_calls if deploy.TOKEN_REMOTE_PATH in argv
+        ]
+        self.assertGreaterEqual(len(touching_the_token), 2)
+        create, write = touching_the_token[0], touching_the_token[1]
+        self.assertIn("install", create)
+        self.assertEqual(create[create.index("-m") + 1], "0600")
+        self.assertIn("/dev/null", create)
+        self.assertNotIn("tee", create)
+        self.assertIn("tee", write)
+
     def test_writes_the_golemd_config_naming_the_token_file(self) -> None:
         remotes, _ = self._run_deploy()
         self.assertTrue(

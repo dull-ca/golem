@@ -19,9 +19,12 @@
 //! line, chosen port and all, is world-readable in `/proc` the whole time. So
 //! `await_forward` requires the port to answer *while ssh is still alive* on
 //! two probes [`CONNECT_INTERVAL`] apart, and [`Tunnel::confirm_alive`] checks
-//! the child once more immediately before the first request: an ssh whose bind
-//! lost the race exits inside that interval, and the port it was refused is
-//! then reported as the stranger it is rather than trusted.
+//! the child once more immediately before the first request. That catches the
+//! losing ssh whenever its bind attempt falls between two probes — the ordinary
+//! case, a refused bind exiting within milliseconds of being refused while the
+//! probes stand a quarter-second apart — and the port it was denied is then
+//! reported as the stranger it is rather than trusted. It is a narrowing, not a
+//! guarantee.
 //!
 //! What survives is a residual window. A local process that reads the port from
 //! `/proc` and binds it while ssh is still authenticating answers every probe

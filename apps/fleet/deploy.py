@@ -30,6 +30,7 @@ SERVICE_REMOTE_PATH = "/etc/systemd/system/golemd.service"
 GOLEMD_CONFIG_DIR = "/etc/golem"
 CONFIG_REMOTE_PATH = "/etc/golem/golemd.toml"
 TOKEN_REMOTE_PATH = "/etc/golem/token"
+SECRET_FILE_MODE = "0600"
 
 
 def build_static_golemd(paths: Paths, force: bool = False) -> Path:
@@ -232,27 +233,54 @@ def _ssh_check(paths: Paths, record: VmRecord, remote: list[str], input_text: st
 
 
 def _ssh_write_secret(paths: Paths, record: VmRecord, remote_path: str, contents: str) -> None:
-    """Write a secret to a remote path, keeping it out of every error path.
+    """Write a secret to a remote path: 0600 before it holds anything, and out of
+    every error path.
 
-    `tee` echoes its stdin whether or not the destination write succeeds, so the
-    token comes back on the remote command's stdout. `_ssh_check` folds stdout
-    into its `FleetError` when stderr is empty, and `cli.py` prints that message
-    to the console — a full disk or a permission denial on `/etc/golem` would
-    have put the fleet's secret on screen. Two independent guards: the remote
-    stdout is redirected to `/dev/null`, and the failure message here is built
-    from stderr alone."""
+    `install -m 0600 /dev/null` creates the file empty, root-owned and readable
+    only by root, and the write then fills a file that was never anything else.
+    Creating it with `tee` and narrowing afterwards would publish the secret to
+    every account on the guest for the length of one ssh round trip — the same
+    create-then-narrow window the local token file closes with `O_EXCL` and 0600.
+
+    Neither step may put the secret on screen. `tee` echoes its stdin whether or
+    not the destination write succeeds, so the token comes back on the remote
+    command's stdout; `_ssh_check` folds stdout into its `FleetError` when stderr
+    is empty, and `cli.py` prints that message to the console — a full disk or a
+    permission denial on `/etc/golem` would have put the fleet's secret there.
+    Hence neither step goes through `_ssh_check`: the remote stdout is redirected
+    to `/dev/null`, and both failure messages are built from stderr alone."""
+    _ssh_run_quietly(
+        paths,
+        record,
+        ["sudo", "install", "-m", SECRET_FILE_MODE, "/dev/null", remote_path],
+        None,
+        f"{record.name}: create {remote_path} failed",
+    )
+    _ssh_run_quietly(
+        paths,
+        record,
+        ["sudo", "tee", remote_path, ">", "/dev/null"],
+        contents,
+        f"{record.name}: write {remote_path} failed",
+    )
+
+
+def _ssh_run_quietly(
+    paths: Paths,
+    record: VmRecord,
+    remote: list[str],
+    input_text: str | None,
+    failure: str,
+) -> None:
     result = subprocess.run(
-        ssh_argv(paths, record, ["sudo", "tee", remote_path, ">", "/dev/null"]),
-        input=contents,
+        ssh_argv(paths, record, remote),
+        input=input_text,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         detail = result.stderr.strip()
-        message = f"{record.name}: write {remote_path} failed"
-        if detail:
-            message += f": {detail}"
-        raise FleetError(message)
+        raise FleetError(f"{failure}: {detail}" if detail else failure)
 
 
 def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:

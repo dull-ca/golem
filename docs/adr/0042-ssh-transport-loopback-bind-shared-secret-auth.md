@@ -87,8 +87,12 @@ issued by authentik" changes the middleware, not the architecture.
   not of any particular secret, and knowing it buys an attacker nothing
   they could not already assume.
 - Every golemctl round-trip gains SSH tunnel setup unless a ControlMaster
-  is already up; with one, the forward is milliseconds. The fleet verbs
-  open one tunnel per host per invocation.
+  is already up; with one, ssh's own work is milliseconds. Confirming the
+  forward is not: refusing to trust the first answer costs a second probe
+  a quarter-second later, so every successful open has a ~250ms floor
+  however warm the connection is. The fleet verbs open one tunnel per host
+  per invocation and hold the hosts concurrently, so a fan-out pays that
+  floor once, not once per host.
 - The VM fleet's direct golemd forwards (`88xx`) go dead by construction —
   the guest daemon no longer listens on a forwardable address. The harness
   provisions the token, deploys loopback daemons, and emits an ssh-form
