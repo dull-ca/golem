@@ -9,16 +9,28 @@
 //! ControlMaster already up makes the forward cost milliseconds and golemctl
 //! needs to know nothing about it.
 //!
-//! **Lifecycle.** `free_loopback_port` binds port 0, reads what the kernel
-//! chose, and closes it — the port is then merely *likely* free, and the window
-//! between closing and ssh binding is a real race. `ExitOnForwardFailure=yes`
-//! closes the dangerous half of it: if something took the port first, ssh exits
-//! instead of running on with no forward, and a request would otherwise be
-//! addressed to a stranger holding that port. `await_forward` waits for the
-//! port to answer *while ssh is still alive* — a port that answers after ssh
-//! exited is that stranger, and is reported as one rather than used.
-//! [`Drop`] kills the child and reaps it, so the forward never outlives the
-//! verb even when the verb exits nonzero.
+//! **Lifecycle, and the race it does not fully close.** `free_loopback_port`
+//! binds port 0, reads what the kernel chose, and closes it — the port is then
+//! merely *likely* free, and the window between closing it and ssh binding it
+//! is a real race. `ExitOnForwardFailure=yes` narrows that window: an ssh that
+//! finds the port taken exits instead of running on with no forward. It does
+//! not close it, because ssh binds the `-L` listener only *after* it
+//! authenticates — 100ms to seconds on a cold connection — while its command
+//! line, chosen port and all, is world-readable in `/proc` the whole time. So
+//! `await_forward` requires the port to answer *while ssh is still alive* on
+//! two probes [`CONNECT_INTERVAL`] apart, and [`Tunnel::confirm_alive`] checks
+//! the child once more immediately before the first request: an ssh whose bind
+//! lost the race exits inside that interval, and the port it was refused is
+//! then reported as the stranger it is rather than trusted.
+//!
+//! What survives is a residual window. A local process that reads the port from
+//! `/proc` and binds it while ssh is still authenticating answers every probe
+//! and keeps ssh alive on every one of them, so golemctl cannot tell it from a
+//! working forward and will send it the bearer token. Closing that needs a
+//! rendezvous only the owner can open — forwarding a unix socket rather than a
+//! TCP port — which ADR 0042 records as the future path; the window is accepted
+//! until then. [`Drop`] kills the child and reaps it, so the forward never
+//! outlives the verb even when the verb exits nonzero.
 //!
 //! **ssh's stderr** is piped and drained by a thread (`collect`), so its
 //! diagnosis (`No route to host`, a key refusal) can be quoted in the failure.
@@ -61,6 +73,7 @@ type SshSaid = Arc<Mutex<Option<String>>>;
 pub struct Tunnel {
     child: Child,
     said: SshSaid,
+    destination: String,
     pub local_port: u16,
 }
 
@@ -130,14 +143,34 @@ impl Tunnel {
         let mut tunnel = Tunnel {
             child,
             said,
+            destination: destination.to_string(),
             local_port,
         };
-        tunnel.await_forward(destination, budget)?;
+        tunnel.await_forward(budget)?;
         Ok(tunnel)
     }
 
-    fn await_forward(&mut self, destination: &str, budget: Duration) -> Result<()> {
+    pub fn confirm_alive(&mut self) -> Result<()> {
+        match self
+            .child
+            .try_wait()
+            .context("wait on the ssh forward process")?
+        {
+            None => Ok(()),
+            Some(status) => bail!(
+                "ssh to {} {} before the first request crossed its forward, so 127.0.0.1:{} is no longer it{}",
+                self.destination,
+                exited_as(status),
+                self.local_port,
+                self.stderr_tail()
+            ),
+        }
+    }
+
+    fn await_forward(&mut self, budget: Duration) -> Result<()> {
+        let destination = self.destination.clone();
         let deadline = Instant::now() + budget;
+        let mut carried_on_the_previous_probe = false;
         loop {
             let answering =
                 TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, self.local_port)))
@@ -147,7 +180,8 @@ impl Tunnel {
                 .try_wait()
                 .context("wait on the ssh forward process")?;
             match (answering, exited) {
-                (true, None) => return Ok(()),
+                (true, None) if carried_on_the_previous_probe => return Ok(()),
+                (true, None) => carried_on_the_previous_probe = true,
                 (true, Some(status)) => bail!(
                     "ssh to {destination} {}, so 127.0.0.1:{} is not its forward — something else took the port{}",
                     exited_as(status),
@@ -159,9 +193,9 @@ impl Tunnel {
                     exited_as(status),
                     self.stderr_tail()
                 ),
-                (false, None) => {}
+                (false, None) => carried_on_the_previous_probe = false,
             }
-            if Instant::now() >= deadline {
+            if !carried_on_the_previous_probe && Instant::now() >= deadline {
                 self.terminate();
                 bail!(
                     "ssh to {destination} opened no forward within {}s{}",
@@ -224,9 +258,11 @@ fn exited_as(status: ExitStatus) -> String {
 }
 
 // NOTE: this reserves nothing — the listener is closed before ssh binds, so
-// another process can take the port in between. `ExitOnForwardFailure=yes` and
-// the answering-while-alive check in `await_forward` are what make that window
-// a reported failure instead of a request sent to whoever won it.
+// another process can take the port in between, and ssh publishes which port to
+// take in its `/proc` command line. `ExitOnForwardFailure=yes` plus the
+// two-probe answering-while-alive check in `await_forward` turn a *lost* bind
+// into a reported failure; they cannot turn a squatter that wins the port and
+// holds it into one. See the module docs for the window that leaves open.
 fn free_loopback_port() -> Result<u16> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .context("reserve a loopback port for the ssh forward")?;
@@ -348,6 +384,98 @@ mod tests {
         });
         assert!(err.contains("golem@scaly"), "{err}");
         assert!(err.contains("forward"), "{err}");
+    }
+
+    fn squat_the_forwarded_port(argv: PathBuf, stand_down: PathBuf) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let listener = loop {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                if let Some(port) = recorded_forward_port(&argv) {
+                    if let Ok(listener) =
+                        TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+                    {
+                        break listener;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            listener.set_nonblocking(true).unwrap();
+            let mut told_ssh_to_exit = false;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok(_) if !told_ssh_to_exit => {
+                        std::fs::write(&stand_down, "").unwrap();
+                        told_ssh_to_exit = true;
+                    }
+                    Ok(_) => {}
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        })
+    }
+
+    fn recorded_forward_port(argv: &Path) -> Option<u16> {
+        let recorded = std::fs::read_to_string(argv).ok()?;
+        let spec = recorded.lines().nth(4)?;
+        spec.split(':').nth(1)?.parse().ok()
+    }
+
+    #[test]
+    fn a_port_squatter_that_outlives_the_ssh_it_displaced_is_reported_not_used() {
+        let _serial = one_spawn_at_a_time();
+        let dir = tempfile::tempdir().unwrap();
+        let argv = dir.path().join("argv");
+        let stand_down = dir.path().join("stand-down");
+        let ssh = fake_ssh(
+            dir.path(),
+            "displaced",
+            &format!(
+                "printf '%s\\n' \"$@\" > {}\nwhile [ ! -f {} ]; do sleep 0.02; done\nexit 255",
+                argv.display(),
+                stand_down.display()
+            ),
+        );
+        let squatter = squat_the_forwarded_port(argv.clone(), stand_down.clone());
+        let err = Tunnel::open_within(
+            "golem@scaly",
+            None,
+            7474,
+            &[],
+            ssh.to_str().unwrap(),
+            Duration::from_secs(5),
+        )
+        .map(|_| ())
+        .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("golem@scaly"), "{err}");
+        assert!(err.contains("something else took the port"), "{err}");
+        drop(squatter);
+    }
+
+    #[test]
+    fn a_dead_ssh_is_named_when_liveness_is_confirmed_before_the_first_request() {
+        let _serial = one_spawn_at_a_time();
+        let dir = tempfile::tempdir().unwrap();
+        let ssh = fake_ssh(dir.path(), "hang", "sleep 30");
+        let mut tunnel = Tunnel {
+            child: Command::new(ssh.to_str().unwrap())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+            said: Arc::new(Mutex::new(Some(String::new()))),
+            destination: "golem@scaly".to_string(),
+            local_port: 1,
+        };
+        tunnel.confirm_alive().unwrap();
+        tunnel.terminate();
+        let err = format!("{:#}", tunnel.confirm_alive().unwrap_err());
+        assert!(err.contains("golem@scaly"), "{err}");
+        assert!(err.contains("before the first request"), "{err}");
     }
 
     #[test]

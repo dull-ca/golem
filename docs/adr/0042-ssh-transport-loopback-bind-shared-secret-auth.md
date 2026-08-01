@@ -59,8 +59,33 @@ issued by authentik" changes the middleware, not the architecture.
   can SSH to the box, and people who hold the shared secret. Revocation is
   rotating one file.
 - The secret lives in the team's shared path and reaches golemctl by
-  environment; it crosses the wire only inside SSH. Its file on the host
-  is root-owned, mode 0600.
+  environment. An `ssh://` target keeps it inside the tunnel; a plain
+  `http://` one cannot, so golemctl still attaches the token there — an
+  operator with a segmented network or a mesh VPN may mean exactly that —
+  but writes a one-line warning to stderr whenever the address it is sent
+  to is not loopback. What the code enforces is that the choice is never
+  made silently, not that it cannot be made. Its file on the host is
+  root-owned, mode 0600.
+- golemctl's forward asks the kernel for a free loopback port, closes it,
+  and hands the number to ssh — which binds it only *after* it
+  authenticates, while publishing that number in its world-readable
+  `/proc` command line. `ExitOnForwardFailure=yes`, a two-probe
+  answering-while-alive check, and a liveness re-check before the first
+  request together turn a *lost* bind into a reported failure. They leave
+  a residual window: a local process that wins the port and holds it
+  answers exactly as the forward would, and golemctl would send it the
+  bearer token. That window is accepted — it takes a hostile account on
+  the operator's own machine, which has already lost the game — and it is
+  the one thing here that is not closed. Forwarding a unix socket in a
+  directory only the operator can write (`ssh -L /run/user/…/golem.sock:…`)
+  rather than a TCP port is the fully race-free replacement, and is the
+  path to take if that assumption ever weakens.
+- golemd's bearer comparison is constant-time over the token's bytes but
+  returns early when the lengths differ, so a caller can learn how long
+  the secret is. That leak is accepted: the length is a property of how
+  golem generates tokens (32 random bytes from `secrets.token_urlsafe`),
+  not of any particular secret, and knowing it buys an attacker nothing
+  they could not already assume.
 - Every golemctl round-trip gains SSH tunnel setup unless a ControlMaster
   is already up; with one, the forward is milliseconds. The fleet verbs
   open one tunnel per host per invocation.

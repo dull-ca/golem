@@ -92,6 +92,9 @@ impl Endpoint {
         if rest.is_empty() {
             bail!("the ssh target {addr} names no host — write {SSH_ADDR_FORM}");
         }
+        if rest.starts_with('-') {
+            bail!("the ssh target {addr} begins with '-', which ssh would read as a flag rather than a destination — write {SSH_ADDR_FORM}");
+        }
         let (destination, ssh_port) = split_ssh_port(rest)?;
         Ok(Endpoint::Ssh {
             destination,
@@ -545,6 +548,15 @@ mod tests {
                 ssh_args: vec![],
             }
         );
+    }
+
+    #[test]
+    fn an_ssh_addr_that_would_become_an_ssh_flag_is_refused() {
+        for addr in ["ssh://-oProxyCommand=touch /tmp/pwned", "ssh://-lroot"] {
+            let err = Endpoint::parse(addr).unwrap_err().to_string();
+            assert!(err.contains("flag"), "{err}");
+            assert!(err.contains(SSH_ADDR_FORM), "{err}");
+        }
     }
 
     #[test]

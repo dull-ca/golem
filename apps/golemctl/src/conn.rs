@@ -17,11 +17,20 @@
 //! Reading an empty token file is an error rather than a silent `None`: a
 //! truncated secret must not degrade into an unauthenticated request.
 //!
+//! **Where it is safe to send it.** ADR 0042 assumes the token only ever
+//! crosses an ssh forward, and an `ssh://` target guarantees that — its base is
+//! the loopback end of the tunnel. A plain `http://` target guarantees nothing:
+//! aimed at a routable address it puts the fleet's shared secret on the network
+//! in cleartext. golemctl attaches it anyway — an operator with a segmented
+//! network or a VPN may mean exactly that — but warns on stderr each time, so
+//! the choice is never made silently ([`is_loopback_base`] decides).
+//!
 //! [`AuthSource`] and [`Conn`] both hand-write `Debug` to print [`REDACTED`] in
 //! place of the secret. Every derived `Debug` in golemctl is one `{:?}` in an
 //! error path away from putting the token in a log or a terminal, so the type
 //! that holds it never learns to print it.
 
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -98,6 +107,38 @@ fn read_token_file(path: &Path) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+const LOCALHOST_NAME: &str = "localhost";
+
+/// Whether a base URL addresses this machine — `127.0.0.0/8`, `::1`, or
+/// `localhost`. Anything golemctl cannot read as one of those counts as remote,
+/// so an unparseable address warns rather than passes.
+pub fn is_loopback_base(base: &str) -> bool {
+    let Some(host) = host_of(base) else {
+        return false;
+    };
+    host.eq_ignore_ascii_case(LOCALHOST_NAME)
+        || host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+        || host.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+fn host_of(base: &str) -> Option<&str> {
+    let after_scheme = base.split_once("://").map_or(base, |(_, rest)| rest);
+    let authority = after_scheme.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        return bracketed.split_once(']').map(|(host, _)| host);
+    }
+    authority.split(':').next().filter(|host| !host.is_empty())
+}
+
+fn cleartext_token_warning(name: &str, base: &str) -> String {
+    format!(
+        "warning: host {name} is dialed at {base}, which is not loopback — the auth token crosses that network in cleartext; use an ssh:// target to keep it inside the tunnel (ADR 0042)"
+    )
+}
+
 /// Open the forward off the async runtime: [`Tunnel::open`] spawns ssh and then
 /// polls a socket until it answers, which would block a runtime worker — and
 /// with a fleet fan-out, every other host's task with it.
@@ -141,33 +182,39 @@ impl std::fmt::Debug for Conn {
 
 impl Conn {
     pub async fn open(target: &Target, auth: &AuthSource) -> Result<Conn> {
-        let (base, tunnel) = match &target.endpoint {
-            Endpoint::Http { url } => (url.trim_end_matches('/').to_string(), None),
+        let (base, tunnel, reached_over_ssh) = match &target.endpoint {
+            Endpoint::Http { url } => (url.trim_end_matches('/').to_string(), None, false),
             Endpoint::Ssh {
                 destination,
                 ssh_port,
                 remote_port,
                 ssh_args,
             } => {
-                let tunnel = forward(
+                let mut tunnel = forward(
                     destination.clone(),
                     *ssh_port,
                     *remote_port,
                     ssh_args.clone(),
                 )
                 .await?;
+                tunnel.confirm_alive()?;
                 (
                     format!("http://127.0.0.1:{}", tunnel.local_port),
                     Some(tunnel),
+                    true,
                 )
             }
         };
+        let token = match &target.token_file {
+            Some(path) => resolve_auth(Some(path))?.token(),
+            None => auth.token(),
+        };
+        if token.is_some() && !reached_over_ssh && !is_loopback_base(&base) {
+            eprintln!("{}", cleartext_token_warning(&target.name, &base));
+        }
         Ok(Conn {
             base,
-            token: match &target.token_file {
-                Some(path) => resolve_auth(Some(path))?.token(),
-                None => auth.token(),
-            },
+            token,
             client: reqwest::Client::new(),
             tunnel,
         })
@@ -374,6 +421,43 @@ mod tests {
         let _env = EnvGuard::set(None, Some(&path));
         let err = resolve_auth(None).unwrap_err();
         assert!(err.to_string().contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn loopback_bases_are_the_only_ones_a_token_may_cross_in_the_clear() {
+        for base in [
+            "http://127.0.0.1:8807",
+            "http://127.1.2.3:8807",
+            "http://localhost:8807",
+            "http://LocalHost",
+            "http://[::1]:7474",
+            "https://127.0.0.1",
+            "http://golem@127.0.0.1:8807",
+            "http://127.0.0.1:8807/",
+        ] {
+            assert!(is_loopback_base(base), "{base}");
+        }
+        for base in [
+            "http://10.0.0.5:8807",
+            "http://scaly:8807",
+            "http://scaly",
+            "https://golem.example.org",
+            "http://[2001:db8::1]:7474",
+            "http://127.0.0.1.example.org:8807",
+            "http://",
+            "",
+        ] {
+            assert!(!is_loopback_base(base), "{base}");
+        }
+    }
+
+    #[test]
+    fn the_cleartext_warning_names_the_host_the_address_and_the_safe_alternative() {
+        let warning = cleartext_token_warning("scaly", "http://10.0.0.5:8807");
+        assert!(!warning.contains('\n'), "{warning}");
+        assert!(warning.contains("scaly"), "{warning}");
+        assert!(warning.contains("http://10.0.0.5:8807"), "{warning}");
+        assert!(warning.contains("ssh://"), "{warning}");
     }
 
     fn http_target(name: &str, url: String) -> Target {

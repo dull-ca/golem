@@ -203,11 +203,16 @@ fn error_note(message: &str, color: bool) -> String {
 /// plumbing on every one of them. `--json` carries the chain verbatim, so nothing
 /// is lost, only shortened.
 fn concise_error(message: &str) -> String {
+    let message = on_one_line(message);
     let segments: Vec<&str> = message.split(": ").collect();
     match (segments.first(), segments.last()) {
         (Some(context), Some(cause)) if segments.len() > 2 => format!("{context} — {cause}"),
-        _ => message.to_string(),
+        _ => message.clone(),
     }
+}
+
+fn on_one_line(message: &str) -> String {
+    message.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
 
 fn under_heading(line: &str) -> String {
@@ -993,6 +998,16 @@ mod tests {
         );
         assert_eq!(concise_error("plain message"), "plain message");
         assert_eq!(concise_error("context: cause"), "context: cause");
+    }
+
+    #[test]
+    fn a_multi_line_error_becomes_one_line_so_the_table_stays_aligned() {
+        let chain = "open an ssh forward: ssh to golem@scaly exited 255: ssh: connect to host scaly port 22:\n  No route to host\n\tkex_exchange_identification: banner line";
+        let concise = concise_error(chain);
+        assert!(!concise.contains('\n'), "{concise}");
+        assert!(!concise.contains('\t'), "{concise}");
+        assert_eq!(concise, "open an ssh forward — banner line");
+        assert_eq!(concise_error("one\nline\nonly"), "one line only");
     }
 
     fn rolled_back() -> HostOutcome {
