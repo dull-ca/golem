@@ -83,7 +83,7 @@ def up(
     Pass `--hosts` for named VMs or `--count N` for the first N lichess hosts;
     with neither, boots the full lichess set. Already-running VMs are left be.
     `--publish` forwards an extra guest port to the host: `--publish
-    registry=5000:5000` exposes only the registry guest's `:5000` on host
+    kaiju=5000:5000` exposes only the `kaiju` guest's `:5000` on host
     `:5000` (a bare `5000:5000` would clash across hosts sharing a host port)."""
     p = paths()
     state = _state()

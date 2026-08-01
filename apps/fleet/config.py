@@ -15,7 +15,7 @@ from typing import Optional
 
 # The default host set: the six lichess server names. `up` boots these unless
 # --hosts or --count narrows it.
-LICHESS_HOSTS = ["scaly", "manta", "orbit", "talos", "kaiju", "zulip"]
+LICHESS_HOSTS = ["scaly", "manta", "orbit", "talos", "kaiju", "remora"]
 
 BASE_IMAGE_INDEX_URL = "https://cloud.debian.org/images/cloud/trixie/latest/"
 BASE_IMAGE_PATTERN = "debian-13-genericcloud-amd64"
@@ -102,10 +102,9 @@ def slot_for_name(name: str) -> int:
     """The port slot a name owns: `blake2b(name) mod PORT_SLOT_COUNT`. Hashing
     the name (not its position in the boot list) means a name always maps to the
     same slot — and thus the same ssh/golemd ports — no matter what else is
-    booted alongside it. The slots are collision-free across the fleet's known
-    host names (the lichess set plus the registry/builder/puller/website dogfood
-    boxes); a collision is only theoretically possible for arbitrary names
-    outside that set."""
+    booted alongside it. The slots are collision-free across the six lichess
+    host names, which is every box the examples target; a collision is only
+    theoretically possible for arbitrary names outside that set."""
     digest = hashlib.blake2b(name.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") % PORT_SLOT_COUNT
 

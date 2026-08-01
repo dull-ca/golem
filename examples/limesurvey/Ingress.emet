@@ -1,0 +1,18 @@
+module Ingress exposing (publish, units)
+
+import Traefik exposing (Frontend(..), ingress, ingressUnit)
+import Traefik
+import Routing exposing (Route)
+import Quadlet exposing (Workload)
+
+frontend : Frontend
+frontend =
+  Frontend { network = "frontend", certificateResolver = "myresolver" }
+
+publish : Route -> Workload -> Workload
+publish =
+  Traefik.publish frontend
+
+units : List Scroll
+units =
+  [ ingressUnit (ingress "bigbeards@lichess.org" frontend) ]

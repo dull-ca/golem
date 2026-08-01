@@ -90,9 +90,12 @@ golemd's slot-derived port, recorded but never forwarded:
 
 | name     | slot | ssh (host → guest 22) | golemd port (recorded, not forwarded) |
 |----------|------|-----------------------|----------------------------------------|
-| registry | 65   | 2265                  | 8865                                    |
-| builder  | 3    | 2203                  | 8803                                    |
-| puller   | 68   | 2268                  | 8868                                    |
+| scaly    | 59   | 2259                  | 8859                                    |
+| manta    | 28   | 2228                  | 8828                                    |
+| orbit    | 64   | 2264                  | 8864                                    |
+| talos    | 19   | 2219                  | 8819                                    |
+| kaiju    | 74   | 2274                  | 8874                                    |
+| remora   | 93   | 2293                  | 8893                                    |
 
 golemd listens on `127.0.0.1:7474` inside the guest — loopback only — so an
 `8800+slot` QEMU hostfwd would be dead by construction: nothing arriving over
@@ -114,7 +117,7 @@ other guests: only ssh is forwarded to the host. Two facts make one guest
 reach a service on another:
 
 - `up --publish` forwards an extra guest port to the host. `--publish
-  registry=5000:5000` binds host `127.0.0.1:5000` to the `registry` guest's
+  registry=5000:5000` binds host `127.0.0.1:5000` to the `kaiju` guest's
   `:5000`; a bare `--publish 5000:5000` publishes on every booted host (which
   clashes if they share a host port, so name the host for a single service).
   The forwards are recorded per VM, so a stopped VM brought back up re-forwards
@@ -124,7 +127,7 @@ reach a service on another:
   lands on the host's loopback, which QEMU forwards into the publishing guest.
 
 Together these give a host-gateway rendezvous. `examples/registry/` uses it:
-the `registry` guest publishes its `:5000`, and the `builder`/`puller` guests
+the `kaiju` guest publishes its `:5000`, and the `talos`/`orbit` guests
 push and pull from `10.0.2.2:5000` — one golem-hosted registry shared across
 machines, no shared L2 segment required.
 

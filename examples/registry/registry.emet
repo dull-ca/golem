@@ -1,10 +1,10 @@
 -- The registry box of the self-hosted-CI loop (milestone 3): golem provisions
--- the machine that stores the website image the builder pushes and the web box
--- pulls. One internally-exposed `Workload` — the docker.io registry:2 container
--- on :5000, backed by a named `golem-registry-data` volume — which lowers to the
--- podman apt, the `.volume` unit, the `.container` quadlet, its service, and the
--- internal firewall drop-in with the golem-owned nftables base that loads it
--- (ADR 0041), reloaded by the scroll's `notifies`.
+-- `kaiju`, the machine that stores the website image `talos` pushes and
+-- `remora` pulls. One internally-exposed `Workload` — the docker.io registry:2
+-- container on :5000, backed by a named `golem-registry-data` volume — lowers
+-- to the podman apt, the `.volume` unit, the `.container` quadlet, its service,
+-- and the internal firewall drop-in with the golem-owned nftables base that
+-- loads it (ADR 0041), reloaded by the scroll's `notifies`.
 --
 -- Authored against the shared `Quadlet` library, resolved from `lib/` via the
 -- repo-root `emet.json` (ADR 0024).
@@ -28,7 +28,9 @@ registry =
     { name = "registry"
     , image = image "docker.io/library" "registry" "2"
     , env = []
+    , labels = []
     , ports = [ tcp 5000 5000 ]
+    , networks = []
     , volumes =
         [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private ]
     , restart = Always
@@ -38,7 +40,7 @@ registry =
 main : List Scroll
 main =
   [ scroll
-      { name = "registry"
+      { name = "kaiju"
       , notifies = [ "golem-nftables.service" ]
       , glyphs = workloadGlyphs registry
       }

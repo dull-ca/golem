@@ -30,6 +30,13 @@ module Quadlet exposing
   , udp
   , EnvVar(..)
   , env
+  , Label(..)
+  , label
+  , Network(..)
+  , NetworkUnit(..)
+  , networkUnit
+  , derivedNetworkUnits
+  , networkUnitGlyphs
   , Restart(..)
   , Access(..)
   , Relabel(..)
@@ -218,10 +225,82 @@ type EnvVar = EnvVar { name : String, value : String }
 env : String -> String -> EnvVar
 env name value = EnvVar { name = name, value = value }
 
+needsQuoting : String -> Bool
+needsQuoting value =
+  String.contains " " value
+    || String.contains "\t" value
+    || String.contains "\"" value
+    || String.contains "'" value
+    || String.contains "\\" value
+
+quotedIfNeeded : String -> String
+quotedIfNeeded value =
+  if needsQuoting value then
+    "\"" ++ String.replace "\"" "\\\"" (String.replace "\\" "\\\\" value) ++ "\""
+  else
+    value
+
 environmentLine : EnvVar -> String
 environmentLine e =
   case e of
-    EnvVar spec -> "Environment=${spec.name}=${spec.value}"
+    EnvVar spec -> "Environment=${spec.name}=${quotedIfNeeded spec.value}"
+
+type Label = Label { name : String, value : String }
+
+label : String -> String -> Label
+label name value = Label { name = name, value = value }
+
+labelLine : Label -> String
+labelLine l =
+  case l of
+    Label spec -> "Label=${spec.name}=${quotedIfNeeded spec.value}"
+
+type Network
+  = ManagedNetwork String
+  | ExistingNetwork String
+
+networkLine : Network -> String
+networkLine n =
+  case n of
+    ManagedNetwork name -> "Network=${name}.network"
+    ExistingNetwork name -> "Network=${name}"
+
+type NetworkUnit = NetworkUnit { name : String, driver : String }
+
+networkUnit : String -> NetworkUnit
+networkUnit name = NetworkUnit { name = name, driver = "bridge" }
+
+derivedNetworkUnits : List Network -> List NetworkUnit
+derivedNetworkUnits networks =
+  List.concatMap derivedNetworkUnit networks
+
+derivedNetworkUnit : Network -> List NetworkUnit
+derivedNetworkUnit n =
+  case n of
+    ManagedNetwork name -> [ networkUnit name ]
+    ExistingNetwork _ -> []
+
+networkUnitContents : NetworkUnit -> String
+networkUnitContents u =
+  case u of
+    NetworkUnit spec ->
+      String.join "\n"
+        [ "[Network]"
+        , "NetworkName=${spec.name}"
+        , "Driver=${spec.driver}"
+        ]
+
+networkUnitGlyphs : NetworkUnit -> List Glyph
+networkUnitGlyphs u =
+  case u of
+    NetworkUnit spec ->
+      [ aptPackage { name = "aardvark-dns" }
+      , file
+          { path = "/etc/containers/systemd/${spec.name}.network"
+          , contents = networkUnitContents u
+          , mode = "0644"
+          }
+      ]
 
 -- The unit's `Restart=` value, as the three systemd words golem writes:
 -- `always`, `on-failure`, `no`. Constructors rather than a string, so a typo is
@@ -344,9 +423,12 @@ type ContainerUnit = ContainerUnit
   , image        : Image
   , exec         : Maybe String
   , publishPorts : List Port
+  , networks     : List Network
+  , networkUnits : List NetworkUnit
   , mounts       : List Mount
   , volumeUnits  : List VolumeUnit
   , environment  : List EnvVar
+  , labels       : List Label
   , restart      : Restart
   , wantedBy     : List String
   }
@@ -372,8 +454,10 @@ containerUnitContents u =
             ]
           , execLines spec.exec
           , List.map publishPortLine spec.publishPorts
+          , List.map networkLine spec.networks
           , List.map volumeLine spec.mounts
           , List.map environmentLine spec.environment
+          , List.map labelLine spec.labels
           , [ ""
             , "[Service]"
             , "Restart=${restartValue spec.restart}"
@@ -394,6 +478,7 @@ containerUnitGlyphs u =
       List.concat
         [ [ aptPackage { name = "podman" } ]
         , List.concatMap hostSourceGlyphs spec.mounts
+        , List.concatMap networkUnitGlyphs spec.networkUnits
         , List.concatMap volumeUnitGlyphs spec.volumeUnits
         , [ file
               { path = "/etc/containers/systemd/${spec.name}.container"
@@ -421,13 +506,15 @@ type Expose = Unexposed | Internal | Public
 -- environment, plus how far it is exposed. The authoring surface of this
 -- library — `workloadGlyphs` is the only other thing a scroll needs.
 type Workload = Workload
-  { name    : String
-  , image   : Image
-  , env     : List EnvVar
-  , ports   : List Port
-  , volumes : List Mount
-  , restart : Restart
-  , expose  : Expose
+  { name     : String
+  , image    : Image
+  , env      : List EnvVar
+  , labels   : List Label
+  , ports    : List Port
+  , networks : List Network
+  , volumes  : List Mount
+  , restart  : Restart
+  , expose   : Expose
   }
 
 -- The container unit a workload lowers to: volume units derived from its
@@ -442,9 +529,12 @@ workloadUnit w =
         , image = spec.image
         , exec = Nothing
         , publishPorts = spec.ports
+        , networks = spec.networks
+        , networkUnits = derivedNetworkUnits spec.networks
         , mounts = spec.volumes
         , volumeUnits = derivedVolumeUnits spec.volumes
         , environment = spec.env
+        , labels = spec.labels
         , restart = spec.restart
         , wantedBy = [ "multi-user.target", "default.target" ]
         }

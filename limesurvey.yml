@@ -1,0 +1,36 @@
+services:
+  limesurvey:
+    image: adamzammit/limesurvey:7.0.7
+    environment:
+      LIMESURVEY_DB_PASSWORD: xxx
+      LIMESURVEY_ADMIN_USER: admin
+      LIMESURVEY_ADMIN_PASSWORD: yyyy
+      LIMESURVEY_ADMIN_NAME: Lime Administrator
+      LIMESURVEY_ADMIN_EMAIL: bigbeards@lichess.org
+    volumes:
+      - /data/limesurvey/plugins:/var/www/html/plugins
+      - /data/limesurvey/upload:/var/www/html/upload
+    networks:
+      - frontend
+      - limesurvey
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=frontend
+      - traefik.http.services.limesurvey.loadbalancer.server.port=80
+      - traefik.http.routers.limesurvey.rule=Host(`survey.lichess.app`)
+      - traefik.http.routers.limesurvey.entrypoints=websecure
+      - traefik.http.routers.limesurvey.tls=true
+      - traefik.http.routers.limesurvey.tls.certresolver=myresolver
+
+  mysql:
+    image: mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: xxx
+    networks:
+      - limesurvey
+
+networks:
+  frontend:
+    external: true
+  limesurvey:
+    driver: overlay

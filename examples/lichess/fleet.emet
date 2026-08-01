@@ -12,7 +12,7 @@
 --   talos — a fishnet worker, the monitoring/infra services (influx, prometheus,
 --           alertmanager, loki, dns, ntp, syslog), and their ingresses.
 --   kaiju — the primary mongod service.
---   zulip — the zulip stack (app, email, postgres, redis) and its ingress.
+--   remora — the zulip stack (app, email, postgres, redis) and its ingress.
 --
 -- `Lichess` and `Fleet` sit in this directory and win on entry-directory-first
 -- precedence, shadowing `lib/Fleet.emet`. The repo-root `emet.json` search path
@@ -100,10 +100,10 @@ kaiju =
     , glyphs = service "mongod-lichess-primary" (dockerImage "mongo" "7") 27017
     }
 
-zulip : Scroll
-zulip =
+remora : Scroll
+remora =
   scroll
-    { name = "zulip"
+    { name = "remora"
     , notifies = [ "golem-nftables.service" ]
     , glyphs =
         List.concat
@@ -116,4 +116,4 @@ zulip =
     }
 
 main : List Scroll
-main = [ scaly, manta, orbit, talos, kaiju, zulip ]
+main = [ scaly, manta, orbit, talos, kaiju, remora ]

@@ -18,13 +18,13 @@ class ManifestContextTests(unittest.TestCase):
         console = Console(file=buf, force_terminal=False, no_color=True, width=200)
         with mock.patch.object(cli, "console", console):
             cli._render_manifest_context(
-                ["scaly", "manta", "orbit", "talos", "kaiju", "zulip"], ["scaly"]
+                ["scaly", "manta", "orbit", "talos", "kaiju", "remora"], ["scaly"]
             )
         out = buf.getvalue()
         self.assertIn("manifest: 6 scrolls", out)
-        self.assertIn("scaly, manta, orbit, talos, kaiju, zulip", out)
+        self.assertIn("scaly, manta, orbit, talos, kaiju, remora", out)
         self.assertIn("applying to 1 running host: scaly", out)
-        self.assertIn("5 skipped: manta, orbit, talos, kaiju, zulip", out)
+        self.assertIn("5 skipped: manta, orbit, talos, kaiju, remora", out)
 
 
 class ApplyExecTests(unittest.TestCase):

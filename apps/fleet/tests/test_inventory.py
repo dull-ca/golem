@@ -77,9 +77,9 @@ class InventoryEntriesTests(unittest.TestCase):
         self.assertEqual(entries[1].ssh_port, 2202)
 
     def test_preserves_the_given_record_order(self) -> None:
-        records = [_record("zulip"), _record("kaiju")]
+        records = [_record("remora"), _record("kaiju")]
         entries = inventory.inventory_entries(self.paths, records)
-        self.assertEqual([entry.name for entry in entries], ["zulip", "kaiju"])
+        self.assertEqual([entry.name for entry in entries], ["remora", "kaiju"])
 
 
 class RenderHostsTomlTests(unittest.TestCase):
@@ -129,9 +129,9 @@ class RenderHostsTomlTests(unittest.TestCase):
         self.assertIn("remote_port = 9000", toml)
 
     def test_renders_one_block_per_entry_in_order(self) -> None:
-        toml = inventory.render_hosts_toml(self._entries(["zulip", "kaiju"]))
+        toml = inventory.render_hosts_toml(self._entries(["remora", "kaiju"]))
         headers = [line for line in toml.splitlines() if line.startswith("[hosts.")]
-        self.assertEqual(headers, ["[hosts.zulip]", "[hosts.kaiju]"])
+        self.assertEqual(headers, ["[hosts.remora]", "[hosts.kaiju]"])
 
     def test_empty_entries_renders_an_empty_string(self) -> None:
         self.assertEqual(inventory.render_hosts_toml([]), "")

@@ -57,6 +57,8 @@ fn workload_lowers_to_podman_apt_container_volume_service_directory_dropin_and_b
         vec![
             "apt:podman".to_string(),
             "file:/srv/registry/uploads".to_string(),
+            "apt:aardvark-dns".to_string(),
+            "file:/etc/containers/systemd/golem-registry-net.network".to_string(),
             "file:/etc/containers/systemd/golem-registry-data.volume".to_string(),
             "file:/etc/containers/systemd/registry.container".to_string(),
             "systemd:registry.service".to_string(),
@@ -114,6 +116,11 @@ fn container_unit_file_renders_every_typed_key() {
         unit.contains("Environment=REGISTRY_LOG_LEVEL=info"),
         "got:\n{unit}"
     );
+    assert!(
+        unit.contains("Network=golem-registry-net.network"),
+        "got:\n{unit}"
+    );
+    assert!(unit.contains("Label=golem.role=registry"), "got:\n{unit}");
     assert!(unit.contains("Restart=always"), "got:\n{unit}");
     assert!(
         unit.contains("WantedBy=multi-user.target default.target"),
@@ -130,6 +137,64 @@ fn volume_unit_file_renders_the_dot_volume_quadlet() {
     );
     assert!(vol.contains("[Volume]"), "got:\n{vol}");
     assert!(vol.contains("Driver=local"), "got:\n{vol}");
+}
+
+#[test]
+fn only_a_value_systemd_would_split_is_quoted() {
+    let c = compiled();
+    let unit = file_contents(
+        scroll(&c, "registry"),
+        "/etc/containers/systemd/registry.container",
+    );
+    assert!(
+        unit.contains("Environment=REGISTRY_NOTE=\"two words\""),
+        "systemd splits an unquoted value on whitespace; got:\n{unit}"
+    );
+    assert!(
+        unit.contains("Environment=REGISTRY_LOG_LEVEL=info\n"),
+        "a value with nothing to quote is written verbatim; got:\n{unit}"
+    );
+}
+
+#[test]
+fn a_managed_network_writes_a_dot_network_quadlet_naming_the_podman_network() {
+    let c = compiled();
+    let net = file_contents(
+        scroll(&c, "registry"),
+        "/etc/containers/systemd/golem-registry-net.network",
+    );
+    assert!(net.contains("[Network]"), "got:\n{net}");
+    assert!(
+        net.contains("NetworkName=golem-registry-net"),
+        "got:\n{net}"
+    );
+    assert!(net.contains("Driver=bridge"), "got:\n{net}");
+    assert!(
+        keys(scroll(&c, "registry")).contains(&"apt:aardvark-dns".to_string()),
+        "a managed network resolves container names through aardvark-dns"
+    );
+}
+
+#[test]
+fn an_existing_network_is_referenced_by_bare_name_and_writes_no_unit() {
+    let c = compiled();
+    let s = scroll(&c, "web");
+    let unit = file_contents(s, "/etc/containers/systemd/web.container");
+    assert!(unit.contains("Network=frontend"), "got:\n{unit}");
+    assert!(
+        !unit.contains("Network=frontend.network"),
+        "an existing network is not a quadlet reference; got:\n{unit}"
+    );
+    assert!(
+        !keys(s).iter().any(|k| k.ends_with("frontend.network")),
+        "golem does not write a unit for a network it does not own; got: {:?}",
+        keys(s)
+    );
+    assert!(
+        !keys(s).contains(&"apt:aardvark-dns".to_string()),
+        "the owner of the network owns its resolver; got: {:?}",
+        keys(s)
+    );
 }
 
 #[test]

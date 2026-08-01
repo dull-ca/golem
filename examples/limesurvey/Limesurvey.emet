@@ -1,0 +1,121 @@
+module Limesurvey exposing (Config, config, withAdministrator, withAdministratorEmail, route, workload, units)
+
+import Quadlet exposing
+  ( image
+  , env
+  , Network(..)
+  , Restart(..)
+  , Access(..)
+  , Relabel(..)
+  , fromVolume
+  , fromHost
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+import Routing exposing (Route)
+import Routing as R
+
+type Config = Config
+  { domain                : String
+  , administrator         : String
+  , administratorEmail    : String
+  , administratorPassword : String
+  , databasePassword      : String
+  }
+
+config : { domain : String, databasePassword : String, administratorPassword : String } -> Config
+config required =
+  Config
+    { domain = required.domain
+    , administrator = "Lime Administrator"
+    , administratorEmail = "admin@${required.domain}"
+    , administratorPassword = required.administratorPassword
+    , databasePassword = required.databasePassword
+    }
+
+withAdministrator : String -> Config -> Config
+withAdministrator name c =
+  case c of
+    Config spec ->
+      Config
+        { domain = spec.domain
+        , administrator = name
+        , administratorEmail = spec.administratorEmail
+        , administratorPassword = spec.administratorPassword
+        , databasePassword = spec.databasePassword
+        }
+
+withAdministratorEmail : String -> Config -> Config
+withAdministratorEmail address c =
+  case c of
+    Config spec ->
+      Config
+        { domain = spec.domain
+        , administrator = spec.administrator
+        , administratorEmail = address
+        , administratorPassword = spec.administratorPassword
+        , databasePassword = spec.databasePassword
+        }
+
+databaseNetwork = "limesurvey"
+databaseContainer = "mysql"
+databaseName = "limesurvey"
+
+route : Config -> Route
+route c =
+  case c of
+    Config spec -> R.route "limesurvey" spec.domain 80
+
+workload : Config -> Workload
+workload c =
+  case c of
+    Config spec ->
+      Workload
+        { name = "limesurvey"
+        , image = image "docker.io" "adamzammit/limesurvey" "7.0.7"
+        , env =
+            [ env "LIMESURVEY_DB_HOST" databaseContainer
+            , env "LIMESURVEY_DB_NAME" databaseName
+            , env "LIMESURVEY_DB_PASSWORD" spec.databasePassword
+            , env "LIMESURVEY_ADMIN_USER" "admin"
+            , env "LIMESURVEY_ADMIN_PASSWORD" spec.administratorPassword
+            , env "LIMESURVEY_ADMIN_NAME" spec.administrator
+            , env "LIMESURVEY_ADMIN_EMAIL" spec.administratorEmail
+            ]
+        , labels = []
+        , ports = []
+        , networks = [ ManagedNetwork databaseNetwork ]
+        , volumes =
+            [ fromHost "/data/limesurvey/plugins" "/var/www/html/plugins" ReadWrite NoRelabel
+            , fromHost "/data/limesurvey/upload" "/var/www/html/upload" ReadWrite NoRelabel
+            ]
+        , restart = Always
+        , expose = Unexposed
+        }
+
+database : Config -> Workload
+database c =
+  case c of
+    Config spec ->
+      Workload
+        { name = databaseContainer
+        , image = image "docker.io/library" "mariadb" "11.4"
+        , env =
+            [ env "MARIADB_ROOT_PASSWORD" spec.databasePassword
+            , env "MARIADB_DATABASE" databaseName
+            ]
+        , labels = []
+        , ports = []
+        , networks = [ ManagedNetwork databaseNetwork ]
+        , volumes =
+            [ fromVolume "limesurvey-db-data" "/var/lib/mysql" ReadWrite Private ]
+        , restart = Always
+        , expose = Unexposed
+        }
+
+units : Config -> Workload -> List Scroll
+units c published =
+  [ scroll { name = "database", glyphs = workloadGlyphs (database c) }
+  , scroll { name = "limesurvey", glyphs = workloadGlyphs published }
+  ]
