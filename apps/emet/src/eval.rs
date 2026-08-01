@@ -101,7 +101,7 @@ pub enum Value {
     },
     Closure {
         rec: Option<Rc<RecGroup>>,
-        param: String,
+        param: Pattern,
         body: Rc<Spanned<Expr>>,
         env: Env,
     },
@@ -135,7 +135,7 @@ pub struct RecGroup {
 
 struct RecMember {
     name: String,
-    param: String,
+    param: Pattern,
     body: Rc<Spanned<Expr>>,
 }
 
@@ -322,7 +322,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         }
         Expr::Lam { param, body } => Value::Closure {
             rec: None,
-            param: param.clone(),
+            param: param.0.clone(),
             body: Rc::new((**body).clone()),
             env: env.clone(),
         },
@@ -591,7 +591,7 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
                 Some(group) => bind_group(&captured, group),
                 None => captured,
             };
-            let result = eval(&self_bound.insert(param, arg), &body, depth);
+            let result = eval(&bind_param(self_bound, &param, arg), &body, depth);
             *depth -= 1;
             result
         }
@@ -627,6 +627,18 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
         }
         _ => unreachable!("applied non-function"),
     }
+}
+
+fn bind_param(env: Env, param: &Pattern, arg: Value) -> Env {
+    let mut bindings = Vec::new();
+    if !match_pattern(param, &arg, &mut bindings) {
+        unreachable!("refutable argument pattern survived inference");
+    }
+    let mut bound = env;
+    for (name, value) in bindings {
+        bound = bound.insert(name, value);
+    }
+    bound
 }
 
 /// Reconstruct every member of a recursive group as a closure carrying the same
@@ -694,7 +706,7 @@ fn eval_recursive_group(env: &Env, decls: &[Decl], group: &[usize]) -> Option<En
         match curried.0 {
             Expr::Lam { param, body } => members.push(RecMember {
                 name: decls[idx].name.clone(),
-                param,
+                param: param.0,
                 body: Rc::new(*body),
             }),
             _ => return None,

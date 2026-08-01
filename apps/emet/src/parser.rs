@@ -83,7 +83,7 @@ type TokSpan = SimpleSpan<usize>;
 enum SigOrBind {
     Sig(Spanned<Type>),
     Bind {
-        params: Vec<String>,
+        params: Vec<Spanned<Pattern>>,
         body: Spanned<Expr>,
     },
 }
@@ -96,7 +96,7 @@ enum DeclItem {
     },
     Bind {
         name: String,
-        params: Vec<String>,
+        params: Vec<Spanned<Pattern>>,
         body: Spanned<Expr>,
         span: Span,
     },
@@ -107,6 +107,22 @@ where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     select! { Tok::Ident(name) => name }
+}
+
+fn param_parser<'src, I>(
+) -> impl Parser<'src, I, Spanned<Pattern>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+where
+    I: ValueInput<'src, Token = Tok, Span = TokSpan>,
+{
+    let binder = ident().map_with(|name, e| Spanned(Pattern::Var(name), span_range(e.span())));
+
+    let destructure = just(Tok::LParen)
+        .ignore_then(select! { Tok::Upper(u) => u })
+        .then(binder.clone().repeated().collect::<Vec<_>>())
+        .then_ignore(just(Tok::RParen))
+        .map_with(|(ctor, fields), e| Spanned(Pattern::Ctor(ctor, fields), span_range(e.span())));
+
+    choice((binder, destructure))
 }
 
 // The head of a top-level or `let` binding. Plain `ident()` accepted a reserved
@@ -595,7 +611,7 @@ where
 
         let lambda = just(Tok::Backslash)
             .map_with(|_, e| span_range(e.span()).start)
-            .then(ident().repeated().at_least(1).collect::<Vec<_>>())
+            .then(param_parser().repeated().at_least(1).collect::<Vec<_>>())
             .then_ignore(just(Tok::Arrow))
             .then(expr.clone())
             .map(|((start, params), body)| {
@@ -1005,7 +1021,7 @@ where
         .ignore_then(type_parser())
         .map(SigOrBind::Sig);
 
-    let binding_tail = ident()
+    let binding_tail = param_parser()
         .repeated()
         .collect::<Vec<_>>()
         .then_ignore(just(Tok::Equals))
@@ -1059,7 +1075,7 @@ where
         .ignore_then(type_parser())
         .map(SigOrBind::Sig);
 
-    let binding_tail = ident()
+    let binding_tail = param_parser()
         .repeated()
         .collect::<Vec<_>>()
         .then_ignore(just(Tok::Equals))

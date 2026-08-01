@@ -37,7 +37,7 @@ pub fn scc_order(decls: &[Decl]) -> Vec<Vec<usize>> {
 /// dependency graph. The decl's own parameters start out bound, so a parameter
 /// that shadows a sibling name is not counted as a dependency.
 fn dependency_indices(decl: &Decl, names: &HashMap<&str, usize>) -> Vec<usize> {
-    let mut bound: HashSet<String> = decl.params.iter().cloned().collect();
+    let mut bound: HashSet<String> = params_binders(&decl.params).into_iter().collect();
     let mut refs: HashSet<usize> = HashSet::new();
     free_vars_expr(&decl.body, &mut bound, names, &mut refs);
     let mut out: Vec<usize> = refs.into_iter().collect();
@@ -116,11 +116,10 @@ fn free_vars_expr(
             }
         }
         Expr::Lam { param, body } => {
-            let shadowed = bound.insert(param.clone());
+            let introduced = params_binders(std::slice::from_ref(param));
+            let restore = bind_all(&introduced, bound);
             free_vars_expr(body, bound, names, refs);
-            if shadowed {
-                bound.remove(param);
-            }
+            unbind_all(restore, bound);
         }
         Expr::App(f, x) => {
             free_vars_expr(f, bound, names, refs);
@@ -135,20 +134,9 @@ fn free_vars_expr(
                 bound.insert(d.name.clone());
             }
             for d in decls {
-                let mut inner: Vec<(String, bool)> = d
-                    .params
-                    .iter()
-                    .map(|p| (p.clone(), bound.contains(p)))
-                    .collect();
-                for p in &d.params {
-                    bound.insert(p.clone());
-                }
+                let restore = bind_all(&params_binders(&d.params), bound);
                 free_vars_expr(&d.body, bound, names, refs);
-                for (p, was_bound) in inner.drain(..) {
-                    if !was_bound {
-                        bound.remove(&p);
-                    }
-                }
+                unbind_all(restore, bound);
             }
             free_vars_expr(body, bound, names, refs);
             for (name, was_bound) in previously {
@@ -198,14 +186,31 @@ fn free_vars_arm(
 ) {
     let mut introduced = Vec::new();
     collect_pattern_binders(&arm.pat.0, &mut introduced);
+    let restore = bind_all(&introduced, bound);
+    free_vars_expr(&arm.body, bound, names, refs);
+    unbind_all(restore, bound);
+}
+
+fn params_binders(params: &[Spanned<Pattern>]) -> Vec<String> {
+    let mut out = Vec::new();
+    for param in params {
+        collect_pattern_binders(&param.0, &mut out);
+    }
+    out
+}
+
+fn bind_all(introduced: &[String], bound: &mut HashSet<String>) -> Vec<(String, bool)> {
     let restore: Vec<(String, bool)> = introduced
         .iter()
         .map(|n| (n.clone(), bound.contains(n)))
         .collect();
-    for n in &introduced {
+    for n in introduced {
         bound.insert(n.clone());
     }
-    free_vars_expr(&arm.body, bound, names, refs);
+    restore
+}
+
+fn unbind_all(restore: Vec<(String, bool)>, bound: &mut HashSet<String>) {
     for (n, was_bound) in restore {
         if !was_bound {
             bound.remove(&n);

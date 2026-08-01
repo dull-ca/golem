@@ -1482,15 +1482,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
 
         Expr::Lam { param, body } => {
             let tv = inf.fresh();
-            let env2 = env.insert(param.clone(), mono(tv.clone()));
-            let mut added = HashMap::new();
-            added.insert(
-                param.clone(),
-                DefSite {
-                    span: span.clone(),
-                    module: None,
-                },
-            );
+            let mut env2 = env.clone();
+            reject_refutable_param(inf, param)?;
+            infer_pattern(inf, &mut env2, param, &tv)?;
+            let added = pattern_def_sites(param);
             inf.rec_open_scope(body.1.clone(), &env2, added);
             let bt = infer_expr(inf, &env2, body)?;
             inf.rec_close_scope();
@@ -1744,6 +1739,30 @@ fn infer_pattern(
             Ok(())
         }
     }
+}
+
+fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), TypeError> {
+    let Pattern::Ctor(ctor, _) = &param.0 else {
+        return Ok(());
+    };
+    let Some(scheme) = inf.constructor_scheme(ctor) else {
+        return Ok(());
+    };
+    let (_, result) = uncurry(&scheme.ty);
+    let Type::Con(type_name, _) = result else {
+        return Ok(());
+    };
+    let siblings = inf.sum_type_constructors(&type_name).unwrap_or_default();
+    if siblings.len() == 1 {
+        return Ok(());
+    }
+    Err(TypeError::new(
+        format!("`{ctor}` is one of several constructors of `{type_name}`, so this pattern could fail"),
+        param.1.clone(),
+    )
+    .note(format!(
+        "an argument pattern must always match. Take the whole `{type_name}` as a parameter and branch on it with `case … of`, which is checked for exhaustiveness."
+    )))
 }
 
 fn uncurry(ty: &Type) -> (Vec<Type>, Type) {

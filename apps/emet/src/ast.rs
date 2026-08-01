@@ -208,7 +208,7 @@ pub enum Expr {
     /// when saturated, evaluate to `Value::Data` (ADR 0005).
     Ctor(String),
     Lam {
-        param: String,
+        param: Spanned<Pattern>,
         body: Box<Spanned<Expr>>,
     },
     App(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
@@ -343,7 +343,7 @@ pub enum Pattern {
 pub struct Decl {
     pub name: String,
     pub sig: Option<Spanned<Type>>,
-    pub params: Vec<String>,
+    pub params: Vec<Spanned<Pattern>>,
     pub body: Spanned<Expr>,
     pub span: Span,
 }
