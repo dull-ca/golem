@@ -149,20 +149,24 @@ fn exit_code(report: Option<&serde_json::Value>) -> i32 {
 }
 
 pub async fn run(bytes: Vec<u8>, conn: Conn, json: bool, reattach: bool) -> Result<()> {
+    let code = follow(bytes, conn, json, reattach).await?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+async fn follow(bytes: Vec<u8>, conn: Conn, json: bool, reattach: bool) -> Result<i32> {
     let id = if reattach {
         conn.get_latest(0).await?.reconcile_id
     } else {
         conn.post_manifest(bytes).await?.reconcile_id
     };
-    let code = if !json && std::io::stdout().is_terminal() {
-        run_tui(conn, id).await?
+    if !json && std::io::stdout().is_terminal() {
+        run_tui(conn, id).await
     } else {
-        run_plain(&conn, id, json).await?
-    };
-    if code != 0 {
-        std::process::exit(code);
+        run_plain(&conn, id, json).await
     }
-    Ok(())
 }
 
 async fn run_plain(conn: &Conn, id: u64, json: bool) -> Result<i32> {

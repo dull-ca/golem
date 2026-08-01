@@ -1,3 +1,5 @@
+use std::io::copy;
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -6,11 +8,15 @@ use std::time::{Duration, Instant};
 use golemctl::conn::{AuthSource, Conn};
 use golemctl::fleet;
 use golemctl::inventory::{self, Endpoint, Target};
-use golemctl::tunnel::SSH_BIN_ENV;
+use golemctl::tunnel::{Tunnel, SSH_BIN_ENV};
 use golemd::fake_reconciler::FakeReconciler;
 use golemd::foreman::Foreman;
 use golemd::http;
 use golemd::planroom::MemoryPlanRoom;
+
+const FORWARD_SPEC_ENV: &str = "GOLEMCTL_FAKE_SSH_FORWARD";
+const FORWARD_REMOTE_ENV: &str = "GOLEMCTL_FAKE_SSH_REMOTE";
+const FORWARDER_TEST: &str = "the_fake_ssh_forwarder_re_exec_of_this_test_binary";
 
 static SSH_BIN_LOCK: Mutex<()> = Mutex::new(());
 
@@ -21,10 +27,18 @@ struct FakeSsh {
 
 impl FakeSsh {
     fn standing_in_for_ssh(body: &str) -> FakeSsh {
+        FakeSsh::written(|_| body.to_string())
+    }
+
+    fn forwarding() -> FakeSsh {
+        FakeSsh::written(|dir| forwarder_script(&dir.join("pid")))
+    }
+
+    fn written(body: impl Fn(&Path) -> String) -> FakeSsh {
         let lock = SSH_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ssh");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\n{}\n", body(dir.path()))).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::env::set_var(SSH_BIN_ENV, &path);
         FakeSsh { dir, _lock: lock }
@@ -41,35 +55,50 @@ impl Drop for FakeSsh {
     }
 }
 
-const FORWARDING_SSH: &str = r#"echo $$ > "$GOLEMCTL_TEST_PIDFILE"
-exec python3 -c '
-import socket, sys, threading
-spec = sys.argv[sys.argv.index("-L") + 1].split(":")
-local_port, remote_port = int(spec[1]), int(spec[3])
-def pump(src, dst):
-    try:
-        while True:
-            block = src.recv(65536)
-            if not block:
-                break
-            dst.sendall(block)
-    except OSError:
-        pass
-    finally:
-        try:
-            dst.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
-server = socket.socket()
-server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind(("127.0.0.1", local_port))
-server.listen(16)
-while True:
-    downstream, _ = server.accept()
-    upstream = socket.create_connection(("127.0.0.1", remote_port))
-    threading.Thread(target=pump, args=(downstream, upstream), daemon=True).start()
-    threading.Thread(target=pump, args=(upstream, downstream), daemon=True).start()
-' "$@""#;
+fn forwarder_script(pidfile: &Path) -> String {
+    let binary = std::env::current_exe().unwrap();
+    format!(
+        r#"echo $$ > {pidfile}
+while [ $# -gt 0 ] && [ "$1" != "-L" ]; do shift; done
+[ $# -lt 2 ] && exit 9
+{FORWARD_SPEC_ENV}="$2" exec {binary} --exact {FORWARDER_TEST} --ignored --nocapture"#,
+        pidfile = pidfile.display(),
+        binary = binary.display(),
+    )
+}
+
+#[test]
+#[ignore = "not a test — the fake ssh forwarder the ssh targets re-exec"]
+fn the_fake_ssh_forwarder_re_exec_of_this_test_binary() {
+    let Ok(spec) = std::env::var(FORWARD_SPEC_ENV) else {
+        return;
+    };
+    let ports: Vec<&str> = spec.split(':').collect();
+    let local: u16 = ports[1].parse().unwrap();
+    let remote: u16 = match std::env::var(FORWARD_REMOTE_ENV) {
+        Ok(overridden) => overridden.parse().unwrap(),
+        Err(_) => ports[3].parse().unwrap(),
+    };
+    let server = TcpListener::bind(("127.0.0.1", local)).unwrap();
+    for downstream in server.incoming() {
+        let Ok(downstream) = downstream else { continue };
+        let Ok(upstream) = TcpStream::connect(("127.0.0.1", remote)) else {
+            continue;
+        };
+        pump(
+            downstream.try_clone().unwrap(),
+            upstream.try_clone().unwrap(),
+        );
+        pump(upstream, downstream);
+    }
+}
+
+fn pump(mut from: TcpStream, mut to: TcpStream) {
+    std::thread::spawn(move || {
+        let _ = copy(&mut from, &mut to);
+        let _ = to.shutdown(Shutdown::Write);
+    });
+}
 
 const REFUSING_SSH: &str =
     "echo 'ssh: connect to host scaly port 22: No route to host' >&2\nexit 255";
@@ -109,17 +138,52 @@ fn ssh_inventory(
     inventory::load(&path).unwrap().select(None).unwrap()
 }
 
+fn forward_pid(ssh: &FakeSsh) -> String {
+    std::fs::read_to_string(ssh.path("pid"))
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
 fn lives(pid: &str) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// The whole point of ADR 0042 §2: a host reached over ssh is a loopback-bound
-/// daemon, and the verb speaks plain gated HTTP through a forward golemctl owns.
+fn await_death(pid: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lives(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !lives(pid)
+}
+
+#[test]
+fn the_forward_is_open_while_the_tunnel_lives_and_gone_once_it_drops() {
+    let ssh = FakeSsh::forwarding();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let remote_port = listener.local_addr().unwrap().port();
+
+    let tunnel = Tunnel::open(
+        "golem@127.0.0.1",
+        None,
+        remote_port,
+        &[],
+        ssh.path("ssh").to_str().unwrap(),
+    )
+    .unwrap();
+    let local_port = tunnel.local_port;
+    assert!(TcpStream::connect(("127.0.0.1", local_port)).is_ok());
+
+    let pid = forward_pid(&ssh);
+    assert!(lives(&pid));
+    drop(tunnel);
+    assert!(await_death(&pid), "the forward dies with the tunnel");
+    assert!(TcpStream::connect(("127.0.0.1", local_port)).is_err());
+}
+
 #[tokio::test]
 async fn an_ssh_target_reaches_a_loopback_gated_daemon_through_the_forward() {
-    let ssh = FakeSsh::standing_in_for_ssh(FORWARDING_SSH);
-    let pidfile = ssh.path("pid");
-    std::env::set_var("GOLEMCTL_TEST_PIDFILE", &pidfile);
+    let ssh = FakeSsh::forwarding();
     let token_file = ssh.path("token");
     std::fs::write(&token_file, "secret\n").unwrap();
     let remote_port = serve_gated("scaly", Some("secret")).await;
@@ -139,39 +203,113 @@ async fn an_ssh_target_reaches_a_loopback_gated_daemon_through_the_forward() {
     let status = conn.get_json("status").await.unwrap();
     assert_eq!(status["host"], "scaly");
 
-    let pid = std::fs::read_to_string(&pidfile)
-        .unwrap()
-        .trim()
-        .to_string();
+    let pid = forward_pid(&ssh);
     assert!(lives(&pid), "the forward runs while the verb does");
     drop(conn);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while lives(&pid) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(25));
-    }
     assert!(
-        !lives(&pid),
+        await_death(&pid),
         "the forward dies with the conn that opened it"
     );
-    std::env::remove_var("GOLEMCTL_TEST_PIDFILE");
 }
 
-/// A missing token is still a 401 through the tunnel — the forward is the
-/// transport, never the authorization (ADR 0042 §3).
 #[tokio::test]
 async fn a_forwarded_verb_without_the_secret_is_still_refused() {
-    let ssh = FakeSsh::standing_in_for_ssh(FORWARDING_SSH);
-    std::env::set_var("GOLEMCTL_TEST_PIDFILE", ssh.path("pid"));
+    let ssh = FakeSsh::forwarding();
     let remote_port = serve_gated("scaly", Some("secret")).await;
     let targets = ssh_inventory(ssh.dir.path(), "scaly", remote_port, None);
     let conn = Conn::open(&targets[0], &AuthSource::None).await.unwrap();
     let err = format!("{:#}", conn.get_json("status").await.unwrap_err());
     assert!(err.contains("GOLEM_AUTH_TOKEN"), "{err}");
-    std::env::remove_var("GOLEMCTL_TEST_PIDFILE");
 }
 
-/// One host's dead ssh is that host's line, not the fleet's failure: the status
-/// row reports it through the same `concise_error` an http host's refusal takes.
+#[test]
+fn an_apply_that_exits_nonzero_still_takes_its_forward_down_with_it() {
+    let ssh = FakeSsh::forwarding();
+    let daemon = TcpListener::bind("127.0.0.1:0").unwrap();
+    let daemon_port = daemon.local_addr().unwrap().port();
+    std::thread::spawn(move || serve_a_rolled_back_apply(daemon));
+
+    let manifest = ssh.path("manifest.bin");
+    std::fs::write(&manifest, b"\x00").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_golemctl"))
+        .args(["apply", manifest.to_str().unwrap(), "ssh://golem@127.0.0.1"])
+        .env(SSH_BIN_ENV, ssh.path("ssh"))
+        .env(FORWARD_REMOTE_ENV, daemon_port.to_string())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("apply rolled_back"),
+        "the nonzero exit is the report's, not a transport failure: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let pid = forward_pid(&ssh);
+    assert!(
+        await_death(&pid),
+        "the forward outlived the verb that exited {:?}",
+        output.status.code()
+    );
+}
+
+fn serve_a_rolled_back_apply(listener: TcpListener) {
+    while let Ok((mut stream, _)) = listener.accept() {
+        let request = read_request(&mut stream);
+        if request.is_empty() {
+            continue;
+        }
+        let (status, body) = if request.starts_with("POST /manifest") {
+            ("202 Accepted", r#"{"reconcile_id":1}"#.to_string())
+        } else {
+            (
+                "200 OK",
+                serde_json::json!({
+                    "reconcile_id": 1,
+                    "phase": "rolled_back",
+                    "units": [],
+                    "events": [],
+                    "cursor": 1,
+                    "report": {
+                        "outcome": "rolled_back",
+                        "revision": { "id": 1 },
+                        "units": []
+                    }
+                })
+                .to_string(),
+            )
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+        let _ = std::io::Write::flush(&mut stream);
+    }
+}
+
+fn read_request(stream: &mut TcpStream) -> String {
+    let mut buf = [0u8; 8192];
+    let mut text = String::new();
+    loop {
+        let read = std::io::Read::read(stream, &mut buf).unwrap_or(0);
+        if read == 0 {
+            break;
+        }
+        text.push_str(&String::from_utf8_lossy(&buf[..read]));
+        if text.contains("\r\n\r\n") {
+            break;
+        }
+    }
+    text
+}
+
 #[tokio::test]
 async fn a_fleet_status_over_a_failing_ssh_reports_what_ssh_said() {
     let _ssh = FakeSsh::standing_in_for_ssh(REFUSING_SSH);

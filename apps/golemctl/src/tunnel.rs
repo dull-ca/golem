@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 
 pub const SSH_BIN_ENV: &str = "GOLEMCTL_SSH";
+pub const EXIT_ON_FORWARD_FAILURE: &str = "ExitOnForwardFailure=yes";
 pub const DEFAULT_SSH_BIN: &str = "ssh";
 pub const CONNECT_INTERVAL: Duration = Duration::from_millis(250);
 pub const CONNECT_BUDGET: Duration = Duration::from_secs(10);
@@ -66,6 +67,8 @@ impl Tunnel {
         let mut command = Command::new(ssh_bin);
         command
             .arg("-N")
+            .arg("-o")
+            .arg(EXIT_ON_FORWARD_FAILURE)
             .arg("-L")
             .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"));
         if let Some(port) = ssh_port {
@@ -183,7 +186,6 @@ fn free_loopback_port() -> Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpStream;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -218,14 +220,15 @@ mod tests {
             .map(|line| line.to_string())
             .collect();
         assert_eq!(recorded[0], "-N");
-        assert_eq!(recorded[1], "-L");
-        let spec: Vec<&str> = recorded[2].split(':').collect();
+        assert_eq!(recorded[1..3], ["-o", EXIT_ON_FORWARD_FAILURE]);
+        assert_eq!(recorded[3], "-L");
+        let spec: Vec<&str> = recorded[4].split(':').collect();
         assert_eq!(spec[0], "127.0.0.1");
         assert!(spec[1].parse::<u16>().unwrap() > 0);
         assert_eq!(spec[2], "127.0.0.1");
         assert_eq!(spec[3], "7474");
         assert_eq!(
-            recorded[3..],
+            recorded[5..],
             ["-p", "2222", "-i", "/keys/id", "golem@scaly"]
         );
         assert!(format!("{err:#}").contains("golem@scaly"), "{err:#}");
@@ -270,20 +273,5 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("/nonexistent/ssh"), "{err}");
-    }
-
-    #[test]
-    fn the_forward_is_open_while_the_tunnel_lives_and_gone_once_it_drops() {
-        let dir = tempfile::tempdir().unwrap();
-        let ssh = fake_ssh(
-            dir.path(),
-            "listen",
-            "exec python3 -c 'import socket,sys,time\nspec=sys.argv[sys.argv.index(\"-L\")+1].split(\":\")\ns=socket.socket()\ns.bind((spec[0],int(spec[1])))\ns.listen(16)\ntime.sleep(30)' \"$@\"",
-        );
-        let tunnel = Tunnel::open("golem@scaly", None, 7474, &[], ssh.to_str().unwrap()).unwrap();
-        let port = tunnel.local_port;
-        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
-        drop(tunnel);
-        assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }
 }
