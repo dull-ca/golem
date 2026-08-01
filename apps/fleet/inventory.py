@@ -1,3 +1,18 @@
+"""Render the booted VMs as the TOML inventory `golemctl fleet` reads (ADR 0038).
+
+Each guest is an ssh-form host (ADR 0042): its `[hosts.<name>]` table carries
+the ssh destination and forwarded ssh port, the fleet key and the host-checking
+options every harness ssh uses, and the path to the shared token. There is no
+url to write — the guests' daemons are loopback-bound, and golemctl opens its
+own forward from these fields.
+
+A VM's name is also its scroll's name, which is what makes the file drivable:
+golemctl matches inventory names against the manifest's scroll names and skips
+any host the manifest is silent about.
+
+The TOML is written by hand — the stdlib reads TOML but does not write it.
+"""
+
 from __future__ import annotations
 
 from typing import Iterable
@@ -21,6 +36,11 @@ SSH_ARGS = (
 
 
 class HostEntry:
+    """One guest as golemctl needs to see it. `remote_port` is `None` for the
+    usual case — the daemon on `config.GOLEMD_GUEST_PORT` — and is written out
+    only when it differs, so the common inventory says nothing golemctl already
+    assumes."""
+
     def __init__(
         self,
         name: str,
@@ -39,6 +59,9 @@ class HostEntry:
 
 
 def host_entry(paths: Paths, record: VmRecord) -> HostEntry:
+    """A record as its inventory host. Paths are resolved absolute: golemctl may
+    be run from anywhere, and a relative key or token path would be read against
+    its working directory, not the repo root."""
     return HostEntry(
         name=record.name,
         ssh=f"{config.GUEST_USER}@127.0.0.1",
@@ -49,6 +72,7 @@ def host_entry(paths: Paths, record: VmRecord) -> HostEntry:
 
 
 def inventory_entries(paths: Paths, records: Iterable[VmRecord]) -> list[HostEntry]:
+    """Each record as its inventory host, in the given order."""
     return [host_entry(paths, record) for record in records]
 
 
@@ -70,6 +94,11 @@ def _toml_array(values: Iterable[str]) -> str:
 
 
 def render_hosts_toml(entries: Iterable[HostEntry]) -> str:
+    """One `[hosts.<name>]` block per entry, in the order given. A name that is
+    not a bare TOML key is quoted, and every string is escaped, so a name, path,
+    or ssh argument carrying a quote or backslash still parses back. No entries
+    renders empty rather than a bare `[hosts]`: golemctl errors on an inventory
+    with no hosts, which is the right answer for a fleet with none."""
     blocks: list[str] = []
     for entry in entries:
         lines = [f"[hosts.{_toml_key(entry.name)}]"]

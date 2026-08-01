@@ -1,3 +1,16 @@
+"""Read a guest's golemd through an ssh forward the harness opens itself.
+
+The guests' daemons bind `127.0.0.1:7474` (ADR 0042), so the `8800+slot` QEMU
+hostfwd reaches nothing: the only route in is ssh, which is the same route
+`golemctl` takes for real hosts. `get_json` opens a forward, makes exactly one
+authorized request through it, and tears the forward down again — the harness's
+read-only verbs (`status`, `deploy`'s readiness poll) are occasional, so a
+per-call forward costs less than keeping one alive per guest.
+
+The wait matters: ssh returns before the forward is listening, so the local port
+is polled until it answers rather than dialed straight away.
+"""
+
 from __future__ import annotations
 
 import socket
@@ -72,6 +85,10 @@ def get_json(
     connect_timeout: float = CONNECT_TIMEOUT_S,
     request_timeout: float = REQUEST_TIMEOUT_S,
 ) -> Any:
+    """GET one path from a guest's golemd, bearing `token`, and decode the JSON.
+    Raises `TunnelError` if the forward never comes up and `httpx` errors for
+    anything the daemon answered — including the 401 a wrong token earns. The
+    forward is killed in `finally`, so no ssh survives a failed call."""
     local_port = free_local_port()
     proc = subprocess.Popen(
         ssh_forward_argv(paths, record, local_port, remote_port),

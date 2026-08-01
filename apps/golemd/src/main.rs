@@ -33,6 +33,9 @@ struct Cli {
     host: String,
     #[arg(long, default_value = "/var/lib/golem")]
     state_dir: PathBuf,
+    /// Address to serve on. Loopback is the deployed posture (ADR 0042):
+    /// operators reach the daemon through an ssh forward, and a routable bind
+    /// publishes root-equivalent control of this host.
     #[arg(long, default_value = "127.0.0.1:7474")]
     listen: SocketAddr,
     #[arg(long, value_enum, default_value_t = ReconcilerKind::Fake, env = "GOLEM_RECONCILER")]
@@ -41,10 +44,19 @@ struct Cli {
     /// apply (`config::load`).
     #[arg(long)]
     config: Option<PathBuf>,
+    /// File holding the shared secret every request must present as
+    /// `Authorization: Bearer <token>`. Overrides `[auth] token_file`. With
+    /// neither set golemd answers anyone who reaches the port — dev only.
     #[arg(long)]
     auth_token_file: Option<PathBuf>,
 }
 
+/// Read the secret golemd will require, once, at startup — an unreadable or
+/// empty file stops the daemon rather than starting it ungated, so a
+/// mis-provisioned token can never look like a working deployment. `None` (no
+/// flag and no `[auth]` table) is the deliberate ungated posture, the only way
+/// to get one. Trailing whitespace is trimmed because the file is written by
+/// hand and by shell redirection as often as by the harness.
 fn load_required_token(path: Option<PathBuf>) -> Result<Option<Arc<String>>> {
     let Some(path) = path else {
         return Ok(None);

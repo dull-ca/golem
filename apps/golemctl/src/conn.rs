@@ -1,3 +1,27 @@
+//! One way to reach a daemon, whatever the inventory said (ADR 0042).
+//!
+//! Every verb — single-host and fleet alike — goes through [`Conn`]: it resolves
+//! a [`Target`] to a base URL, opening an ssh forward first when the endpoint is
+//! an ssh one ([`crate::tunnel`]), attaches the bearer token to each request,
+//! and turns a `401` into an error naming the environment variables an operator
+//! can set. Callers speak in paths (`status`, `manifest`, `reconciles/7`) and
+//! never see whether the bytes crossed a tunnel or which credential carried
+//! them.
+//!
+//! **Where the token comes from**, nearest source winning
+//! ([`resolve_auth`]): the target's own inventory `token_file`, then
+//! `GOLEM_AUTH_TOKEN`, then the file named by `GOLEM_AUTH_TOKEN_FILE`. A
+//! per-host file overrides the ambient environment so one fan-out can span
+//! hosts holding different secrets. Nothing found is [`AuthSource::None`] — no
+//! header at all, which an ungated daemon accepts and a gated one refuses.
+//! Reading an empty token file is an error rather than a silent `None`: a
+//! truncated secret must not degrade into an unauthenticated request.
+//!
+//! [`AuthSource`] and [`Conn`] both hand-write `Debug` to print [`REDACTED`] in
+//! place of the secret. Every derived `Debug` in golemctl is one `{:?}` in an
+//! error path away from putting the token in a log or a terminal, so the type
+//! that holds it never learns to print it.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -10,6 +34,9 @@ use crate::tunnel::{ssh_bin, Tunnel};
 pub const AUTH_TOKEN_ENV: &str = "GOLEM_AUTH_TOKEN";
 pub const AUTH_TOKEN_FILE_ENV: &str = "GOLEM_AUTH_TOKEN_FILE";
 
+/// The ambient credential a run carries, resolved once before any host is
+/// contacted so a fan-out reads the environment a single time. `None` means
+/// requests go out with no `Authorization` header.
 #[derive(Clone, PartialEq, Eq)]
 pub enum AuthSource {
     None,
@@ -36,6 +63,10 @@ impl AuthSource {
     }
 }
 
+/// The token to use, taking the first of: a host's own inventory `token_file`,
+/// `GOLEM_AUTH_TOKEN`, the file at `GOLEM_AUTH_TOKEN_FILE`. Absent everywhere
+/// is [`AuthSource::None`], not an error — golemctl still talks to ungated
+/// daemons.
 pub fn resolve_auth(inventory_token_file: Option<&Path>) -> Result<AuthSource> {
     if let Some(path) = inventory_token_file {
         return Ok(AuthSource::Token(read_token_file(path)?));
@@ -67,6 +98,9 @@ fn read_token_file(path: &Path) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+/// Open the forward off the async runtime: [`Tunnel::open`] spawns ssh and then
+/// polls a socket until it answers, which would block a runtime worker — and
+/// with a fleet fan-out, every other host's task with it.
 async fn forward(
     destination: String,
     ssh_port: Option<u16>,
@@ -80,6 +114,14 @@ async fn forward(
     .context("open an ssh forward")?
 }
 
+/// An open line to one daemon: where to send, what to send with it, and — for
+/// an ssh target — the forward that line rides on, kept alive exactly as long
+/// as the `Conn` is.
+///
+/// NOTE: field order is load-bearing. Rust drops fields in declaration order,
+/// so `client` (and the keep-alive sockets in its pool) must be declared before
+/// `tunnel`; reversing them kills ssh while connections through it are still
+/// open.
 pub struct Conn {
     base: String,
     token: Option<String>,
@@ -225,6 +267,9 @@ fn response_error(status: StatusCode, text: &str) -> anyhow::Error {
     anyhow!("{status}: {text}")
 }
 
+/// A `401` says the daemon is gated and this run holds the wrong secret or
+/// none. The message names every place golemctl would have looked, because the
+/// fix is always to put the secret in one of them — not to retry.
 fn unauthorized_error() -> anyhow::Error {
     anyhow!(
         "unauthorized — set {AUTH_TOKEN_ENV} or {AUTH_TOKEN_FILE_ENV} (or an inventory host's token_file) to golemd's configured secret"
@@ -236,6 +281,10 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex, MutexGuard};
 
+    // The precedence tests set process-wide environment variables, so they hold
+    // this for their whole body and restore what was there on the way out.
+    // Cargo runs a crate's tests on threads of one process; without the lock
+    // one test's `GOLEM_AUTH_TOKEN` decides another's outcome.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {

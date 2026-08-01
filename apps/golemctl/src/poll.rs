@@ -1,12 +1,15 @@
-//! The typed client for golemd's fire-then-poll apply protocol (ADR 0033
-//! §1–2). [`post_manifest`] fires the manifest and gets back a `202
-//! { reconcile_id }`; [`get_progress`] then polls `GET
+//! The typed shapes of golemd's fire-then-poll apply protocol (ADR 0033 §1–2).
+//! [`crate::conn::Conn::post_manifest`] fires the manifest and gets back a `202
+//! { reconcile_id }`; [`crate::conn::Conn::get_progress`] then polls `GET
 //! /reconciles/<id>?after=<cursor>` until the projection settles. The
 //! projection — the folded per-glyph [`GlyphState`] under each [`UnitProgress`]
 //! — is the truth; `events` is the ordered log golemd streams alongside it,
-//! rendered as garnish under the active unit. [`get_latest`] hits
-//! `/reconciles/latest` to reattach to the newest attempt when the caller has
-//! lost its id.
+//! rendered as garnish under the active unit.
+//! [`crate::conn::Conn::get_latest`] hits `/reconciles/latest` to reattach to
+//! the newest attempt when the caller has lost its id.
+//!
+//! The requests themselves live on [`crate::conn::Conn`], which is what knows
+//! whether they cross an ssh forward and which token they carry.
 //!
 //! These types mirror golemd's `report`/projection wire shape; `serde` field
 //! and variant names are the contract, so their spelling matches the JSON

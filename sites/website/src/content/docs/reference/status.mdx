@@ -31,6 +31,11 @@ An honest split between what the code does and what is still a design.
 - **`golemctl`.** `apply` (compile-and-ship or ship a prebuilt manifest),
   `state`, `history`, `show`. HTTP: `POST /manifest`, `GET /state`,
   `/revisions`, `/revisions/:id`, `/status`.
+- **SSH transport and the authorization gate.** The agent binds loopback and
+  requires `Authorization: Bearer <token>` against a configured token file;
+  `golemctl` takes an `ssh://` target or an inventory `ssh` host, opens the
+  forward itself, and carries the secret. See
+  [Trust model](/explanation/trust/).
 - **The lichess fleet in Emet.** A real multi-host deploy authored against a
   shared Emet library (`examples/lichess/`), compiling to scrolls of the
   four glyphs. See [the tour](/guides/litour/).
@@ -41,9 +46,13 @@ An honest split between what the code does and what is still a design.
   The following are designs, not working features.
 </Aside>
 
-- **Signing and trust.** No manifest signature, no trusted-key check. The
-  apply path is unauthenticated; bind the listener to localhost or a tunnel.
-  See [Trust model](/explanation/trust/).
+- **Per-user identity.** The agent binds loopback and requires one shared
+  bearer token, reached over an SSH forward `golemctl` opens — that much is
+  built. What is not: knowing *which* person submitted. Per-user tokens, an
+  audit trail, and SSO group mapping arrive with an authentik-issued token
+  replacing the shared secret. Manifest signing is not on the roadmap; the
+  tunnel already holds that boundary. See
+  [Trust model](/explanation/trust/).
 - **Multi-node orchestration.** A manifest carries the whole fleet, but each
   `golemd` acts only on its own scroll. There is no coordinator, no ordered
   drain, no health-gated rollback across hosts.

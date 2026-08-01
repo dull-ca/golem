@@ -22,9 +22,13 @@
 -- allowlist is the minimum that keeps a fleet box from orphaning itself —
 -- established/related and loopback so replies and local traffic survive, icmp so
 -- the box stays diagnosable, dhcp so it keeps its lease, ssh so an operator can
--- reach it, and golemd's 7474 so the next scroll can reach it. Sort order is the
--- merge order, and `00-` sorts first, so the chain exists before any drop-in
--- adds a rule to it.
+-- reach it, and golemd's 7474. Sort order is the merge order, and `00-` sorts
+-- first, so the chain exists before any drop-in adds a rule to it.
+--
+-- NOTE: the 7474 accept matches nothing under ADR 0042. golemd binds loopback
+-- and the next apply arrives through an ssh forward, so its packets land on `lo`
+-- and the loopback rule accepts them first. The rule is left in place because
+-- removing it changes the base's content id on every host that carries it.
 --
 -- `/etc/nftables.d` is written as an explicit `directory` glyph, not left to the
 -- drop-in files' parents. A parent golem creates on the way to writing a file is

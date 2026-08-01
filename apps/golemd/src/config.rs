@@ -1,4 +1,5 @@
-//! golemd's operational config: the `golemd.toml` `[retry]` and `[enact]` tables.
+//! golemd's operational config: the `golemd.toml` `[retry]`, `[enact]`, and
+//! `[auth]` tables.
 //!
 //! This is golemd's PRIVATE surface — it is never on the manifest wire and never
 //! hashed. Absent file, every field falls back to a built-in default, so a
@@ -23,12 +24,21 @@
 //!
 //! [enact]
 //! workers            = 4        # concurrent units the parallel enact executor runs
+//!
+//! [auth]
+//! token_file         = "/etc/golem/token"  # no default — absent means no gate
 //! ```
 //!
 //! The `[retry]` table is the fleet-wide default; the per-scroll `policy`
 //! cascade overrides it, nearest scope winning (`foreman::resolve_retry`,
 //! ADR 0029 §3, ADR 0031 §3). `[enact]` has no per-scroll override — it is a
 //! host-wide knob.
+//!
+//! `[auth] token_file` names the file holding the shared secret every request
+//! must present as `Authorization: Bearer <token>` (ADR 0042). It is the only
+//! field here with no built-in default: absent, golemd runs *ungated* and
+//! anyone who reaches the port controls the host — the dev and test posture,
+//! never a deployed one. `--auth-token-file` overrides it (`main.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -108,13 +118,17 @@ impl Default for EnactConfig {
     }
 }
 
+/// Where the shared bearer secret lives. `None` — the default — is the gate
+/// switched off, which is why this is an `Option` rather than a path with a
+/// built-in location: golemd must never invent a token file and imply a
+/// protection it does not have (ADR 0042).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthConfig {
     pub token_file: Option<PathBuf>,
 }
 
-/// The whole resolved `golemd.toml`: the fleet-default retry pace and the
-/// host-wide enact width.
+/// The whole resolved `golemd.toml`: the fleet-default retry pace, the
+/// host-wide enact width, and where the bearer secret is read from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GolemdConfig {
     pub retry: RetryConfig,
@@ -151,7 +165,7 @@ struct RetryTable {
 }
 
 /// A `--config` path was given but could not be read (`Read`) or was not valid
-/// TOML for the `[retry]` shape (`Parse`). Absent path is not an error — it
+/// TOML for the table shapes above (`Parse`). Absent path is not an error — it
 /// yields the defaults.
 #[derive(Debug)]
 pub enum ConfigError {
@@ -170,9 +184,10 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Resolve the fleet-default `RetryConfig`. `None` (no `--config`) is the
-/// defaults; a path is read and its present `[retry]` fields override the
-/// defaults field by field, absent fields keeping them.
+/// Resolve the whole `GolemdConfig`. `None` (no `--config`) is the defaults;
+/// a path is read and every field present in it overrides its default one at a
+/// time, absent fields keeping theirs. `[auth] token_file` has no default to
+/// keep, so an absent `[auth]` leaves the gate off.
 pub fn load(path: Option<&Path>) -> Result<GolemdConfig, ConfigError> {
     let Some(path) = path else {
         return Ok(GolemdConfig {

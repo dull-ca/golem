@@ -147,7 +147,9 @@ Each host's scroll then says `notifies = [ "golem-nftables.service" ]`, so a
 changed drop-in earns a reload of the ruleset at the end of the apply. The base
 chain's policy is `drop`, which makes that allowlist real: a port nothing
 declares is closed. Its standing accepts are the ones that keep a box reachable
-— established traffic, loopback, icmp, dhcp, ssh, and golemd's own `7474`.
+— established traffic, loopback, icmp, dhcp, ssh, and golemd's own `7474`. That
+last one is vestigial: the agent binds loopback and the next apply arrives over
+SSH, so ssh is what keeps the box reachable to golem at all.
 
 ## The fleet
 

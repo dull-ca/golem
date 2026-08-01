@@ -66,10 +66,12 @@ The agent keeps its journal in `--state-dir` (default `/var/lib/golem`,
 file `planroom.db`). See the [CLI reference](/reference/cli/) for every
 flag.
 
-<Aside type="caution" title="No authentication yet">
-  `golemd` does not verify who sent a manifest. Keep the listener on
-  `127.0.0.1` or behind an SSH forward until signing lands — see
-  [Trust model](/explanation/trust/).
+<Aside type="caution" title="This agent is open">
+  Started with no `--auth-token-file` (and no `[auth] token_file`), `golemd`
+  answers anyone who reaches the port — fine on `127.0.0.1` while you are
+  learning, never on a deployed box. A real agent stays loopback-bound,
+  requires a shared bearer token, and is reached through an SSH forward
+  `golemctl` opens for you. See [Trust model](/explanation/trust/).
 </Aside>
 
 ## What's next

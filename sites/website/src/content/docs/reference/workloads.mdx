@@ -179,8 +179,10 @@ reloaded once the files are in place.
 
 <Aside type="caution" title="The base chain drops what nothing declares">
   `00-base` hooks input at `policy drop`, with standing accepts for established
-  traffic, loopback, icmp, dhcp, ssh, and golemd's `7474`. Anything else a box
-  listens on is closed unless a workload declares it through `expose`.
+  traffic, loopback, icmp, dhcp, ssh, and golemd's `7474` — the last of which
+  matches nothing now that the agent binds loopback and applies arrive through
+  an SSH forward. Anything else a box listens on is closed unless a workload
+  declares it through `expose`.
 </Aside>
 
 <Aside type="note" title="The reverse proxy is a different container">

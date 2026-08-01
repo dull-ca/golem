@@ -29,7 +29,7 @@ with the harness importable):
 ```bash
 fleet up                                  # boot the six lichess VMs
 fleet deploy                              # build + install golemd on each
-fleet apply examples/lichess/fleet.emet   # compile the scroll, POST to each daemon
+fleet apply examples/lichess/fleet.emet   # compile the scroll, fan it out to every guest
 fleet status                              # who is up, golemd reachable, last revision
 fleet logs scaly -f                       # tail one guest's golemd journal
 fleet reset                               # kill everything, back to a clean slate
@@ -39,6 +39,15 @@ fleet reset                               # kill everything, back to a clean sla
 hosts. `deploy`, `apply`, and `logs` take `--hosts` to target a subset; without
 it they hit every VM. `apply` accepts either an `.emet` source (compiled here)
 or a prebuilt `manifest.bin`; relative paths anchor at the repo root.
+
+Every guest's golemd is loopback-bound and requires a bearer token (ADR 0042).
+`deploy` generates that token once into `.fleet/golem-token`, installs it
+root-owned 0600 at `/etc/golem/token` on each guest, and points the daemon at it
+with `--config /etc/golem/golemd.toml`. Everything that reads or drives a guest
+— `status`, `apply`, `plan`, the rendered inventory — opens an ssh forward and
+presents the same secret. The token outlives `reset` and even `reset --purge`,
+which keeps a rebuilt fleet talking to an already-rendered inventory; rotating
+it is deleting `.fleet/golem-token` and running `deploy` again.
 
 On a guest, `journalctl -u <unit>` works as the `golem` user without sudo — the
 cloud-init user data adds it to the `systemd-journal` group. Existing VMs booted
@@ -124,6 +133,8 @@ Everything the harness writes lives under `.fleet/` at the repo root:
 
 - `images/` — the cached base image.
 - `id_ed25519[.pub]` — the fleet keypair, injected into every guest.
+- `golem-token` — the shared bearer secret (mode 0600), deployed to every guest
+  and presented on every request.
 - `state.json` — the record of which VMs exist (ports, pid, disk paths).
 - `vm-<name>/` — one per guest: its overlay disk, cloud-init seed, pidfile, and
   serial-console log.

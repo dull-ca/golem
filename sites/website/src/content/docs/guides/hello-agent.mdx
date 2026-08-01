@@ -54,11 +54,16 @@ The binary manifest is the default output; `--text` is the readable view.
    golemd --host web --reconciler host --listen 127.0.0.1:7474
    ```
 
-2. From your laptop, compile-and-ship in one command:
+2. Compile-and-ship in one command:
 
    ```bash
    golemctl apply web.emet http://127.0.0.1:7474
    ```
+
+   That address reaches an agent on this machine. For a Debian box across
+   the room, name it `ssh://golem@web` instead: `golemctl` opens the SSH
+   forward to its loopback agent and carries your bearer token
+   ([Trust model](/explanation/trust/)).
 
 3. Inspect what the node applied:
 

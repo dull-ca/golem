@@ -7,12 +7,30 @@
 //!
 //! [hosts.manta]
 //! url = "http://127.0.0.1:8842"
+//!
+//! [hosts.orbit]
+//! ssh        = "golem@10.0.0.5"          # the ssh destination, required
+//! ssh_port   = 2222                      # ssh's own port; default is ssh's
+//! remote_port = 7474                     # golemd's loopback port on that host
+//! ssh_args   = ["-i", "/keys/id_ed25519"]  # extra flags for the ssh command
+//! token_file = "/keys/golem-token"       # this host's bearer secret
 //! ```
 //!
-//! Both value shapes carry the same one fact today. The table form is accepted
-//! from the start so per-host connection options — a unix socket path, a
-//! tunnel — can join it later without breaking files written now; ADR 0040
-//! puts every such transport concern here rather than in golemd.
+//! A bare string and a table carrying `url` say the same thing: dial this
+//! address directly. A table carrying `ssh` says the daemon is loopback-bound
+//! and golemctl must open its own forward to reach it (ADR 0042,
+//! [`crate::tunnel`]) — the deployed shape, since a routable golemd port
+//! publishes root-equivalent control of its host. `url` and `ssh` in one table
+//! is an error: a host is reached one way. `token_file` is orthogonal to both
+//! and overrides the ambient `GOLEM_AUTH_TOKEN*` for that host alone
+//! ([`crate::conn::resolve_auth`]).
+//!
+//! A single-host verb's positional address takes the same two shapes:
+//! `http://host:port`, or [`SSH_ADDR_FORM`] — `ssh://[user@]host[:port]`, whose
+//! port is *ssh's*, the daemon's staying [`DEFAULT_REMOTE_PORT`]. The richer
+//! ssh fields have no spelling there; a host needing them belongs in an
+//! inventory. ADR 0040 puts every such transport concern here rather than in
+//! golemd.
 //!
 //! A name is the join with the manifest: it labels output, it is what `--hosts`
 //! selects, and a fleet apply matches it against the manifest's scroll names
@@ -44,6 +62,9 @@ pub const DEFAULT_REMOTE_PORT: u16 = 7474;
 pub const SSH_SCHEME: &str = "ssh://";
 pub const SSH_ADDR_FORM: &str = "ssh://[user@]host[:port]";
 
+/// How a daemon is reached: dialed directly, or through a forward golemctl
+/// opens over ssh. `Display` renders each back in the spelling it was written
+/// in, which is what per-host headings and `--json` show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     Http {
@@ -58,6 +79,9 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
+    /// Read a verb's positional address. Only the `ssh://` prefix is
+    /// interpreted; anything else is carried through untouched as a base URL,
+    /// so golemctl never has to keep up with what the HTTP client will accept.
     pub fn parse(addr: &str) -> Result<Endpoint> {
         let Some(rest) = addr.strip_prefix(SSH_SCHEME) else {
             return Ok(Endpoint::Http {
@@ -94,6 +118,10 @@ impl std::fmt::Display for Endpoint {
     }
 }
 
+// NOTE: the port colon is searched only after the last `@`, so a colon inside
+// the user part is not read as a port. A trailing `:something` that is not a
+// port is an error rather than part of the host name — silently dialing port 22
+// on `ssh://scaly:2222x` would be worse than refusing it.
 fn split_ssh_port(rest: &str) -> Result<(String, Option<u16>)> {
     let host_at = rest.rfind('@').map(|at| at + 1).unwrap_or(0);
     let Some(colon) = rest[host_at..].rfind(':').map(|at| host_at + at) else {
@@ -105,6 +133,8 @@ fn split_ssh_port(rest: &str) -> Result<(String, Option<u16>)> {
     Ok((rest[..colon].to_string(), Some(port)))
 }
 
+/// One host a verb may act on: the name that joins it to a scroll, how to reach
+/// it, and — when it holds a secret of its own — where that secret is read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub name: String,
@@ -122,8 +152,8 @@ pub struct Inventory {
 struct InventoryFile {
     // NOTE: the `BTreeMap` is what fixes host order — names sort, and the
     // file's own order never shows through. `toml::Value` rather than a typed
-    // enum because the two value shapes are told apart in `addr_of`, where the
-    // error can name both spellings.
+    // enum because the string and table shapes are told apart in `target_of`,
+    // where the error can name every spelling a host accepts.
     #[serde(default)]
     hosts: BTreeMap<String, toml::Value>,
 }

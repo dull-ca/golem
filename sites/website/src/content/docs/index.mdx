@@ -117,8 +117,11 @@ reconcilers, the way we ran them.
 Golem is honest about its edges. The following are **roadmap**, not
 working today:
 
-- **Signing and trust.** There is no ed25519 signature on the manifest
-  and no trusted-key check on the agent. See [Trust model](/explanation/trust/).
+- **Per-user identity.** The agent authorizes with one shared secret over
+  an SSH tunnel, so it knows a caller was authorized, never which person
+  submitted. SSO and an audit trail are designed, not built. Manifest
+  signing is not on the roadmap at all. See
+  [Trust model](/explanation/trust/).
 - **Multi-node orchestration.** A manifest carries the whole fleet, but
   each `golemd` acts only on its own scroll. There is no coordinator,
   no drain, no health-gated rollback.

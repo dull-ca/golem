@@ -155,11 +155,13 @@ def inventory(
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
     output: Optional[Path] = typer.Option(None, "--output", help="Where to write the TOML inventory."),
 ) -> None:
-    """Write the booted VMs as a `[hosts]` TOML inventory and print its path —
+    """Write the booted VMs as a TOML inventory and print its path —
     `.fleet/inventory.toml` unless `--output` says otherwise, `--hosts` to
     narrow the set. It is the file `golemctl fleet apply|plan|status` reads
     (ADR 0038), so the local fleet drives those verbs unchanged: pass it as
-    `--inventory` or export `$GOLEMCTL_INVENTORY`."""
+    `--inventory` or export `$GOLEMCTL_INVENTORY`. Each guest is written in ssh
+    form with the fleet's token file, so golemctl reaches the loopback-bound
+    daemons the same way it reaches production ones (ADR 0042)."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)
@@ -207,6 +209,10 @@ def _render_manifest_context(scroll_names: list[str], applying: list[str]) -> No
 
 
 def _ssh_inventory_file(p: Paths, records: list[VmRecord]) -> Path:
+    # The inventory handed to one `golemctl fleet` run, written fresh each time
+    # rather than reusing `.fleet/inventory.toml`: that file is the operator's,
+    # written when they ask for it, and may name a different set of guests than
+    # this invocation targets.
     token_ops.ensure_token(p)
     tmp_dir = Path(tempfile.mkdtemp(prefix="fleet-inventory-"))
     dest = tmp_dir / "inventory.toml"
@@ -220,6 +226,17 @@ def apply(
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
     raw: bool = typer.Option(False, "--json", help="Print the raw revision JSON instead of a summary."),
 ) -> None:
+    """Compile a scroll and hand every target to one `golemctl fleet apply`.
+    `source` is an `.emet` file (compiled here) or a prebuilt `manifest.bin`;
+    the same bytes go to every host.
+
+    fleet owns orchestration (which hosts); golemctl owns the apply itself — and
+    since ADR 0042 that is a single fan-out call over a rendered ssh inventory,
+    not a `golemctl apply` per host: golemctl opens each guest's forward, holds
+    the hosts concurrently, and draws one live tree across them. fleet execs it
+    with inherited stdio, because the TUI must own the terminal to draw its
+    frames. The exit code is golemctl's, which is already 0 only if every host
+    settled or was skipped."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)
@@ -260,6 +277,11 @@ def plan(
     raw: bool = typer.Option(False, "--json", help="Print the raw plan JSON instead of the collapsed view."),
     detail: bool = typer.Option(False, "--detail", help="One glyph per line with content ids."),
 ) -> None:
+    """Compile a scroll and hand every target to one `golemctl fleet plan` — the
+    dry-run diff, nothing applied (ADR 0036). Same split as `apply`: fleet picks
+    the hosts and renders the ssh inventory, golemctl opens the forwards, POSTs,
+    and renders each host's diff under its own heading. A plan is not a failure,
+    so golemctl exits nonzero only when a host errored."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)

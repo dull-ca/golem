@@ -1,3 +1,17 @@
+//! End-to-end cover for ssh targets (ADR 0042): a verb reaches a loopback-bound,
+//! token-gated daemon through a forward golemctl opens, and that forward dies
+//! with the verb.
+//!
+//! Real ssh cannot appear in a test, so `GOLEMCTL_SSH` points at a shell script
+//! standing in for it. A script alone cannot forward, so the script re-execs
+//! *this test binary* at `the_fake_ssh_forwarder_re_exec_of_this_test_binary` —
+//! an `#[ignore]`d test that is not a test, but a TCP pump from the `-L` spec's
+//! local port to its remote one. That keeps the fake forwarder in the same
+//! source file as the tests it serves, and needs no second binary in the crate.
+//!
+//! `SSH_BIN_LOCK` serializes these tests: `GOLEMCTL_SSH` is process-wide, and
+//! cargo runs a file's tests on threads of one process.
+
 use std::io::copy;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
@@ -72,6 +86,10 @@ while [ $# -gt 0 ] && [ "$1" != "-L" ]; do shift; done
     )
 }
 
+// The hazard `ExitOnForwardFailure` and the answering-while-alive check exist
+// for: this "ssh" leaves a forwarder holding the local port and then exits
+// nonzero, so the port answers while ssh is dead. It waits for the squatter to
+// have bound before exiting, so the race is staged rather than hoped for.
 fn squatter_script(dir: &Path) -> String {
     let binary = std::env::current_exe().unwrap();
     format!(
@@ -271,6 +289,9 @@ async fn a_forwarded_verb_without_the_secret_is_still_refused() {
     assert!(err.contains("GOLEM_AUTH_TOKEN"), "{err}");
 }
 
+// A rolled-back apply leaves through `std::process::exit`, which runs no
+// destructors — only the real binary can show that the forward still comes
+// down, so this drives `golemctl` as a subprocess and watches ssh's pid die.
 #[test]
 fn an_apply_that_exits_nonzero_still_takes_its_forward_down_with_it() {
     let ssh = FakeSsh::forwarding();

@@ -1,3 +1,36 @@
+//! A local port forwarded to a daemon's loopback port over ssh (ADR 0042).
+//!
+//! golemd binds `127.0.0.1` on a deployed host, so the only route to it is the
+//! one every production box already has: an ssh session. [`Tunnel::open`]
+//! spawns `ssh -N -L 127.0.0.1:<free>:127.0.0.1:<remote> <destination>` and
+//! hands back the local port; [`crate::conn::Conn`] then speaks plain HTTP to
+//! it. The ssh session is the encryption and the host authentication — golem
+//! carries no TLS. An operator's own `ssh_config` still applies, so a
+//! ControlMaster already up makes the forward cost milliseconds and golemctl
+//! needs to know nothing about it.
+//!
+//! **Lifecycle.** `free_loopback_port` binds port 0, reads what the kernel
+//! chose, and closes it — the port is then merely *likely* free, and the window
+//! between closing and ssh binding is a real race. `ExitOnForwardFailure=yes`
+//! closes the dangerous half of it: if something took the port first, ssh exits
+//! instead of running on with no forward, and a request would otherwise be
+//! addressed to a stranger holding that port. `await_forward` waits for the
+//! port to answer *while ssh is still alive* — a port that answers after ssh
+//! exited is that stranger, and is reported as one rather than used.
+//! [`Drop`] kills the child and reaps it, so the forward never outlives the
+//! verb even when the verb exits nonzero.
+//!
+//! **ssh's stderr** is piped and drained by a thread (`collect`), so its
+//! diagnosis (`No route to host`, a key refusal) can be quoted in the failure.
+//! Draining is not optional: an ssh that inherits golemctl's stderr can leave a
+//! grandchild holding the pipe open, and reading to EOF on the main path would
+//! hang the verb instead of failing it. The thread reads to EOF and publishes
+//! once; `stderr_tail` waits a short grace for that and gives up rather than
+//! block an error report.
+//!
+//! `GOLEMCTL_SSH` replaces the `ssh` binary — the seam the tests drive a fake
+//! forwarder through, and an escape hatch for a non-default ssh.
+
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
@@ -23,6 +56,8 @@ pub fn ssh_bin() -> String {
 
 type SshSaid = Arc<Mutex<Option<String>>>;
 
+/// A live forward. It exists only while the ssh child does: hold it for as long
+/// as requests must flow, and drop it to take the forward down.
 pub struct Tunnel {
     child: Child,
     said: SshSaid,
@@ -38,6 +73,10 @@ impl std::fmt::Debug for Tunnel {
 }
 
 impl Tunnel {
+    /// Open a forward to `destination`'s `remote_port` and return once it
+    /// carries traffic. Blocks for up to [`CONNECT_BUDGET`]; every failure —
+    /// ssh missing, ssh dead, no forward in time — names the destination and
+    /// quotes whatever ssh said.
     pub fn open(
         destination: &str,
         ssh_port: Option<u16>,
@@ -55,6 +94,8 @@ impl Tunnel {
         )
     }
 
+    /// [`Tunnel::open`] with the wait budget injected, so a test can watch an
+    /// ssh that never opens a forward give up in well under ten seconds.
     pub fn open_within(
         destination: &str,
         ssh_port: Option<u16>,
@@ -182,6 +223,10 @@ fn exited_as(status: ExitStatus) -> String {
     }
 }
 
+// NOTE: this reserves nothing — the listener is closed before ssh binds, so
+// another process can take the port in between. `ExitOnForwardFailure=yes` and
+// the answering-while-alive check in `await_forward` are what make that window
+// a reported failure instead of a request sent to whoever won it.
 fn free_loopback_port() -> Result<u16> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .context("reserve a loopback port for the ssh forward")?;
@@ -199,6 +244,9 @@ mod tests {
 
     const PORT_LOTTERY_RETRIES: usize = 8;
 
+    // `GOLEMCTL_SSH` is not read here — each test passes its fake ssh
+    // explicitly — but the picked loopback port is a shared resource, so
+    // spawning one at a time keeps two tests from racing for the same one.
     static ONE_SPAWN_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     fn one_spawn_at_a_time() -> std::sync::MutexGuard<'static, ()> {
@@ -214,6 +262,11 @@ mod tests {
         path
     }
 
+    // These tests assert on how a doomed ssh is *reported*, so they need the
+    // failure, not the lottery: if the freshly-picked port is claimed by
+    // something else before ssh reaches it, `open` can return a tunnel to that
+    // stranger instead. Retrying re-rolls the port until the intended failure
+    // is the one observed.
     fn failure_of(mut open: impl FnMut() -> Result<Tunnel>) -> String {
         for _ in 0..PORT_LOTTERY_RETRIES {
             match open() {

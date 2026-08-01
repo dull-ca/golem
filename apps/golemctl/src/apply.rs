@@ -148,6 +148,11 @@ fn exit_code(report: Option<&serde_json::Value>) -> i32 {
     }
 }
 
+/// POST-and-follow, then exit with the code the report earned.
+///
+/// NOTE: `follow` owns the `Conn` so that it is dropped before the exit —
+/// `std::process::exit` runs no destructors, and exiting with the connection
+/// still alive would leave its ssh forward running as an orphan (ADR 0042).
 pub async fn run(bytes: Vec<u8>, conn: Conn, json: bool, reattach: bool) -> Result<()> {
     let code = follow(bytes, conn, json, reattach).await?;
     if code != 0 {

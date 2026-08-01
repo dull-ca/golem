@@ -1,64 +1,86 @@
 ---
 title: Trust model
-description: What the agent verifies today (nothing cryptographic) and the signing / trust design that is roadmap, not built.
+description: SSH-only transport, a loopback-bound agent, and one shared-secret check — what golem enforces, what it delegates, and why signing is not the roadmap.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-<Aside type="caution" title="Roadmap — not implemented">
-  Nothing on this page about signing, keys, or trust is built yet.
-  `golemctl` does not sign manifests and `golemd` does not verify a signer.
-  This page records the intended design so it can be reviewed ahead of the
-  implementation, and states plainly what protects a node in the meantime.
+Submitting a change to a host takes membership in two sets at once: people
+who can SSH to that box, and people who hold the fleet's shared secret.
+Everything below follows from that sentence.
+
+## The three layers
+
+1. **SSH is the only way onto a box.** `golemd` binds `127.0.0.1:7474`. No
+   agent port is routable or forwarded; there is nothing on the network to
+   reach.
+2. **`golemctl` rides the SSH connection you already have.** Give it an
+   `ssh://[user@]host[:port]` target — or an inventory host with an `ssh`
+   field — and it opens a local forward to the agent's loopback port and
+   speaks plain HTTP through it. Your `~/.ssh/config` applies: an existing
+   `ControlMaster` makes the forward cost milliseconds.
+3. **A shared secret authorizes, even then.** `golemd` reads a token file
+   and requires `Authorization: Bearer <token>` on every request, compared
+   in constant time. Anything else is a `401`.
+
+The SSH session is the encryption and the host authentication. Golem has no
+TLS of its own and needs none: inside the tunnel there is no on-path
+attacker to defend against.
+
+## Configuring it
+
+On the agent:
+
+```bash
+golemd --host web \
+  --listen 127.0.0.1:7474 \
+  --auth-token-file /etc/golem/token
+```
+
+`[auth] token_file = "/etc/golem/token"` in `golemd.toml` says the same
+thing; the flag wins. The file is root-owned, mode `0600`.
+
+On the operator's machine, `golemctl` takes the secret from the first of:
+a host's inventory `token_file`, `GOLEM_AUTH_TOKEN`, or the file named by
+`GOLEM_AUTH_TOKEN_FILE`. A per-host `token_file` overrides the environment,
+so one fan-out can span hosts holding different secrets.
+
+<Aside type="caution" title="No token file, no gate">
+  With neither `--auth-token-file` nor `[auth] token_file` set, `golemd`
+  answers anyone who reaches the port. That is the local-development
+  posture and nothing else. Binding `--listen` to a routable interface —
+  with or without a token — publishes root-equivalent control of that host.
 </Aside>
 
-## What the agent checks today
+## What golem does not do
 
-On `POST /manifest`, `golemd`:
+Confidentiality, host authenticity, and reachability are the
+infrastructure's, composed from mechanisms that already exist: SSH, unix
+domain sockets with filesystem permissions, loopback binds, network
+segmentation, a mesh VPN. Golem's own abstractions may *provision* those —
+they compile to the four glyphs like anything else — but the agent itself
+enforces exactly one check.
 
-1. Decodes the manifest bytes and checks `format_version`.
-2. Selects the scroll whose name matches its `--host`.
-3. Reconciles toward that scroll.
+**Signing is not the roadmap.** An HMAC or ed25519 scheme defends against
+an on-path attacker replaying or forging a request, and inside an SSH
+tunnel there is no on-path. Manifest signing would buy key distribution, a
+wire-format change, and a verification path to defend a boundary the
+transport already holds.
 
-There is **no signature check and no authentication**. Any client that can
-reach the listener can apply a manifest. The only thing protecting a node is
-where you bind the listener.
+**Content addressing is not authentication.** A content id proves *what* a
+scroll is, not *who* sent it. A changed scroll has a changed id; that makes
+drift detectable, not callers accountable.
 
-## What protects a node in the meantime
+## What is missing, plainly
 
-- **The listener defaults to `127.0.0.1:7474`.** Nothing off-box reaches it
-  unless you bind it wider or forward to it.
-- **Run it behind a tunnel or an SSH forward.** Until signing lands,
-  transport is the whole boundary — put the agent somewhere only you can
-  reach.
-- **Content addressing is not authentication.** A content id proves *what*
-  a scroll is, not *who* sent it. It makes tampering detectable in the sense
-  that a changed scroll has a changed id, but it does not establish trust.
+The gate is deliberately one check, so it establishes that *someone
+authorized* did this — never who. Per-user identity, an audit trail of who
+submitted, and SSO group mapping arrive together, with an authentik-issued
+token replacing the shared secret. That swap changes the middleware and
+nothing else: the agent still reads one header and either answers `401` or
+proceeds.
 
-## The intended design (roadmap)
-
-The plan of record is manifest signing with an operator key the agent
-trusts:
-
-- The operator holds an **ed25519 signing key**; the agent holds the
-  corresponding **public key** (a small allowlist).
-- `golemctl` signs the manifest bytes; `golemd` verifies the signature
-  against its trusted keys before applying, and rejects an unsigned or
-  wrongly-signed manifest.
-- The trust boundary becomes the signing key, not the network — an attacker
-  on the wire can push nothing the agent will apply; an attacker who steals
-  the signing key has the same blast radius as stealing root SSH.
-
-None of this exists yet. When it lands, it will be documented here as
-implemented, with the exact key locations and CLI commands.
-
-## Threat model, honestly stated
-
-Today, an attacker who can reach the listener can apply any manifest. That
-is why the listener is localhost by default and why a real deployment must
-put the agent behind a tunnel or SSH forward. Golem does not yet defend the
-apply path cryptographically; do not expose `golemd` on an untrusted
-network.
+Rotation, meanwhile, is rewriting one file and restarting the agents.
 
 See [Status](/reference/status/) for the full implemented-vs-roadmap
 breakdown.

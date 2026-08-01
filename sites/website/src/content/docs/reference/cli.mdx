@@ -89,10 +89,28 @@ content id (lowercase hex).
 `GET /revisions/:id` for one entry — its kind (`Init` / `Reconcile`), the
 content id enacted, the ordered glyph ops, and the reversal receipts.
 
-<Aside type="caution" title="No keys yet">
+### Reaching a remote agent
+
+`<addr>` takes two shapes. `http://host:port` dials directly — useful
+against a local agent, and nothing else, since a deployed one binds
+loopback. `ssh://[user@]host[:port]` makes `golemctl` open its own SSH
+forward to the agent's loopback port and speak HTTP through it; the port
+there is **ssh's**, not the agent's.
+
+```bash
+golemctl apply fleet.emet ssh://golem@scaly
+golemctl apply fleet.emet ssh://golem@scaly:2222
+```
+
+Every request carries `Authorization: Bearer <token>`, taken from
+`GOLEM_AUTH_TOKEN`, from the file named by `GOLEM_AUTH_TOKEN_FILE`, or from
+a per-host inventory `token_file`. A `401` comes back as an error naming
+those. See [Trust model](/explanation/trust/).
+
+<Aside type="caution" title="No signing, by decision">
   `golemctl` does not sign manifests and `golemd` does not verify a signer.
-  There is no `keygen`, `sign`, or `push` command. Signing is
-  [roadmap](/explanation/trust/).
+  There is no `keygen`, `sign`, or `push` command, and none is planned —
+  the SSH tunnel holds that boundary. The shared secret is what authorizes.
 </Aside>
 
 ## `golemd`
@@ -107,6 +125,8 @@ Options:
       --state-dir <DIR>        Where to keep planroom.db [default: /var/lib/golem]
       --listen <ADDR>          HTTP listen address [default: 127.0.0.1:7474]
       --reconciler <KIND>      host | fake [default: fake] [env: GOLEM_RECONCILER]
+      --config <FILE>          golemd.toml: [retry], [enact], [auth]
+      --auth-token-file <FILE> Shared secret every request must present
 ```
 
 ### `--host <name>` (required)
@@ -131,7 +151,21 @@ Also settable via `GOLEM_RECONCILER`.
 
 `--state-dir` holds the SQLite journal (`planroom.db`), golem's record of
 what it applied and how to reverse it. `--listen` is the HTTP bind address;
-default `127.0.0.1:7474`.
+default `127.0.0.1:7474`. Keep it on loopback — operators reach a deployed
+agent through an SSH forward, and a routable bind publishes root-equivalent
+control of that host.
+
+### `--auth-token-file <file>`
+
+The file holding the shared secret every request must present as
+`Authorization: Bearer <token>`; anything else is a `401`. `[auth]
+token_file` in `golemd.toml` says the same thing and the flag overrides it.
+An unreadable or empty file stops the agent at startup rather than starting
+it open.
+
+**With neither set, the agent answers anyone who reaches the port** — the
+local-development posture, never a deployed one. See
+[Trust model](/explanation/trust/).
 
 ## HTTP endpoints
 

@@ -12,6 +12,12 @@ agent. `golemctl apply` does both.
 golemctl apply fleet.emet http://127.0.0.1:7474
 ```
 
+That address is a local agent. A deployed one binds loopback and is named
+`ssh://[user@]host[:port]` instead — `golemctl` opens the SSH forward and
+carries the shared bearer token from `GOLEM_AUTH_TOKEN` or
+`GOLEM_AUTH_TOKEN_FILE`. Every command on this page takes either shape. See
+[Trust model](/explanation/trust/).
+
 ## What `golemctl apply` does
 
 <Steps>

@@ -1,5 +1,5 @@
 //! Fan a verb out over an inventory of daemons, concurrently (ADR 0038).
-//! golemd, the wire format, and the trust model are untouched: every daemon
+//! golemd and the wire format are untouched: every daemon
 //! already selects its own scroll from the shared manifest, so a fleet verb is
 //! N single-host verbs driven from one process — one manifest compiled once,
 //! each host's `Progress` folded into its own [`ApplyModel`] by the same
@@ -33,9 +33,15 @@
 //! (Single-host `apply` keeps its meaning — naming one daemon is an explicit
 //! order.) golemd must adopt the same rule before peer gossip ships (ADR 0039).
 //!
-//! **Trust.** Fan-out reaches every daemon directly from the operator's
-//! machine and sends no credentials; reachability and authenticity of a golemd
-//! port are the infra layer's to establish, not golem's (ADR 0040).
+//! **Trust.** Fan-out reaches every daemon from the operator's machine, over
+//! whatever each host's endpoint says: a direct dial, or an ssh forward opened
+//! for that host alone and torn down with it. Each request carries the bearer
+//! token resolved for that host — the ambient `GOLEM_AUTH_TOKEN*`, or its own
+//! inventory `token_file` (ADR 0042). Confidentiality and host authenticity are
+//! still the layer below's, established by the ssh session golemctl rides
+//! (ADR 0040); what golem adds is the one check that says this caller may
+//! submit changes. One fan-out therefore opens one tunnel per ssh host, and a
+//! host that refuses the token errors alone like any other per-host failure.
 //!
 //! Surfaces mirror [`crate::apply`]: a TTY gets one live tree, a branch per
 //! host over that host's reused unit tree ([`fleet_lines`]); `--json` and a

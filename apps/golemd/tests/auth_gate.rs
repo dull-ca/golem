@@ -1,3 +1,7 @@
+//! The whole of golemd's authorization contract (ADR 0042): with a token
+//! configured, every route needs `Authorization: Bearer <token>` and anything
+//! else is a typed 401; with none, the routes are open.
+
 use std::sync::Arc;
 
 use golemd::fake_reconciler::FakeReconciler;
