@@ -219,6 +219,21 @@ def _ssh_check(paths: Paths, record: VmRecord, remote: list[str], input_text: st
     return result.stdout
 
 
+def _ssh_write_secret(paths: Paths, record: VmRecord, remote_path: str, contents: str) -> None:
+    result = subprocess.run(
+        ssh_argv(paths, record, ["sudo", "tee", remote_path, ">", "/dev/null"]),
+        input=contents,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        message = f"{record.name}: write {remote_path} failed"
+        if detail:
+            message += f": {detail}"
+        raise FleetError(message)
+
+
 def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
     token = ensure_token(paths)
     staging = f"/home/golem/golemd.staging-{uuid.uuid4().hex[:8]}"
@@ -239,7 +254,7 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
     )
     _ssh_check(paths, record, ["rm", "-f", staging])
     _ssh_check(paths, record, ["sudo", "install", "-d", "-m", "0755", GOLEMD_CONFIG_DIR])
-    _ssh_check(paths, record, ["sudo", "tee", TOKEN_REMOTE_PATH], input_text=token)
+    _ssh_write_secret(paths, record, TOKEN_REMOTE_PATH, token)
     _ssh_check(paths, record, ["sudo", "chown", "root:root", TOKEN_REMOTE_PATH])
     _ssh_check(paths, record, ["sudo", "chmod", "0600", TOKEN_REMOTE_PATH])
     _ssh_check(
