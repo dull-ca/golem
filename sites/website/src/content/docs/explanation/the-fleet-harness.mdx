@@ -1,0 +1,191 @@
+---
+title: The fleet harness
+description: What `fleet` actually does — rootless QEMU, cloud-init, copy-on-write overlays, name-derived ports, the static musl golemd, SLIRP rendezvous, and the contents of .fleet/.
+---
+
+{/*
+  COUNTERPART: TUTORIAL-fleet.md at the repo root, "Appendix — What `fleet` is
+  actually doing". Duplicated on purpose for now; edit one and edit the other.
+*/}
+
+import { Aside } from "@astrojs/starlight/components";
+
+## It stands in for real hosts, it does not simulate them
+
+golem's unit tests drive the reconcilers through a fake host. That proves the
+logic and touches nothing. `fleet` (`apps/fleet/`) closes the gap: rootless-QEMU
+Debian trixie guests, a real `golemd` running its **`host`** reconciler
+(`--reconciler host` in the unit it writes, not the default `fake`), against real
+apt, real systemd, and a real filesystem. This is where the bugs a fake host
+cannot express get found — the `daemon-reload`-before-enable fix came from here.
+
+Nothing about the guests is special-cased. They are reached over ssh with a
+bearer token because that is how production hosts are reached; the harness has no
+privileged path that a real deployment would lack. See
+[Trust model](/explanation/trust/).
+
+## The base image and first boot
+
+Guests boot Debian's `genericcloud` qcow2 from `trixie/latest`. The harness
+scrapes that index for the newest concrete `.qcow2`, downloads it once with a
+resumable `curl --continue-at -` into a `.part` file that is only renamed on
+success, and caches it in `.fleet/images/`.
+
+genericcloud ships cloud-init and no cloud-vendor agents, so one read-only seed
+ISO configures a guest completely. The `user-data` sets the hostname, creates a
+passwordless-sudo `golem` user whose only credential is the fleet's injected
+public key, disables ssh password auth and root login, and adds `golem` to
+`systemd-journal` — which is why `journalctl -u UNIT` works on a guest without
+`sudo`. The ISO is built with `cloud-localds`, falling back to
+xorriso/genisoimage/mkisofs, and attached read-only.
+
+qemu runs `-daemonize` with `-display none` and its serial console redirected to
+`console.log`. Under `-daemonize` there is no terminal to attach a console to, so
+`-nographic`'s serial-to-stdin wiring would be wrong; the log file is where
+boot-time failures are legible.
+
+## One overlay per guest
+
+Each VM's disk is a copy-on-write qcow2 backed by the shared base image. Writes
+land in the overlay, the base stays pristine and is reused by every guest, and
+discarding a VM is deleting one directory. Each guest gets 2 GB of memory and
+2 vCPUs, under `-enable-kvm -cpu host`.
+
+## Ports come from names, not boot order
+
+A host's slot is `blake2b(name) mod 100`; its ssh port is `2200 + slot`. Hashing
+the *name* rather than its position in the boot list means `scaly` is always 2259
+whether you booted it alone or sixth. Rebooting a subset does not shuffle
+anyone's port, and a `~/.ssh/config` stanza you wrote last week still works.
+
+| name | slot | ssh |
+| --- | --- | --- |
+| `scaly` | 59 | 2259 |
+| `manta` | 28 | 2228 |
+| `orbit` | 64 | 2264 |
+| `talos` | 19 | 2219 |
+| `kaiju` | 74 | 2274 |
+| `zulip` | 10 | 2210 |
+| `registry` | 65 | 2265 |
+| `builder` | 3 | 2203 |
+| `web` | 52 | 2252 |
+
+The slots are collision-free across that set. `8800 + slot` is still computed and
+still recorded in `state.json` — it keys the name-to-slot map and older records
+carry it — but nothing forwards to it and nothing listens behind it. Ports for an
+already-created VM are read from its record, so a guest booted under an older
+scheme keeps the ports it was given.
+
+## What survives `down`, `reset`, and `reset --purge`
+
+- **`down`** kills qemu (SIGTERM, escalating to SIGKILL after ~5s) and leaves the
+  overlay disk, seed ISO, and state record in place. A later `up` on that name
+  *resumes* it against the same disk on its recorded ports, so guest data
+  survives. SIGTERM does not sync the guest's page cache, so run `sync` in the
+  guest first if a very recent write must live.
+- **`reset`** kills every VM, deletes every `vm-*/` directory and the state file.
+  All guest data is gone. The cached image and the keypair stay, so the next `up`
+  is fast.
+- **`reset --purge`** additionally drops `images/` and the keypair, so the next
+  `up` re-downloads and re-generates.
+
+`.fleet/golem-token` survives all three. That is deliberate: a rebuilt fleet keeps
+talking to an inventory you already rendered and a `~/.ssh` setup you already
+wrote. Rotation is an explicit delete, never a side effect of tearing VMs down.
+
+## golemd: one static file, one root unit
+
+`deploy` builds the `golemd-static` flake output — crane over `pkgsStatic` with
+`-C target-feature=+crt-static`, linking musl libc, bundled sqlite, and the
+rustls crypto into a single file. A nix-*dynamic* binary names its interpreter as
+a `/nix/store` path and simply will not run on Debian; the static one is one
+`scp` away from running anywhere.
+
+Installation, per guest: `scp` to a per-deploy unique staging name under
+`/home/golem` (a fixed `/tmp` name wedges every later deploy the moment a stale
+copy survives under other ownership), `install -m 0755` into
+`/usr/local/bin/golemd`, create `/etc/golem`, write the token, write
+`golemd.toml`, write the unit, `daemon-reload`, `enable`, then `restart` —
+restart rather than `enable --now`, so a redeployed binary actually replaces the
+running process.
+
+The unit runs as root with `--listen 127.0.0.1:7474 --config
+/etc/golem/golemd.toml --reconciler host`. The config file says one thing: where
+the bearer secret lives. Retry and enact defaults are left to golemd, so the file
+states only what the harness had to decide.
+
+The token is written with `install -m 0600 /dev/null` first and filled second, so
+it is never briefly world-readable — and neither the create nor the write goes
+through the harness's usual error-reporting path, because `tee` echoes its stdin
+and a failure message built from stdout would print the fleet secret to your
+terminal.
+
+The token is the *fleet's*, not the guest's: every guest gets the same secret,
+which is exactly what lets one `golemctl fleet` run span all of them.
+
+## Networking: SLIRP, `10.0.2.2`, and `--publish`
+
+Every guest runs behind qemu user-mode (SLIRP) networking, isolated from its
+siblings. Only ssh is forwarded in by default. Two facts make cross-guest traffic
+possible:
+
+- `up --publish` adds a host-to-guest forward. `--publish registry=5000:5000`
+  binds your `127.0.0.1:5000` to the registry guest's `:5000`. A bare `--publish
+  5000:5000` publishes on *every* booted host, which clashes the moment two share
+  a host port — name the host for a single service. Forwards are recorded per VM,
+  so a resumed guest re-forwards them, and a resume can add forwards the stopped
+  guest lacked.
+- In SLIRP every guest reaches the host at `10.0.2.2`.
+
+Compose them and you get a host-gateway rendezvous: guest A reaches guest B's
+*published* port at `10.0.2.2:HOST_PORT`, because the connection lands on your
+loopback and qemu forwards it into B. That is the whole mechanism behind
+[the website loop](/tutorials/website-loop/) — one golem-hosted registry shared
+across machines, no shared L2 segment.
+
+## Inside `.fleet/`
+
+Everything ephemeral lives under `.fleet/` at the repo root, so nothing escapes
+the checkout and `reset` can wipe it wholesale.
+
+| path | what it is |
+| --- | --- |
+| `images/` | the cached Debian base image, shared by every overlay |
+| `id_ed25519`, `.pub` | the fleet keypair; the public half is injected by cloud-init |
+| `golem-token` | the shared bearer secret, mode 0600, created `O_EXCL` |
+| `state.json` | which VMs exist: name, ports, qemu pid, disk/pidfile/console paths, published forwards |
+| `inventory.toml` | the rendered golemctl inventory, written when you ask for it |
+| `vm-NAME/` | one per guest: `disk.qcow2`, `seed.iso`, `user-data`, `meta-data`, `qemu.pid`, `console.log` |
+| `result-golemd-static` | the nix out-link for the static build |
+
+The harness's own read-only calls — `fleet status`, `deploy`'s readiness poll —
+open a forward, make exactly one authorized request, and tear it down. They are
+occasional enough that a per-call forward costs less than a long-lived one per
+guest.
+
+`fleet apply` and `fleet plan` do not use that path at all: they render a *fresh*
+per-run inventory into a temp directory and run `golemctl fleet apply|plan
+--inventory` with inherited stdio — the TUI has to own the terminal to draw its
+frames. golemctl opens every forward, holds the hosts concurrently, and draws one
+live tree across them. The per-run file is separate from `.fleet/inventory.toml`
+on purpose: that file is yours, written when you ask, and may name a different
+set of guests than the invocation targets.
+
+## A guest's name is its scroll's name
+
+There is no mapping table anywhere, and that is the design. A VM named `scaly`
+gets an inventory entry `[hosts.scaly]`; the manifest carries a scroll named
+`scaly`; golemctl matches the two by name. A host the manifest names no scroll
+for is skipped, never POSTed to, and not counted against the exit code.
+
+This is why `fleet` needs no configuration file. The name is the join key between
+three otherwise-independent artifacts — the VM, the inventory, and the manifest —
+and everything else falls out of it.
+
+<Aside type="note" title="Not a deployment tool">
+  `fleet` exists to run golem against real boxes on one workstation. Its QEMU,
+  cloud-init, and port-derivation machinery is scaffolding around `emetc`,
+  `golemctl`, and `golemd` — the three binaries in the
+  [CLI reference](/reference/cli/) — and none of it is involved in reaching a
+  real host.
+</Aside>

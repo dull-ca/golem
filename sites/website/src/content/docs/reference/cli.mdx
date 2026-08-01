@@ -10,8 +10,9 @@ manifest to a node and reads its state. `golemd` runs on each node and
 reconciles it.
 
 The `fleet` VM harness wraps these same primitives to compile, ship, and
-inspect against throwaway Debian VMs — see the [Deploy a fleet to
-VMs](/tutorials/the-vm-harness/) tutorial.
+inspect against throwaway Debian VMs — see [Bring up the
+fleet](/tutorials/the-vm-harness/) and [The fleet
+harness](/explanation/the-fleet-harness/).
 
 ## `emetc`
 
@@ -61,6 +62,8 @@ golemctl <COMMAND>
 
 Commands:
   apply    <source> <addr>   Compile-and-ship, or ship a prebuilt manifest
+  plan     <source> <addr>   Ask what an apply would do, changing nothing
+  fleet    <COMMAND>         Fan a verb out over an inventory, concurrently
   state    <addr>            Print the host's applied scroll + content id
   history  <addr>            Print the revision journal
   show     <addr> <id>       Print one revision by id
@@ -77,6 +80,48 @@ If `<source>` ends in `.emet`, `golemctl` shells out to `emetc build
 golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
 golemctl apply fleet.manifest              http://127.0.0.1:7474
 ```
+
+### `golemctl plan <source> <addr>`
+
+The same compile, and no POST. `golemd` diffs the manifest against what it
+has applied and answers with what an apply would do; nothing is written, so
+a plan is safe to run while an apply is in flight. `--detail` expands every
+group to one glyph per line with content ids; `--json` emits golemd's
+response verbatim.
+
+### `golemctl fleet <apply|plan|status>`
+
+The same three readings, fanned out over every host in a TOML inventory,
+concurrently. One host's failure never stops the others, and a host the
+manifest names no scroll for is **skipped untouched** — never POSTed to and
+not counted against the exit code. `fleet apply` exits 0 only if every host
+settled or was skipped.
+
+```bash
+golemctl fleet status
+golemctl fleet plan examples/lichess/fleet.emet --hosts scaly,talos
+golemctl fleet apply examples/lichess/fleet.emet
+```
+
+`--hosts a,b` narrows the run to a subset, resolved before anything is
+compiled or contacted, so a typo'd name fails while no daemon has been
+touched. The inventory itself comes from the first of `--inventory`,
+`$GOLEMCTL_INVENTORY`, `./fleet.toml`, `./.fleet/inventory.toml`.
+
+Each host is a key under `[hosts]` — a bare URL string, or a table:
+
+```toml
+[hosts.scaly]
+ssh = "golem@127.0.0.1"
+ssh_port = 2259
+ssh_args = ["-i", ".fleet/id_ed25519", "-o", "StrictHostKeyChecking=no"]
+token_file = ".fleet/golem-token"
+```
+
+A table carries `url` **or** `ssh`, never both. The name is the join key:
+it matches the scroll of the same name in the manifest. See
+[The fleet harness](/explanation/the-fleet-harness/) for the harness that
+writes this file for you.
 
 ### `golemctl state <addr>`
 

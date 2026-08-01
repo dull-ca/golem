@@ -44,7 +44,8 @@ export default defineConfig({
         {
           label: "Deploy a fleet",
           items: [
-            { label: "Deploy to VMs", link: "/tutorials/the-vm-harness/" },
+            { label: "Bring up the fleet", link: "/tutorials/the-vm-harness/" },
+            { label: "A failing unit", link: "/tutorials/a-failing-unit/" },
             { label: "A registry on the fleet", link: "/tutorials/registry-on-the-fleet/" },
             { label: "The website loop", link: "/tutorials/website-loop/" },
           ],
@@ -75,6 +76,7 @@ export default defineConfig({
             { label: "Architecture", link: "/explanation/architecture/" },
             { label: "Reversible reconcile", link: "/explanation/reversible-reconcile/" },
             { label: "Trust model", link: "/explanation/trust/" },
+            { label: "The fleet harness", link: "/explanation/the-fleet-harness/" },
           ],
         },
       ],

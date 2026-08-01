@@ -1,0 +1,187 @@
+---
+title: A failing unit
+description: Apply a nine-unit scroll tree with one deliberately broken leaf, watch the other eight settle green, then regroup that host while standing another up.
+---
+
+{/*
+  COUNTERPART: TUTORIAL-fleet.md at the repo root, "Lesson 2 — Break one unit and
+  watch its siblings ignore it" and "Lesson 3 — Regroup one host while standing
+  another up". Duplicated on purpose for now; edit one and edit the other.
+*/}
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+A leaf of a scroll tree is the failure-isolation boundary: one leaf's failure
+never rolls back a sibling. `examples/fishnet-farm/farm.emet` is where you watch
+that happen, because one of its nine leaves cannot possibly work.
+
+Start from [Bring up the fleet](/tutorials/the-vm-harness/) — this needs `scaly`
+and `talos` running with `golemd` deployed. Commands are nushell, from the repo
+root.
+
+## The tree, and the leaf that will not settle
+
+`farm.emet` is one host, `scaly`, as nine leaf units: three `fishnet-move`
+clients, two `fishnet-analysis` clients, a `lila-gif` workload, the nftables
+firewall, a `base` leaf, and a `canary`:
+
+```emet
+canaryImage : Image
+canaryImage = image "docker.io" "golem-example/does-not-exist" "latest"
+
+canary : Scroll
+canary =
+  scroll
+    { name = "canary"
+    , policy = keep
+    , glyphs = worker "fishnet-canary" canaryImage
+    }
+
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , groups =
+        [ scroll { name = "fishnet-move", groups = List.map moveClient [ 1, 2, 3 ] }
+        , scroll { name = "fishnet-analysis", groups = List.map analysisClient [ 1, 2 ] }
+        , lilaGif
+        , firewall
+        , base
+        , canary
+        ]
+    }
+```
+
+The canary's image cannot be pulled, and it carries `policy = keep`.
+
+<Aside type="note" title="Memory">
+  Each guest holds 2 GB. If your workstation is feeling it, `fleet down manta`
+  (and orbit, kaiju, zulip) frees them; a later `fleet up --hosts manta` resumes
+  that guest off the same disk. Leave `scaly` and `talos` up — the second half of
+  this page wants both.
+</Aside>
+
+## Break it
+
+<Steps>
+1. **Read the diff before enacting it.**
+
+   ```nushell
+   fleet plan examples/fishnet-farm/farm.emet --hosts scaly
+   ```
+
+   `fleet` compiles the scroll, reports the manifest it produced and which
+   running hosts it will reach, then golemctl prints the diff under a heading
+   naming the host and its address:
+
+   ```
+   scaly  ssh://golem@127.0.0.1:2259
+     against revision 1 · manifest <id>…
+     …one collapsed line per action…
+     N changes · N install, N replace, N remove · N unchanged
+   ```
+
+   Nothing is written. A plan is safe to run while an apply is in flight.
+
+2. **Apply it.**
+
+   ```nushell
+   fleet apply examples/fishnet-farm/farm.emet --hosts scaly
+   ```
+
+   A live tree draws as the units settle. Eight leaves finish `✓`. The canary's
+   leaf finishes `✗` with the podman pull error in the forensics block beneath
+   it, and the run closes with a summary under scaly's heading:
+
+   ```
+   scaly  ssh://golem@127.0.0.1:2259
+     apply partial — revision 2 — scaly / canary: 1 glyph failed (kept)
+   ```
+
+   `fleet apply` passes golemctl's exit code through, and `partial` is a nonzero
+   outcome — so this successful lesson exits 1. That is the point: eight units
+   settled, one did not, and golem said so instead of rolling the whole host
+   back.
+
+3. **Apply it a second time.**
+
+   ```nushell
+   fleet apply examples/fishnet-farm/farm.emet --hosts scaly
+   ```
+
+   Same ending. The canary resurfaces on every reconcile rather than
+   disappearing into "unchanged" — a kept failure stays visible, because a unit
+   that has never worked is not a unit that needs no attention.
+
+4. **Read the journal on the box.**
+
+   ```nushell
+   fleet ssh scaly -- journalctl -u fishnet-move-1.service -n 5
+   ```
+
+   No `sudo`. cloud-init put the `golem` user in `systemd-journal` on first
+   boot.
+</Steps>
+
+<Aside type="tip" title="A cold guest's first apply is slow">
+  `apt update`, installing podman, pulling fishnet: many minutes. `fleet apply`
+  waits as long as it takes and streams progress while it does. If the
+  connection to your workstation drops, golemd keeps reconciling server-side —
+  `fleet logs scaly -f` shows it, and re-running the apply gets you the report.
+</Aside>
+
+## Regroup one host while standing another up
+
+`examples/lichess/fleet.emet` emits six scrolls. Four of them name images that
+are not publicly pullable; `scaly` and `talos` are the live-tested pair, so name
+them explicitly.
+
+```nushell
+fleet up --hosts talos
+fleet deploy --hosts talos
+fleet plan examples/lichess/fleet.emet --hosts scaly,talos
+fleet apply examples/lichess/fleet.emet --hosts scaly,talos
+```
+
+The first two lines are no-ops if you left `talos` running, and are what brings
+it back if you did not. The plan shows both halves of what follows before the
+apply performs them.
+
+`scaly` goes from the nine-leaf farm tree to a single flat scroll holding one
+fishnet workload. Its farm units come down in the reverse of their install
+order, each undone by the inverse golem recorded when it installed them — golem
+removes only what golem put there. See
+[Reversible reconcile](/explanation/reversible-reconcile/).
+
+`talos` stands up fishnet, influxd, alertmanager, prometheus, loki, dns, ntpd,
+rsyslogd, and the three nginx ingresses. dns publishes on 5353 because
+systemd-resolved already owns 53 on the guests. That is roughly eight images to
+pull on a cold box; expect minutes.
+
+<Aside type="caution" title="Absence is silence">
+  Drop `--hosts` and `fleet apply` targets every VM in the state file, which is
+  safe but slower: golemctl skips any host the manifest names no scroll for and
+  reports it skipped. A manifest that forgot to mention a host must not
+  decommission it. Decommissioning is an authored empty scroll, never an
+  omission.
+</Aside>
+
+## Explore from here
+
+- **Fix the canary.** Point `canaryImage` at an image that exists and re-apply —
+  the leaf that has failed every reconcile since revision 2 settles, and the
+  eight that were already green stay `unchanged`.
+- **Reverse a host entirely.** Apply a scroll named `scaly` with an empty
+  `glyphs` list. Every glyph golem installed comes off, each by its recorded
+  inverse; a package that was already on the box is left alone.
+- **Read a revision.** golemd's `/revisions/:id` carries each op and the inverse
+  it recorded — the receipts that make removal exact.
+
+## Where to next
+
+- **[A registry on the fleet](/tutorials/registry-on-the-fleet/)** — a real
+  container registry on a VM, reachable from the others.
+- **[A tour of the lichess fleet](/guides/litour/)** — every scroll `fleet.emet`
+  emits, and the four glyphs they lower to.
+- **[The four glyphs](/reference/primitives/)** — what a leaf's `glyphs` list can
+  hold.

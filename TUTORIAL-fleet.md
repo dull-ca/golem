@@ -1,3 +1,18 @@
+<!--
+  COUNTERPART: this file is duplicated on the docs site under
+  sites/website/src/content/docs/. Edit one and edit the other.
+
+    Before you start + Lesson 1 + Reading the fleet + When it breaks
+                        → tutorials/the-vm-harness.mdx   (/tutorials/the-vm-harness/)
+    Lesson 2 + Lesson 3 → tutorials/a-failing-unit.mdx   (/tutorials/a-failing-unit/)
+    Lesson 4 steps 1–4  → tutorials/registry-on-the-fleet.mdx
+    Lesson 4 steps 2–5  → tutorials/website-loop.mdx
+    Appendix            → explanation/the-fleet-harness.mdx
+
+  "Working on the language while the fleet runs" and "Still open" are
+  repo-only — they are contributor notes, not published docs.
+-->
+
 # Running golem against real machines
 
 By the end of this you will have Debian trixie VMs on your workstation, each

@@ -1,40 +1,36 @@
 ---
 title: The website loop
-description: golem deploying golem's own docs — build the website container, push it to the fleet registry, run it as a Workload, and curl the Starlight homepage for HTTP 200.
+description: golem deploying golem's own docs — build this site, ship it to a golem-provisioned builder, push the image to a golem-provisioned registry, and serve it from a golem-provisioned web box.
 ---
+
+{/*
+  COUNTERPART: TUTORIAL-fleet.md at the repo root, "Lesson 4 — Build, store, and
+  serve golem's own docs", steps 2–5. Duplicated on purpose for now; edit one and
+  edit the other. Steps 1 and 4 live at /tutorials/registry-on-the-fleet/.
+*/}
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-This is golem deploying golem's own docs. `examples/website/` closes the dogfood
-loop: build this Starlight site into a container on one golem-managed box, push
-it to the golem-hosted registry, run it as a `Workload` on a third, and curl the
-homepage for a 200. It builds on the
-[registry tutorial](/tutorials/registry-on-the-fleet/) — get that registry
-serving first.
+This is golem deploying golem's own docs. Build this Starlight site into a
+container on one golem-managed box, push it to the golem-hosted registry, run it
+as a `Workload` on a third, and curl the homepage for a 200.
+
+It continues [A registry on the fleet](/tutorials/registry-on-the-fleet/) — the
+`registry`, `builder`, and `web` guests must be up, `golemd` deployed, and the
+registry serving on your `127.0.0.1:5000`. Commands are nushell, from the repo
+root.
 
 ## The three boxes
 
-| Box | `examples/website/` scroll | Role |
+| Box | scroll | Role |
 | --- | --- | --- |
-| `registry` | (from the registry tutorial) | stores the image |
-| `builder` | `builder.emet` | builds the site image and pushes it |
-| `web` | `website.emet` | pulls the image and serves it publicly |
+| `registry` | `examples/registry/registry.emet` | stores the image |
+| `builder` | `examples/website/builder.emet` | builds the site image and pushes it |
+| `web` | `examples/website/website.emet` | pulls the image and serves it publicly |
 
 `builder.emet` provisions podman and the insecure-registry drop-in — the box can
 push, but *building and pushing is a CI step, not a glyph*. The scroll only makes
-the box able to push:
-
-```emet
-builderGlyphs : List Glyph
-builderGlyphs =
-  [ aptPackage { name = "podman" }
-  , file
-      { path = "/etc/containers/registries.conf.d/golem-registry.conf"
-      , contents = insecureConfContents      -- 10.0.2.2:5000, insecure
-      , mode = "0644"
-      }
-  ]
-```
+the box able to push.
 
 `website.emet` runs the served container. It drops in the same insecure-registry
 fragment, then a single **public** `Workload` — the `golem-website` image pulled
@@ -89,55 +85,72 @@ planned scrolls (1):
     ↻ web notifies golem-nftables.service
 ```
 
-The last file is the whole opening: a complete `table inet golem` block
-accepting `:80`, dropped into a directory the entrypoint conf includes. The six
-glyphs above it are the base every exposed workload carries — the table, its
-entrypoint, and the service that loads them. The `↻` line is the scroll's
-`notifies`: one reload at the end of the apply, after the drop-in is in place.
+The last file is the whole opening: a complete `table inet golem` block accepting
+`:80`, dropped into a directory the entrypoint conf includes. The six glyphs
+above it are the base every exposed workload carries — the table, its entrypoint,
+and the service that loads them. The `↻` line is the scroll's `notifies`: one
+reload at the end of the apply, after the drop-in is in place.
 
 ## Run the loop
 
-The registry from the [registry tutorial](/tutorials/registry-on-the-fleet/) must
-be up and published on `5000:5000`.
-
 <Steps>
-1. **Boot and provision the builder and web boxes.** Publish the web box's `:80`
-   so you can curl it from the host:
+1. **Build the site on your workstation.**
 
-   ```bash
-   fleet up --hosts builder --publish builder=5000:5000
-   fleet up --hosts web --publish web=8080:80
-   fleet deploy --hosts builder,web
-   fleet apply examples/website/builder.emet --hosts builder
+   ```nushell
+   build-site
    ```
 
-2. **Build the site image on the builder and push it.** The image serves the
-   built Starlight `dist/` — build the docs, hand the tree to the builder, and
-   push it to the registry:
+   The devenv script that runs `bun run build` in `sites/website`. Output lands
+   in `sites/website/dist`.
 
-   ```bash
-   (cd sites/website && bun run build)
-   # copy dist/ into the builder and build+push the image there:
-   fleet ssh builder -- podman build -t 10.0.2.2:5000/golem-website:latest /path/to/site
-   fleet ssh builder -- podman push 10.0.2.2:5000/golem-website:latest
+2. **Ship the build context to the builder and push the image.**
+
+   ```nushell
+   tar -C sites/website -cf - Containerfile Caddyfile dist | fleet ssh builder -- "mkdir -p site && tar -xf - -C site"
+   fleet ssh builder -- "sudo podman build -t 10.0.2.2:5000/golem-website:latest site && sudo podman push 10.0.2.2:5000/golem-website:latest"
    ```
 
-3. **Apply the web scroll.** The web box pulls the freshly-pushed image from the
-   registry and starts serving:
+   The quoted `&&` chains run in the guest's bash over ssh, so nushell never
+   sees them.
 
-   ```bash
+3. **Check that the registry took it.**
+
+   ```nushell
+   curl -s http://127.0.0.1:5000/v2/_catalog
+   ```
+
+   ```
+   {"repositories":["golem-website"]}
+   ```
+
+   That request went to your workstation's `127.0.0.1:5000`, which qemu forwards
+   into the registry guest. The builder reached the same registry from *inside*
+   its own guest at `10.0.2.2:5000` — the host gateway — which is how two
+   SLIRP-isolated guests trade an image with no shared network between them.
+
+4. **Serve it.** The web box pulls the freshly-pushed image and starts serving:
+
+   ```nushell
+   fleet plan examples/website/website.emet --hosts web
    fleet apply examples/website/website.emet --hosts web
    ```
 
-4. **Curl the homepage for a 200.** The web box's `:80` is published to the host:
+5. **Curl the homepage for a 200.** The web box's `:80` is published to your
+   workstation on 8081:
 
-   ```bash
-   curl -sI http://127.0.0.1:8080/ | head -1     # → HTTP/1.1 200 OK
+   ```nushell
+   curl -sI http://127.0.0.1:8081/ | lines | first
+   ```
+
+   ```
+   HTTP/1.1 200 OK
    ```
 </Steps>
 
-golem built the docs, golem's registry stored them, and golem serves them — the
-whole loop, one glyph model, four kinds.
+Golem's documentation, built on a golem-provisioned builder, stored in a
+golem-provisioned registry, pulled and served by a golem-provisioned web box.
+`curl -s http://127.0.0.1:8081/` shows `<title>Golem | Golem</title>` in the
+markup.
 
 <Aside type="note" title="The push is CI, not a glyph">
   `podman build`/`push` are steps a CI job runs; golem does not model them. The
@@ -152,9 +165,10 @@ whole loop, one glyph model, four kinds.
   re-apply the web scroll — the `.container` glyph's content id is unchanged (the
   tag is the same), so pin a new tag or a digest with `imageAt` to make the diff
   replace it.
-- **Reverse the web box.** Apply an empty scroll to `web` and watch golem stop the
-  container, remove the quadlet, close `:80`, and remove exactly its ingress line
-  from the shared chain — leaving any other host's line intact.
+- **Reverse the web box.** Apply a `web` scroll with an empty `glyphs` list and
+  watch golem stop the container, remove the quadlet, close `:80`, and remove
+  exactly its ingress line from the shared chain — leaving any other host's line
+  intact.
 - **Add a second served site.** Write another public `Workload` on a different
   port and apply it alongside — two containers, two firewall openings, derived
   from their ports.
@@ -165,5 +179,5 @@ whole loop, one glyph model, four kinds.
   this loop is built on.
 - **[A tour of the lichess fleet](/guides/litour/)** — the same shapes at fleet
   scale.
-- **[Reversible reconcile](/explanation/reversible-reconcile/)** — why reversing the
-  web box is exact.
+- **[Reversible reconcile](/explanation/reversible-reconcile/)** — why reversing
+  the web box is exact.
