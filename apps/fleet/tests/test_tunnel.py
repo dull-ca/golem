@@ -32,7 +32,12 @@ class SshForwardArgvTests(unittest.TestCase):
         argv = tunnel.ssh_forward_argv(self.paths, _record(), local_port=9999, remote_port=7474)
         self.assertIn("-N", argv)
         self.assertIn("-L", argv)
-        self.assertEqual(argv[argv.index("-L") + 1], "9999:127.0.0.1:7474")
+        self.assertEqual(argv[argv.index("-L") + 1], "127.0.0.1:9999:127.0.0.1:7474")
+
+    def test_binds_the_forward_to_loopback_and_exits_if_the_bind_fails(self) -> None:
+        argv = tunnel.ssh_forward_argv(self.paths, _record(), local_port=9999, remote_port=7474)
+        self.assertIn("ExitOnForwardFailure=yes", argv)
+        self.assertTrue(argv[argv.index("-L") + 1].startswith("127.0.0.1:"))
 
     def test_carries_the_fleet_key_and_the_vms_ssh_port(self) -> None:
         argv = tunnel.ssh_forward_argv(self.paths, _record(ssh_port=2277), local_port=9999, remote_port=7474)

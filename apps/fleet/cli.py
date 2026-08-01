@@ -224,7 +224,7 @@ def _ssh_inventory_file(p: Paths, records: list[VmRecord]) -> Path:
 def apply(
     source: Path = typer.Argument(..., help="A .emet source or a prebuilt manifest.bin."),
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
-    raw: bool = typer.Option(False, "--json", help="Print the raw revision JSON instead of a summary."),
+    raw: bool = typer.Option(False, "--json", help="Print golemctl's {\"hosts\": {…}} aggregate instead of a summary."),
 ) -> None:
     """Compile a scroll and hand every target to one `golemctl fleet apply`.
     `source` is an `.emet` file (compiled here) or a prebuilt `manifest.bin`;
@@ -274,7 +274,7 @@ def apply(
 def plan(
     source: Path = typer.Argument(..., help="A .emet source or a prebuilt manifest.bin."),
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
-    raw: bool = typer.Option(False, "--json", help="Print the raw plan JSON instead of the collapsed view."),
+    raw: bool = typer.Option(False, "--json", help="Print golemctl's {\"hosts\": {…}} aggregate instead of the collapsed view."),
     detail: bool = typer.Option(False, "--detail", help="One glyph per line with content ids."),
 ) -> None:
     """Compile a scroll and hand every target to one `golemctl fleet plan` — the

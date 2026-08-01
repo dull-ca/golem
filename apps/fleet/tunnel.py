@@ -45,8 +45,10 @@ def ssh_forward_argv(
     return [
         "ssh",
         "-N",
+        "-o",
+        "ExitOnForwardFailure=yes",
         "-L",
-        f"{local_port}:127.0.0.1:{remote_port}",
+        f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
         "-i",
         str(paths.ssh_key),
         "-p",

@@ -44,7 +44,8 @@ golemd's port is root-equivalent control of its host, so a deployed daemon binds
 loopback and requires a shared secret on every request (ADR 0042):
 
 ```bash
-head -c 32 /dev/urandom | base64 > /etc/golem/token   # root-owned, chmod 0600
+install -m 0600 /dev/null /etc/golem/token            # 0600 before a byte is in it
+head -c 32 /dev/urandom | base64 > /etc/golem/token   # the redirect keeps that mode
 ./target/release/golemd --host dev-01 \
   --listen 127.0.0.1:7474 \
   --auth-token-file /etc/golem/token
@@ -253,16 +254,23 @@ from the fleet): the node reverses each recorded outcome and journals the result
 
 The API is plain HTTP + JSON, so curl reaches a gated daemon as well as golemctl
 does — it just has to carry the header itself, and to be on the loopback the
-daemon listens on:
+daemon listens on.
+
+Write the header into a file of its own and let curl read it from there
+(`-H @file`, curl 7.55+). A header passed as `-H "Authorization: Bearer $TOKEN"`
+is in curl's argv, and every argv on the box is world-readable in `/proc` for as
+long as the process runs — which would hand the fleet secret to any local user
+who happens to run `ps` at the right moment:
 
 ```bash
-AUTH="Authorization: Bearer $(cat /etc/golem/token)"
+install -m 0600 /dev/null /etc/golem/auth-header
+{ printf 'Authorization: Bearer '; cat /etc/golem/token; } > /etc/golem/auth-header
 
-curl -H "$AUTH" -X POST http://127.0.0.1:7474/manifest \
+curl -H @/etc/golem/auth-header -X POST http://127.0.0.1:7474/manifest \
   --data-binary @examples/lichess/fleet.manifest
 
-curl -H "$AUTH" http://127.0.0.1:7474/state     | jq
-curl -H "$AUTH" http://127.0.0.1:7474/revisions | jq
+curl -H @/etc/golem/auth-header http://127.0.0.1:7474/state     | jq
+curl -H @/etc/golem/auth-header http://127.0.0.1:7474/revisions | jq
 ```
 
 Drop the header only against an ungated dev daemon; a gated one answers `401`
@@ -270,8 +278,8 @@ with a message naming the flag. For a remote host, open the forward yourself and
 curl through it — this is exactly what an `ssh://` target does for you:
 
 ```bash
-ssh -N -L 7474:127.0.0.1:7474 golem@scaly &
-curl -H "$AUTH" http://127.0.0.1:7474/status | jq
+ssh -N -L 127.0.0.1:7474:127.0.0.1:7474 golem@scaly &
+curl -H @/etc/golem/auth-header http://127.0.0.1:7474/status | jq
 ```
 
 ## What this isn't (yet)
