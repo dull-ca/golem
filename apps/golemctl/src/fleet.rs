@@ -175,7 +175,7 @@ fn host_heading(target: &Target, color: bool) -> String {
     format!(
         "{}  {}",
         paint(&target.name, BOLD, color),
-        paint(&target.addr, DIM, color)
+        paint(&target.endpoint.to_string(), DIM, color)
     )
 }
 
@@ -951,13 +951,13 @@ pub fn status_json(readings: &[(Target, Result<HostReading, String>)]) -> serde_
     for (target, reading) in readings {
         let entry = match reading {
             Ok(reading) => serde_json::json!({
-                "addr": target.addr,
+                "addr": target.endpoint.to_string(),
                 "host": reading.host,
                 "latest_revision": reading.latest_revision,
                 "content_id": reading.content_id,
             }),
             Err(message) => serde_json::json!({
-                "addr": target.addr,
+                "addr": target.endpoint.to_string(),
                 "error": message,
             }),
         };
@@ -1006,7 +1006,10 @@ mod tests {
     fn target(name: &str) -> Target {
         Target {
             name: name.into(),
-            addr: format!("http://{name}:8807"),
+            endpoint: crate::inventory::Endpoint::Http {
+                url: format!("http://{name}:8807"),
+            },
+            token_file: None,
         }
     }
 

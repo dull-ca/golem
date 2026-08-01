@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use golemctl::conn::Conn;
-use golemctl::inventory::Target;
+use golemctl::inventory::{Endpoint, Target};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -209,7 +209,8 @@ async fn connect(addr: &str) -> Result<Conn> {
     let auth = golemctl::conn::resolve_auth(None)?;
     let target = Target {
         name: addr.to_string(),
-        addr: addr.to_string(),
+        endpoint: Endpoint::parse(addr)?,
+        token_file: None,
     };
     Conn::open(&target, &auth).await
 }

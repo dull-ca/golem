@@ -567,7 +567,10 @@ mod tests {
         let persistence = Arc::new(Mutex::new(Persistence::open(0)));
         let target = crate::inventory::Target {
             name: "unreachable".into(),
-            addr: "http://127.0.0.1:0".into(),
+            endpoint: crate::inventory::Endpoint::Http {
+                url: "http://127.0.0.1:0".into(),
+            },
+            token_file: None,
         };
         let conn = Conn::open(&target, &crate::conn::AuthSource::None)
             .await

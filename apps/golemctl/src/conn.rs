@@ -3,16 +3,37 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use reqwest::{header::AUTHORIZATION, StatusCode};
 
-use crate::inventory::Target;
+use crate::inventory::{Endpoint, Target};
 use crate::poll::{Progress, Reconcile202};
+use crate::tunnel::{ssh_bin, Tunnel};
 
 pub const AUTH_TOKEN_ENV: &str = "GOLEM_AUTH_TOKEN";
 pub const AUTH_TOKEN_FILE_ENV: &str = "GOLEM_AUTH_TOKEN_FILE";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AuthSource {
     None,
     Token(String),
+}
+
+pub const REDACTED: &str = "<redacted>";
+
+impl std::fmt::Debug for AuthSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthSource::None => write!(f, "None"),
+            AuthSource::Token(_) => write!(f, "Token({REDACTED})"),
+        }
+    }
+}
+
+impl AuthSource {
+    fn token(&self) -> Option<String> {
+        match self {
+            AuthSource::None => None,
+            AuthSource::Token(token) => Some(token.clone()),
+        }
+    }
 }
 
 pub fn resolve_auth(inventory_token_file: Option<&Path>) -> Result<AuthSource> {
@@ -46,22 +67,67 @@ fn read_token_file(path: &Path) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-#[derive(Debug, Clone)]
+async fn forward(
+    destination: String,
+    ssh_port: Option<u16>,
+    remote_port: u16,
+    ssh_args: Vec<String>,
+) -> Result<Tunnel> {
+    tokio::task::spawn_blocking(move || {
+        Tunnel::open(&destination, ssh_port, remote_port, &ssh_args, &ssh_bin())
+    })
+    .await
+    .context("open an ssh forward")?
+}
+
 pub struct Conn {
     base: String,
     token: Option<String>,
     client: reqwest::Client,
+    tunnel: Option<Tunnel>,
+}
+
+impl std::fmt::Debug for Conn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Conn")
+            .field("base", &self.base)
+            .field("token", &self.token.as_ref().map(|_| REDACTED))
+            .field("tunnel", &self.tunnel)
+            .finish()
+    }
 }
 
 impl Conn {
     pub async fn open(target: &Target, auth: &AuthSource) -> Result<Conn> {
+        let (base, tunnel) = match &target.endpoint {
+            Endpoint::Http { url } => (url.trim_end_matches('/').to_string(), None),
+            Endpoint::Ssh {
+                destination,
+                ssh_port,
+                remote_port,
+                ssh_args,
+            } => {
+                let tunnel = forward(
+                    destination.clone(),
+                    *ssh_port,
+                    *remote_port,
+                    ssh_args.clone(),
+                )
+                .await?;
+                (
+                    format!("http://127.0.0.1:{}", tunnel.local_port),
+                    Some(tunnel),
+                )
+            }
+        };
         Ok(Conn {
-            base: target.addr.trim_end_matches('/').to_string(),
-            token: match auth {
-                AuthSource::None => None,
-                AuthSource::Token(token) => Some(token.clone()),
+            base,
+            token: match &target.token_file {
+                Some(path) => resolve_auth(Some(path))?.token(),
+                None => auth.token(),
             },
             client: reqwest::Client::new(),
+            tunnel,
         })
     }
 
@@ -261,6 +327,49 @@ mod tests {
         assert!(err.to_string().contains(&path.display().to_string()));
     }
 
+    fn http_target(name: &str, url: String) -> Target {
+        Target {
+            name: name.into(),
+            endpoint: Endpoint::Http { url },
+            token_file: None,
+        }
+    }
+
+    #[test]
+    fn neither_a_conn_nor_an_auth_source_prints_the_token_it_carries() {
+        assert_eq!(
+            format!("{:?}", AuthSource::Token("secret".into())),
+            "Token(<redacted>)"
+        );
+        assert_eq!(format!("{:?}", AuthSource::None), "None");
+        let conn = Conn {
+            base: "http://scaly:8807".into(),
+            token: Some("secret".into()),
+            client: reqwest::Client::new(),
+            tunnel: None,
+        };
+        let shown = format!("{conn:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains(REDACTED), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn a_hosts_own_token_file_authorizes_it_over_the_ambient_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "secret\n").unwrap();
+        let base = serve_gated("h1", "secret").await;
+        let target = Target {
+            name: "h1".into(),
+            endpoint: Endpoint::Http { url: base },
+            token_file: Some(path),
+        };
+        let conn = Conn::open(&target, &AuthSource::Token("wrong".into()))
+            .await
+            .unwrap();
+        assert_eq!(conn.get_json("status").await.unwrap()["host"], "h1");
+    }
+
     async fn serve_gated(name: &str, token: &str) -> String {
         let foreman = golemd::foreman::Foreman::new(
             name.to_string(),
@@ -282,10 +391,7 @@ mod tests {
     #[tokio::test]
     async fn a_conn_carrying_the_right_token_reaches_a_gated_daemon() {
         let base = serve_gated("h1", "secret").await;
-        let target = Target {
-            name: "h1".into(),
-            addr: base,
-        };
+        let target = http_target("h1", base);
         let conn = Conn::open(&target, &AuthSource::Token("secret".into()))
             .await
             .unwrap();
@@ -296,10 +402,7 @@ mod tests {
     #[tokio::test]
     async fn a_401_error_names_the_env_vars_an_operator_can_set() {
         let base = serve_gated("h1", "secret").await;
-        let target = Target {
-            name: "h1".into(),
-            addr: base,
-        };
+        let target = http_target("h1", base);
         let conn = Conn::open(&target, &AuthSource::None).await.unwrap();
         let err = conn.get_json("status").await.unwrap_err();
         let message = format!("{err:#}");

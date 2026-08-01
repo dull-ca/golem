@@ -7,4 +7,5 @@ pub mod model;
 pub mod plan;
 pub mod poll;
 pub mod tree;
+pub mod tunnel;
 pub mod view;

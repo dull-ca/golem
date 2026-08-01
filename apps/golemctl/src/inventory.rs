@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
 pub const INVENTORY_ENV: &str = "GOLEMCTL_INVENTORY";
@@ -40,10 +40,76 @@ pub const HARNESS_INVENTORY_FILE: &str = ".fleet/inventory.toml";
 pub const RESOLUTION_CHAIN: &str =
     "--inventory, then $GOLEMCTL_INVENTORY, then ./fleet.toml, then ./.fleet/inventory.toml";
 
+pub const DEFAULT_REMOTE_PORT: u16 = 7474;
+pub const SSH_SCHEME: &str = "ssh://";
+pub const SSH_ADDR_FORM: &str = "ssh://[user@]host[:port]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoint {
+    Http {
+        url: String,
+    },
+    Ssh {
+        destination: String,
+        ssh_port: Option<u16>,
+        remote_port: u16,
+        ssh_args: Vec<String>,
+    },
+}
+
+impl Endpoint {
+    pub fn parse(addr: &str) -> Result<Endpoint> {
+        let Some(rest) = addr.strip_prefix(SSH_SCHEME) else {
+            return Ok(Endpoint::Http {
+                url: addr.to_string(),
+            });
+        };
+        let rest = rest.trim_end_matches('/');
+        if rest.is_empty() {
+            bail!("the ssh target {addr} names no host — write {SSH_ADDR_FORM}");
+        }
+        let (destination, ssh_port) = split_ssh_port(rest)?;
+        Ok(Endpoint::Ssh {
+            destination,
+            ssh_port,
+            remote_port: DEFAULT_REMOTE_PORT,
+            ssh_args: Vec::new(),
+        })
+    }
+}
+
+impl std::fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Endpoint::Http { url } => write!(f, "{url}"),
+            Endpoint::Ssh {
+                destination,
+                ssh_port,
+                ..
+            } => match ssh_port {
+                Some(port) => write!(f, "{SSH_SCHEME}{destination}:{port}"),
+                None => write!(f, "{SSH_SCHEME}{destination}"),
+            },
+        }
+    }
+}
+
+fn split_ssh_port(rest: &str) -> Result<(String, Option<u16>)> {
+    let host_at = rest.rfind('@').map(|at| at + 1).unwrap_or(0);
+    let Some(colon) = rest[host_at..].rfind(':').map(|at| host_at + at) else {
+        return Ok((rest.to_string(), None));
+    };
+    let port = rest[colon + 1..].parse::<u16>().map_err(|_| {
+        anyhow!("the ssh target {SSH_SCHEME}{rest} names no readable port — write {SSH_ADDR_FORM}")
+    })?;
+    Ok((rest[..colon].to_string(), Some(port)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub name: String,
-    pub addr: String,
+    pub endpoint: Endpoint,
+    pub token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,10 +186,8 @@ pub fn parse(path: &Path, text: &str) -> Result<Inventory> {
     }
     let mut targets = Vec::with_capacity(file.hosts.len());
     for (name, value) in &file.hosts {
-        targets.push(Target {
-            name: name.clone(),
-            addr: addr_of(name, value).with_context(|| format!("inventory {}", path.display()))?,
-        });
+        targets
+            .push(target_of(name, value).with_context(|| format!("inventory {}", path.display()))?);
     }
     Ok(Inventory {
         path: path.to_path_buf(),
@@ -131,16 +195,56 @@ pub fn parse(path: &Path, text: &str) -> Result<Inventory> {
     })
 }
 
-fn addr_of(name: &str, value: &toml::Value) -> Result<String> {
+#[derive(Debug, Deserialize)]
+struct HostTable {
+    url: Option<String>,
+    ssh: Option<String>,
+    ssh_port: Option<u16>,
+    remote_port: Option<u16>,
+    #[serde(default)]
+    ssh_args: Vec<String>,
+    token_file: Option<PathBuf>,
+}
+
+fn target_of(name: &str, value: &toml::Value) -> Result<Target> {
     match value {
-        toml::Value::String(url) => Ok(url.clone()),
-        toml::Value::Table(table) => match table.get("url").and_then(|u| u.as_str()) {
-            Some(url) => Ok(url.to_string()),
-            None => bail!(
-                "host {name} has no url — write `{name} = \"http://…\"` or a [hosts.{name}] table with `url = \"http://…\"`"
-            ),
-        },
-        _ => bail!("host {name} must be a url string or a table carrying a url"),
+        toml::Value::String(url) => Ok(Target {
+            name: name.to_string(),
+            endpoint: Endpoint::Http { url: url.clone() },
+            token_file: None,
+        }),
+        toml::Value::Table(_) => {
+            let host: HostTable = value
+                .clone()
+                .try_into()
+                .with_context(|| format!("host {name}"))?;
+            Ok(Target {
+                name: name.to_string(),
+                endpoint: endpoint_of(name, &host)?,
+                token_file: host.token_file,
+            })
+        }
+        _ => bail!(
+            "host {name} must be a url string or a table carrying a url or an ssh destination"
+        ),
+    }
+}
+
+fn endpoint_of(name: &str, host: &HostTable) -> Result<Endpoint> {
+    match (&host.url, &host.ssh) {
+        (Some(_), Some(_)) => bail!(
+            "host {name} is reached two ways at once — a [hosts.{name}] table carries `url` or `ssh`, never both"
+        ),
+        (Some(url), None) => Ok(Endpoint::Http { url: url.clone() }),
+        (None, Some(destination)) => Ok(Endpoint::Ssh {
+            destination: destination.clone(),
+            ssh_port: host.ssh_port,
+            remote_port: host.remote_port.unwrap_or(DEFAULT_REMOTE_PORT),
+            ssh_args: host.ssh_args.clone(),
+        }),
+        (None, None) => bail!(
+            "host {name} says how to reach it neither way — write `{name} = \"http://…\"`, or a [hosts.{name}] table with `url = \"http://…\"` or `ssh = \"user@host\"`"
+        ),
     }
 }
 
@@ -259,11 +363,17 @@ mod tests {
             [
                 Target {
                     name: "manta".into(),
-                    addr: "http://127.0.0.1:8842".into()
+                    endpoint: Endpoint::Http {
+                        url: "http://127.0.0.1:8842".into()
+                    },
+                    token_file: None,
                 },
                 Target {
                     name: "scaly".into(),
-                    addr: "http://127.0.0.1:8807".into()
+                    endpoint: Endpoint::Http {
+                        url: "http://127.0.0.1:8807".into()
+                    },
+                    token_file: None,
                 },
             ]
         );
@@ -296,6 +406,153 @@ mod tests {
         assert!(err.contains("scaly"), "{err}");
         assert!(err.contains("[hosts.scaly]"), "{err}");
         assert!(err.contains("url"), "{err}");
+        assert!(err.contains("ssh"), "{err}");
+    }
+
+    #[test]
+    fn an_ssh_host_carries_its_destination_ports_and_extra_args() {
+        let inventory = inventory_of(
+            r#"
+            [hosts.scaly]
+            ssh = "golem@10.0.0.5"
+            ssh_port = 2222
+            remote_port = 7000
+            ssh_args = ["-i", "/keys/id_ed25519"]
+            token_file = "/keys/golem-token"
+            "#,
+        );
+        assert_eq!(
+            inventory.targets(),
+            [Target {
+                name: "scaly".into(),
+                endpoint: Endpoint::Ssh {
+                    destination: "golem@10.0.0.5".into(),
+                    ssh_port: Some(2222),
+                    remote_port: 7000,
+                    ssh_args: vec!["-i".into(), "/keys/id_ed25519".into()],
+                },
+                token_file: Some(PathBuf::from("/keys/golem-token")),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_ssh_host_naming_only_a_destination_takes_the_loopback_defaults() {
+        let inventory = inventory_of(
+            r#"
+            [hosts.scaly]
+            ssh = "golem@10.0.0.5"
+            "#,
+        );
+        assert_eq!(
+            inventory.targets(),
+            [Target {
+                name: "scaly".into(),
+                endpoint: Endpoint::Ssh {
+                    destination: "golem@10.0.0.5".into(),
+                    ssh_port: None,
+                    remote_port: DEFAULT_REMOTE_PORT,
+                    ssh_args: vec![],
+                },
+                token_file: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_host_reached_both_ways_at_once_is_an_error_naming_both_spellings() {
+        let err = parse(
+            Path::new("fleet.toml"),
+            r#"
+            [hosts.scaly]
+            url = "http://127.0.0.1:8807"
+            ssh = "golem@10.0.0.5"
+            "#,
+        )
+        .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("scaly"), "{err}");
+        assert!(err.contains("url"), "{err}");
+        assert!(err.contains("ssh"), "{err}");
+    }
+
+    #[test]
+    fn an_http_host_carries_no_per_host_token_file_unless_it_says_so() {
+        let inventory = inventory_of(
+            r#"
+            [hosts.scaly]
+            url = "http://127.0.0.1:8807"
+            token_file = "/keys/golem-token"
+            "#,
+        );
+        assert_eq!(
+            inventory.targets()[0].token_file,
+            Some(PathBuf::from("/keys/golem-token"))
+        );
+        assert_eq!(
+            inventory_of("[hosts]\nscaly = \"http://s\"\n").targets()[0].token_file,
+            None
+        );
+    }
+
+    #[test]
+    fn an_ssh_addr_parses_its_user_host_and_ssh_port() {
+        assert_eq!(
+            Endpoint::parse("ssh://golem@10.0.0.5:2222").unwrap(),
+            Endpoint::Ssh {
+                destination: "golem@10.0.0.5".into(),
+                ssh_port: Some(2222),
+                remote_port: DEFAULT_REMOTE_PORT,
+                ssh_args: vec![],
+            }
+        );
+        assert_eq!(
+            Endpoint::parse("ssh://scaly").unwrap(),
+            Endpoint::Ssh {
+                destination: "scaly".into(),
+                ssh_port: None,
+                remote_port: DEFAULT_REMOTE_PORT,
+                ssh_args: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn an_addr_without_the_ssh_scheme_stays_the_http_address_it_always_was() {
+        assert_eq!(
+            Endpoint::parse("http://127.0.0.1:8807").unwrap(),
+            Endpoint::Http {
+                url: "http://127.0.0.1:8807".into()
+            }
+        );
+    }
+
+    #[test]
+    fn an_ssh_addr_with_an_unreadable_port_says_how_to_write_one() {
+        let err = Endpoint::parse("ssh://scaly:none").unwrap_err().to_string();
+        assert!(err.contains("ssh://[user@]host[:port]"), "{err}");
+        let err = Endpoint::parse("ssh://").unwrap_err().to_string();
+        assert!(err.contains("ssh://[user@]host[:port]"), "{err}");
+    }
+
+    #[test]
+    fn an_endpoint_shows_itself_the_way_it_was_written() {
+        assert_eq!(
+            Endpoint::parse("ssh://golem@10.0.0.5:2222")
+                .unwrap()
+                .to_string(),
+            "ssh://golem@10.0.0.5:2222"
+        );
+        assert_eq!(
+            Endpoint::parse("ssh://scaly").unwrap().to_string(),
+            "ssh://scaly"
+        );
+        assert_eq!(
+            Endpoint::parse("http://127.0.0.1:8807")
+                .unwrap()
+                .to_string(),
+            "http://127.0.0.1:8807"
+        );
     }
 
     #[test]
