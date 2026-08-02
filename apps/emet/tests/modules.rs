@@ -181,3 +181,26 @@ fn multi_module_program_compiles_to_expected_scrolls() {
     assert_eq!(c.scrolls[0].glyphs()[0].key(), "apt:nginx");
     assert_eq!(c.scrolls[1].glyphs()[0].key(), "apt:postgresql");
 }
+
+#[test]
+fn imported_single_constructor_type_destructures_in_an_argument() {
+    let c = compile_fixture("DestructureEntry.emet")
+        .expect("an open-exposed single-constructor type destructures in a parameter");
+    assert_eq!(scroll_names(&c), vec!["unwrapped".to_string()]);
+}
+
+#[test]
+fn imported_multi_constructor_type_may_not_destructure_in_an_argument() {
+    let err = compile_fixture("DestructureMultiEntry.emet")
+        .expect_err("an open-exposed multi-constructor type stays `case`-only");
+    assert_eq!(err.phase, Phase::Type);
+    assert!(
+        err.msg.contains("`Web`") && err.msg.contains("`Role`"),
+        "the message must name the imported constructor and its type, got: {}",
+        err.msg
+    );
+    assert!(
+        err.note.unwrap_or_default().contains("case"),
+        "the note must direct the author to `case`"
+    );
+}

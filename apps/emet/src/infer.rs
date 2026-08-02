@@ -955,6 +955,32 @@ fn describe_found(found: &Type) -> String {
     }
 }
 
+fn absent_update_field(field: &str, known: &BTreeMap<String, Type>, span: &Span) -> TypeError {
+    let mut msg = format!("this record has no `{field}` field to update");
+    if let Some(hint) = did_you_mean(field, known.keys().cloned()) {
+        msg.push_str(&format!(" — did you mean `{hint}`?"));
+    }
+    let listed: Vec<String> = known.keys().map(|k| format!("`{k}`")).collect();
+    let note = if listed.is_empty() {
+        "this record has no fields at all".to_string()
+    } else {
+        format!("it has {}", listed.join(", "))
+    };
+    TypeError::new(msg, span.clone()).note(note)
+}
+
+fn field_type_changed(field: &str, existing: &Type, found: &Type, span: &Span) -> TypeError {
+    let rendered = render_types_shared(&[existing, found]);
+    TypeError::new(
+        format!(
+            "a record update cannot change a field's type — `{field}` is `{}`, and this is `{}`",
+            rendered[0], rendered[1]
+        ),
+        span.clone(),
+    )
+    .note("record update replaces a field's value, not its type; write a new record literal when the shape itself must change")
+}
+
 fn constraint_name(c: Constraint) -> &'static str {
     match c {
         Constraint::None => "unconstrained",
@@ -1468,15 +1494,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
 
         Expr::Lam { param, body } => {
             let tv = inf.fresh();
-            let env2 = env.insert(param.clone(), mono(tv.clone()));
-            let mut added = HashMap::new();
-            added.insert(
-                param.clone(),
-                DefSite {
-                    span: span.clone(),
-                    module: None,
-                },
-            );
+            let mut env2 = env.clone();
+            reject_refutable_param(inf, param)?;
+            infer_pattern(inf, &mut env2, param, &tv)?;
+            let added = pattern_def_sites(param);
             inf.rec_open_scope(body.1.clone(), &env2, added);
             let bt = infer_expr(inf, &env2, body)?;
             inf.rec_close_scope();
@@ -1509,6 +1530,74 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 tys.insert(k.clone(), infer_expr(inf, env, v)?);
             }
             Ok(Type::Record(tys, Row::Closed))
+        }
+
+        // `{ r | f = v, … }` (ADR 0044), over the rows of ADR 0010.
+        //
+        // The base is unified against an *open* record demanding only the named
+        // fields, so an open base stays open: `rename n r = { r | name = n }`
+        // gets `a -> { name : a | ρ } -> { name : a | ρ }` and one setter serves
+        // every record shape carrying a `name`. Demanding a closed record here
+        // would pin the setter to a single shape.
+        //
+        // The rule is type-preserving. Each value is unified against the fresh
+        // variable that the row unification has already tied to the field's
+        // existing type, and the result is the base's type unchanged, so an
+        // update replaces what a record holds and never its shape. A record
+        // literal is how you change the shape.
+        //
+        // The result therefore shares a row tail with the base, and both name
+        // the same keys. That is only sound because `unify_records` computes its
+        // two surplus sets with the shared keys filtered out, so `bind_row`
+        // never hands a row variable a field its own record already names —
+        // without that, updating a field could bind ρ to a second copy of it.
+        Expr::RecordUpdate { base, fields } => {
+            let base_ty = infer_expr(inf, env, base)?;
+            // A closed base is checked for the updated fields up front: row
+            // unification would reject an absent field too, but as a whole-record
+            // mismatch. Catching it here names the field and lists the ones the
+            // record has (ADR 0032). An open base or a bare variable has a row
+            // that will absorb the fields, so there is nothing yet to check.
+            match inf.prune(&base_ty) {
+                Type::Record(known, Row::Closed) => {
+                    for (name, _) in fields {
+                        if !known.contains_key(&name.0) {
+                            return Err(absent_update_field(&name.0, &known, &name.1));
+                        }
+                    }
+                }
+                Type::Var(_, _) | Type::Record(_, Row::Open(_)) => {}
+                other => {
+                    return Err(TypeError::new(
+                        format!(
+                            "a record update needs a record to update, but this is {}",
+                            describe_found(&inf.apply(&other))
+                        ),
+                        base.1.clone(),
+                    ));
+                }
+            }
+
+            let mut demanded = BTreeMap::new();
+            for (name, _) in fields {
+                demanded.insert(name.0.clone(), inf.fresh());
+            }
+            let rest = inf.fresh_row();
+            inf.unify(&base_ty, &Type::Record(demanded.clone(), rest), span)?;
+
+            // Values are inferred left to right, matching the source order eval
+            // inserts them in. The raw unification failure here would read as
+            // two anonymous types colliding, so it is replaced by one that names
+            // the field and both types.
+            for (name, value) in fields {
+                let vt = infer_expr(inf, env, value)?;
+                let existing = &demanded[&name.0];
+                inf.unify(&vt, existing, &value.1).map_err(|_| {
+                    field_type_changed(&name.0, &inf.apply(existing), &inf.apply(&vt), &value.1)
+                })?;
+            }
+
+            Ok(inf.apply(&base_ty))
         }
 
         // A tuple literal infers to a `Type::Tuple` of its elements' types,
@@ -1689,6 +1778,100 @@ fn infer_pattern(
             Ok(())
         }
     }
+}
+
+/// Reject a parameter pattern that could fail to match (ADR 0044).
+///
+/// A `case` arm is allowed to be refutable because the checker proves the arms
+/// cover every value between them (ADR 0005). A parameter has no siblings, so it
+/// must match on its own; admitting a refutable one would let an author write
+/// the partial function ADR 0005 exists to forbid, just spelled as a binding
+/// rather than a branch.
+///
+/// The `match` is exhaustive with no catch-all deliberately. `param_parser`
+/// currently produces only a binder or `( Upper binder* )`, so most of these
+/// arms are unreachable from source — but the previous shape, an early
+/// `return Ok(())` for everything that was not a constructor, rested the whole
+/// invariant on that grammar silently. Written out, adding a [`Pattern`] variant
+/// or widening the parameter grammar fails the build here instead of passing a
+/// refutable pattern through to `eval`.
+///
+/// It recurses for the same reason: `Box (Just x)` is irrefutable at its head
+/// and refutable one level down. `Pattern::Tuple` is irrefutable at its own
+/// level — a tuple has a single shape (ADR 0027) — and contributes only its
+/// elements. The arms the parser cannot reach are covered by
+/// `refutable_param_tests`, which builds the patterns directly.
+///
+/// Accepting tuples and nesting makes this check *broader* than the grammar
+/// feeding it: `f (a, b) = …` passes here and is a parse error in
+/// `param_parser`. That gap is deliberate room, not an inconsistency — widening
+/// the grammar to those forms needs no change here.
+fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), TypeError> {
+    match &param.0 {
+        Pattern::Wildcard | Pattern::Var(_) => Ok(()),
+        Pattern::Str(_) | Pattern::Int(_) | Pattern::Char(_) => Err(refutable_param_error(
+            "a literal matches only one value",
+            "the value",
+            &param.1,
+        )),
+        Pattern::Nil => Err(refutable_param_error(
+            "`[]` matches only the empty list",
+            "the list",
+            &param.1,
+        )),
+        Pattern::Cons(_, _) => Err(refutable_param_error(
+            "`::` matches only a non-empty list",
+            "the list",
+            &param.1,
+        )),
+        Pattern::Tuple(elements) => elements
+            .iter()
+            .try_for_each(|element| reject_refutable_param(inf, element)),
+        Pattern::Ctor(ctor, fields) => {
+            reject_multi_constructor_param(inf, ctor, &param.1)?;
+            fields
+                .iter()
+                .try_for_each(|field| reject_refutable_param(inf, field))
+        }
+    }
+}
+
+/// The type-directed half of the check: a constructor pattern is irrefutable
+/// only when its type has exactly one constructor. `Box` is; `Just` leaves
+/// `Nothing` unmatched and must be a `case`.
+///
+/// A name with no scheme, or one whose result type is not a `Con`, is passed
+/// over so `infer_pattern` reports it as an unknown constructor rather than as a
+/// refutability failure. A type with no recorded constructor set is treated as
+/// "not exactly one" — rejecting a pattern that cannot be proved total is the
+/// safe direction.
+///
+/// The verdict is only as good as the constructor set the registries hold; two
+/// imported modules exposing same-named types corrupt it, which `docs/TODO.md`
+/// records under the Emet language backlog.
+fn reject_multi_constructor_param(inf: &Infer, ctor: &str, span: &Span) -> Result<(), TypeError> {
+    let Some(scheme) = inf.constructor_scheme(ctor) else {
+        return Ok(());
+    };
+    let (_, result) = uncurry(&scheme.ty);
+    let Type::Con(type_name, _) = result else {
+        return Ok(());
+    };
+    let siblings = inf.sum_type_constructors(&type_name).unwrap_or_default();
+    if siblings.len() == 1 {
+        return Ok(());
+    }
+    Err(refutable_param_error(
+        &format!("`{ctor}` is one of several constructors of `{type_name}`"),
+        &format!("the whole `{type_name}`"),
+        span,
+    ))
+}
+
+fn refutable_param_error(why: &str, whole: &str, span: &Span) -> TypeError {
+    TypeError::new(format!("{why}, so this pattern could fail"), span.clone()).note(format!(
+        "an argument pattern must always match. Take {whole} as a parameter and branch on it with `case … of`, which is checked for exhaustiveness."
+    ))
 }
 
 fn uncurry(ty: &Type) -> (Vec<Type>, Type) {
@@ -2638,4 +2821,101 @@ fn main_decl_span(m: &Module) -> Span {
         .find(|d| d.name == "main")
         .map(|d| d.span.clone())
         .unwrap_or(0..0)
+}
+
+#[cfg(test)]
+mod refutable_param_tests {
+    use super::*;
+
+    fn at(pattern: Pattern) -> Spanned<Pattern> {
+        Spanned(pattern, 0..0)
+    }
+
+    fn single_constructor_env() -> Infer {
+        let mut inf = Infer::default();
+        inf.user_ctor_schemes.insert(
+            "Box".to_string(),
+            Scheme {
+                vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fun(Box::new(con("String")), Box::new(con("Box"))),
+            },
+        );
+        inf.user_sum_ctors
+            .insert("Box".to_string(), vec![("Box".to_string(), 1)]);
+        inf
+    }
+
+    #[test]
+    fn a_binder_is_accepted() {
+        let inf = single_constructor_env();
+        assert!(reject_refutable_param(&inf, &at(Pattern::Var("x".to_string()))).is_ok());
+    }
+
+    #[test]
+    fn a_single_constructor_binding_a_name_is_accepted() {
+        let inf = single_constructor_env();
+        let param = at(Pattern::Ctor(
+            "Box".to_string(),
+            vec![at(Pattern::Var("inner".to_string()))],
+        ));
+        assert!(reject_refutable_param(&inf, &param).is_ok());
+    }
+
+    #[test]
+    fn a_refutable_pattern_nested_under_a_single_constructor_is_rejected() {
+        let inf = single_constructor_env();
+        let param = at(Pattern::Ctor(
+            "Box".to_string(),
+            vec![at(Pattern::Ctor(
+                "Just".to_string(),
+                vec![at(Pattern::Var("x".to_string()))],
+            ))],
+        ));
+        let error = reject_refutable_param(&inf, &param)
+            .expect_err("a `Just` nested inside a `Box` can still fail to match");
+        assert!(
+            error.msg.contains("`Just`") && error.msg.contains("`Maybe`"),
+            "got: {}",
+            error.msg
+        );
+    }
+
+    #[test]
+    fn a_refutable_pattern_nested_under_a_tuple_is_rejected() {
+        let inf = single_constructor_env();
+        let param = at(Pattern::Tuple(vec![
+            at(Pattern::Var("x".to_string())),
+            at(Pattern::Ctor(
+                "Just".to_string(),
+                vec![at(Pattern::Var("y".to_string()))],
+            )),
+        ]));
+        assert!(reject_refutable_param(&inf, &param).is_err());
+    }
+
+    #[test]
+    fn literal_patterns_are_rejected() {
+        let inf = single_constructor_env();
+        for literal in [
+            Pattern::Str("a".to_string()),
+            Pattern::Int(1),
+            Pattern::Char('c'),
+        ] {
+            let error = reject_refutable_param(&inf, &at(literal))
+                .expect_err("a literal matches only one value");
+            assert!(error.msg.contains("could fail"), "got: {}", error.msg);
+        }
+    }
+
+    #[test]
+    fn list_patterns_are_rejected() {
+        let inf = single_constructor_env();
+        assert!(reject_refutable_param(&inf, &at(Pattern::Nil)).is_err());
+        let cons = at(Pattern::Cons(
+            Box::new(at(Pattern::Var("head".to_string()))),
+            Box::new(at(Pattern::Var("tail".to_string()))),
+        ));
+        assert!(reject_refutable_param(&inf, &cons).is_err());
+    }
 }

@@ -3,6 +3,8 @@ title: Values and types
 description: Emet literals, operators with precedence, the number/comparable/appendable constraints, type annotations, and user-defined sum, parameterized, and record types.
 ---
 
+import Snippet from "../../../../components/Snippet.astro";
+
 The lexical and type surface of the Emet language. For the standard-library
 functions these types thread through, see the
 [prelude reference](/reference/language/prelude/). For the four glyph
@@ -168,6 +170,35 @@ constrains its argument to *some* record that has at least a `name` field of
 the right type, not one exact record shape. A function reading `h.name`
 accepts any record carrying a matching `name`. A record *literal* has a closed
 row — exactly the fields written, no more.
+
+#### Record update
+
+`{ r | field = value, … }` produces a copy of `r` with the named fields
+replaced. Everything else is carried through.
+
+<Snippet file="language-record-update.emet" region="record-update" />
+
+Update is **type-preserving**: a new value must have the type the field already
+has, and the result has the base's type. An update changes what a record holds,
+never its shape — a record literal is how the shape changes.
+
+Updating a field the record does not have is always a compile error. How it
+reads depends on what is known at the update. When the base's type is already a
+closed record — an annotated value, or a literal — the error names the offending
+field, suggests a near spelling, and lists the fields the record does have. When
+the base is an inferred or row-polymorphic record, as in the setter below, the
+row absorbs the unknown field at the update and the mismatch surfaces at the
+*call site* instead, reading as two record types that differ rather than naming
+the field.
+
+At least one field is required; `{ r | }` is a parse error.
+
+The base is any expression, not only a variable. It is unified against an *open*
+record demanding just the named fields, so an unannotated setter is
+row-polymorphic in the same way field access is, and one function updates every
+record shape carrying that field:
+
+<Snippet file="language-record-update.emet" region="record-update-polymorphic" />
 
 ### Tuples and unit
 

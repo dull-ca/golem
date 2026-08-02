@@ -3,8 +3,12 @@ title: Pattern matching
 description: The Emet case expression, its pattern forms, list and constructor patterns, and compile-time exhaustiveness and redundancy checking.
 ---
 
-`case` is the sole elimination form for sum types and lists. For the branching
-`if` form see [functions](/reference/language/functions/).
+import Snippet from "../../../../components/Snippet.astro";
+
+`case` is the elimination form for sum types and lists; a single-constructor
+type may also be destructured where a parameter binds it (see
+[patterns in argument position](#patterns-in-argument-position)). For the
+branching `if` form see [functions](/reference/language/functions/).
 
 ## `case … of`
 
@@ -112,6 +116,40 @@ A non-exhaustive `case` — one that fails to cover some value — is a compile
 error, reported with the missing constructors. A redundant arm — one that can
 never match because earlier arms already cover it — is also a compile error.
 Both are checked at compile time, so no arm falls through at runtime.
+
+## Patterns in argument position
+
+A parameter of a declaration, a `let` binding, or a lambda may be a constructor
+pattern, so a value destructures where it binds:
+
+<Snippet file="language-argument-patterns.emet" region="argument-patterns" />
+
+<Snippet file="language-argument-patterns.emet" region="argument-patterns-lambda" />
+
+A parameter is a **binder** or a **parenthesized constructor application**, and
+nothing else. Every other pattern form on this page — tuple, unit, list, literal,
+and a constructor nested inside another — is a parse error in argument position,
+and a nullary constructor still needs its parentheses (`f (Unit) = …`, not
+`f Unit = …`).
+
+The constructor must also be the **only** constructor of its type, which is what
+the narrow grammar exists to guarantee. A parameter has no sibling arms to cover
+the values it misses, so a pattern that can fail there would be a partial
+function — the thing exhaustiveness checking exists to prevent, reached by
+writing a binding instead of a branch. Take the whole value as a parameter and
+branch on it with `case … of`, which is checked:
+
+```emet
+nameFor : Maybe String -> String
+nameFor m =
+  case m of
+    Just name -> name
+    Nothing   -> "anonymous"
+```
+
+An excluded form reports a general parse error at the parameter — `f (a, b) = …`
+says `found 'a' expected an expression` — rather than naming argument position as
+the thing that does not support it.
 
 ## See also
 

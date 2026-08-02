@@ -83,7 +83,7 @@ type TokSpan = SimpleSpan<usize>;
 enum SigOrBind {
     Sig(Spanned<Type>),
     Bind {
-        params: Vec<String>,
+        params: Vec<Spanned<Pattern>>,
         body: Spanned<Expr>,
     },
 }
@@ -96,7 +96,7 @@ enum DeclItem {
     },
     Bind {
         name: String,
-        params: Vec<String>,
+        params: Vec<Spanned<Pattern>>,
         body: Spanned<Expr>,
         span: Span,
     },
@@ -107,6 +107,45 @@ where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     select! { Tok::Ident(name) => name }
+}
+
+// A parameter of a declaration, a `let` binding, or a lambda: a binder, or a
+// parenthesized constructor applied to binders (ADR 0044).
+//
+// NOTE: this grammar is deliberately narrower than `pattern_parser`, which also
+// reads literals, `[]`, `::`, and nesting, and the narrowness is load-bearing.
+// It is what keeps `f [] = …`, `f "x" = …`, and `f 0 = …` out of argument
+// position, where a pattern that can fail would be a partial function.
+// `infer::reject_refutable_param` checks the same property on the pattern this
+// produces, so widening here moves which diagnostic an author sees but cannot
+// admit a refutable parameter.
+//
+// The parens are required even with no fields — `f (Unit) = …`, where Elm also
+// accepts a bare `f Unit = …`. A bare `Upper` reads ambiguously against the
+// parameters after it (`f Box x` is one destructuring or two parameters), so
+// admitting it costs a disambiguation rule for no new expressive power.
+//
+// NOTE: the exclusion is wider than the refutability argument needs, and the two
+// halves do not coincide. `reject_refutable_param` accepts `Pattern::Tuple`
+// (single-shape, ADR 0027) and recurses through nesting, so `f (a, b) = …`,
+// `f () = …`, and `f (Wrap (Box s)) = …` would all pass the gate — they are
+// excluded here and nowhere else. Widening for them is a grammar change with no
+// soundness question attached; the deferral, and the misdirecting parse error
+// the excluded forms currently report, are in `docs/TODO.md`.
+fn param_parser<'src, I>(
+) -> impl Parser<'src, I, Spanned<Pattern>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+where
+    I: ValueInput<'src, Token = Tok, Span = TokSpan>,
+{
+    let binder = ident().map_with(|name, e| Spanned(Pattern::Var(name), span_range(e.span())));
+
+    let destructure = just(Tok::LParen)
+        .ignore_then(select! { Tok::Upper(u) => u })
+        .then(binder.clone().repeated().collect::<Vec<_>>())
+        .then_ignore(just(Tok::RParen))
+        .map_with(|(ctor, fields), e| Spanned(Pattern::Ctor(ctor, fields), span_range(e.span())));
+
+    choice((binder, destructure))
 }
 
 // The head of a top-level or `let` binding. Plain `ident()` accepted a reserved
@@ -475,18 +514,43 @@ where
             .then_ignore(just(Tok::Equals))
             .then(expr.clone());
 
-        let record = record_field
+        let record_literal = record_field
             .separated_by(just(Tok::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
-            .delimited_by(just(Tok::LBrace), just(Tok::RBrace))
-            .map_with(|pairs: Vec<(String, Spanned<Expr>)>, e| {
+            .then_ignore(just(Tok::RBrace))
+            .map(|pairs: Vec<(String, Spanned<Expr>)>| {
                 let mut fields = BTreeMap::new();
                 for (k, v) in pairs {
                     fields.insert(k, v);
                 }
-                Spanned(Expr::Record(fields), span_range(e.span()))
+                Expr::Record(fields)
             });
+
+        let update_field = field_name()
+            .map_with(|name, e| Spanned(name, span_range(e.span())))
+            .then_ignore(just(Tok::Equals))
+            .then(expr.clone());
+
+        let record_update = expr
+            .clone()
+            .then_ignore(just(Tok::Op("|".to_string())))
+            .then(
+                update_field
+                    .separated_by(just(Tok::Comma))
+                    .allow_trailing()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Tok::RBrace))
+            .map(|(base, fields)| Expr::RecordUpdate {
+                base: Box::new(base),
+                fields,
+            });
+
+        let record = just(Tok::LBrace)
+            .ignore_then(choice((record_literal, record_update)))
+            .map_with(|node, e| Spanned(node, span_range(e.span())));
 
         // The one parenthesized form, read by element count (ADR 0027 §2):
         // `()` (0) is unit, `(e)` (1) is grouping — the inner node itself, NOT a
@@ -556,7 +620,7 @@ where
                 })
             });
 
-        let operator = select! { Tok::Op(s) => s };
+        let operator = select! { Tok::Op(s) if s != "|" => s };
 
         let binary = unary
             .clone()
@@ -573,7 +637,7 @@ where
 
         let lambda = just(Tok::Backslash)
             .map_with(|_, e| span_range(e.span()).start)
-            .then(ident().repeated().at_least(1).collect::<Vec<_>>())
+            .then(param_parser().repeated().at_least(1).collect::<Vec<_>>())
             .then_ignore(just(Tok::Arrow))
             .then(expr.clone())
             .map(|((start, params), body)| {
@@ -983,7 +1047,7 @@ where
         .ignore_then(type_parser())
         .map(SigOrBind::Sig);
 
-    let binding_tail = ident()
+    let binding_tail = param_parser()
         .repeated()
         .collect::<Vec<_>>()
         .then_ignore(just(Tok::Equals))
@@ -1037,7 +1101,7 @@ where
         .ignore_then(type_parser())
         .map(SigOrBind::Sig);
 
-    let binding_tail = ident()
+    let binding_tail = param_parser()
         .repeated()
         .collect::<Vec<_>>()
         .then_ignore(just(Tok::Equals))

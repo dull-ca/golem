@@ -1,7 +1,9 @@
 # TODO / Backlog
 
 Deferred work and known gaps, with pointers to the design/ADRs that explain the
-context. These are intentional deferrals, not bugs.
+context. Most entries are intentional deferrals. The few that are defects carry
+a **KNOWN BUG** label and say what makes them wrong, so a deferral is never
+mistaken for one.
 
 Three backlogs: **A** is work inside the Emet language itself; **B** is the
 Emet ↔ golem ecosystem integration, now that Emet lives in the golem
@@ -151,6 +153,86 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   (negative literal patterns fold at parse time), but argument position still
   needs disambiguating. Future work: resolve `-1` as a negative literal in
   argument position too.
+
+- **Record update and constructor patterns in argument position — DONE (ADR
+  0044).** `{ r | field = value, … }` copies a record with the named fields
+  replaced, over ADR 0010's rows: the base unifies with an open record demanding
+  those fields, so a setter written against a row-polymorphic parameter serves
+  every record shape carrying them. The rule is type-preserving — a new value
+  must have the field's existing type and the result type is the base's — so an
+  update never reshapes a record. A function or lambda parameter may also be a
+  constructor pattern (`unwrap (Box held) = held`), restricted to
+  single-constructor types so ADR 0005's exhaustiveness is never bypassed;
+  `infer::reject_refutable_param` is the gate. A nullary constructor needs its
+  parens (`f (Unit) = …`), where Elm accepts the bare form. Tests green
+  (`apps/emet/tests/record_update.rs`, `apps/emet/tests/pattern_arguments.rs`).
+
+- **Only a binder or `( Upper binder* )` may be a parameter — DEFERRED (ADR
+  0044).** `parser::param_parser` is the whole parameter grammar, and it is
+  narrower than the refutability rule requires. Three irrefutable forms Elm
+  admits are parse errors: tuple parameters (`f (a, b) = …`), unit
+  (`f () = …`), and nesting (`f (Wrap (Box s)) = …`). The gate does not object
+  to any of them — `infer::reject_refutable_param` accepts `Pattern::Tuple` as
+  a single-shape product (ADR 0027) and recurses through nesting — so widening
+  the grammar to reach them needs no change to the type-level check. The
+  narrowness was taken deliberately, because it is what keeps the refutable
+  spellings (`f []`, `f "x"`, `f 0`) unwritable, and relaxing it must not
+  reopen those.
+
+  Bundled with it, and the more visible half: an excluded form reports a
+  general parse error that does not name argument position as the limitation.
+  `f (a, b) = a ++ b` says `found 'a' expected an expression`; a nested
+  `f (Wrap (Box s))` says `found '(' expected an expression or ')'`. Both point
+  at roughly the right place and describe the wrong repair, which ADR 0032 does
+  not accept as a resting state. A `validate`-based redirect in `param_parser`
+  would name the form; it was left out of ADR 0044's implementation as scope
+  creep.
+
+- **Duplicate fields in a record literal or update silently take the last
+  value — DEFERRED.** `{ a = 1, a = 2 }` evaluates to `{ a = 2 }` and
+  `{ r | a = 1, a = 2 }` applies `2`, where Elm rejects both. The literal path
+  overwrites through `BTreeMap::insert` and the update path through the same
+  insert into the copied map, so the two spellings are consistent with each
+  other but not with Elm. Deferred rather than fixed alongside ADR 0044's
+  record update precisely because a fix must cover both spellings together —
+  fixing only the update would leave the older, more common literal silently
+  wrong, which is the worse of the two states.
+
+- **A row-polymorphic record type cannot be written in a signature — KNOWN
+  GAP (ADR 0010).** The type parser builds `Row::Closed` records only, so
+  `{ name : String | r }` is a parse error (`found '|' expected a type, '->',
+  ',', or '}'`). Open record types exist and are inferred — that is the whole
+  of ADR 0010 — but are unannotatable, so the headline shape ADR 0044's record
+  update produces, a setter serving every record carrying a field, is exactly
+  the shape whose type cannot be written down. Two consequences: such a
+  function must be left unannotated to stay polymorphic, and `render_type`
+  prints the open row as `{ prt : Int | .. }`, a spelling the parser cannot
+  read back — so LSP hover shows a type that cannot be pasted into a signature.
+  The fix is row-variable syntax in type position, on both sides.
+
+- **Same-named types from two imports collide in the constructor registry —
+  KNOWN BUG.** `resolve::import_constructors` (`apps/emet/src/resolve.rs`) fills
+  `ctor_schemes` and `sum_ctors` keyed by *bare* type name, inserting over each
+  import in order. When two imported modules each expose a type of the same
+  name, `sum_ctors` keeps only the last import's variant list while every
+  module's constructors accumulate side by side in `ctor_schemes` — and since
+  both types are `Con("Thing")`, their values unify freely. A multi-constructor
+  type can therefore appear single-constructor.
+
+  Both pattern paths then admit a match that can fail. A `case` over the
+  losing type is accepted as exhaustive and panics at `eval.rs`'s
+  `unreachable!("non-exhaustive case")`; a constructor parameter passes
+  `reject_multi_constructor_param` — which asks the corrupted set how many
+  constructors the type has — and panics at
+  `unreachable!("refutable argument pattern survived inference")`. The `case`
+  route predates ADR 0044 and was confirmed to panic identically on a
+  pre-change build, so argument patterns add a second door to one room rather
+  than a new hole.
+
+  The fix belongs to the module system, not to either pattern path: key both
+  maps by owning module, or reject an import that shadows a type name already
+  in scope. Until then a program is safe only because same-named types across
+  two imported modules are rare.
 
 ### Diagnostics / tooling
 

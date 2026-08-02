@@ -101,7 +101,7 @@ pub enum Value {
     },
     Closure {
         rec: Option<Rc<RecGroup>>,
-        param: String,
+        param: Pattern,
         body: Rc<Spanned<Expr>>,
         env: Env,
     },
@@ -135,7 +135,7 @@ pub struct RecGroup {
 
 struct RecMember {
     name: String,
-    param: String,
+    param: Pattern,
     body: Rc<Spanned<Expr>>,
 }
 
@@ -322,7 +322,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         }
         Expr::Lam { param, body } => Value::Closure {
             rec: None,
-            param: param.clone(),
+            param: param.0.clone(),
             body: Rc::new((**body).clone()),
             env: env.clone(),
         },
@@ -342,6 +342,22 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             let mut m = BTreeMap::new();
             for (k, v) in fields {
                 m.insert(k.clone(), eval(env, v, depth)?);
+            }
+            Value::Record(m)
+        }
+        // A copy of the base with the named fields overwritten in source order
+        // (ADR 0044). Inference has unified the base with a record, so a
+        // non-record here would mean it let one through. Overwriting rather than
+        // inserting is the whole of the update: the type rule guarantees every
+        // name is already present and keeps its type.
+        Expr::RecordUpdate { base, fields } => {
+            let mut m = match eval(env, base, depth)? {
+                Value::Record(m) => m,
+                _ => unreachable!("record update on non-record"),
+            };
+            for (k, v) in fields {
+                let value = eval(env, v, depth)?;
+                m.insert(k.0.clone(), value);
             }
             Value::Record(m)
         }
@@ -580,7 +596,7 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
                 Some(group) => bind_group(&captured, group),
                 None => captured,
             };
-            let result = eval(&self_bound.insert(param, arg), &body, depth);
+            let result = eval(&bind_param(self_bound, &param, arg), &body, depth);
             *depth -= 1;
             result
         }
@@ -616,6 +632,25 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
         }
         _ => unreachable!("applied non-function"),
     }
+}
+
+/// Bind an argument through a parameter pattern (ADR 0044) — the `case` arm loop
+/// without the search, since a parameter has exactly one pattern.
+///
+/// The failure is unreachable for the same reason `case`'s is: inference has
+/// already proved the pattern irrefutable (`infer::reject_refutable_param`), as
+/// it proves a `case`'s arms exhaustive. Reaching it means a refutable pattern
+/// got past the type checker, so there is no runtime answer to give.
+fn bind_param(env: Env, param: &Pattern, arg: Value) -> Env {
+    let mut bindings = Vec::new();
+    if !match_pattern(param, &arg, &mut bindings) {
+        unreachable!("refutable argument pattern survived inference");
+    }
+    let mut bound = env;
+    for (name, value) in bindings {
+        bound = bound.insert(name, value);
+    }
+    bound
 }
 
 /// Reconstruct every member of a recursive group as a closure carrying the same
@@ -683,7 +718,7 @@ fn eval_recursive_group(env: &Env, decls: &[Decl], group: &[usize]) -> Option<En
         match curried.0 {
             Expr::Lam { param, body } => members.push(RecMember {
                 name: decls[idx].name.clone(),
-                param,
+                param: param.0,
                 body: Rc::new(*body),
             }),
             _ => return None,

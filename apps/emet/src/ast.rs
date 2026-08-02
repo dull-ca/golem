@@ -207,8 +207,13 @@ pub enum Expr {
     /// `LT`, …). Distinct from `Var`: constructors live in the prelude and,
     /// when saturated, evaluate to `Value::Data` (ADR 0005).
     Ctor(String),
+    /// `\p -> body`. The parameter is a [`Pattern`], so a lambda may
+    /// destructure its argument (`\(Box spec) -> spec.label`) and a plain name
+    /// is the [`Pattern::Var`] case of that (ADR 0044). Only irrefutable
+    /// patterns are admitted — the parameter has no sibling arms to cover what
+    /// it misses — which `infer::reject_refutable_param` enforces.
     Lam {
-        param: String,
+        param: Spanned<Pattern>,
         body: Box<Spanned<Expr>>,
     },
     App(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
@@ -223,6 +228,19 @@ pub enum Expr {
     /// `{ a = e1, b = e2 }` — a record literal. Infers to a `Closed` record
     /// (ADR 0010).
     Record(BTreeMap<String, Spanned<Expr>>),
+    /// `{ r | field = value, … }` — a copy of the base record with the named
+    /// fields replaced (ADR 0044). Type-preserving: a new value must have the
+    /// field's existing type, and the result type is the base's, so an update
+    /// changes what a record holds and never its shape.
+    ///
+    /// `fields` is a `Vec` rather than the `BTreeMap` [`Expr::Record`] uses,
+    /// because here source order is evaluation order. Each name carries its own
+    /// span so a complaint about the field — updating one the record does not
+    /// have — underlines the name and not the value beside it (ADR 0032).
+    RecordUpdate {
+        base: Box<Spanned<Expr>>,
+        fields: Vec<(Spanned<String>, Spanned<Expr>)>,
+    },
     /// A tuple literal `(a, b)` / `(a, b, c)`, or unit `()` when empty
     /// (ADR 0027).
     Tuple(Vec<Spanned<Expr>>),
@@ -334,12 +352,15 @@ pub enum Pattern {
 /// ```
 ///
 /// `params` are desugared into nested lambdas before inference/eval, so a
-/// declaration is just a name bound to an expression.
+/// declaration is just a name bound to an expression. A parameter is a
+/// [`Pattern`] rather than a name so it may destructure —
+/// `unwrap (Box held) = held` — but only an irrefutable one; see
+/// [`Expr::Lam`].
 #[derive(Debug, Clone)]
 pub struct Decl {
     pub name: String,
     pub sig: Option<Spanned<Type>>,
-    pub params: Vec<String>,
+    pub params: Vec<Spanned<Pattern>>,
     pub body: Spanned<Expr>,
     pub span: Span,
 }

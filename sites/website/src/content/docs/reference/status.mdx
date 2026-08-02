@@ -10,10 +10,12 @@ the roadmap is a design or a deliberate deferral with no code behind it.
 
 ## Implemented and tested
 
-- **Emet authoring language.** Hindley-Milner types with generics, records,
-  `case`/`if` with exhaustiveness checking, numbers with infix operators,
-  string interpolation, recursion and mutual recursion, `Char`, tuples and
-  unit, and a minimal Elm-modeled module system (`module … exposing`,
+- **Emet authoring language.** Hindley-Milner types with generics, records
+  with row-polymorphic field access and update (`{ r | port = 443 }`),
+  `case`/`if` with exhaustiveness checking, single-constructor patterns in
+  argument position (`withPort p (Config spec) = …`), numbers with infix
+  operators, string interpolation, recursion and mutual recursion, `Char`,
+  tuples and unit, and a minimal Elm-modeled module system (`module … exposing`,
   `import … [as …] [exposing …]`, file = module). A program compiles a
   fleet: `main : List Scroll`. Diagnostics are Elm-style: source spans,
   did-you-mean, one report per error.
