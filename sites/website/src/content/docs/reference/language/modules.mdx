@@ -78,6 +78,34 @@ imported together.
 A type reached through two imports is one type, not a collision: two modules may
 both re-expose a third module's type.
 
+## One constructor name, one owner
+
+Within one module, a constructor name has exactly one owner. Importing two
+modules that each expose a constructor named `Wrap` is a compile error, as is
+declaring a variant named `Wrap` when an import already supplies one.
+
+```emet
+import CtorA   -- exposes Alpha(..), whose variant is Wrap
+import CtorB   -- exposes Beta(..), also with a Wrap: rejected
+```
+
+A constructor is reached only by its bare name. `CtorA.Wrap` is not a spelling
+Emet has, in expression or in pattern position, so nothing at a use site could
+say which `Wrap` is meant. Two repairs: rename one of the two constructors, or
+import the two modules from separate modules.
+
+The scope of this rule is the **exposing list**, which is narrower than the type
+rule above. Only a `Type(..)` export contributes constructors to an importer, so
+a type exposed without `(..)` constrains nothing — two modules may each declare
+a `Wrap` and be imported together as long as at most one of them exposes it
+openly. The type rule reaches further, past the exposing list to any type named
+in an exposed signature, because such a type still unifies by name even though
+the importer cannot write it.
+
+Constructor ownership does not travel either: a module cannot re-expose a
+constructor it did not declare. One module reached through two `import` lines
+contributes one owner and is not a collision.
+
 ## Qualified access
 
 `Alias.name` (or `Module.name`) reaches an exposed member. This reuses the same

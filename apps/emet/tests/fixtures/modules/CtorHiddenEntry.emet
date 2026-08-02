@@ -1,0 +1,15 @@
+module Main exposing (..)
+
+import CtorHidden exposing (Alpha, wrap)
+
+type Local = Wrap String
+
+boxed : Alpha
+boxed = wrap "opaque"
+
+unwrapLocal : Local -> String
+unwrapLocal (Wrap s) = s
+
+main : List Scroll
+main =
+  [ scroll { name = unwrapLocal (Wrap "hidden"), glyphs = [] } ]

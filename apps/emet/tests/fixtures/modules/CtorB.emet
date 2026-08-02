@@ -1,0 +1,3 @@
+module CtorB exposing (Beta(..))
+
+type Beta = Wrap Int

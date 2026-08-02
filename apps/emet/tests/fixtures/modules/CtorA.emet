@@ -1,0 +1,6 @@
+module CtorA exposing (Alpha(..), unwrap)
+
+type Alpha = Wrap String
+
+unwrap : Alpha -> String
+unwrap (Wrap s) = s

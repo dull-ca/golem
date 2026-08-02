@@ -1,0 +1,13 @@
+module Main exposing (..)
+
+import CtorA exposing (Alpha(..))
+import CtorB exposing (Beta(..))
+
+describe : Alpha -> String
+describe v =
+  case v of
+    Wrap s -> s
+
+main : List Scroll
+main =
+  [ scroll { name = describe (Wrap "matched"), glyphs = [] } ]
