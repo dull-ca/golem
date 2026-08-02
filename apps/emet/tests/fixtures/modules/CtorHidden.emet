@@ -1,0 +1,6 @@
+module CtorHidden exposing (Alpha, wrap)
+
+type Alpha = Wrap String
+
+wrap : String -> Alpha
+wrap s = Wrap s

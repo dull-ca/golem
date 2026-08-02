@@ -67,6 +67,7 @@ struct Interface {
     exposed_sum_ctors: HashMap<String, Vec<(String, usize)>>,
     exposed_def_spans: HashMap<String, Span>,
     type_owners: BTreeMap<String, String>,
+    ctor_owners: BTreeMap<String, ConstructorOrigin>,
 }
 
 /// Compile a multi-module program from its entry file to `main`'s type and the
@@ -139,7 +140,9 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     for name in &order {
         let loaded_mod = &loaded[name];
 
-        if let Err(e) = reject_type_name_collisions(loaded_mod, name, &interfaces) {
+        if let Err(e) = reject_type_name_collisions(loaded_mod, name, &interfaces)
+            .and_then(|()| reject_constructor_name_collisions(loaded_mod, name, &interfaces))
+        {
             diagnostics.push(e);
             continue;
         }
@@ -213,6 +216,7 @@ fn check_and_eval(
         let is_entry = name == &entry_name;
 
         reject_type_name_collisions(loaded_mod, name, &interfaces)?;
+        reject_constructor_name_collisions(loaded_mod, name, &interfaces)?;
         let base_ty = import_ty_env(&loaded_mod.module, &interfaces, loaded_mod)?;
         let base_val = import_value_env(&loaded_mod.module, &interfaces);
         let imported_types = import_type_arities(&loaded_mod.module, &interfaces);
@@ -672,6 +676,114 @@ fn reject_type_name_collisions(
     Ok(())
 }
 
+#[derive(Clone)]
+struct ConstructorOrigin {
+    owner: String,
+    type_name: String,
+}
+
+fn reject_constructor_name_collisions(
+    loaded: &Loaded,
+    module_name: &str,
+    interfaces: &HashMap<String, Interface>,
+) -> Result<(), Error> {
+    let mut origins: HashMap<String, ConstructorOrigin> = HashMap::new();
+    for import in &loaded.module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        for (ctor_name, origin) in &iface.ctor_owners {
+            match origins.get(ctor_name) {
+                Some(seen) if seen.owner != origin.owner => {
+                    return Err(imports_define_the_same_constructor(
+                        loaded,
+                        ctor_name,
+                        seen,
+                        origin,
+                        import.span.clone(),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    origins.insert(ctor_name.clone(), origin.clone());
+                }
+            }
+        }
+    }
+    for declaration in &loaded.module.type_decls {
+        for variant in &declaration.variants {
+            if let Some(seen) = origins.get(&variant.name) {
+                return Err(local_constructor_shadows_an_imported_one(
+                    loaded,
+                    &ConstructorOrigin {
+                        owner: module_name.to_string(),
+                        type_name: declaration.name.clone(),
+                    },
+                    &variant.name,
+                    seen,
+                    variant.span.clone(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn unreachable_constructor_note(
+    ctor_name: &str,
+    first: &ConstructorOrigin,
+    second: &ConstructorOrigin,
+) -> String {
+    format!(
+        "`{}` defines `{ctor_name}` on type `{}`, and `{}` defines it on type `{}`. Emet reaches a constructor only by its bare name — there is no qualified `Module.Constructor` spelling — so only one `{ctor_name}` can be reachable here; the other vanishes, and using it reports a type error against the surviving one's type. ",
+        first.owner, first.type_name, second.owner, second.type_name
+    )
+}
+
+fn imports_define_the_same_constructor(
+    site: &Loaded,
+    ctor_name: &str,
+    first: &ConstructorOrigin,
+    second: &ConstructorOrigin,
+    span: Span,
+) -> Error {
+    let mut note = unreachable_constructor_note(ctor_name, first, second);
+    note.push_str(
+        "Rename one of the two constructors, or import the two modules from separate modules.",
+    );
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "`{}` and `{}` both define a constructor named `{ctor_name}`",
+            first.owner, second.owner
+        ),
+        span,
+        note: Some(note),
+        file: Some(site.path.clone()),
+    }
+}
+
+fn local_constructor_shadows_an_imported_one(
+    site: &Loaded,
+    local: &ConstructorOrigin,
+    ctor_name: &str,
+    imported: &ConstructorOrigin,
+    span: Span,
+) -> Error {
+    let mut note = unreachable_constructor_note(ctor_name, local, imported);
+    note.push_str("Rename one of the two constructors.");
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "`{}` and `{}` both define a constructor named `{ctor_name}`",
+            local.owner, imported.owner
+        ),
+        span,
+        note: Some(note),
+        file: Some(site.path.clone()),
+    }
+}
+
 fn imports_define_the_same_type(
     site: &Loaded,
     type_name: &str,
@@ -975,10 +1087,18 @@ fn interface_of(
         }
     }
 
+    let mut ctor_owners: BTreeMap<String, ConstructorOrigin> = BTreeMap::new();
     for type_name in &open_type_names {
         if let Some(variants) = ctor_names.get(type_name) {
             exposed_constructors.extend(variants.iter().cloned());
             for ctor in variants {
+                ctor_owners.insert(
+                    ctor.clone(),
+                    ConstructorOrigin {
+                        owner: module_name.to_string(),
+                        type_name: type_name.clone(),
+                    },
+                );
                 if let Some(scheme) = ty_env.scheme(ctor) {
                     exposed_ctor_schemes.insert(ctor.clone(), scheme);
                 }
@@ -1043,6 +1163,7 @@ fn interface_of(
         exposed_sum_ctors,
         exposed_def_spans,
         type_owners,
+        ctor_owners,
     }
 }
 

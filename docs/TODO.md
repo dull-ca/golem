@@ -229,17 +229,33 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   is still free. Module-qualified type identity is the better end state and is
   deferred, not superseded — see ADR 0045's consequences.
 
-- **Two imports may expose the same constructor name — KNOWN BUG (ADR 0045).**
-  `resolve::import_constructors` keys `ctor_schemes` by *bare constructor* name,
-  so with `CtorA.Alpha = Wrap String` and `CtorB.Beta = Wrap Int` imported
-  together the last import wins and `CtorA`'s `Wrap` becomes silently
-  unreachable — `a : Alpha` / `a = Wrap "text"` reports `expected Int, found
-  String`, naming the wrong type. Not unsoundness: ADR 0045 keeps `Alpha` and
-  `Beta` distinct, so no value crosses. What it costs an author is a constructor
-  that vanishes without a word and a type error that points at the wrong type,
-  so the reported mismatch reads as a bug in code that is correct. Elm rejects
-  the ambiguous import outright; Emet should too — either by rejecting it or by
-  keying `ctor_schemes` by owning module. Unscheduled.
+- **Two imports may expose the same constructor name — FIXED (ADR 0046).**
+  `resolve::import_constructors` keyed `ctor_schemes` by *bare constructor* name
+  and `import_ty_env` bound `exposed_constructors` the same way, so with
+  `CtorA.Alpha = Wrap String` and `CtorB.Beta = Wrap Int` imported together the
+  last import won and `CtorA`'s `Wrap` became silently unreachable — `a : Alpha`
+  / `a = Wrap "text"` reported `expected Int, found String`, naming the wrong
+  type. Reproduction added two more shapes: the pattern side shadowed
+  identically (`case v of Wrap s -> s` in a function annotated `Alpha -> String`
+  reported `expected Beta, found Alpha` against the signature line), and a local
+  `type Local = Wrap Int` silently displaced an imported `Wrap`. Never
+  unsoundness — ADR 0045 keeps `Alpha` and `Beta` distinct, so no value crossed
+  — but it cost an author a constructor that vanished without a word and a type
+  error pointing at a type the author never wrote, so correct code read as
+  broken.
+
+  `resolve::reject_constructor_name_collisions` now enforces one owner per
+  constructor name per module, over each interface's `ctor_owners` — every
+  open-exposed constructor mapped to its declaring module and the type it
+  builds. Rejection rather than owner-keyed lookup because a constructor is
+  reachable *only* by its bare name: `CtorA.Wrap` is a parse error, so a
+  disambiguated map would have no use site to disambiguate with, and the second
+  constructor was never usable in the first place. It extends across the module
+  boundary the rule `infer::register_type_decls` already applies within one
+  (`duplicate constructor`). Narrower than ADR 0045's type rule in two ways that
+  follow from constructors being gated tighter than types: only `Type(..)`
+  constructors are in scope at all, and constructor ownership never propagates
+  through a re-export, so one module imported twice is not a collision.
 
 ### Diagnostics / tooling
 

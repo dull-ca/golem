@@ -205,11 +205,11 @@ fn imported_multi_constructor_type_may_not_destructure_in_an_argument() {
     );
 }
 
-fn assert_names_both_modules(err: &emet::Error, type_name: &str, first: &str, second: &str) {
+fn assert_names_both_modules(err: &emet::Error, name: &str, first: &str, second: &str) {
     assert_eq!(err.phase, Phase::Type);
     let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
     for needle in [
-        format!("`{type_name}`"),
+        format!("`{name}`"),
         format!("`{first}`"),
         format!("`{second}`"),
     ] {
@@ -262,4 +262,61 @@ fn two_imports_sharing_a_third_modules_type_still_compile() {
     let c = compile_fixture("SharedEntry.emet")
         .expect("one type reached through two imports is not a collision");
     assert_eq!(scroll_names(&c), vec!["shared".to_string()]);
+}
+
+fn assert_reports_no_type_mismatch(err: &emet::Error) {
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
+    assert!(
+        !rendered.contains("type mismatch"),
+        "the collision must be reported directly, not as a mismatch against the surviving constructor's type, got: {rendered}"
+    );
+}
+
+#[test]
+fn same_named_constructors_from_two_imports_are_rejected() {
+    let err = compile_fixture("CtorCollisionEntry.emet")
+        .expect_err("two imports defining `Wrap` must not compile");
+    assert_names_both_modules(&err, "Wrap", "CtorA", "CtorB");
+    assert_reports_no_type_mismatch(&err);
+}
+
+#[test]
+fn same_named_constructors_are_rejected_on_the_pattern_side() {
+    let err = compile_fixture("CtorCollisionMatchEntry.emet")
+        .expect_err("two imports defining `Wrap` must not compile");
+    assert_names_both_modules(&err, "Wrap", "CtorA", "CtorB");
+    assert_reports_no_type_mismatch(&err);
+}
+
+#[test]
+fn a_local_constructor_may_not_share_a_name_with_an_imported_one() {
+    let err = compile_fixture("CtorCollisionLocalEntry.emet")
+        .expect_err("a local `Wrap` must not collide with an imported `Wrap`");
+    assert_names_both_modules(&err, "Wrap", "Main", "CtorA");
+    assert_reports_no_type_mismatch(&err);
+}
+
+#[test]
+fn a_collision_diagnostic_names_each_constructors_type() {
+    let err = compile_fixture("CtorCollisionEntry.emet")
+        .expect_err("two imports defining `Wrap` must not compile");
+    let note = err.note.unwrap_or_default();
+    assert!(
+        note.contains("`Alpha`") && note.contains("`Beta`"),
+        "the note must name the type each `Wrap` builds, got: {note}"
+    );
+}
+
+#[test]
+fn one_module_imported_twice_does_not_collide_with_itself() {
+    let c = compile_fixture("CtorTwiceEntry.emet")
+        .expect("one constructor reached through two imports of one module is not a collision");
+    assert_eq!(scroll_names(&c), vec!["twice".to_string()]);
+}
+
+#[test]
+fn a_constructor_behind_a_closed_type_export_does_not_collide() {
+    let c = compile_fixture("CtorHiddenEntry.emet")
+        .expect("a constructor an import never exposes cannot collide with a local one");
+    assert_eq!(scroll_names(&c), vec!["hidden".to_string()]);
 }
