@@ -98,7 +98,7 @@
       "name": "keyword.control.emet"
     },
     "builtin": {
-      "match": "\\b(systemdService|aptPackage|lineInFile|scroll|file)\\b",
+      "match": "\\b(systemdService|aptPackage|lineInFile|directory|rollback|symlink|scroll|retry|file|keep)\\b",
       "name": "support.function.builtin.emet"
     },
     "type-signature": {
