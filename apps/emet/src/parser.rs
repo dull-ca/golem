@@ -492,7 +492,6 @@ where
             .then(expr.clone());
 
         let record_literal = record_field
-            .clone()
             .separated_by(just(Tok::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
@@ -505,12 +504,16 @@ where
                 Expr::Record(fields)
             });
 
+        let update_field = field_name()
+            .map_with(|name, e| Spanned(name, span_range(e.span())))
+            .then_ignore(just(Tok::Equals))
+            .then(expr.clone());
+
         let record_update = expr
             .clone()
             .then_ignore(just(Tok::Op("|".to_string())))
             .then(
-                record_field
-                    .clone()
+                update_field
                     .separated_by(just(Tok::Comma))
                     .allow_trailing()
                     .at_least(1)

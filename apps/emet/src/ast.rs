@@ -225,7 +225,7 @@ pub enum Expr {
     Record(BTreeMap<String, Spanned<Expr>>),
     RecordUpdate {
         base: Box<Spanned<Expr>>,
-        fields: Vec<(String, Spanned<Expr>)>,
+        fields: Vec<(Spanned<String>, Spanned<Expr>)>,
     },
     /// A tuple literal `(a, b)` / `(a, b, c)`, or unit `()` when empty
     /// (ADR 0027).

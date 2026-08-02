@@ -969,6 +969,18 @@ fn absent_update_field(field: &str, known: &BTreeMap<String, Type>, span: &Span)
     TypeError::new(msg, span.clone()).note(note)
 }
 
+fn field_type_changed(field: &str, existing: &Type, found: &Type, span: &Span) -> TypeError {
+    let rendered = render_types_shared(&[existing, found]);
+    TypeError::new(
+        format!(
+            "a record update cannot change a field's type — `{field}` is `{}`, and this is `{}`",
+            rendered[0], rendered[1]
+        ),
+        span.clone(),
+    )
+    .note("record update replaces a field's value, not its type; write a new record literal when the shape itself must change")
+}
+
 fn constraint_name(c: Constraint) -> &'static str {
     match c {
         Constraint::None => "unconstrained",
@@ -1524,9 +1536,9 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             let base_ty = infer_expr(inf, env, base)?;
             match inf.prune(&base_ty) {
                 Type::Record(known, Row::Closed) => {
-                    for (name, value) in fields {
-                        if !known.contains_key(name) {
-                            return Err(absent_update_field(name, &known, &value.1));
+                    for (name, _) in fields {
+                        if !known.contains_key(&name.0) {
+                            return Err(absent_update_field(&name.0, &known, &name.1));
                         }
                     }
                 }
@@ -1544,21 +1556,20 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
 
             let mut demanded = BTreeMap::new();
             for (name, _) in fields {
-                demanded.insert(name.clone(), inf.fresh());
+                demanded.insert(name.0.clone(), inf.fresh());
             }
             let rest = inf.fresh_row();
-            inf.unify(&base_ty, &Type::Record(demanded, rest), span)?;
+            inf.unify(&base_ty, &Type::Record(demanded.clone(), rest), span)?;
 
-            let mut replacements = BTreeMap::new();
             for (name, value) in fields {
-                replacements.insert(name.clone(), infer_expr(inf, env, value)?);
+                let vt = infer_expr(inf, env, value)?;
+                let existing = &demanded[&name.0];
+                inf.unify(&vt, existing, &value.1).map_err(|_| {
+                    field_type_changed(&name.0, &inf.apply(existing), &inf.apply(&vt), &value.1)
+                })?;
             }
 
-            let Type::Record(mut updated, row) = inf.apply(&base_ty) else {
-                unreachable!("a record update's base has just been unified with a record")
-            };
-            updated.extend(replacements);
-            Ok(Type::Record(updated, row))
+            Ok(inf.apply(&base_ty))
         }
 
         // A tuple literal infers to a `Type::Tuple` of its elements' types,

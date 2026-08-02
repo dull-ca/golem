@@ -352,7 +352,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             };
             for (k, v) in fields {
                 let value = eval(env, v, depth)?;
-                m.insert(k.clone(), value);
+                m.insert(k.0.clone(), value);
             }
             Value::Record(m)
         }
