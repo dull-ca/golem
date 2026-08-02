@@ -14,7 +14,7 @@
 //! visibility gate is what distinguishes a module's public API from its
 //! internals.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme, Span};
@@ -58,6 +58,7 @@ struct Interface {
     exposed_ctor_schemes: HashMap<String, Scheme>,
     exposed_sum_ctors: HashMap<String, Vec<(String, usize)>>,
     exposed_def_spans: HashMap<String, Span>,
+    type_owners: BTreeMap<String, String>,
 }
 
 /// Compile a multi-module program from its entry file to `main`'s type and the
@@ -130,6 +131,10 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     for name in &order {
         let loaded_mod = &loaded[name];
 
+        if let Err(e) = reject_type_name_collisions(loaded_mod, name, &interfaces) {
+            diagnostics.push(e);
+            continue;
+        }
         let base_ty = match import_ty_env(&loaded_mod.module, &interfaces, loaded_mod) {
             Ok(env) => env,
             Err(e) => {
@@ -169,7 +174,13 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
                 &imported_types,
                 &imported_ctors,
             ) {
-                let iface = interface_of(&loaded_mod.module, final_ty, eval::prelude_env());
+                let iface = interface_of(
+                    &loaded_mod.module,
+                    name,
+                    &inherited_type_owners(&loaded_mod.module, &interfaces),
+                    final_ty,
+                    eval::prelude_env(),
+                );
                 interfaces.insert(name.clone(), iface);
             }
         }
@@ -193,6 +204,7 @@ fn check_and_eval(
         let loaded_mod = &loaded[name];
         let is_entry = name == &entry_name;
 
+        reject_type_name_collisions(loaded_mod, name, &interfaces)?;
         let base_ty = import_ty_env(&loaded_mod.module, &interfaces, loaded_mod)?;
         let base_val = import_value_env(&loaded_mod.module, &interfaces);
         let imported_types = import_type_arities(&loaded_mod.module, &interfaces);
@@ -224,9 +236,10 @@ fn check_and_eval(
             .map_err(|e| type_error(loaded_mod, e))?;
             let final_val = eval::eval_library(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
+            let owners = inherited_type_owners(&loaded_mod.module, &interfaces);
             interfaces.insert(
                 name.clone(),
-                interface_of(&loaded_mod.module, final_ty, final_val),
+                interface_of(&loaded_mod.module, name, &owners, final_ty, final_val),
             );
         }
     }
@@ -540,13 +553,6 @@ fn import_type_arities(
 /// exposed without `(..)` contributes nothing here and stays unmatchable in the
 /// importer. Fed to inference so `infer_pattern` resolves imported constructors
 /// and the exhaustiveness checker sees their type's complete signature.
-///
-/// NOTE: both maps are keyed by bare name, so two imported modules exposing
-/// same-named types collide and `sum_ctors` keeps only the last import's
-/// variants — a multi-constructor type can then look single-constructor and
-/// defeat both the `case` exhaustiveness check and the argument-pattern gate.
-/// Recorded as a KNOWN BUG in `docs/TODO.md`; the fix is to key by owning module
-/// or to reject the shadowing import.
 fn import_constructors(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
@@ -567,6 +573,165 @@ fn import_constructors(
     ImportedConstructors {
         ctor_schemes,
         sum_ctors,
+    }
+}
+
+struct TypeNameOrigin {
+    owner: String,
+    via: String,
+}
+
+fn reject_type_name_collisions(
+    loaded: &Loaded,
+    module_name: &str,
+    interfaces: &HashMap<String, Interface>,
+) -> Result<(), Error> {
+    let mut origins: HashMap<String, TypeNameOrigin> = HashMap::new();
+    for import in &loaded.module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        for (type_name, owner) in &iface.type_owners {
+            match origins.get(type_name) {
+                Some(seen) if &seen.owner != owner => {
+                    return Err(imports_define_the_same_type(
+                        loaded,
+                        type_name,
+                        seen,
+                        &TypeNameOrigin {
+                            owner: owner.clone(),
+                            via: import.module.clone(),
+                        },
+                        import.span.clone(),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    origins.insert(
+                        type_name.clone(),
+                        TypeNameOrigin {
+                            owner: owner.clone(),
+                            via: import.module.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    for declaration in &loaded.module.type_decls {
+        if let Some(seen) = origins.get(&declaration.name) {
+            return Err(local_type_shadows_an_imported_one(
+                loaded,
+                module_name,
+                &declaration.name,
+                seen,
+                declaration.span.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn imports_define_the_same_type(
+    site: &Loaded,
+    type_name: &str,
+    first: &TypeNameOrigin,
+    second: &TypeNameOrigin,
+    span: Span,
+) -> Error {
+    let mut note = String::new();
+    for origin in [first, second] {
+        if origin.owner != origin.via {
+            note.push_str(&format!(
+                "`{}` exposes the `{type_name}` defined in `{}`. ",
+                origin.via, origin.owner
+            ));
+        }
+    }
+    note.push_str(&format!(
+        "Emet knows a type only by its bare name, so with both modules imported here the two `{type_name}` types would be interchangeable — a value of one would be accepted wherever the other is expected. Rename one of the two types, or import the two modules from separate modules."
+    ));
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "`{}` and `{}` both define a type named `{type_name}`",
+            first.owner, second.owner
+        ),
+        span,
+        note: Some(note),
+        file: Some(site.path.clone()),
+    }
+}
+
+fn local_type_shadows_an_imported_one(
+    site: &Loaded,
+    module_name: &str,
+    type_name: &str,
+    imported: &TypeNameOrigin,
+    span: Span,
+) -> Error {
+    let mut note = String::new();
+    if imported.owner != imported.via {
+        note.push_str(&format!(
+            "`{}` exposes the `{type_name}` defined in `{}`. ",
+            imported.via, imported.owner
+        ));
+    }
+    note.push_str(&format!(
+        "Emet knows a type only by its bare name, so this `{type_name}` and `{}`'s would be interchangeable — a value of one would be accepted wherever the other is expected. Rename one of the two types.",
+        imported.owner
+    ));
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "`{module_name}` and `{}` both define a type named `{type_name}`",
+            imported.owner
+        ),
+        span,
+        note: Some(note),
+        file: Some(site.path.clone()),
+    }
+}
+
+fn inherited_type_owners(
+    module: &Module,
+    interfaces: &HashMap<String, Interface>,
+) -> BTreeMap<String, String> {
+    let mut owners = BTreeMap::new();
+    for import in &module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        for (type_name, owner) in &iface.type_owners {
+            owners.insert(type_name.clone(), owner.clone());
+        }
+    }
+    owners
+}
+
+fn type_con_names(ty: &crate::ast::Type, found: &mut BTreeSet<String>) {
+    match ty {
+        crate::ast::Type::Var(_, _) | crate::ast::Type::Rigid(_) => {}
+        crate::ast::Type::Con(name, args) => {
+            found.insert(name.clone());
+            for arg in args {
+                type_con_names(arg, found);
+            }
+        }
+        crate::ast::Type::Fun(from, to) => {
+            type_con_names(from, found);
+            type_con_names(to, found);
+        }
+        crate::ast::Type::Record(fields, _) => {
+            for field in fields.values() {
+                type_con_names(field, found);
+            }
+        }
+        crate::ast::Type::Tuple(elements) => {
+            for element in elements {
+                type_con_names(element, found);
+            }
+        }
     }
 }
 
@@ -679,7 +844,13 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
 /// exhaustiveness checker see the complete constructor set. A type exposed
 /// without `(..)` contributes none of this, so its constructors stay invisible
 /// to the importer.
-fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
+fn interface_of(
+    module: &Module,
+    module_name: &str,
+    inherited_owners: &BTreeMap<String, String>,
+    ty_env: TyEnv,
+    value_env: Env,
+) -> Interface {
     let mut exposed_values = HashSet::new();
     let mut exposed_constructors = Vec::new();
     let mut exposed_type_arities = HashMap::new();
@@ -779,6 +950,30 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         }
     }
 
+    let mut surface_type_names: BTreeSet<String> = exposed_type_arities.keys().cloned().collect();
+    for name in exposed_values.iter().chain(exposed_constructors.iter()) {
+        if let Some(scheme) = ty_env.scheme(name) {
+            type_con_names(&scheme.ty, &mut surface_type_names);
+        }
+    }
+    let declared_here: HashSet<&str> = module
+        .type_decls
+        .iter()
+        .map(|decl| decl.name.as_str())
+        .collect();
+    let type_owners = surface_type_names
+        .into_iter()
+        .filter_map(|type_name| {
+            if declared_here.contains(type_name.as_str()) {
+                Some((type_name, module_name.to_string()))
+            } else {
+                inherited_owners
+                    .get(&type_name)
+                    .map(|owner| (type_name, owner.clone()))
+            }
+        })
+        .collect();
+
     Interface {
         ty_env,
         value_env,
@@ -788,6 +983,7 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         exposed_ctor_schemes,
         exposed_sum_ctors,
         exposed_def_spans,
+        type_owners,
     }
 }
 

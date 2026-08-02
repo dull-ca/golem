@@ -1,0 +1,8 @@
+module Main exposing (..)
+
+import ShadowOpaqueA exposing (describe)
+import ShadowOpaqueB exposing (make)
+
+main : List Scroll
+main =
+  [ scroll { name = describe (make 5), glyphs = [] } ]

@@ -204,3 +204,62 @@ fn imported_multi_constructor_type_may_not_destructure_in_an_argument() {
         "the note must direct the author to `case`"
     );
 }
+
+fn assert_names_both_modules(err: &emet::Error, type_name: &str, first: &str, second: &str) {
+    assert_eq!(err.phase, Phase::Type);
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
+    for needle in [
+        format!("`{type_name}`"),
+        format!("`{first}`"),
+        format!("`{second}`"),
+    ] {
+        assert!(
+            rendered.contains(&needle),
+            "the diagnostic must contain {needle}, got: {rendered}"
+        );
+    }
+    assert!(
+        err.note
+            .clone()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("rename"),
+        "the note must tell the author what to do, got: {:?}",
+        err.note
+    );
+}
+
+#[test]
+fn same_named_types_from_two_imports_are_rejected() {
+    let err = compile_fixture("ShadowCaseEntry.emet")
+        .expect_err("two imports defining `Thing` must not compile");
+    assert_names_both_modules(&err, "Thing", "ShadowMulti", "ShadowSingle");
+}
+
+#[test]
+fn same_named_types_are_rejected_before_the_argument_pattern_gate() {
+    let err = compile_fixture("ShadowParamEntry.emet")
+        .expect_err("two imports defining `Thing` must not compile");
+    assert_names_both_modules(&err, "Thing", "ShadowMulti", "ShadowSingle");
+}
+
+#[test]
+fn a_local_type_may_not_share_a_name_with_an_imported_one() {
+    let err = compile_fixture("ShadowLocalEntry.emet")
+        .expect_err("a local `Thing` must not collide with an imported `Thing`");
+    assert_names_both_modules(&err, "Thing", "Main", "ShadowMulti");
+}
+
+#[test]
+fn same_named_opaque_types_from_two_imports_are_rejected() {
+    let err = compile_fixture("ShadowOpaqueEntry.emet")
+        .expect_err("two imports whose signatures mention a private `Thing` must not compile");
+    assert_names_both_modules(&err, "Thing", "ShadowOpaqueA", "ShadowOpaqueB");
+}
+
+#[test]
+fn two_imports_sharing_a_third_modules_type_still_compile() {
+    let c = compile_fixture("SharedEntry.emet")
+        .expect("one type reached through two imports is not a collision");
+    assert_eq!(scroll_names(&c), vec!["shared".to_string()]);
+}

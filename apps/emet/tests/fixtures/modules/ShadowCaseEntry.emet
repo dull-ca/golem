@@ -1,0 +1,12 @@
+module Main exposing (..)
+
+import ShadowMulti exposing (Thing(..))
+import ShadowSingle exposing (Thing(..))
+
+label t =
+  case t of
+    Only -> "only"
+
+main : List Scroll
+main =
+  [ scroll { name = label Two, glyphs = [] } ]

@@ -1,0 +1,3 @@
+module SharedType exposing (Tag(..))
+
+type Tag = Tag String
