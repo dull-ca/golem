@@ -33,14 +33,19 @@
 
 ### Task 2: `Secretspec.get` in Emet
 
-**Files:** `apps/emet/src/{prelude,infer,eval,main}.rs`; new tests.
+**Files:** `apps/emet/src/{prelude,infer,eval}.rs`, `main.rs`; new tests.
 
-- `Secretspec.get : String -> String` as a module-qualified builtin (ADR 0006), resolved at **compile time**.
+- `Secretspec.get "key"` as a module-qualified builtin (ADR 0006), resolved at **compile time** through the secretspec Rust library.
 - Read `secretspec.toml` (auto-detected by walking up, as the CLI does). An undeclared key is a compile error naming it and listing the declared keys. A declared key the provider cannot supply is a distinct error naming the provider.
-- Seal with the fleet key, deterministically. The key is an input: decide flag vs env (`--secret-key` / `GOLEM_SECRET_KEY_FILE`) and say why. Compiling a program that uses no secret must require neither key nor provider.
-- The resulting IR value is `Secret(Sealed{..})`, never a `String` — a sealed value must be unable to leak into a path or a name by construction.
+- Seal deterministically with the fleet key. The key is a compile input — decide flag vs env (`--secret-key` / `GOLEM_SECRET_KEY_FILE`) and justify it. A program using no secret must need neither key nor provider.
 
-- [ ] Failing tests: undeclared key error text; missing-provider error text; determinism (compile twice, identical manifest bytes); a program with no secret still compiles with no key configured.
+**Interpolation is the crux (ADR 0047, `Text = Plain | Composed`).** A secret must survive `"Environment=PW=${Secretspec.get "db"}"` by becoming `Composed [Lit "Environment=PW=", Hole (Sealed …)]` — literal chunks with sealed holes, so the surrounding text stays readable in the manifest and in `golemctl plan`. Sealing the whole string is explicitly rejected by the ADR.
+
+That means a secret-derived value must be distinguishable from an ordinary string all the way from `Secretspec.get` to lowering, through `++`, `String.concat`, and `${}` interpolation. Decide how — a tainted runtime string that lowers to `Composed`, or a distinct type with its own operations — and justify the choice in your report. The surface must stay usable: `lib/Quadlet.emet` builds env lines by interpolation today and should keep working unchanged.
+
+**A secret must never reach an identifier position.** A path, a unit name, a scroll name, or a mode is an identifier, not a value. If a secret-derived value reaches one, that is an error naming the field — never a silent unsealing, never a stringified ciphertext. If your chosen design makes this a type error rather than a lowering error, say so; that is strictly better.
+
+- [ ] Failing tests: undeclared key (message text); missing provider (message text); determinism — compile twice, identical manifest bytes; interpolation produces `Composed` with the literal chunks intact and only the secret sealed; a secret in a path is refused; a program with no secret compiles with no key and no provider configured.
 - [ ] Implement; run; commit.
 
 ### Task 3: golemd unseals
