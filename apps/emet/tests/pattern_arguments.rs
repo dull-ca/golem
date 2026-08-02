@@ -162,3 +162,71 @@ main = [ scroll { name = unwrap (Just "b"), glyphs = [] } ]
         )
     );
 }
+
+#[test]
+fn let_bound_declaration_destructures_a_single_constructor() {
+    let src = r#"
+type Box = Box { label : String }
+
+main =
+  let
+    labelOf (Box spec) = spec.label
+  in
+  [ scroll { name = labelOf (Box { label = "b" }), glyphs = [] } ]
+"#;
+    let c = compile(src).expect("a `let` binding should take a parameter pattern too");
+    assert_eq!(c.scrolls[0].name, "b");
+}
+
+#[test]
+fn let_bound_lambda_destructures_a_single_constructor() {
+    let src = r#"
+type Box = Box { label : String }
+
+main =
+  let
+    labelOf = \(Box spec) -> spec.label
+  in
+  [ scroll { name = labelOf (Box { label = "b" }), glyphs = [] } ]
+"#;
+    let c = compile(src).expect("a `let`-bound lambda should take a parameter pattern too");
+    assert_eq!(c.scrolls[0].name, "b");
+}
+
+#[test]
+fn let_bound_multi_constructor_pattern_is_rejected() {
+    let src = r#"
+main =
+  let
+    unwrap (Just x) = x
+  in
+  [ scroll { name = unwrap (Just "b"), glyphs = [] } ]
+"#;
+    let e = err(src);
+    assert_eq!(e.phase, Phase::Type);
+    assert!(
+        e.msg.contains("`Just`") && e.msg.contains("`Maybe`"),
+        "the message must name the constructor and its type, got: {}",
+        e.msg
+    );
+}
+
+#[test]
+fn a_literal_may_not_stand_in_for_a_parameter() {
+    let src = r#"
+answer 42 = "yes"
+
+main = [ scroll { name = answer 42, glyphs = [] } ]
+"#;
+    assert_eq!(err(src).phase, Phase::Parse);
+}
+
+#[test]
+fn a_list_pattern_may_not_stand_in_for_a_parameter() {
+    let src = r#"
+firstOf (x :: rest) = x
+
+main = [ scroll { name = firstOf [ "a" ], glyphs = [] } ]
+"#;
+    assert_eq!(err(src).phase, Phase::Parse);
+}

@@ -1753,9 +1753,36 @@ fn infer_pattern(
 }
 
 fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), TypeError> {
-    let Pattern::Ctor(ctor, _) = &param.0 else {
-        return Ok(());
-    };
+    match &param.0 {
+        Pattern::Wildcard | Pattern::Var(_) => Ok(()),
+        Pattern::Str(_) | Pattern::Int(_) | Pattern::Char(_) => Err(refutable_param_error(
+            "a literal matches only one value",
+            "the value",
+            &param.1,
+        )),
+        Pattern::Nil => Err(refutable_param_error(
+            "`[]` matches only the empty list",
+            "the list",
+            &param.1,
+        )),
+        Pattern::Cons(_, _) => Err(refutable_param_error(
+            "`::` matches only a non-empty list",
+            "the list",
+            &param.1,
+        )),
+        Pattern::Tuple(elements) => elements
+            .iter()
+            .try_for_each(|element| reject_refutable_param(inf, element)),
+        Pattern::Ctor(ctor, fields) => {
+            reject_multi_constructor_param(inf, ctor, &param.1)?;
+            fields
+                .iter()
+                .try_for_each(|field| reject_refutable_param(inf, field))
+        }
+    }
+}
+
+fn reject_multi_constructor_param(inf: &Infer, ctor: &str, span: &Span) -> Result<(), TypeError> {
     let Some(scheme) = inf.constructor_scheme(ctor) else {
         return Ok(());
     };
@@ -1767,13 +1794,17 @@ fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), T
     if siblings.len() == 1 {
         return Ok(());
     }
-    Err(TypeError::new(
-        format!("`{ctor}` is one of several constructors of `{type_name}`, so this pattern could fail"),
-        param.1.clone(),
-    )
-    .note(format!(
-        "an argument pattern must always match. Take the whole `{type_name}` as a parameter and branch on it with `case … of`, which is checked for exhaustiveness."
-    )))
+    Err(refutable_param_error(
+        &format!("`{ctor}` is one of several constructors of `{type_name}`"),
+        &format!("the whole `{type_name}`"),
+        span,
+    ))
+}
+
+fn refutable_param_error(why: &str, whole: &str, span: &Span) -> TypeError {
+    TypeError::new(format!("{why}, so this pattern could fail"), span.clone()).note(format!(
+        "an argument pattern must always match. Take {whole} as a parameter and branch on it with `case … of`, which is checked for exhaustiveness."
+    ))
 }
 
 fn uncurry(ty: &Type) -> (Vec<Type>, Type) {
@@ -2723,4 +2754,101 @@ fn main_decl_span(m: &Module) -> Span {
         .find(|d| d.name == "main")
         .map(|d| d.span.clone())
         .unwrap_or(0..0)
+}
+
+#[cfg(test)]
+mod refutable_param_tests {
+    use super::*;
+
+    fn at(pattern: Pattern) -> Spanned<Pattern> {
+        Spanned(pattern, 0..0)
+    }
+
+    fn single_constructor_env() -> Infer {
+        let mut inf = Infer::default();
+        inf.user_ctor_schemes.insert(
+            "Box".to_string(),
+            Scheme {
+                vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fun(Box::new(con("String")), Box::new(con("Box"))),
+            },
+        );
+        inf.user_sum_ctors
+            .insert("Box".to_string(), vec![("Box".to_string(), 1)]);
+        inf
+    }
+
+    #[test]
+    fn a_binder_is_accepted() {
+        let inf = single_constructor_env();
+        assert!(reject_refutable_param(&inf, &at(Pattern::Var("x".to_string()))).is_ok());
+    }
+
+    #[test]
+    fn a_single_constructor_binding_a_name_is_accepted() {
+        let inf = single_constructor_env();
+        let param = at(Pattern::Ctor(
+            "Box".to_string(),
+            vec![at(Pattern::Var("inner".to_string()))],
+        ));
+        assert!(reject_refutable_param(&inf, &param).is_ok());
+    }
+
+    #[test]
+    fn a_refutable_pattern_nested_under_a_single_constructor_is_rejected() {
+        let inf = single_constructor_env();
+        let param = at(Pattern::Ctor(
+            "Box".to_string(),
+            vec![at(Pattern::Ctor(
+                "Just".to_string(),
+                vec![at(Pattern::Var("x".to_string()))],
+            ))],
+        ));
+        let error = reject_refutable_param(&inf, &param)
+            .expect_err("a `Just` nested inside a `Box` can still fail to match");
+        assert!(
+            error.msg.contains("`Just`") && error.msg.contains("`Maybe`"),
+            "got: {}",
+            error.msg
+        );
+    }
+
+    #[test]
+    fn a_refutable_pattern_nested_under_a_tuple_is_rejected() {
+        let inf = single_constructor_env();
+        let param = at(Pattern::Tuple(vec![
+            at(Pattern::Var("x".to_string())),
+            at(Pattern::Ctor(
+                "Just".to_string(),
+                vec![at(Pattern::Var("y".to_string()))],
+            )),
+        ]));
+        assert!(reject_refutable_param(&inf, &param).is_err());
+    }
+
+    #[test]
+    fn literal_patterns_are_rejected() {
+        let inf = single_constructor_env();
+        for literal in [
+            Pattern::Str("a".to_string()),
+            Pattern::Int(1),
+            Pattern::Char('c'),
+        ] {
+            let error = reject_refutable_param(&inf, &at(literal))
+                .expect_err("a literal matches only one value");
+            assert!(error.msg.contains("could fail"), "got: {}", error.msg);
+        }
+    }
+
+    #[test]
+    fn list_patterns_are_rejected() {
+        let inf = single_constructor_env();
+        assert!(reject_refutable_param(&inf, &at(Pattern::Nil)).is_err());
+        let cons = at(Pattern::Cons(
+            Box::new(at(Pattern::Var("head".to_string()))),
+            Box::new(at(Pattern::Var("tail".to_string()))),
+        ));
+        assert!(reject_refutable_param(&inf, &cons).is_err());
+    }
 }

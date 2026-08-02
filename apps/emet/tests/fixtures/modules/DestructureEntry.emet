@@ -1,0 +1,10 @@
+module Main exposing (..)
+
+import Boxes exposing (Box(..))
+
+unwrap : Box a -> a
+unwrap (Box held) = held
+
+main : List Scroll
+main =
+  [ scroll { name = unwrap (Box "unwrapped"), glyphs = [] } ]
