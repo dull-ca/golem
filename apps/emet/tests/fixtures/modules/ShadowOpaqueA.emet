@@ -1,0 +1,8 @@
+module ShadowOpaqueA exposing (describe)
+
+type Thing = FromA String
+
+describe : Thing -> String
+describe t =
+  case t of
+    FromA s -> s

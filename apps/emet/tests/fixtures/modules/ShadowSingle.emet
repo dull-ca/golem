@@ -1,0 +1,3 @@
+module ShadowSingle exposing (Thing(..))
+
+type Thing = Only

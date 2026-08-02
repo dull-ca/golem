@@ -13,8 +13,13 @@
 //! and — for a `Type(..)` export — exposed constructors are importable; the
 //! visibility gate is what distinguishes a module's public API from its
 //! internals.
+//!
+//! Because a type's identity is its bare name, this stage also enforces that a
+//! module never sees two different types under one name:
+//! `reject_type_name_collisions` runs before inference on every module (ADR
+//! 0045).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme, Span};
@@ -49,6 +54,9 @@ impl ProjectAnalysis {
 /// `exposed_def_spans` additionally maps each exposed name to the span of its
 /// definition in *this* module's source, so an importer's go-to-definition can
 /// jump across the file boundary (ADR 0018) — see `import_def_sites`.
+/// `type_owners` maps every type name this module's exposed surface can put in
+/// front of an importer to the module that *declared* it, which is what makes
+/// ADR 0045's one-owner rule checkable — see `interface_of`.
 struct Interface {
     ty_env: TyEnv,
     value_env: Env,
@@ -58,6 +66,7 @@ struct Interface {
     exposed_ctor_schemes: HashMap<String, Scheme>,
     exposed_sum_ctors: HashMap<String, Vec<(String, usize)>>,
     exposed_def_spans: HashMap<String, Span>,
+    type_owners: BTreeMap<String, String>,
 }
 
 /// Compile a multi-module program from its entry file to `main`'s type and the
@@ -130,6 +139,10 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     for name in &order {
         let loaded_mod = &loaded[name];
 
+        if let Err(e) = reject_type_name_collisions(loaded_mod, name, &interfaces) {
+            diagnostics.push(e);
+            continue;
+        }
         let base_ty = match import_ty_env(&loaded_mod.module, &interfaces, loaded_mod) {
             Ok(env) => env,
             Err(e) => {
@@ -169,7 +182,13 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
                 &imported_types,
                 &imported_ctors,
             ) {
-                let iface = interface_of(&loaded_mod.module, final_ty, eval::prelude_env());
+                let iface = interface_of(
+                    &loaded_mod.module,
+                    name,
+                    &inherited_type_owners(&loaded_mod.module, &interfaces),
+                    final_ty,
+                    eval::prelude_env(),
+                );
                 interfaces.insert(name.clone(), iface);
             }
         }
@@ -193,6 +212,7 @@ fn check_and_eval(
         let loaded_mod = &loaded[name];
         let is_entry = name == &entry_name;
 
+        reject_type_name_collisions(loaded_mod, name, &interfaces)?;
         let base_ty = import_ty_env(&loaded_mod.module, &interfaces, loaded_mod)?;
         let base_val = import_value_env(&loaded_mod.module, &interfaces);
         let imported_types = import_type_arities(&loaded_mod.module, &interfaces);
@@ -224,9 +244,10 @@ fn check_and_eval(
             .map_err(|e| type_error(loaded_mod, e))?;
             let final_val = eval::eval_library(&loaded_mod.module, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
+            let owners = inherited_type_owners(&loaded_mod.module, &interfaces);
             interfaces.insert(
                 name.clone(),
-                interface_of(&loaded_mod.module, final_ty, final_val),
+                interface_of(&loaded_mod.module, name, &owners, final_ty, final_val),
             );
         }
     }
@@ -541,12 +562,16 @@ fn import_type_arities(
 /// importer. Fed to inference so `infer_pattern` resolves imported constructors
 /// and the exhaustiveness checker sees their type's complete signature.
 ///
-/// NOTE: both maps are keyed by bare name, so two imported modules exposing
-/// same-named types collide and `sum_ctors` keeps only the last import's
-/// variants — a multi-constructor type can then look single-constructor and
-/// defeat both the `case` exhaustiveness check and the argument-pattern gate.
-/// Recorded as a KNOWN BUG in `docs/TODO.md`; the fix is to key by owning module
-/// or to reject the shadowing import.
+/// NOTE: both maps are keyed by bare name and inserted per import in order, so
+/// the last import wins. On the `sum_ctors` side that is safe — its key is a
+/// *type* name, and `reject_type_name_collisions` has already rejected any
+/// module where two imports contribute one type name (ADR 0045), so no variant
+/// list can be overwritten by another type's. On the `ctor_schemes` side it is
+/// not: its key is a bare *constructor* name, which ADR 0045 does not constrain,
+/// so two imports exposing the same constructor name for two differently-named
+/// types silently shadow one another. That is a KNOWN BUG in `docs/TODO.md` —
+/// a wrong-type diagnostic and an unreachable constructor, not unsoundness,
+/// since the two types stay distinct and no value crosses.
 fn import_constructors(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
@@ -567,6 +592,193 @@ fn import_constructors(
     ImportedConstructors {
         ctor_schemes,
         sum_ctors,
+    }
+}
+
+/// How one type name reached the module being checked: `owner` declared it,
+/// `via` is the import that carried it in. The two differ when a module
+/// re-exposes a type it did not declare, and the diagnostic says so — otherwise
+/// it would name a module the author would search in vain for the `type` line.
+struct TypeNameOrigin {
+    owner: String,
+    via: String,
+}
+
+/// Enforce ADR 0045: within one module, a type name has exactly one owner.
+/// Rejected are two imports contributing the same type name under different
+/// declaring modules, and a local `type` declaration whose name an import
+/// already contributes.
+///
+/// This guards soundness, not hygiene. Emet identifies a type by its bare name
+/// — `Type::Con` carries a `String` and nothing else — so two modules' `Thing`
+/// are one type: a function typed `A.Thing -> …` accepts a `B.Thing`, and a
+/// value of one reaches code the compiler proved held the other. Rejection is
+/// the only available answer because there is no qualified spelling for a type
+/// to disambiguate with.
+///
+/// The check reads each interface's `type_owners`, which covers the exposed
+/// *surface* rather than the exposing list, so a private type named in an
+/// exposed signature collides even though the importer cannot write its name.
+/// A name arriving twice under the *same* owner is one type reached by two
+/// paths, not a collision, and passes.
+fn reject_type_name_collisions(
+    loaded: &Loaded,
+    module_name: &str,
+    interfaces: &HashMap<String, Interface>,
+) -> Result<(), Error> {
+    let mut origins: HashMap<String, TypeNameOrigin> = HashMap::new();
+    for import in &loaded.module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        for (type_name, owner) in &iface.type_owners {
+            match origins.get(type_name) {
+                Some(seen) if &seen.owner != owner => {
+                    return Err(imports_define_the_same_type(
+                        loaded,
+                        type_name,
+                        seen,
+                        &TypeNameOrigin {
+                            owner: owner.clone(),
+                            via: import.module.clone(),
+                        },
+                        import.span.clone(),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    origins.insert(
+                        type_name.clone(),
+                        TypeNameOrigin {
+                            owner: owner.clone(),
+                            via: import.module.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    for declaration in &loaded.module.type_decls {
+        if let Some(seen) = origins.get(&declaration.name) {
+            return Err(local_type_shadows_an_imported_one(
+                loaded,
+                module_name,
+                &declaration.name,
+                seen,
+                declaration.span.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn imports_define_the_same_type(
+    site: &Loaded,
+    type_name: &str,
+    first: &TypeNameOrigin,
+    second: &TypeNameOrigin,
+    span: Span,
+) -> Error {
+    let mut note = String::new();
+    for origin in [first, second] {
+        if origin.owner != origin.via {
+            note.push_str(&format!(
+                "`{}` exposes the `{type_name}` defined in `{}`. ",
+                origin.via, origin.owner
+            ));
+        }
+    }
+    note.push_str(&format!(
+        "Emet knows a type only by its bare name, so with both modules imported here the two `{type_name}` types would be interchangeable — a value of one would be accepted wherever the other is expected. Rename one of the two types, or import the two modules from separate modules."
+    ));
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "`{}` and `{}` both define a type named `{type_name}`",
+            first.owner, second.owner
+        ),
+        span,
+        note: Some(note),
+        file: Some(site.path.clone()),
+    }
+}
+
+fn local_type_shadows_an_imported_one(
+    site: &Loaded,
+    module_name: &str,
+    type_name: &str,
+    imported: &TypeNameOrigin,
+    span: Span,
+) -> Error {
+    let mut note = String::new();
+    if imported.owner != imported.via {
+        note.push_str(&format!(
+            "`{}` exposes the `{type_name}` defined in `{}`. ",
+            imported.via, imported.owner
+        ));
+    }
+    note.push_str(&format!(
+        "Emet knows a type only by its bare name, so this `{type_name}` and `{}`'s would be interchangeable — a value of one would be accepted wherever the other is expected. Rename one of the two types.",
+        imported.owner
+    ));
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "`{module_name}` and `{}` both define a type named `{type_name}`",
+            imported.owner
+        ),
+        span,
+        note: Some(note),
+        file: Some(site.path.clone()),
+    }
+}
+
+/// The type-name ownership a module takes on from its imports. Each name keeps
+/// the module that declared it, never the one it arrived through, so a type
+/// re-exposed down a chain of modules stays one type all the way along.
+///
+/// NOTE: called only after `reject_type_name_collisions` has passed, so the
+/// last-write-wins insert cannot lose an owner — a name arriving twice here
+/// arrives under one owner.
+fn inherited_type_owners(
+    module: &Module,
+    interfaces: &HashMap<String, Interface>,
+) -> BTreeMap<String, String> {
+    let mut owners = BTreeMap::new();
+    for import in &module.imports {
+        let Some(iface) = interfaces.get(&import.module) else {
+            continue;
+        };
+        for (type_name, owner) in &iface.type_owners {
+            owners.insert(type_name.clone(), owner.clone());
+        }
+    }
+    owners
+}
+
+fn type_con_names(ty: &crate::ast::Type, found: &mut BTreeSet<String>) {
+    match ty {
+        crate::ast::Type::Var(_, _) | crate::ast::Type::Rigid(_) => {}
+        crate::ast::Type::Con(name, args) => {
+            found.insert(name.clone());
+            for arg in args {
+                type_con_names(arg, found);
+            }
+        }
+        crate::ast::Type::Fun(from, to) => {
+            type_con_names(from, found);
+            type_con_names(to, found);
+        }
+        crate::ast::Type::Record(fields, _) => {
+            for field in fields.values() {
+                type_con_names(field, found);
+            }
+        }
+        crate::ast::Type::Tuple(elements) => {
+            for element in elements {
+                type_con_names(element, found);
+            }
+        }
     }
 }
 
@@ -679,7 +891,25 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
 /// exhaustiveness checker see the complete constructor set. A type exposed
 /// without `(..)` contributes none of this, so its constructors stay invisible
 /// to the importer.
-fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
+///
+/// `type_owners` is harvested here too, and its scope is wider than the
+/// exposing list: the exposed type names, *plus* every `Type::Con` head in the
+/// schemes of the exposed values and constructors. That second half is the
+/// load-bearing one. A module can hold a type back and still put it in front of
+/// an importer by naming it in an exposed signature — the importer cannot write
+/// the name, but its inference unifies the type by that name all the same, so a
+/// same-named type from elsewhere would still be accepted for it (ADR 0045).
+/// Ownership follows the declaration: a name this module declares is owned
+/// here, otherwise its owner comes from `inherited_owners`, so re-exposing a
+/// type never reassigns it. A head belonging to neither — `String`, `List`,
+/// `Scroll` and the rest of the prelude — is owned by no module and drops out.
+fn interface_of(
+    module: &Module,
+    module_name: &str,
+    inherited_owners: &BTreeMap<String, String>,
+    ty_env: TyEnv,
+    value_env: Env,
+) -> Interface {
     let mut exposed_values = HashSet::new();
     let mut exposed_constructors = Vec::new();
     let mut exposed_type_arities = HashMap::new();
@@ -779,6 +1009,30 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         }
     }
 
+    let mut surface_type_names: BTreeSet<String> = exposed_type_arities.keys().cloned().collect();
+    for name in exposed_values.iter().chain(exposed_constructors.iter()) {
+        if let Some(scheme) = ty_env.scheme(name) {
+            type_con_names(&scheme.ty, &mut surface_type_names);
+        }
+    }
+    let declared_here: HashSet<&str> = module
+        .type_decls
+        .iter()
+        .map(|decl| decl.name.as_str())
+        .collect();
+    let type_owners = surface_type_names
+        .into_iter()
+        .filter_map(|type_name| {
+            if declared_here.contains(type_name.as_str()) {
+                Some((type_name, module_name.to_string()))
+            } else {
+                inherited_owners
+                    .get(&type_name)
+                    .map(|owner| (type_name, owner.clone()))
+            }
+        })
+        .collect();
+
     Interface {
         ty_env,
         value_env,
@@ -788,6 +1042,7 @@ fn interface_of(module: &Module, ty_env: TyEnv, value_env: Env) -> Interface {
         exposed_ctor_schemes,
         exposed_sum_ctors,
         exposed_def_spans,
+        type_owners,
     }
 }
 

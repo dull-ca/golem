@@ -210,29 +210,36 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   read back — so LSP hover shows a type that cannot be pasted into a signature.
   The fix is row-variable syntax in type position, on both sides.
 
-- **Same-named types from two imports collide in the constructor registry —
-  KNOWN BUG.** `resolve::import_constructors` (`apps/emet/src/resolve.rs`) fills
-  `ctor_schemes` and `sum_ctors` keyed by *bare* type name, inserting over each
-  import in order. When two imported modules each expose a type of the same
-  name, `sum_ctors` keeps only the last import's variant list while every
-  module's constructors accumulate side by side in `ctor_schemes` — and since
-  both types are `Con("Thing")`, their values unify freely. A multi-constructor
-  type can therefore appear single-constructor.
+- **Same-named types from two imports — FIXED (ADR 0045).** Reproduction
+  showed the reported constructor-registry merge was the lesser half. Because
+  type identity is a bare `String` in `Type::Con`, two modules' `Thing` were
+  literally one type: a function typed `A.Thing -> …` accepted a `B.Thing`,
+  carrying a `String` into a slot the compiler had proved `Int`. That fired
+  with neither module exposing its type (private types reachable only through
+  exposed *signatures*), and with a single import against a local declaration —
+  neither of which touches `import_constructors` at all. The `case`
+  (`unreachable!("non-exhaustive case")`) and argument-pattern
+  (`unreachable!("refutable argument pattern survived inference")`) panics were
+  downstream reports of the broken identity; the `case` route predates ADR 0044.
 
-  Both pattern paths then admit a match that can fail. A `case` over the
-  losing type is accepted as exhaustive and panics at `eval.rs`'s
-  `unreachable!("non-exhaustive case")`; a constructor parameter passes
-  `reject_multi_constructor_param` — which asks the corrupted set how many
-  constructors the type has — and panics at
-  `unreachable!("refutable argument pattern survived inference")`. The `case`
-  route predates ADR 0044 and was confirmed to panic identically on a
-  pre-change build, so argument patterns add a second door to one room rather
-  than a new hole.
+  `resolve::reject_type_name_collisions` now enforces one owner per type name
+  per module, over each interface's `type_owners` — the exposed surface's type
+  names mapped to their declaring module. A type reached through two imports is
+  still one type; a privately-held name never mentioned in an exposed signature
+  is still free. Module-qualified type identity is the better end state and is
+  deferred, not superseded — see ADR 0045's consequences.
 
-  The fix belongs to the module system, not to either pattern path: key both
-  maps by owning module, or reject an import that shadows a type name already
-  in scope. Until then a program is safe only because same-named types across
-  two imported modules are rare.
+- **Two imports may expose the same constructor name — KNOWN BUG (ADR 0045).**
+  `resolve::import_constructors` keys `ctor_schemes` by *bare constructor* name,
+  so with `CtorA.Alpha = Wrap String` and `CtorB.Beta = Wrap Int` imported
+  together the last import wins and `CtorA`'s `Wrap` becomes silently
+  unreachable — `a : Alpha` / `a = Wrap "text"` reports `expected Int, found
+  String`, naming the wrong type. Not unsoundness: ADR 0045 keeps `Alpha` and
+  `Beta` distinct, so no value crosses. What it costs an author is a constructor
+  that vanishes without a word and a type error that points at the wrong type,
+  so the reported mismatch reads as a bug in code that is correct. Elm rejects
+  the ambiguous import outright; Emet should too — either by rejecting it or by
+  keying `ctor_schemes` by owning module. Unscheduled.
 
 ### Diagnostics / tooling
 

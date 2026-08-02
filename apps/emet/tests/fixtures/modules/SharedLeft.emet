@@ -1,0 +1,8 @@
+module SharedLeft exposing (unTag)
+
+import SharedType exposing (Tag(..))
+
+unTag : Tag -> String
+unTag t =
+  case t of
+    Tag s -> s

@@ -1,0 +1,6 @@
+module ShadowOpaqueB exposing (make)
+
+type Thing = FromB Int
+
+make : Int -> Thing
+make n = FromB n

@@ -94,7 +94,7 @@
       ]
     },
     "keyword": {
-      "match": "\\b(then|else|case|let|in|if|of)\\b",
+      "match": "\\b(exposing|module|import|type|then|else|case|let|in|if|of|as)\\b",
       "name": "keyword.control.emet"
     },
     "builtin": {

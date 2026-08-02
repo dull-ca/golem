@@ -113,6 +113,22 @@ An Elm-shaped, minimal module system for reuse across files:
   exhaustiveness checker seeing the imported type's complete constructor set. A
   type exposed without `(..)` stays unmatchable — its constructors never enter
   the importer (`resolve::import_constructors`, `infer::seed_imported_constructors`).
+- **One type name, one owner, per module (ADR 0045).** A module may not see two
+  different types under one name. Importing two modules that each define a
+  `Thing`, or declaring a `Thing` an import already contributes, is a compile
+  error (`resolve::reject_type_name_collisions`); the author renames one of the
+  two, or imports the two modules from separate modules. This is soundness, not
+  hygiene: type identity is the **bare name** (`Type::Con` carries a `String`
+  and nothing else), so the two `Thing`s would be one type and a value of either
+  accepted wherever the other is expected — and there is no qualified spelling
+  for a type to disambiguate with, which is why the rule has to reject rather
+  than distinguish. It covers each interface's exposed **surface**
+  (`Interface::type_owners`) — the exposed type names *plus* every `Type::Con`
+  head in the schemes of exposed values and constructors — so a private type
+  named in an exposed signature counts, while a type no exposed signature
+  mentions stays free. A type reached through two imports keeps its declaring
+  owner and is one type, not a collision. Module-qualified type identity would
+  readmit these programs and is deferred, not superseded.
 - **Exactly one module has `main`** (the entry); the rest are libraries. A
   library that declares `main` is a compile error.
 - **`compile(src)`** is the single-file pipeline (imports not resolved from

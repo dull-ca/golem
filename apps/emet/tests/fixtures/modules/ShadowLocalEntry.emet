@@ -1,0 +1,13 @@
+module Main exposing (..)
+
+import ShadowMulti exposing (Thing(..))
+
+type Thing = Mine
+
+label t =
+  case t of
+    Mine -> "mine"
+
+main : List Scroll
+main =
+  [ scroll { name = label Two, glyphs = [] } ]

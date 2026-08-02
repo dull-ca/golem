@@ -1,0 +1,6 @@
+module SharedRight exposing (tag)
+
+import SharedType exposing (Tag(..))
+
+tag : String -> Tag
+tag s = Tag s
