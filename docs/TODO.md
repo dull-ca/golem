@@ -235,8 +235,11 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   together the last import wins and `CtorA`'s `Wrap` becomes silently
   unreachable — `a : Alpha` / `a = Wrap "text"` reports `expected Int, found
   String`, naming the wrong type. Not unsoundness: ADR 0045 keeps `Alpha` and
-  `Beta` distinct, so no value crosses. It is a diagnostic defect and a silent
-  shadowing. Elm rejects the ambiguous import outright; Emet should too.
+  `Beta` distinct, so no value crosses. What it costs an author is a constructor
+  that vanishes without a word and a type error that points at the wrong type,
+  so the reported mismatch reads as a bug in code that is correct. Elm rejects
+  the ambiguous import outright; Emet should too — either by rejecting it or by
+  keying `ctor_schemes` by owning module. Unscheduled.
 
 ### Diagnostics / tooling
 

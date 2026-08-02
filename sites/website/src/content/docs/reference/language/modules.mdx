@@ -52,6 +52,32 @@ pattern-match, with the exhaustiveness checker seeing the full constructor set.
 A type exposed without `(..)` keeps its constructors private, so it cannot be
 matched in the importer.
 
+## One type name, one owner
+
+Within one module, a type name has exactly one owner. Importing two modules that
+each define a type named `Thing` is a compile error, as is declaring a `Thing`
+when an import already supplies one.
+
+```emet
+import IntBox   -- defines Thing
+import StrBox   -- also defines Thing: rejected
+```
+
+Emet identifies a type by its bare name, and there is no qualified spelling for
+a type in type position. Two `Thing`s in scope would therefore be one type, and
+a value of either would be accepted wherever the other is expected. Rename one
+of the two types, or import the two modules from separate modules.
+
+The rule covers every type a module's exposed surface can reach: the types it
+exposes, and the types named in the signatures of the values and constructors it
+exposes. A type counts even when the module keeps the type itself unexposed and
+only mentions it in an exposed signature. A type no exposed signature mentions
+is private and unconstrained — two modules may both hold a `Hidden` and still be
+imported together.
+
+A type reached through two imports is one type, not a collision: two modules may
+both re-expose a third module's type.
+
 ## Qualified access
 
 `Alias.name` (or `Module.name`) reaches an exposed member. This reuses the same

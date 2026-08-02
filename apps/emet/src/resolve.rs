@@ -13,6 +13,11 @@
 //! and — for a `Type(..)` export — exposed constructors are importable; the
 //! visibility gate is what distinguishes a module's public API from its
 //! internals.
+//!
+//! Because a type's identity is its bare name, this stage also enforces that a
+//! module never sees two different types under one name:
+//! `reject_type_name_collisions` runs before inference on every module (ADR
+//! 0045).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -49,6 +54,9 @@ impl ProjectAnalysis {
 /// `exposed_def_spans` additionally maps each exposed name to the span of its
 /// definition in *this* module's source, so an importer's go-to-definition can
 /// jump across the file boundary (ADR 0018) — see `import_def_sites`.
+/// `type_owners` maps every type name this module's exposed surface can put in
+/// front of an importer to the module that *declared* it, which is what makes
+/// ADR 0045's one-owner rule checkable — see `interface_of`.
 struct Interface {
     ty_env: TyEnv,
     value_env: Env,
@@ -553,6 +561,17 @@ fn import_type_arities(
 /// exposed without `(..)` contributes nothing here and stays unmatchable in the
 /// importer. Fed to inference so `infer_pattern` resolves imported constructors
 /// and the exhaustiveness checker sees their type's complete signature.
+///
+/// NOTE: both maps are keyed by bare name and inserted per import in order, so
+/// the last import wins. On the `sum_ctors` side that is safe — its key is a
+/// *type* name, and `reject_type_name_collisions` has already rejected any
+/// module where two imports contribute one type name (ADR 0045), so no variant
+/// list can be overwritten by another type's. On the `ctor_schemes` side it is
+/// not: its key is a bare *constructor* name, which ADR 0045 does not constrain,
+/// so two imports exposing the same constructor name for two differently-named
+/// types silently shadow one another. That is a KNOWN BUG in `docs/TODO.md` —
+/// a wrong-type diagnostic and an unreachable constructor, not unsoundness,
+/// since the two types stay distinct and no value crosses.
 fn import_constructors(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
@@ -576,11 +595,32 @@ fn import_constructors(
     }
 }
 
+/// How one type name reached the module being checked: `owner` declared it,
+/// `via` is the import that carried it in. The two differ when a module
+/// re-exposes a type it did not declare, and the diagnostic says so — otherwise
+/// it would name a module the author would search in vain for the `type` line.
 struct TypeNameOrigin {
     owner: String,
     via: String,
 }
 
+/// Enforce ADR 0045: within one module, a type name has exactly one owner.
+/// Rejected are two imports contributing the same type name under different
+/// declaring modules, and a local `type` declaration whose name an import
+/// already contributes.
+///
+/// This guards soundness, not hygiene. Emet identifies a type by its bare name
+/// — `Type::Con` carries a `String` and nothing else — so two modules' `Thing`
+/// are one type: a function typed `A.Thing -> …` accepts a `B.Thing`, and a
+/// value of one reaches code the compiler proved held the other. Rejection is
+/// the only available answer because there is no qualified spelling for a type
+/// to disambiguate with.
+///
+/// The check reads each interface's `type_owners`, which covers the exposed
+/// *surface* rather than the exposing list, so a private type named in an
+/// exposed signature collides even though the importer cannot write its name.
+/// A name arriving twice under the *same* owner is one type reached by two
+/// paths, not a collision, and passes.
 fn reject_type_name_collisions(
     loaded: &Loaded,
     module_name: &str,
@@ -693,6 +733,13 @@ fn local_type_shadows_an_imported_one(
     }
 }
 
+/// The type-name ownership a module takes on from its imports. Each name keeps
+/// the module that declared it, never the one it arrived through, so a type
+/// re-exposed down a chain of modules stays one type all the way along.
+///
+/// NOTE: called only after `reject_type_name_collisions` has passed, so the
+/// last-write-wins insert cannot lose an owner — a name arriving twice here
+/// arrives under one owner.
 fn inherited_type_owners(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
@@ -844,6 +891,18 @@ fn import_value_env(module: &Module, interfaces: &HashMap<String, Interface>) ->
 /// exhaustiveness checker see the complete constructor set. A type exposed
 /// without `(..)` contributes none of this, so its constructors stay invisible
 /// to the importer.
+///
+/// `type_owners` is harvested here too, and its scope is wider than the
+/// exposing list: the exposed type names, *plus* every `Type::Con` head in the
+/// schemes of the exposed values and constructors. That second half is the
+/// load-bearing one. A module can hold a type back and still put it in front of
+/// an importer by naming it in an exposed signature — the importer cannot write
+/// the name, but its inference unifies the type by that name all the same, so a
+/// same-named type from elsewhere would still be accepted for it (ADR 0045).
+/// Ownership follows the declaration: a name this module declares is owned
+/// here, otherwise its owner comes from `inherited_owners`, so re-exposing a
+/// type never reassigns it. A head belonging to neither — `String`, `List`,
+/// `Scroll` and the rest of the prelude — is owned by no module and drops out.
 fn interface_of(
     module: &Module,
     module_name: &str,
