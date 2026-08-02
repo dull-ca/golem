@@ -20,7 +20,7 @@ use crate::scroll::{Glyph, Scroll};
 // untouched and the first v4 apply is a Noop pass, not a Replace storm.
 // (v3 was the recursive `Scroll` tree of ADR 0031 plus ADR 0030's enriched
 // `aptPackage`; v2 was the filesystem glyph of ADR 0019.)
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// A scroll paired with its content address. The `content_id` is over the
 /// `scroll` ALONE — never over this wrapper — so a scroll's identity does not
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_version_is_four() {
-        assert_eq!(FORMAT_VERSION, 4);
+    fn format_version_is_five() {
+        assert_eq!(FORMAT_VERSION, 5);
     }
 }

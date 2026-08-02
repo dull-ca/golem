@@ -94,7 +94,7 @@ fn service_firewall_allows_internal_sources_to_the_service_port() {
                 path,
                 entry: emet::ir::Entry::File { contents, .. },
             } if path == "/etc/nftables.d/mongod-lichess-primary-27017.nft" => {
-                Some(contents.clone())
+                Some(contents.to_string())
             }
             _ => None,
         })
@@ -115,7 +115,7 @@ fn ingress_site_block_proxies_to_the_named_service_over_ssl() {
             emet::ir::Glyph::Filesystem {
                 path,
                 entry: emet::ir::Entry::File { contents, .. },
-            } if path == "/etc/nginx/sites-enabled/lichess.org.conf" => Some(contents.clone()),
+            } if path == "/etc/nginx/sites-enabled/lichess.org.conf" => Some(contents.to_string()),
             _ => None,
         })
         .expect("nginx site block present");

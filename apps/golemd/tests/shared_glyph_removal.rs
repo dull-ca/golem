@@ -91,7 +91,7 @@ fn body_of(glyph: &Glyph) -> String {
         Glyph::Filesystem {
             entry: Entry::File { contents, .. },
             ..
-        } => contents.clone(),
+        } => contents.to_string(),
         other => format!("{other:?}"),
     }
 }

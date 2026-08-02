@@ -32,7 +32,7 @@ impl Reconciler for FileHost {
             _ => return Err(EnactError::Fatal("only files here".into())),
         };
         let prior = self.files.lock().unwrap().get(path).cloned();
-        if prior.as_deref() == Some(contents.as_str()) {
+        if prior.as_deref() == contents.plain() {
             return Ok(Outcome {
                 op: GlyphOp::Install {
                     cid,
@@ -46,7 +46,7 @@ impl Reconciler for FileHost {
         self.files
             .lock()
             .unwrap()
-            .insert(path.clone(), contents.clone());
+            .insert(path.clone(), contents.to_string());
         let inverse = match prior {
             Some(prior_contents) => Inverse::RestoreFile {
                 path: path.clone(),
@@ -72,7 +72,7 @@ impl Reconciler for FileHost {
                 self.files
                     .lock()
                     .unwrap()
-                    .insert(path.clone(), contents.clone());
+                    .insert(path.clone(), contents.to_string());
             }
             Inverse::DeleteFile { path } => {
                 self.files.lock().unwrap().remove(path);
@@ -210,6 +210,6 @@ trait GlyphContentPeek {
 }
 impl GlyphContentPeek for GlyphOp {
     fn glyph_content_id_matches(&self, contents: &str) -> bool {
-        matches!(self.glyph(), Glyph::Filesystem { entry: Entry::File { contents: c, .. }, .. } if c == contents)
+        matches!(self.glyph(), Glyph::Filesystem { entry: Entry::File { contents: c, .. }, .. } if c.plain() == Some(contents))
     }
 }

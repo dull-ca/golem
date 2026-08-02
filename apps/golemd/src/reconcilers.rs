@@ -33,7 +33,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use nix::unistd::{chown, Gid, Group, Uid, User};
-use scroll_format::{ContentId, Entry, Glyph, Perms};
+use scroll_format::{ContentId, Entry, Glyph, Perms, Text};
 use tracing::warn;
 
 use crate::host::{CommandRunner, CommandSink, SystemCommandRunner};
@@ -430,12 +430,14 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
             Glyph::AptPackage { name } => self.apply_apt(name, cid, glyph, sink),
             Glyph::SystemdService { unit } => self.apply_systemd(unit, cid, glyph, sink),
             Glyph::Filesystem { path, entry } => match entry {
-                Entry::File { contents, perms } => apply_file(path, contents, perms, cid, glyph),
+                Entry::File { contents, perms } => {
+                    apply_file(path, unsealed(contents)?, perms, cid, glyph)
+                }
                 Entry::Directory { perms } => apply_directory(path, perms, cid, glyph),
                 Entry::Symlink { target } => apply_symlink(path, target, cid, glyph),
             },
             Glyph::LineInFile { path, line } => {
-                self.apply_line_in_file_locked(path, line, cid, glyph)
+                self.apply_line_in_file_locked(path, unsealed(line)?, cid, glyph)
             }
         }
     }
@@ -565,6 +567,15 @@ fn outcome(glyph: &Glyph, cid: ContentId, inverse: Inverse, changed: bool) -> Ou
         inverse,
         changed,
     }
+}
+
+fn unsealed(text: &Text) -> EnactResult<&str> {
+    text.plain().ok_or_else(|| {
+        EnactError::Fatal(format!(
+            "{text}: this golemd cannot unseal secrets — no key is configured and \
+             host-side resolution is not implemented"
+        ))
+    })
 }
 
 fn apply_file(

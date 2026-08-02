@@ -18,7 +18,7 @@ fn fixed_scroll() -> Scroll {
             Glyph::Filesystem {
                 path: "/etc/nginx/nginx.conf".to_string(),
                 entry: Entry::File {
-                    contents: "worker_processes auto;".to_string(),
+                    contents: "worker_processes auto;".into(),
                     perms: Perms {
                         mode: 0o644,
                         owner: None,
@@ -28,7 +28,7 @@ fn fixed_scroll() -> Scroll {
             },
             Glyph::LineInFile {
                 path: "/etc/hosts".to_string(),
-                line: "127.0.0.1 localhost".to_string(),
+                line: "127.0.0.1 localhost".into(),
             },
         ]),
     }
@@ -58,19 +58,21 @@ fn notifying_scroll() -> Scroll {
 const GOLDEN_SCROLL_BYTES: &[u8] = &[
     3, 119, 101, 98, 0, 0, 0, 4, 0, 5, 110, 103, 105, 110, 120, 1, 13, 110, 103, 105, 110, 120, 46,
     115, 101, 114, 118, 105, 99, 101, 2, 21, 47, 101, 116, 99, 47, 110, 103, 105, 110, 120, 47,
-    110, 103, 105, 110, 120, 46, 99, 111, 110, 102, 0, 22, 119, 111, 114, 107, 101, 114, 95, 112,
-    114, 111, 99, 101, 115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47, 101,
-    116, 99, 47, 104, 111, 115, 116, 115, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108, 111, 99,
-    97, 108, 104, 111, 115, 116,
+    110, 103, 105, 110, 120, 46, 99, 111, 110, 102, 0, 0, 22, 119, 111, 114, 107, 101, 114, 95,
+    112, 114, 111, 99, 101, 115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47,
+    101, 116, 99, 47, 104, 111, 115, 116, 115, 0, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108,
+    111, 99, 97, 108, 104, 111, 115, 116,
 ];
 
-const GOLDEN_CONTENT_ID: &str = "337a88f5cb8e7672f6965c6940601033000e4d70c7f4031979095f3d3d30a189";
+const GOLDEN_CONTENT_ID: &str = "f0f42965824b5ab73cef5c3295cb2bcce8a5199dac60588328b34e2cfe1cfd13";
 
 // Captured from the v3 code *before* the bump: ADR 0036's "glyph cids are
 // untouched" promise written down, which is what makes the first v4 apply a
 // Noop pass rather than a Replace storm. A scroll-level change must never move
 // these; only a change to a glyph's own shape may.
-const GLYPH_CONTENT_IDS_AT_V3: &[(&str, &str)] = &[
+const VALUELESS_GLYPH_KEYS: &[&str] = &["apt:nginx", "systemd:nginx.service"];
+
+const GLYPH_CONTENT_IDS_BEFORE_V5: &[(&str, &str)] = &[
     (
         "apt:nginx",
         "69cc4176a66accd09e9f786cf5f0b6d38472b0053bc945f3c39b1ca4ac0b9a45",
@@ -102,18 +104,40 @@ const V3_MANIFEST_BYTES: &[u8] = &[
     104, 111, 115, 116,
 ];
 
+fn content_id_before_v5(key: &str) -> &'static str {
+    GLYPH_CONTENT_IDS_BEFORE_V5
+        .iter()
+        .find(|(pinned, _)| *pinned == key)
+        .map(|(_, cid)| *cid)
+        .unwrap_or_else(|| panic!("no pinned pre-v5 content id for {key}"))
+}
+
 #[test]
-fn every_glyph_content_id_survived_the_v4_bump() {
+fn a_valueless_glyph_content_id_survived_the_v5_bump() {
     for glyph in fixed_scroll().all_glyphs() {
-        let expected = GLYPH_CONTENT_IDS_AT_V3
-            .iter()
-            .find(|(key, _)| *key == glyph.key())
-            .map(|(_, cid)| *cid)
-            .unwrap_or_else(|| panic!("no pinned v3 content id for {}", glyph.key()));
+        if !VALUELESS_GLYPH_KEYS.contains(&glyph.key().as_str()) {
+            continue;
+        }
         assert_eq!(
             content_id_of_glyph(glyph).to_string(),
-            expected,
-            "{} changed content id across the format_version bump",
+            content_id_before_v5(&glyph.key()),
+            "{} carries no value and must not move across the bump",
+            glyph.key()
+        );
+    }
+}
+
+#[test]
+fn a_value_bearing_glyph_content_id_moved_at_the_v5_bump() {
+    for glyph in fixed_scroll().all_glyphs() {
+        if VALUELESS_GLYPH_KEYS.contains(&glyph.key().as_str()) {
+            continue;
+        }
+        assert_ne!(
+            content_id_of_glyph(glyph).to_string(),
+            content_id_before_v5(&glyph.key()),
+            "{} wraps its value in `Text::Plain`, whose variant tag is a byte the \
+             pre-v5 encoding did not have",
             glyph.key()
         );
     }
@@ -135,6 +159,17 @@ fn adding_notifies_changes_the_scroll_content_id_and_no_glyph_id() {
     assert_eq!(plain, notifying);
 }
 
+const V4_MANIFEST_BYTES: &[u8] = &[
+    4, 5, 48, 46, 49, 46, 48, 1, 51, 122, 136, 245, 203, 142, 118, 114, 246, 150, 92, 105, 64, 96,
+    16, 51, 0, 14, 77, 112, 199, 244, 3, 25, 121, 9, 95, 61, 61, 48, 161, 137, 3, 119, 101, 98, 0,
+    0, 0, 4, 0, 5, 110, 103, 105, 110, 120, 1, 13, 110, 103, 105, 110, 120, 46, 115, 101, 114, 118,
+    105, 99, 101, 2, 21, 47, 101, 116, 99, 47, 110, 103, 105, 110, 120, 47, 110, 103, 105, 110,
+    120, 46, 99, 111, 110, 102, 0, 22, 119, 111, 114, 107, 101, 114, 95, 112, 114, 111, 99, 101,
+    115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47, 101, 116, 99, 47, 104,
+    111, 115, 116, 115, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108, 111, 99, 97, 108, 104,
+    111, 115, 116,
+];
+
 #[test]
 fn a_real_v3_manifest_is_rejected_as_an_unsupported_format_version() {
     match from_bytes(V3_MANIFEST_BYTES) {
@@ -143,6 +178,17 @@ fn a_real_v3_manifest_is_rejected_as_an_unsupported_format_version() {
             assert_eq!(supported, FORMAT_VERSION);
         }
         other => panic!("expected UnsupportedFormatVersion for v3 bytes, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_real_v4_manifest_is_rejected_as_an_unsupported_format_version() {
+    match from_bytes(V4_MANIFEST_BYTES) {
+        Err(FromBytesError::UnsupportedFormatVersion { found, supported }) => {
+            assert_eq!(found, 4);
+            assert_eq!(supported, FORMAT_VERSION);
+        }
+        other => panic!("expected UnsupportedFormatVersion for v4 bytes, got {other:?}"),
     }
 }
 

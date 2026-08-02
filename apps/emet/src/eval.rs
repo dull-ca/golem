@@ -228,7 +228,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             let path = as_str(eval(env, path, depth)?);
             let entry = match entry {
                 EntryExpr::File { contents, mode } => Entry::File {
-                    contents: as_str(eval(env, contents, depth)?),
+                    contents: as_str(eval(env, contents, depth)?).into(),
                     perms: perms_from_mode(as_str(eval(env, mode, depth)?))?,
                 },
                 EntryExpr::Directory { mode } => Entry::Directory {
@@ -243,7 +243,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::LineInFile { path, line } => glyph_value(
             Glyph::LineInFile {
                 path: as_str(eval(env, path, depth)?),
-                line: as_str(eval(env, line, depth)?),
+                line: as_str(eval(env, line, depth)?).into(),
             },
             &e.1,
         ),
@@ -488,7 +488,7 @@ fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
             "LineInFile",
             record_value(&[
                 ("path", Value::Str(path.clone())),
-                ("line", Value::Str(line.clone())),
+                ("line", Value::Str(line.to_string())),
             ]),
         ),
     }
@@ -504,7 +504,7 @@ fn entry_value(entry: &Entry) -> Value {
         Entry::File { contents, perms } => (
             "File",
             record_value(&[
-                ("contents", Value::Str(contents.clone())),
+                ("contents", Value::Str(contents.to_string())),
                 ("perms", perms_value(perms)),
             ]),
         ),
