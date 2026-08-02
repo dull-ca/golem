@@ -1,0 +1,30 @@
+-- #region record-update
+defaults : { domain : String, port : Int, tls : Bool }
+defaults =
+  { domain = "example.org"
+  , port = 8080
+  , tls = False
+  }
+
+secured : { domain : String, port : Int, tls : Bool }
+secured = { defaults | port = 443, tls = True }
+-- #endregion
+
+-- #region record-update-polymorphic
+withPort p r = { r | port = p }
+
+service = withPort 443 { name = "web", port = 8080 }
+listener = withPort 9000 { port = 80, backlog = 128 }
+-- #endregion
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "${secured.domain}:${String.fromInt secured.port}"
+      , glyphs = []
+      }
+  , scroll
+      { name = "${service.name}:${String.fromInt listener.port}"
+      , glyphs = []
+      }
+  ]

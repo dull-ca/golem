@@ -109,6 +109,21 @@ where
     select! { Tok::Ident(name) => name }
 }
 
+// A parameter of a declaration, a `let` binding, or a lambda: a binder, or a
+// parenthesized constructor applied to binders (ADR 0044).
+//
+// NOTE: this grammar is deliberately narrower than `pattern_parser`, which also
+// reads literals, `[]`, `::`, and nesting, and the narrowness is load-bearing.
+// It is what keeps `f [] = …`, `f "x" = …`, and `f 0 = …` out of argument
+// position, where a pattern that can fail would be a partial function.
+// `infer::reject_refutable_param` checks the same property on the pattern this
+// produces, so widening here moves which diagnostic an author sees but cannot
+// admit a refutable parameter.
+//
+// The parens are required even with no fields — `f (Unit) = …`, where Elm also
+// accepts a bare `f Unit = …`. A bare `Upper` reads ambiguously against the
+// parameters after it (`f Box x` is one destructuring or two parameters), so
+// admitting it costs a disambiguation rule for no new expressive power.
 fn param_parser<'src, I>(
 ) -> impl Parser<'src, I, Spanned<Pattern>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where

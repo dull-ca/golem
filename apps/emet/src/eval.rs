@@ -345,6 +345,11 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             }
             Value::Record(m)
         }
+        // A copy of the base with the named fields overwritten in source order
+        // (ADR 0044). Inference has unified the base with a record, so a
+        // non-record here would mean it let one through. Overwriting rather than
+        // inserting is the whole of the update: the type rule guarantees every
+        // name is already present and keeps its type.
         Expr::RecordUpdate { base, fields } => {
             let mut m = match eval(env, base, depth)? {
                 Value::Record(m) => m,
@@ -629,6 +634,13 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
     }
 }
 
+/// Bind an argument through a parameter pattern (ADR 0044) — the `case` arm loop
+/// without the search, since a parameter has exactly one pattern.
+///
+/// The failure is unreachable for the same reason `case`'s is: inference has
+/// already proved the pattern irrefutable (`infer::reject_refutable_param`), as
+/// it proves a `case`'s arms exhaustive. Reaching it means a refutable pattern
+/// got past the type checker, so there is no runtime answer to give.
 fn bind_param(env: Env, param: &Pattern, arg: Value) -> Env {
     let mut bindings = Vec::new();
     if !match_pattern(param, &arg, &mut bindings) {

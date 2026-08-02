@@ -7,11 +7,12 @@
 //! importer, then type-checks and evaluates each module against the *interfaces*
 //! of the modules it imports.
 //!
-//! An [`Interface`] is the harvested public surface of an already-processed
-//! library: the type env and value env plus which names it exposes. Only
-//! exposed values, exposed type names (`exposed_type_arities`), and — for a
-//! `Type(..)` export — exposed constructors are importable; the visibility gate
-//! is what distinguishes a module's public API from its internals.
+//! An `Interface` (crate-private) is the harvested public surface of an
+//! already-processed library: the type env and value env plus which names it
+//! exposes. Only exposed values, exposed type names (`exposed_type_arities`),
+//! and — for a `Type(..)` export — exposed constructors are importable; the
+//! visibility gate is what distinguishes a module's public API from its
+//! internals.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -539,6 +540,13 @@ fn import_type_arities(
 /// exposed without `(..)` contributes nothing here and stays unmatchable in the
 /// importer. Fed to inference so `infer_pattern` resolves imported constructors
 /// and the exhaustiveness checker sees their type's complete signature.
+///
+/// NOTE: both maps are keyed by bare name, so two imported modules exposing
+/// same-named types collide and `sum_ctors` keeps only the last import's
+/// variants — a multi-constructor type can then look single-constructor and
+/// defeat both the `case` exhaustiveness check and the argument-pattern gate.
+/// Recorded as a KNOWN BUG in `docs/TODO.md`; the fix is to key by owning module
+/// or to reject the shadowing import.
 fn import_constructors(
     module: &Module,
     interfaces: &HashMap<String, Interface>,

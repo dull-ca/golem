@@ -1,7 +1,9 @@
 # TODO / Backlog
 
 Deferred work and known gaps, with pointers to the design/ADRs that explain the
-context. These are intentional deferrals, not bugs.
+context. Most entries are intentional deferrals. The few that are defects carry
+a **KNOWN BUG** label and say what makes them wrong, so a deferral is never
+mistaken for one.
 
 Three backlogs: **A** is work inside the Emet language itself; **B** is the
 Emet ↔ golem ecosystem integration, now that Emet lives in the golem
@@ -151,6 +153,43 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   (negative literal patterns fold at parse time), but argument position still
   needs disambiguating. Future work: resolve `-1` as a negative literal in
   argument position too.
+
+- **Record update and constructor patterns in argument position — DONE (ADR
+  0044).** `{ r | field = value, … }` copies a record with the named fields
+  replaced, over ADR 0010's rows: the base unifies with an open record demanding
+  those fields, so a setter written against a row-polymorphic parameter serves
+  every record shape carrying them. The rule is type-preserving — a new value
+  must have the field's existing type and the result type is the base's — so an
+  update never reshapes a record. A function or lambda parameter may also be a
+  constructor pattern (`unwrap (Box held) = held`), restricted to
+  single-constructor types so ADR 0005's exhaustiveness is never bypassed;
+  `infer::reject_refutable_param` is the gate. A nullary constructor needs its
+  parens (`f (Unit) = …`), where Elm accepts the bare form. Tests green
+  (`apps/emet/tests/record_update.rs`, `apps/emet/tests/pattern_arguments.rs`).
+
+- **Same-named types from two imports collide in the constructor registry —
+  KNOWN BUG.** `resolve::import_constructors` (`apps/emet/src/resolve.rs`) fills
+  `ctor_schemes` and `sum_ctors` keyed by *bare* type name, inserting over each
+  import in order. When two imported modules each expose a type of the same
+  name, `sum_ctors` keeps only the last import's variant list while every
+  module's constructors accumulate side by side in `ctor_schemes` — and since
+  both types are `Con("Thing")`, their values unify freely. A multi-constructor
+  type can therefore appear single-constructor.
+
+  Both pattern paths then admit a match that can fail. A `case` over the
+  losing type is accepted as exhaustive and panics at `eval.rs`'s
+  `unreachable!("non-exhaustive case")`; a constructor parameter passes
+  `reject_multi_constructor_param` — which asks the corrupted set how many
+  constructors the type has — and panics at
+  `unreachable!("refutable argument pattern survived inference")`. The `case`
+  route predates ADR 0044 and was confirmed to panic identically on a
+  pre-change build, so argument patterns add a second door to one room rather
+  than a new hole.
+
+  The fix belongs to the module system, not to either pattern path: key both
+  maps by owning module, or reject an import that shadows a type name already
+  in scope. Until then a program is safe only because same-named types across
+  two imported modules are rare.
 
 ### Diagnostics / tooling
 

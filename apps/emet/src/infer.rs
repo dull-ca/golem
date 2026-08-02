@@ -1532,8 +1532,32 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             Ok(Type::Record(tys, Row::Closed))
         }
 
+        // `{ r | f = v, … }` (ADR 0044), over the rows of ADR 0010.
+        //
+        // The base is unified against an *open* record demanding only the named
+        // fields, so an open base stays open: `rename n r = { r | name = n }`
+        // gets `a -> { name : a | ρ } -> { name : a | ρ }` and one setter serves
+        // every record shape carrying a `name`. Demanding a closed record here
+        // would pin the setter to a single shape.
+        //
+        // The rule is type-preserving. Each value is unified against the fresh
+        // variable that the row unification has already tied to the field's
+        // existing type, and the result is the base's type unchanged, so an
+        // update replaces what a record holds and never its shape. A record
+        // literal is how you change the shape.
+        //
+        // The result therefore shares a row tail with the base, and both name
+        // the same keys. That is only sound because `unify_records` computes its
+        // two surplus sets with the shared keys filtered out, so `bind_row`
+        // never hands a row variable a field its own record already names —
+        // without that, updating a field could bind ρ to a second copy of it.
         Expr::RecordUpdate { base, fields } => {
             let base_ty = infer_expr(inf, env, base)?;
+            // A closed base is checked for the updated fields up front: row
+            // unification would reject an absent field too, but as a whole-record
+            // mismatch. Catching it here names the field and lists the ones the
+            // record has (ADR 0032). An open base or a bare variable has a row
+            // that will absorb the fields, so there is nothing yet to check.
             match inf.prune(&base_ty) {
                 Type::Record(known, Row::Closed) => {
                     for (name, _) in fields {
@@ -1561,6 +1585,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             let rest = inf.fresh_row();
             inf.unify(&base_ty, &Type::Record(demanded.clone(), rest), span)?;
 
+            // Values are inferred left to right, matching the source order eval
+            // inserts them in. The raw unification failure here would read as
+            // two anonymous types colliding, so it is replaced by one that names
+            // the field and both types.
             for (name, value) in fields {
                 let vt = infer_expr(inf, env, value)?;
                 let existing = &demanded[&name.0];
@@ -1752,6 +1780,27 @@ fn infer_pattern(
     }
 }
 
+/// Reject a parameter pattern that could fail to match (ADR 0044).
+///
+/// A `case` arm is allowed to be refutable because the checker proves the arms
+/// cover every value between them (ADR 0005). A parameter has no siblings, so it
+/// must match on its own; admitting a refutable one would let an author write
+/// the partial function ADR 0005 exists to forbid, just spelled as a binding
+/// rather than a branch.
+///
+/// The `match` is exhaustive with no catch-all deliberately. `param_parser`
+/// currently produces only a binder or `( Upper binder* )`, so most of these
+/// arms are unreachable from source — but the previous shape, an early
+/// `return Ok(())` for everything that was not a constructor, rested the whole
+/// invariant on that grammar silently. Written out, adding a [`Pattern`] variant
+/// or widening the parameter grammar fails the build here instead of passing a
+/// refutable pattern through to `eval`.
+///
+/// It recurses for the same reason: `Box (Just x)` is irrefutable at its head
+/// and refutable one level down. `Pattern::Tuple` is irrefutable at its own
+/// level — a tuple has a single shape (ADR 0027) — and contributes only its
+/// elements. The arms the parser cannot reach are covered by
+/// `refutable_param_tests`, which builds the patterns directly.
 fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), TypeError> {
     match &param.0 {
         Pattern::Wildcard | Pattern::Var(_) => Ok(()),
@@ -1782,6 +1831,19 @@ fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), T
     }
 }
 
+/// The type-directed half of the check: a constructor pattern is irrefutable
+/// only when its type has exactly one constructor. `Box` is; `Just` leaves
+/// `Nothing` unmatched and must be a `case`.
+///
+/// A name with no scheme, or one whose result type is not a `Con`, is passed
+/// over so `infer_pattern` reports it as an unknown constructor rather than as a
+/// refutability failure. A type with no recorded constructor set is treated as
+/// "not exactly one" — rejecting a pattern that cannot be proved total is the
+/// safe direction.
+///
+/// The verdict is only as good as the constructor set the registries hold; two
+/// imported modules exposing same-named types corrupt it, which `docs/TODO.md`
+/// records under the Emet language backlog.
 fn reject_multi_constructor_param(inf: &Infer, ctor: &str, span: &Span) -> Result<(), TypeError> {
     let Some(scheme) = inf.constructor_scheme(ctor) else {
         return Ok(());

@@ -27,7 +27,8 @@ which lives in the shared `scroll-format` crate and is re-exported through
 manifest of those scrolls (ADR 0012/0013); the readable plan is `--text`, JSON is
 `--json`. The surface is Elm-lite:
 top-level decls with optional signatures, Hindley-Milner inference with generics,
-records, `let`, lambdas, `case`/`if`, numbers with infix operators, string
+records with row-polymorphic access and update, `let`, lambdas, `case`/`if`,
+patterns in argument position, numbers with infix operators, string
 interpolation, and the offside (layout) rule. A program evaluates to a **fleet of
 scrolls** — `main : List Scroll`, one `Scroll` per host, each a recursive tree of
 glyphs or named sub-scrolls (ADR 0031). There is no JSON/YAML intermediary and no
@@ -67,9 +68,11 @@ header.rs  peels the column-zero `module … exposing` + `import` lines off the
            yields the header + the body tokens still to be laid out
 layout.rs  offside rule (Haskell 2010 §10.3): virtual { } ; + parse-error(t)
 parser.rs  chumsky over the laid-out tokens -> Module (exprs, patterns, types,
-           signatures, records, operators by precedence)
+           signatures, records + record update, operators by precedence);
+           `param_parser` is the deliberately narrow parameter grammar (ADR 0044)
 infer.rs   Algorithm W: unify / generalize / instantiate; signature + generics
-           checks; number/comparable constraints; case exhaustiveness/redundancy
+           checks; number/comparable constraints; case exhaustiveness/redundancy;
+           `reject_refutable_param` for parameter patterns
 eval.rs    typed Module -> Vec<Scroll> (may not terminate; depth-guarded)
 resolve.rs multi-module stage (ADR 0016): load the import graph from disk over
            the `emet.json` library search path (ADR 0024; `manifest.rs`), reject
@@ -162,6 +165,25 @@ An Elm-shaped, minimal module system for reuse across files:
   IEEE-754 equality is unreliable, so branch on floats with `<`/`>` in an `if`).
   `List` is treated as a two-constructor sum (`[]` / `::`) so the exhaustiveness
   checker requires both cases — see below.
+- **Patterns in argument position (ADR 0044).** A function, `let`, or lambda
+  parameter may be a constructor pattern — `unwrap (Box held) = held`,
+  `\(Box spec) -> spec.label` — for a **single-constructor** type only. A plain
+  name is the `Pattern::Var` case of the same path. Multi-constructor types stay
+  `case`-only: a parameter has no sibling arms, so admitting a refutable one
+  would reintroduce the partial functions ADR 0005 forbids.
+  `infer::reject_refutable_param` is the gate, an exhaustive match with no
+  catch-all that recurses into sub-patterns; `parser::param_parser` is narrower
+  than `pattern_parser` so the refutable spellings cannot be written at all.
+  Nullary constructors need their parens (`f (Unit) = …`) — the one divergence
+  from Elm here.
+- **Record update (ADR 0044).** `{ r | field = value, … }` copies a record with
+  the named fields replaced, over ADR 0010's rows: the base unifies with an
+  **open** record demanding those fields, so an open base stays open and one
+  setter serves every record shape carrying them. **Type-preserving** — a new
+  value must have the field's existing type, and the result type is the base's,
+  so an update never reshapes a record (write a literal for that). Updating an
+  absent field is a type error naming it. The base may be any expression, not
+  only a variable — a deliberate superset of Elm.
 - **Numbers + operators.** `+ - * / // ^ < > <= >= == /= && || ++ ::` with Elm
   precedence; operators desugar to prelude built-ins. `::` (cons) is
   right-associative at level 5, desugaring to the `cons` builtin. `++` (append)

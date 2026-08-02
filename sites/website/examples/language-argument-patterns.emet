@@ -1,0 +1,25 @@
+-- #region argument-patterns
+type Config = Config { domain : String, port : Int }
+
+domainOf : Config -> String
+domainOf (Config spec) = spec.domain
+
+withPort : Int -> Config -> Config
+withPort p (Config spec) = Config { spec | port = p }
+-- #endregion
+
+-- #region argument-patterns-lambda
+labels : List Config -> List String
+labels = List.map (\(Config spec) -> spec.domain)
+-- #endregion
+
+site : Config
+site = withPort 443 (Config { domain = "example.org", port = 8080 })
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "${domainOf site}-${String.concat (labels [ site ])}"
+      , glyphs = []
+      }
+  ]
