@@ -110,6 +110,14 @@ the trust boundary this inherits.
   could have preserved them by making `Plain` the bare string with a
   sentinel for the sum, and was rejected: the one type content addressing
   rests on should use the derive that every other wire type uses.
+- **`emetc`'s dependency footprint grows roughly fourfold** — ~85 crates to
+  ~283 — because `secretspec` links a full async provider stack and
+  `aes-siv` the AEAD. Weighed against shelling out to the `secretspec` CLI
+  (which would keep the compiler lean at the cost of a runtime binary
+  dependency and untyped output) and against feature-gating the link, and
+  accepted by Dr. Dub on 2026-08-02: resolving secrets properly is worth it.
+  `apps/emet/CLAUDE.md`'s footprint invariant is rewritten to say so rather
+  than quietly outgrown.
 - `format_version` 4 → 5. The encoding is non-self-describing postcard, so
   this is a real break: a v5 manifest is undecodable by a v4 golemd, which
   is what the version guard exists for.
