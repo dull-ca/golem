@@ -42,10 +42,21 @@ The wire gains a **typed secret**, and the field types that can hold one
 become a sum rather than a bare `String`.
 
 ```text
-Secret
-  = Sealed    { key_id : String, ciphertext : Bytes }
-  | Reference { provider : String, key : String }     // reserved; not enacted yet
+Secret = Sealed    { key_id : String, ciphertext : Bytes }
+       | Reference { provider : String, key : String }   // reserved; not enacted yet
+
+Text   = Plain    String
+       | Composed [ Lit String | Hole Secret ]
 ```
+
+A value-bearing field is a `Text`. `Composed` is what makes a secret usable:
+interpolating one into a string yields a sequence of literal chunks and
+sealed holes, which golemd unseals and joins at enact. The alternative —
+sealing the whole surrounding string — would turn a config file with one
+password in it into an opaque blob, unreviewable in the manifest and in
+`golemctl plan`. With holes, the file stays readable and only the secret is
+opaque. A hole may later carry a `Reference`, so one file can mix sealed and
+host-resolved values without another format change.
 
 **`Sealed` is what ships in this ADR.** `emetc` resolves the value through
 secretspec at compile time and encrypts it to the fleet's key. Encryption is
@@ -91,6 +102,14 @@ the trust boundary this inherits.
   reconcile: its content id covers the reference, not the value, so a
   rotated secret produces no diff. That is inherent to resolving on the
   host, and the reason `Sealed` is the default rather than a stepping stone.
+- Content ids move for every `file` and `lineInFile` glyph, because postcard
+  prefixes a variant tag: `Plain(s)` is the v4 encoding with one byte in
+  front. Valueless glyphs (`aptPackage`, `systemdService`) are untouched, so
+  the first v5 apply is a `Replace` on the file-shaped half of a host and a
+  `Noop` on the rest — content unchanged, ids new. A hand-written encoding
+  could have preserved them by making `Plain` the bare string with a
+  sentinel for the sum, and was rejected: the one type content addressing
+  rests on should use the derive that every other wire type uses.
 - `format_version` 4 → 5. The encoding is non-self-describing postcard, so
   this is a real break: a v5 manifest is undecodable by a v4 golemd, which
   is what the version guard exists for.
