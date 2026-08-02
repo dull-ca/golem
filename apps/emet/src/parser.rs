@@ -124,6 +124,14 @@ where
 // accepts a bare `f Unit = …`. A bare `Upper` reads ambiguously against the
 // parameters after it (`f Box x` is one destructuring or two parameters), so
 // admitting it costs a disambiguation rule for no new expressive power.
+//
+// NOTE: the exclusion is wider than the refutability argument needs, and the two
+// halves do not coincide. `reject_refutable_param` accepts `Pattern::Tuple`
+// (single-shape, ADR 0027) and recurses through nesting, so `f (a, b) = …`,
+// `f () = …`, and `f (Wrap (Box s)) = …` would all pass the gate — they are
+// excluded here and nowhere else. Widening for them is a grammar change with no
+// soundness question attached; the deferral, and the misdirecting parse error
+// the excluded forms currently report, are in `docs/TODO.md`.
 fn param_parser<'src, I>(
 ) -> impl Parser<'src, I, Spanned<Pattern>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where

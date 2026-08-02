@@ -126,13 +126,18 @@ pattern, so a value destructures where it binds:
 
 <Snippet file="language-argument-patterns.emet" region="argument-patterns-lambda" />
 
-The constructor must be the **only** constructor of its type. `Just x`, `Web`,
-`[]`, `(x :: xs)`, and literal patterns are all rejected in a parameter.
+A parameter is a **binder** or a **parenthesized constructor application**, and
+nothing else. Every other pattern form on this page — tuple, unit, list, literal,
+and a constructor nested inside another — is a parse error in argument position,
+and a nullary constructor still needs its parentheses (`f (Unit) = …`, not
+`f Unit = …`).
 
-A parameter has no sibling arms to cover the values it misses, so a pattern that
-can fail there would be a partial function — the thing exhaustiveness checking
-exists to prevent, reached by writing a binding instead of a branch. Take the
-whole value as a parameter and branch on it with `case … of`, which is checked:
+The constructor must also be the **only** constructor of its type, which is what
+the narrow grammar exists to guarantee. A parameter has no sibling arms to cover
+the values it misses, so a pattern that can fail there would be a partial
+function — the thing exhaustiveness checking exists to prevent, reached by
+writing a binding instead of a branch. Take the whole value as a parameter and
+branch on it with `case … of`, which is checked:
 
 ```emet
 nameFor : Maybe String -> String
@@ -142,8 +147,9 @@ nameFor m =
     Nothing   -> "anonymous"
 ```
 
-A nullary constructor keeps its parentheses in argument position: `f (Unit) = …`
-binds, and `f Unit = …` is a parse error.
+An excluded form reports a general parse error at the parameter — `f (a, b) = …`
+says `found 'a' expected an expression` — rather than naming argument position as
+the thing that does not support it.
 
 ## See also
 

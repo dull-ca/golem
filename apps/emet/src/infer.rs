@@ -1801,6 +1801,11 @@ fn infer_pattern(
 /// level — a tuple has a single shape (ADR 0027) — and contributes only its
 /// elements. The arms the parser cannot reach are covered by
 /// `refutable_param_tests`, which builds the patterns directly.
+///
+/// Accepting tuples and nesting makes this check *broader* than the grammar
+/// feeding it: `f (a, b) = …` passes here and is a parse error in
+/// `param_parser`. That gap is deliberate room, not an inconsistency — widening
+/// the grammar to those forms needs no change here.
 fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), TypeError> {
     match &param.0 {
         Pattern::Wildcard | Pattern::Var(_) => Ok(()),

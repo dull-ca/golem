@@ -172,18 +172,26 @@ An Elm-shaped, minimal module system for reuse across files:
   `case`-only: a parameter has no sibling arms, so admitting a refutable one
   would reintroduce the partial functions ADR 0005 forbids.
   `infer::reject_refutable_param` is the gate, an exhaustive match with no
-  catch-all that recurses into sub-patterns; `parser::param_parser` is narrower
-  than `pattern_parser` so the refutable spellings cannot be written at all.
-  Nullary constructors need their parens (`f (Unit) = …`) — the one divergence
-  from Elm here.
+  catch-all that recurses into sub-patterns. The grammar is the other half and
+  is deliberately narrow: `parser::param_parser` reads a binder or a
+  parenthesized constructor application, **and nothing else**, so the refutable
+  spellings cannot be written at all. That also excludes irrefutable forms Elm
+  admits — `f (a, b)`, `f ()`, nested `f (Wrap (Box s))`, and the bare nullary
+  `f Unit` are all parse errors. Note the two halves do not coincide: the gate
+  accepts `Pattern::Tuple` (single-shape product, ADR 0027) that the grammar
+  cannot produce, so tuple and unit parameters are a grammar question only. See
+  `docs/TODO.md`.
 - **Record update (ADR 0044).** `{ r | field = value, … }` copies a record with
   the named fields replaced, over ADR 0010's rows: the base unifies with an
   **open** record demanding those fields, so an open base stays open and one
   setter serves every record shape carrying them. **Type-preserving** — a new
   value must have the field's existing type, and the result type is the base's,
   so an update never reshapes a record (write a literal for that). Updating an
-  absent field is a type error naming it. The base may be any expression, not
-  only a variable — a deliberate superset of Elm.
+  absent field is always a type error, but the field-naming diagnostic
+  (`absent_update_field`) only fires when the base prunes to a **closed**
+  record; an open or variable base absorbs the field into its row and the
+  mismatch surfaces later, at the call site, as `record types differ`. The base
+  may be any expression, not only a variable — a deliberate superset of Elm.
 - **Numbers + operators.** `+ - * / // ^ < > <= >= == /= && || ++ ::` with Elm
   precedence; operators desugar to prelude built-ins. `::` (cons) is
   right-associative at level 5, desugaring to the `cons` builtin. `++` (append)
