@@ -83,7 +83,13 @@ pub struct Perms {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Text {
     Plain(String),
-    Secret(Secret),
+    Composed(Vec<Chunk>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Chunk {
+    Lit(String),
+    Hole(Secret),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,27 +99,69 @@ pub enum Secret {
 }
 
 impl Text {
-    pub fn plain(&self) -> Option<&str> {
-        match self {
-            Text::Plain(s) => Some(s),
-            Text::Secret(_) => None,
+    /// The only way to build a [`Text::Composed`], because it is also the only
+    /// way to reach the canonical form content addressing depends on: empty
+    /// literals dropped, adjacent literals merged, and a chunk list with no hole
+    /// left collapsed to [`Text::Plain`]. Two chunk lists that mean the same
+    /// text therefore encode to the same bytes and hash to the same content id.
+    pub fn composed(chunks: Vec<Chunk>) -> Text {
+        let mut canonical: Vec<Chunk> = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            match (chunk, canonical.last_mut()) {
+                (Chunk::Lit(s), _) if s.is_empty() => {}
+                (Chunk::Lit(s), Some(Chunk::Lit(prior))) => prior.push_str(&s),
+                (chunk, _) => canonical.push(chunk),
+            }
+        }
+        if canonical.iter().any(|c| matches!(c, Chunk::Hole(_))) {
+            Text::Composed(canonical)
+        } else {
+            match canonical.pop() {
+                Some(Chunk::Lit(s)) => Text::Plain(s),
+                _ => Text::Plain(String::new()),
+            }
         }
     }
 
-    pub fn secret(&self) -> Option<&Secret> {
+    pub fn plain(&self) -> Option<&str> {
         match self {
-            Text::Plain(_) => None,
-            Text::Secret(s) => Some(s),
+            Text::Plain(s) => Some(s),
+            Text::Composed(_) => None,
+        }
+    }
+
+    pub fn holes(&self) -> impl Iterator<Item = &Secret> {
+        self.chunks().filter_map(|chunk| match chunk {
+            Chunk::Lit(_) => None,
+            Chunk::Hole(secret) => Some(secret),
+        })
+    }
+
+    pub fn chunks(&self) -> std::slice::Iter<'_, Chunk> {
+        match self {
+            Text::Plain(_) => [].iter(),
+            Text::Composed(chunks) => chunks.iter(),
         }
     }
 
     pub fn key_fragment(&self) -> String {
         match self {
             Text::Plain(s) => s.clone(),
-            Text::Secret(Secret::Sealed { key_id, ciphertext }) => {
-                format!("sealed:{key_id}:{}", hex::encode(ciphertext))
+            Text::Composed(chunks) => chunks.iter().map(Chunk::key_fragment).collect(),
+        }
+    }
+}
+
+impl Chunk {
+    fn key_fragment(&self) -> String {
+        match self {
+            Chunk::Lit(s) => s.clone(),
+            Chunk::Hole(Secret::Sealed { key_id, ciphertext }) => {
+                format!("<sealed:{key_id}:{}>", hex::encode(ciphertext))
             }
-            Text::Secret(Secret::Reference { provider, key }) => format!("secret:{provider}:{key}"),
+            Chunk::Hole(Secret::Reference { provider, key }) => {
+                format!("<secret:{provider}:{key}>")
+            }
         }
     }
 }
@@ -134,7 +182,10 @@ impl fmt::Display for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Text::Plain(s) => f.write_str(s),
-            Text::Secret(secret) => write!(f, "{secret}"),
+            Text::Composed(chunks) => chunks.iter().try_for_each(|chunk| match chunk {
+                Chunk::Lit(s) => f.write_str(s),
+                Chunk::Hole(secret) => write!(f, "{secret}"),
+            }),
         }
     }
 }

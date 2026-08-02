@@ -16,6 +16,7 @@ pub mod parser;
 pub mod prelude;
 pub mod query;
 pub mod resolve;
+pub mod secrets;
 
 use std::path::Path;
 
@@ -163,13 +164,24 @@ pub fn compile_file(entry: &Path) -> Result<Compiled, Error> {
     compile_file_all(entry).map_err(|mut errors| errors.remove(0))
 }
 
+pub fn compile_file_with(entry: &Path, secrets: secrets::SecretOptions) -> Result<Compiled, Error> {
+    compile_file_all_with(entry, secrets).map_err(|mut errors| errors.remove(0))
+}
+
 /// The multi-error variant of `compile_file` (ADR 0022). Each module in the
 /// import graph is parsed through the recovering path, so a build reports every
 /// parse error in the offending file; as in `compile_all`, the resulting
 /// `Vec<Error>` is either several parse errors or one later-phase error.
 /// `compile_file` remains the first-error wrapper.
 pub fn compile_file_all(entry: &Path) -> Result<Compiled, Vec<Error>> {
-    let (main_ty, scrolls) = resolve::compile_entry(entry).map_err(|mut errors| {
+    compile_file_all_with(entry, secrets::SecretOptions::default())
+}
+
+pub fn compile_file_all_with(
+    entry: &Path,
+    secrets: secrets::SecretOptions,
+) -> Result<Compiled, Vec<Error>> {
+    let (main_ty, scrolls) = resolve::compile_entry(entry, secrets).map_err(|mut errors| {
         if errors.is_empty() {
             errors.push(Error {
                 phase: Phase::Analyze,

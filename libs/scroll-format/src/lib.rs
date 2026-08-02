@@ -27,5 +27,5 @@ pub use manifest::{
     AddressedScroll, FromBytesError, Manifest, FORMAT_VERSION,
 };
 pub use scroll::{
-    Contents, Entry, Glyph, LeafUnit, OnExhaust, Perms, Policy, Scroll, Secret, Text,
+    Chunk, Contents, Entry, Glyph, LeafUnit, OnExhaust, Perms, Policy, Scroll, Secret, Text,
 };

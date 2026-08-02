@@ -233,10 +233,16 @@ needsQuoting value =
     || String.contains "'" value
     || String.contains "\\" value
 
+quoted : String -> String
+quoted value =
+  "\"" ++ String.replace "\"" "\\\"" (String.replace "\\" "\\\\" value) ++ "\""
+
 quotedIfNeeded : String -> String
 quotedIfNeeded value =
-  if needsQuoting value then
-    "\"" ++ String.replace "\"" "\\\"" (String.replace "\\" "\\\\" value) ++ "\""
+  if String.isSecret value then
+    quoted value
+  else if needsQuoting value then
+    quoted value
   else
     value
 

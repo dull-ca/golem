@@ -21,8 +21,9 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{Constraint, Row, Scheme, Type};
-use crate::eval::{apply_top, BuiltinFn, Env, Value};
+use crate::eval::{apply_top, BuiltinFn, Env, EvalError, Value};
 use crate::infer::TyEnv;
+use crate::secrets::{self, SecretText, TextPiece};
 
 // Sentinel type-variable ids for the polymorphic schemes below. Chosen at the
 // top of the u32 space to never collide with the fresh ids inference mints from
@@ -517,6 +518,10 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             }
             std::cmp::Ordering::Equal
         }
+        (Value::SecretStr(_), _) | (_, Value::SecretStr(_)) => {
+            secrets::note_inspection("compared or ordered");
+            std::cmp::Ordering::Equal
+        }
         _ => unreachable!("comparable operands share a type"),
     }
 }
@@ -605,10 +610,27 @@ fn builtin_not(mut args: Vec<Value>) -> Value {
     boolean(!matches!(as_data(&args.pop().unwrap()), ("True", _)))
 }
 
-fn string_append(mut args: Vec<Value>) -> Value {
-    let b = args.pop().unwrap();
-    let a = args.pop().unwrap();
-    Value::Str(format!("{}{}", as_string(&a), as_string(&b)))
+fn text_pieces(v: &Value, out: &mut Vec<TextPiece>) {
+    match v {
+        Value::Str(s) => out.push(TextPiece::Literal(s.clone())),
+        Value::SecretStr(text) => out.extend(text.pieces().iter().cloned()),
+        _ => unreachable!("expected String"),
+    }
+}
+
+fn composed(pieces: Vec<TextPiece>) -> Value {
+    match secrets::compose(pieces) {
+        secrets::Composed::Plain(s) => Value::Str(s),
+        secrets::Composed::Tainted(text) => Value::SecretStr(text),
+    }
+}
+
+fn string_append(args: Vec<Value>) -> Value {
+    let mut pieces = Vec::new();
+    for arg in &args {
+        text_pieces(arg, &mut pieces);
+    }
+    composed(pieces)
 }
 
 fn append(args: Vec<Value>) -> Value {
@@ -620,22 +642,115 @@ fn append(args: Vec<Value>) -> Value {
 
 fn string_concat(mut args: Vec<Value>) -> Value {
     let parts = args.pop().unwrap();
-    let mut out = String::new();
+    let mut pieces = Vec::new();
     for part in as_list(&parts) {
-        out.push_str(as_string(part));
+        text_pieces(part, &mut pieces);
     }
-    Value::Str(out)
+    composed(pieces)
 }
 
 fn string_join(mut args: Vec<Value>) -> Value {
     let parts = args.pop().unwrap();
     let sep = args.pop().unwrap();
-    let joined = as_list(&parts)
+    let mut pieces = Vec::new();
+    for (index, part) in as_list(&parts).iter().enumerate() {
+        if index > 0 {
+            text_pieces(&sep, &mut pieces);
+        }
+        text_pieces(part, &mut pieces);
+    }
+    composed(pieces)
+}
+
+fn string_is_secret(mut args: Vec<Value>) -> Value {
+    boolean(matches!(args.pop().unwrap(), Value::SecretStr(_)))
+}
+
+fn secretspec_get(_: Vec<Value>) -> Value {
+    unreachable!("Secretspec.get is resolved by run_builtin, never by its table entry")
+}
+
+const COMPOSES_SECRETS: [&str; 4] = ["append", "String.append", "String.concat", "String.join"];
+
+pub fn run_builtin(name: &str, args: Vec<Value>, run: BuiltinFn) -> Result<Value, EvalError> {
+    if name == secrets::GET {
+        return resolve_secret(args);
+    }
+    if !args.iter().any(|a| matches!(a, Value::SecretStr(_)))
+        || name == secrets::IS_SECRET
+        || COMPOSES_SECRETS.contains(&name)
+    {
+        return Ok(run(args));
+    }
+    transform_secret(name, args, run)
+}
+
+fn resolve_secret(mut args: Vec<Value>) -> Result<Value, EvalError> {
+    let key = match args.pop() {
+        Some(Value::Str(key)) => key,
+        Some(Value::SecretStr(_)) => {
+            return Err(secret_error(format!(
+                "`{}` needs a plain key to look up, not another secret",
+                secrets::GET
+            )))
+        }
+        _ => unreachable!("expected String"),
+    };
+    secrets::resolve(&key)
+        .map(|secret| Value::SecretStr(SecretText::of_secret(secret)))
+        .map_err(secret_error)
+}
+
+fn transform_secret(name: &str, args: Vec<Value>, run: BuiltinFn) -> Result<Value, EvalError> {
+    let sources: Vec<&SecretText> = args
         .iter()
-        .map(|p| as_string(p))
-        .collect::<Vec<_>>()
-        .join(as_string(&sep));
-    Value::Str(joined)
+        .filter_map(|arg| match arg {
+            Value::SecretStr(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    let mut opened = Vec::with_capacity(args.len());
+    for arg in &args {
+        opened.push(match arg {
+            Value::SecretStr(text) => match text.plaintext() {
+                Some(plaintext) => Value::Str(plaintext),
+                None => {
+                    return Err(secret_error(format!(
+                        "`{name}` cannot reopen an already-sealed secret read back out of a glyph"
+                    )))
+                }
+            },
+            other => other.clone(),
+        });
+    }
+    match run(opened) {
+        Value::Str(transformed) => Ok(Value::SecretStr(SecretText::derived_from(
+            transformed,
+            &sources,
+        ))),
+        _ => Err(secret_error(format!(
+            "`{}` cannot inspect a secret — a sealed value may only be transformed into \
+             other text or joined into a larger string",
+            as_written(name)
+        ))),
+    }
+}
+
+fn as_written(builtin: &str) -> &str {
+    match builtin {
+        "eq" => "==",
+        "neq" => "/=",
+        "lt" => "<",
+        "gt" => ">",
+        "le" => "<=",
+        "ge" => ">=",
+        "cons" => "::",
+        other => other,
+    }
+}
+
+fn secret_error(msg: String) -> EvalError {
+    EvalError { msg, span: 0..0 }
 }
 
 fn string_length(mut args: Vec<Value>) -> Value {
@@ -1429,6 +1544,18 @@ fn builtins() -> Vec<Builtin> {
             arity: 2,
             scheme: scheme(&[], fun(string(), fun(list(string()), string()))),
             run: string_join,
+        },
+        Builtin {
+            name: secrets::IS_SECRET,
+            arity: 1,
+            scheme: scheme(&[], fun(string(), bool_ty())),
+            run: string_is_secret,
+        },
+        Builtin {
+            name: secrets::GET,
+            arity: 1,
+            scheme: scheme(&[], fun(string(), string())),
+            run: secretspec_get,
         },
         Builtin {
             name: "String.length",

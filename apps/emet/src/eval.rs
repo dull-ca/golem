@@ -11,8 +11,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::ast::*;
-use crate::ir::{Contents, Entry, Glyph, OnExhaust, Perms, Policy, Scroll};
+use crate::ir::{Contents, Entry, Glyph, OnExhaust, Perms, Policy, Scroll, Text};
 use crate::prelude;
+use crate::secrets::{self, SecretText};
 
 pub type BuiltinFn = fn(Vec<Value>) -> Value;
 
@@ -71,6 +72,19 @@ pub struct EvalError {
     pub span: Span,
 }
 
+impl EvalError {
+    fn unlocated(msg: String) -> EvalError {
+        EvalError { msg, span: 0..0 }
+    }
+
+    fn located_at(mut self, span: &Span) -> EvalError {
+        if self.span.start == 0 && self.span.end == 0 {
+            self.span = span.clone();
+        }
+        self
+    }
+}
+
 /// A runtime value. Beyond the obvious literals and containers:
 /// `Data` is a saturated sum-type constructor (`Just 3`, `True`); `Closure` is
 /// a user lambda over a captured env; `Builtin` is a prelude function
@@ -81,6 +95,7 @@ pub struct EvalError {
 #[derive(Clone)]
 pub enum Value {
     Str(String),
+    SecretStr(SecretText),
     Int(i64),
     Float(f64),
     /// One Unicode scalar — the runtime form of an `Expr::Char` (ADR 0025).
@@ -143,6 +158,7 @@ impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Str(s) => f.debug_tuple("Str").field(s).finish(),
+            Value::SecretStr(text) => f.debug_tuple("SecretStr").field(text).finish(),
             Value::Int(n) => f.debug_tuple("Int").field(n).finish(),
             Value::Float(x) => f.debug_tuple("Float").field(x).finish(),
             Value::Char(c) => f.debug_tuple("Char").field(c).finish(),
@@ -214,36 +230,44 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             .unwrap_or_else(|| unreachable!("unbound {name}")),
         Expr::AptPackage(name) => glyph_value(
             Glyph::AptPackage {
-                name: as_str(eval(env, name, depth)?),
+                name: as_identifier(eval(env, name, depth)?, "name", &name.1)?,
             },
             &e.1,
         ),
         Expr::SystemdService(unit) => glyph_value(
             Glyph::SystemdService {
-                unit: as_str(eval(env, unit, depth)?),
+                unit: as_identifier(eval(env, unit, depth)?, "unit", &unit.1)?,
             },
             &e.1,
         ),
         Expr::Filesystem { path, entry } => {
-            let path = as_str(eval(env, path, depth)?);
+            let path = as_identifier(eval(env, path, depth)?, "path", &path.1)?;
             let entry = match entry {
                 EntryExpr::File { contents, mode } => Entry::File {
-                    contents: as_str(eval(env, contents, depth)?).into(),
-                    perms: perms_from_mode(as_str(eval(env, mode, depth)?))?,
+                    contents: as_text(eval(env, contents, depth)?, &contents.1)?,
+                    perms: perms_from_mode(as_identifier(
+                        eval(env, mode, depth)?,
+                        "mode",
+                        &mode.1,
+                    )?)?,
                 },
                 EntryExpr::Directory { mode } => Entry::Directory {
-                    perms: perms_from_mode(as_str(eval(env, mode, depth)?))?,
+                    perms: perms_from_mode(as_identifier(
+                        eval(env, mode, depth)?,
+                        "mode",
+                        &mode.1,
+                    )?)?,
                 },
                 EntryExpr::Symlink { target } => Entry::Symlink {
-                    target: as_str(eval(env, target, depth)?),
+                    target: as_identifier(eval(env, target, depth)?, "target", &target.1)?,
                 },
             };
             glyph_value(Glyph::Filesystem { path, entry }, &e.1)
         }
         Expr::LineInFile { path, line } => glyph_value(
             Glyph::LineInFile {
-                path: as_str(eval(env, path, depth)?),
-                line: as_str(eval(env, line, depth)?).into(),
+                path: as_identifier(eval(env, path, depth)?, "path", &path.1)?,
+                line: as_text(eval(env, line, depth)?, &line.1)?,
             },
             &e.1,
         ),
@@ -255,14 +279,14 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             notifies,
             contents,
         } => {
-            let name = as_str(eval(env, name_expr, depth)?);
+            let name = as_identifier(eval(env, name_expr, depth)?, "name", &name_expr.1)?;
             reject_invalid_scroll_name(&name, &name_expr.1)?;
             let policy = match policy {
                 Some(p) => Some(as_policy(eval(env, p, depth)?)),
                 None => None,
             };
             let notifies = match notifies {
-                Some(n) => as_strings(eval(env, n, depth)?),
+                Some(n) => as_identifiers(eval(env, n, depth)?, "notifies", &n.1)?,
                 None => Vec::new(),
             };
             let contents = match contents {
@@ -329,7 +353,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::App(f, x) => {
             let fv = eval(env, f, depth)?;
             let xv = eval(env, x, depth)?;
-            apply(fv, xv, depth)?
+            apply(fv, xv, depth).map_err(|err| err.located_at(&e.1))?
         }
         Expr::Let { decls, body } => {
             let mut e = env.clone();
@@ -422,7 +446,14 @@ fn match_pattern(pat: &Pattern, value: &Value, bindings: &mut Vec<(String, Value
             bindings.push((name.clone(), value.clone()));
             true
         }
-        Pattern::Str(s) => matches!(value, Value::Str(v) if v == s),
+        Pattern::Str(s) => match value {
+            Value::Str(v) => v == s,
+            Value::SecretStr(_) => {
+                secrets::note_inspection("matched against a string pattern");
+                false
+            }
+            _ => false,
+        },
         // Direct value equality, the same shape as `Str` — no new `Value`
         // variant (ADR 0026 §7). A negative pattern matches here because the
         // parser already folded it to `Pattern::Int(-n)`.
@@ -488,7 +519,7 @@ fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
             "LineInFile",
             record_value(&[
                 ("path", Value::Str(path.clone())),
-                ("line", Value::Str(line.to_string())),
+                ("line", text_value(line)),
             ]),
         ),
     }
@@ -504,7 +535,7 @@ fn entry_value(entry: &Entry) -> Value {
         Entry::File { contents, perms } => (
             "File",
             record_value(&[
-                ("contents", Value::Str(contents.to_string())),
+                ("contents", text_value(contents)),
                 ("perms", perms_value(perms)),
             ]),
         ),
@@ -545,6 +576,13 @@ fn maybe_str_value(s: &Option<String>) -> Value {
     }
 }
 
+fn text_value(text: &Text) -> Value {
+    match secrets::reify(text) {
+        Some(tainted) => Value::SecretStr(tainted),
+        None => Value::Str(text.to_string()),
+    }
+}
+
 fn record_value(fields: &[(&str, Value)]) -> Value {
     Value::Record(
         fields
@@ -572,7 +610,10 @@ pub fn apply_top(func: Value, arg: Value) -> Value {
     let mut depth = 0;
     match apply(func, arg, &mut depth) {
         Ok(v) => v,
-        Err(e) => panic!("{}", e.msg),
+        Err(e) => {
+            secrets::note_failure(e.msg, e.span);
+            Value::Str(String::new())
+        }
     }
 }
 
@@ -607,16 +648,16 @@ pub fn apply(func: Value, arg: Value, depth: &mut u64) -> Result<Value, EvalErro
             run,
         } => {
             args.push(arg);
-            Ok(if args.len() == arity {
-                run(args)
+            if args.len() == arity {
+                prelude::run_builtin(&name, args, run)
             } else {
-                Value::Builtin {
+                Ok(Value::Builtin {
                     name,
                     arity,
                     args,
                     run,
-                }
-            })
+                })
+            }
         }
         Value::Ctor {
             ctor,
@@ -728,9 +769,42 @@ fn eval_recursive_group(env: &Env, decls: &[Decl], group: &[usize]) -> Option<En
     Some(bind_group(env, &group))
 }
 
-fn as_str(v: Value) -> String {
+#[cold]
+#[inline(never)]
+fn secret_in_identifier(field: &str, span: &Span) -> EvalError {
+    EvalError {
+        msg: format!(
+            "a secret cannot be used as `{field}` — a path, a name, a unit, or a mode is an \
+             identifier golem must diff and log in the clear, not a value it can seal"
+        ),
+        span: span.clone(),
+    }
+}
+
+fn as_identifier(v: Value, field: &str, span: &Span) -> Result<String, EvalError> {
     match v {
-        Value::Str(s) => s,
+        Value::Str(s) => Ok(s),
+        Value::SecretStr(_) => Err(secret_in_identifier(field, span)),
+        _ => unreachable!("expected Str"),
+    }
+}
+
+fn as_identifiers(v: Value, field: &str, span: &Span) -> Result<Vec<String>, EvalError> {
+    match v {
+        Value::List(items) => items
+            .into_iter()
+            .map(|item| as_identifier(item, field, span))
+            .collect(),
+        _ => unreachable!("expected List of String"),
+    }
+}
+
+fn as_text(v: Value, span: &Span) -> Result<Text, EvalError> {
+    match v {
+        Value::Str(s) => Ok(Text::Plain(s)),
+        Value::SecretStr(text) => text
+            .seal()
+            .map_err(|msg| EvalError::unlocated(msg).located_at(span)),
         _ => unreachable!("expected Str"),
     }
 }
@@ -770,7 +844,9 @@ pub fn run_module(m: &Module) -> Result<(Vec<Scroll>, GlyphSpans), EvalError> {
         .spawn(move || {
             let (result, spans) = with_glyph_spans(|| {
                 let env = eval_module_env(&m, prelude::env())?;
-                Ok(main_scrolls(&env))
+                let scrolls = main_scrolls(&env);
+                refuse_deferred_failure()?;
+                Ok(scrolls)
             });
             result.map(|scrolls| (scrolls, spans))
         })
@@ -800,7 +876,16 @@ where
 /// imports, returning the full resulting env so the resolver can harvest the
 /// values of its exposed decls. Assumes it already runs on an eval thread.
 pub fn eval_library(m: &Module, base: Env) -> Result<Env, EvalError> {
-    eval_module_env(m, base)
+    let env = eval_module_env(m, base)?;
+    refuse_deferred_failure()?;
+    Ok(env)
+}
+
+fn refuse_deferred_failure() -> Result<(), EvalError> {
+    match secrets::take_failure() {
+        Some((msg, span)) => Err(EvalError { msg, span }),
+        None => Ok(()),
+    }
 }
 
 /// Evaluate an entry module against a base env carrying its imports' values,
@@ -809,7 +894,9 @@ pub fn eval_library(m: &Module, base: Env) -> Result<Env, EvalError> {
 pub fn eval_entry(m: &Module, base: Env) -> Result<(Vec<Scroll>, GlyphSpans), EvalError> {
     let (result, spans) = with_glyph_spans(|| {
         let env = eval_module_env(m, base)?;
-        Ok(main_scrolls(&env))
+        let scrolls = main_scrolls(&env);
+        refuse_deferred_failure()?;
+        Ok(scrolls)
     });
     result.map(|scrolls| (scrolls, spans))
 }
@@ -874,13 +961,6 @@ fn as_scroll(v: &Value) -> Scroll {
     match v {
         Value::Scroll(s) => s.clone(),
         _ => unreachable!("expected Scroll in main list"),
-    }
-}
-
-fn as_strings(v: Value) -> Vec<String> {
-    match v {
-        Value::List(items) => items.into_iter().map(as_str).collect(),
-        _ => unreachable!("expected List of String"),
     }
 }
 

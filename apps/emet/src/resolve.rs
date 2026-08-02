@@ -104,6 +104,7 @@ struct Interface {
 /// parse errors or one type/eval/analyze error.
 pub fn compile_entry(
     entry: &Path,
+    secrets: crate::secrets::SecretOptions,
 ) -> Result<(crate::ast::Type, Vec<crate::ir::Scroll>), Vec<Error>> {
     let search_path = manifest::search_path_for(entry);
 
@@ -111,7 +112,13 @@ pub fn compile_entry(
     let entry_name = load_graph(entry, &search_path, &mut loaded)?;
     let order = topo_order(&entry_name, &loaded).map_err(|e| vec![e])?;
 
-    eval::on_eval_thread(move || check_and_eval(entry_name, order, loaded)).map_err(|e| vec![e])
+    let entry = entry.to_path_buf();
+    eval::on_eval_thread(move || {
+        crate::secrets::with_session(&entry, secrets, || {
+            check_and_eval(entry_name, order, loaded)
+        })
+    })
+    .map_err(|e| vec![e])
 }
 
 pub fn analyze_entry(entry: &Path) -> ProjectAnalysis {

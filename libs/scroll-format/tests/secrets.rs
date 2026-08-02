@@ -1,13 +1,13 @@
 use scroll_format::{
-    content_id_of_glyph, from_bytes, to_bytes, Contents, Entry, FromBytesError, Glyph, Manifest,
-    Perms, Scroll, Secret, Text, FORMAT_VERSION,
+    content_id_of_glyph, from_bytes, to_bytes, Chunk, Contents, Entry, FromBytesError, Glyph,
+    Manifest, Perms, Scroll, Secret, Text, FORMAT_VERSION,
 };
 
 fn sealed(ciphertext: &[u8]) -> Text {
-    Text::Secret(Secret::Sealed {
+    Text::composed(vec![Chunk::Hole(Secret::Sealed {
         key_id: "fleet-2026".to_string(),
         ciphertext: ciphertext.to_vec(),
-    })
+    })])
 }
 
 fn perms() -> Perms {
@@ -94,10 +94,10 @@ fn a_sealed_value_differs_from_the_plain_value_it_seals() {
 
 #[test]
 fn a_key_id_change_alone_moves_the_content_id() {
-    let rekeyed = Text::Secret(Secret::Sealed {
+    let rekeyed = Text::composed(vec![Chunk::Hole(Secret::Sealed {
         key_id: "fleet-2027".to_string(),
         ciphertext: vec![7, 7, 7, 7],
-    });
+    })]);
     assert_ne!(
         content_id_of_glyph(&file_with(sealed(&[7, 7, 7, 7]))),
         content_id_of_glyph(&file_with(rekeyed)),
@@ -199,4 +199,107 @@ fn a_v5_manifest_decodes_and_reports_the_current_format_version() {
         }
         other => panic!("expected a v4 manifest to be refused, got {other:?}"),
     }
+}
+
+#[test]
+fn a_composed_value_keeps_its_literal_chunks_readable_and_only_seals_the_hole() {
+    let line = Text::composed(vec![
+        Chunk::Lit("Environment=PW=".to_string()),
+        Chunk::Hole(Secret::Sealed {
+            key_id: "fleet-2026".to_string(),
+            ciphertext: vec![1, 2, 3],
+        }),
+    ]);
+    let glyph = Glyph::LineInFile {
+        path: "/etc/app.env".to_string(),
+        line: line.clone(),
+    };
+    assert_eq!(
+        from_bytes(&to_bytes(&manifest_of(glyph))).unwrap().scrolls[0]
+            .scroll
+            .glyphs()[0],
+        Glyph::LineInFile {
+            path: "/etc/app.env".to_string(),
+            line
+        }
+    );
+}
+
+#[test]
+fn a_composed_value_renders_its_literals_and_redacts_its_holes() {
+    let rendered = Text::composed(vec![
+        Chunk::Lit("Environment=PW=".to_string()),
+        Chunk::Hole(Secret::Sealed {
+            key_id: "fleet-2026".to_string(),
+            ciphertext: vec![1, 2, 3],
+        }),
+    ])
+    .to_string();
+    assert_eq!(
+        rendered,
+        "Environment=PW=<sealed secret under key fleet-2026>"
+    );
+}
+
+#[test]
+fn composing_only_literals_canonicalizes_to_plain() {
+    assert_eq!(
+        Text::composed(vec![
+            Chunk::Lit("Environment=".to_string()),
+            Chunk::Lit("PW=x".to_string()),
+        ]),
+        Text::Plain("Environment=PW=x".to_string())
+    );
+}
+
+#[test]
+fn composing_merges_adjacent_literals_so_one_meaning_has_one_encoding() {
+    let split = Text::composed(vec![
+        Chunk::Lit("Environment=".to_string()),
+        Chunk::Lit("PW=".to_string()),
+        Chunk::Hole(Secret::Sealed {
+            key_id: "k".to_string(),
+            ciphertext: vec![1],
+        }),
+        Chunk::Lit(String::new()),
+    ]);
+    let merged = Text::composed(vec![
+        Chunk::Lit("Environment=PW=".to_string()),
+        Chunk::Hole(Secret::Sealed {
+            key_id: "k".to_string(),
+            ciphertext: vec![1],
+        }),
+    ]);
+    assert_eq!(split, merged);
+    assert_eq!(
+        content_id_of_glyph(&file_with(split)),
+        content_id_of_glyph(&file_with(merged))
+    );
+}
+
+#[test]
+fn a_composed_key_fragment_discriminates_two_different_sealed_lines() {
+    let hole = |ciphertext: Vec<u8>| {
+        Text::composed(vec![
+            Chunk::Lit("PW=".to_string()),
+            Chunk::Hole(Secret::Sealed {
+                key_id: "k".to_string(),
+                ciphertext,
+            }),
+        ])
+    };
+    assert_ne!(hole(vec![1]).key_fragment(), hole(vec![2]).key_fragment());
+    assert!(hole(vec![1]).key_fragment().starts_with("PW="));
+}
+
+fn manifest_of(glyph: Glyph) -> Manifest {
+    Manifest::from_scrolls(
+        vec![Scroll {
+            name: "app".to_string(),
+            policy: None,
+            notifies: vec![],
+            contents: Contents::Glyphs(vec![glyph]),
+        }],
+        "0.1.0",
+    )
 }

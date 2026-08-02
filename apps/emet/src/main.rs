@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use emet::{compile_all, compile_file_all, Compiled, Error, Phase};
+use emet::secrets::SecretOptions;
+use emet::{compile_all, compile_file_all_with, Compiled, Error, Phase};
 use scroll_format::{to_bytes, to_json, Manifest};
 
 const EMET_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,6 +67,15 @@ struct BuildArgs {
 
     #[arg(long = "json", conflicts_with_all = ["text", "human"])]
     json: bool,
+
+    #[arg(long = "secret-key", env = "GOLEM_SECRET_KEY_FILE")]
+    secret_key: Option<PathBuf>,
+
+    #[arg(long = "secret-provider", env = "SECRETSPEC_PROVIDER")]
+    secret_provider: Option<String>,
+
+    #[arg(long = "secret-profile", env = "SECRETSPEC_PROFILE")]
+    secret_profile: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -76,6 +86,14 @@ enum OutputFormat {
 }
 
 impl BuildArgs {
+    fn secret_options(&self) -> SecretOptions {
+        SecretOptions {
+            key_file: self.secret_key.clone(),
+            provider: self.secret_provider.clone(),
+            profile: self.secret_profile.clone(),
+        }
+    }
+
     fn resolved_format(&self) -> OutputFormat {
         if self.text || self.human {
             OutputFormat::Text
@@ -98,6 +116,9 @@ fn main() -> ExitCode {
             text: false,
             human: false,
             json: false,
+            secret_key: None,
+            secret_provider: None,
+            secret_profile: None,
         }),
     }
 }
@@ -112,7 +133,7 @@ fn run_build(args: BuildArgs) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            match compile_file_all(p) {
+            match compile_file_all_with(p, args.secret_options()) {
                 Ok(compiled) => emit(compiled, &args),
                 Err(errors) => {
                     report_errors(&p.display().to_string(), &src, &errors);
