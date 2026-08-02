@@ -129,6 +129,30 @@ An Elm-shaped, minimal module system for reuse across files:
   mentions stays free. A type reached through two imports keeps its declaring
   owner and is one type, not a collision. Module-qualified type identity would
   readmit these programs and is deferred, not superseded.
+- **One constructor name, one owner, per module (ADR 0046).** Importing two
+  modules that open-expose a constructor named `Wrap`, or declaring a variant
+  named `Wrap` when an import already contributes one, is a compile error
+  (`resolve::reject_constructor_name_collisions`, run right after the type
+  check). This is *not* the type rule restated. It guards **reachability**, not
+  soundness: ADR 0045 keeps the two types distinct, so no value crosses, but
+  `ctor_schemes` was keyed by bare name and the last import won, so the earlier
+  `Wrap` vanished without a word and using it reported a mismatch against the
+  surviving one's type — correct code reading as broken. Rejection rather than
+  an owner-keyed registry because `CtorA.Wrap` is a **parse** error, in
+  expression and in pattern position: no use site could disambiguate, so a
+  shadowed constructor was never reachable by any spelling. It carries across
+  the module boundary the rule `infer::register_type_decls` already applies
+  within one (`duplicate constructor`).
+  **The scope is deliberately narrower than ADR 0045's**, on two counts that
+  both follow from constructors being gated tighter than types. It covers the
+  **exposing list** (`Interface::ctor_owners`), not the exposed surface — only
+  `Type(..)` constructors are in scope at all, so a constructor behind a closed
+  export is genuinely invisible and cannot collide, whereas a private *type*
+  named in an exposed signature still unifies by name and does. And ownership
+  **never propagates** — constructors cannot be re-exposed, so there is no
+  analogue of `inherited_type_owners` and one module imported twice
+  (`examples/limesurvey/Ingress.emet` imports `Traefik` twice) is not a
+  collision.
 - **Exactly one module has `main`** (the entry); the rest are libraries. A
   library that declares `main` is a compile error.
 - **`compile(src)`** is the single-file pipeline (imports not resolved from

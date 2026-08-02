@@ -14,10 +14,25 @@
 //! visibility gate is what distinguishes a module's public API from its
 //! internals.
 //!
-//! Because a type's identity is its bare name, this stage also enforces that a
-//! module never sees two different types under one name:
-//! `reject_type_name_collisions` runs before inference on every module (ADR
-//! 0045).
+//! A type and a constructor are each reached by bare name, so this stage also
+//! enforces one owner per name in both namespaces, before inference runs on any
+//! module: `reject_type_name_collisions` (ADR 0045), then
+//! `reject_constructor_name_collisions` (ADR 0046). Type collisions are checked
+//! first because they are unsoundness — two modules' `Thing` are one type, and a
+//! value of either is accepted where the other is proved — while a constructor
+//! collision costs an unreachable constructor and a diagnostic that names the
+//! wrong type.
+//!
+//! The two rules are **not** mirrors of one another; reading either as the
+//! other's counterpart gets both wrong. The type rule spans a module's exposed
+//! *surface*, because a private type named in an exposed signature still unifies
+//! by name in the importer. The constructor rule stops at the exposing list,
+//! because only a `Type(..)` export puts constructors in scope at all, so a
+//! constructor behind a closed export can be neither built nor matched anywhere
+//! else. Type ownership also propagates — a re-exposed type keeps its declaring
+//! module (`inherited_type_owners`) — while constructor ownership cannot,
+//! because `interface_of` harvests constructors from the module's own
+//! `type_decls` only, so no module can re-expose one it did not declare.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -57,6 +72,12 @@ impl ProjectAnalysis {
 /// `type_owners` maps every type name this module's exposed surface can put in
 /// front of an importer to the module that *declared* it, which is what makes
 /// ADR 0045's one-owner rule checkable — see `interface_of`.
+/// `ctor_owners` is the constructor namespace's counterpart, for ADR 0046, and
+/// its scope is narrower on both axes: it holds only the constructors of a
+/// `Type(..)` export, since no other constructor is in scope in an importer, and
+/// its owner is always *this* module, since a constructor cannot be re-exposed.
+/// Each entry also carries the type the constructor builds, which the diagnostic
+/// names.
 struct Interface {
     ty_env: TyEnv,
     value_env: Env,
@@ -567,15 +588,14 @@ fn import_type_arities(
 /// and the exhaustiveness checker sees their type's complete signature.
 ///
 /// NOTE: both maps are keyed by bare name and inserted per import in order, so
-/// the last import wins. On the `sum_ctors` side that is safe — its key is a
-/// *type* name, and `reject_type_name_collisions` has already rejected any
-/// module where two imports contribute one type name (ADR 0045), so no variant
-/// list can be overwritten by another type's. On the `ctor_schemes` side it is
-/// not: its key is a bare *constructor* name, which ADR 0045 does not constrain,
-/// so two imports exposing the same constructor name for two differently-named
-/// types silently shadow one another. That is a KNOWN BUG in `docs/TODO.md` —
-/// a wrong-type diagnostic and an unreachable constructor, not unsoundness,
-/// since the two types stay distinct and no value crosses.
+/// the last import wins. That is safe on both sides only because this module has
+/// already passed both collision checks. `sum_ctors` is keyed by a *type* name,
+/// which `reject_type_name_collisions` gives one owner (ADR 0045); `ctor_schemes`
+/// is keyed by a bare *constructor* name, which `reject_constructor_name_collisions`
+/// gives one owner (ADR 0046). Either key can therefore arrive twice only from a
+/// single owner — one module imported twice — so an overwrite rewrites an entry
+/// with itself. Before ADR 0046 the `ctor_schemes` side did lose constructors
+/// here, silently.
 fn import_constructors(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
@@ -676,12 +696,42 @@ fn reject_type_name_collisions(
     Ok(())
 }
 
+/// How one constructor reached the module being checked: `owner` declared it, on
+/// type `type_name`. Both are in the diagnostic — two colliding constructors sit
+/// on two differently-named types, and naming only the modules would leave the
+/// author hunting for a `type` line without knowing which type to look for.
+///
+/// There is no counterpart to `TypeNameOrigin::via`: a constructor cannot be
+/// re-exposed, so the import that carried it in always declared it.
 #[derive(Clone)]
 struct ConstructorOrigin {
     owner: String,
     type_name: String,
 }
 
+/// Enforce ADR 0046: within one module, a constructor name has exactly one
+/// owner. Rejected are two imports contributing the same constructor name under
+/// different declaring modules, and a local `type` declaration with a variant
+/// whose name an import already contributes.
+///
+/// This guards reachability and diagnostics, not soundness: ADR 0045 keeps the
+/// two types distinct, so no value ever crosses. Without the check, the later
+/// import's constructor displaced the earlier one in `ctor_schemes` and in
+/// `import_ty_env`'s bindings; the displaced one became unreachable without a
+/// word, and writing it reported a mismatch against the surviving constructor's
+/// type — correct code indicted by a type the author never named.
+///
+/// Rejection rather than a map keyed by owning module, because no use site could
+/// select an entry from such a map: `CtorA.Wrap` is a *parse* error, in
+/// expression and in pattern position alike, so every occurrence of a
+/// constructor carries exactly its bare name. A shadowed constructor was never
+/// reachable by any spelling, so admitting it buys an author nothing. What this
+/// does is carry across the module boundary the rule
+/// `infer::register_type_decls` already applies within one module (`duplicate
+/// constructor`).
+///
+/// Narrower than `reject_type_name_collisions` on two counts — see this module's
+/// doc comment for why neither rule generalizes to the other.
 fn reject_constructor_name_collisions(
     loaded: &Loaded,
     module_name: &str,
@@ -729,6 +779,11 @@ fn reject_constructor_name_collisions(
     Ok(())
 }
 
+/// The half both collision diagnostics share: which module puts the name on
+/// which type, and why only one of the two can be reached. Each caller appends
+/// its own repair, because the repairs differ — two imports can also be split
+/// across two modules, while a local declaration against an imported
+/// constructor can only be renamed.
 fn unreachable_constructor_note(
     ctor_name: &str,
     first: &ConstructorOrigin,
@@ -740,6 +795,8 @@ fn unreachable_constructor_note(
     )
 }
 
+/// Rendered at the second `import` line — the one that brought the duplicate in
+/// — matching where `imports_define_the_same_type` renders its own.
 fn imports_define_the_same_constructor(
     site: &Loaded,
     ctor_name: &str,
@@ -763,6 +820,8 @@ fn imports_define_the_same_constructor(
     }
 }
 
+/// Rendered at the offending variant rather than at the import: the import is
+/// legitimate, and the variant is the line this module wrote.
 fn local_constructor_shadows_an_imported_one(
     site: &Loaded,
     local: &ConstructorOrigin,
