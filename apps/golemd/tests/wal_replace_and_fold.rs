@@ -50,7 +50,7 @@ impl Reconciler for FileHost {
         let inverse = match prior {
             Some(prior_contents) => Inverse::RestoreFile {
                 path: path.clone(),
-                contents: prior_contents,
+                contents: prior_contents.into(),
                 perms: perms.clone(),
             },
             None => Inverse::DeleteFile { path: path.clone() },

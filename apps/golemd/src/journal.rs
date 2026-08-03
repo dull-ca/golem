@@ -8,7 +8,7 @@
 //! reverses edits it recorded, never touching pre-existing host state.
 
 use chrono::{DateTime, Utc};
-use scroll_format::{ContentId, Glyph, Perms, Scroll};
+use scroll_format::{ContentId, Glyph, Perms, Scroll, Text};
 use serde::{Deserialize, Serialize};
 
 /// A single glyph operation the pure diff (`reconcile::plan`) decided on for one
@@ -103,7 +103,7 @@ pub enum Inverse {
     },
     RestoreFile {
         path: String,
-        contents: String,
+        contents: Text,
         perms: Perms,
     },
     DeleteFile {
@@ -122,7 +122,7 @@ pub enum Inverse {
     },
     RemoveLineInFile {
         path: String,
-        line: String,
+        line: Text,
     },
 }
 

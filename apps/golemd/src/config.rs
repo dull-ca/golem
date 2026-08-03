@@ -127,13 +127,25 @@ pub struct AuthConfig {
     pub token_file: Option<PathBuf>,
 }
 
+/// Where the fleet secret key lives — the key `emetc` sealed a manifest's
+/// secrets to, which golemd opens them with at enact (ADR 0047). `None` — the
+/// default — is a host that can enact any manifest carrying no secret and
+/// refuses, by name, every glyph carrying one. Same shape and same reason as
+/// [`AuthConfig`]: golemd must never invent a key path and imply it can unseal.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SecretsConfig {
+    pub key_file: Option<PathBuf>,
+}
+
 /// The whole resolved `golemd.toml`: the fleet-default retry pace, the
-/// host-wide enact width, and where the bearer secret is read from.
+/// host-wide enact width, where the bearer secret is read from, and where the
+/// fleet secret key is read from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GolemdConfig {
     pub retry: RetryConfig,
     pub enact: EnactConfig,
     pub auth: AuthConfig,
+    pub secrets: SecretsConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -141,6 +153,12 @@ struct FileShape {
     retry: Option<RetryTable>,
     enact: Option<EnactTable>,
     auth: Option<AuthTable>,
+    secrets: Option<SecretsTable>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SecretsTable {
+    key_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -194,6 +212,7 @@ pub fn load(path: Option<&Path>) -> Result<GolemdConfig, ConfigError> {
             retry: RetryConfig::default(),
             enact: EnactConfig::default(),
             auth: AuthConfig::default(),
+            secrets: SecretsConfig::default(),
         });
     };
     let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Read(e.to_string()))?;
@@ -234,7 +253,18 @@ pub fn load(path: Option<&Path>) -> Result<GolemdConfig, ConfigError> {
             auth.token_file = Some(f);
         }
     }
-    Ok(GolemdConfig { retry, enact, auth })
+    let mut secrets = SecretsConfig::default();
+    if let Some(t) = shape.secrets {
+        if let Some(f) = t.key_file {
+            secrets.key_file = Some(f);
+        }
+    }
+    Ok(GolemdConfig {
+        retry,
+        enact,
+        auth,
+        secrets,
+    })
 }
 
 #[cfg(test)]
@@ -248,6 +278,23 @@ mod tests {
         assert_eq!(cfg.retry.max_attempts, 5);
         assert_eq!(cfg.retry.on_exhaust, OnExhaustConfig::Rollback);
         assert_eq!(cfg.auth.token_file, None);
+        assert_eq!(cfg.secrets.key_file, None);
+    }
+
+    #[test]
+    fn secrets_key_file_parses_and_is_absent_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("golemd.toml");
+        std::fs::write(&path, "[secrets]\nkey_file = \"/etc/golem/fleet.key\"\n").unwrap();
+        let cfg = load(Some(&path)).unwrap();
+        assert_eq!(
+            cfg.secrets.key_file,
+            Some(PathBuf::from("/etc/golem/fleet.key"))
+        );
+        assert_eq!(cfg.auth.token_file, None);
+
+        std::fs::write(&path, "[auth]\ntoken_file = \"/etc/golem/token\"\n").unwrap();
+        assert_eq!(load(Some(&path)).unwrap().secrets.key_file, None);
     }
 
     #[test]

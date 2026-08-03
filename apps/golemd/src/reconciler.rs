@@ -252,7 +252,7 @@ pub fn inverse_of(glyph: &Glyph) -> Inverse {
         },
         Glyph::LineInFile { path, line } => Inverse::RemoveLineInFile {
             path: path.clone(),
-            line: line.to_string(),
+            line: line.clone(),
         },
     }
 }

@@ -52,7 +52,7 @@ impl Reconciler for RestartRecorder {
                 let inverse = match prior {
                     Some(p) => Inverse::RestoreFile {
                         path: path.clone(),
-                        contents: p,
+                        contents: p.into(),
                         perms: perms.clone(),
                     },
                     None => Inverse::DeleteFile { path: path.clone() },

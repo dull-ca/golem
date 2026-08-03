@@ -9,6 +9,7 @@ use golemd::http;
 use golemd::planroom::SqlitePlanRoom;
 use golemd::reconciler::Reconciler;
 use golemd::reconcilers::HostReconciler;
+use golemd::secrets::Keyring;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,6 +50,12 @@ struct Cli {
     /// neither set golemd answers anyone who reaches the port — dev only.
     #[arg(long)]
     auth_token_file: Option<PathBuf>,
+    /// File holding the fleet secret key `emetc` sealed this fleet's manifests
+    /// to (ADR 0047). Overrides `[secrets] key_file`. With neither set golemd
+    /// enacts any manifest carrying no secret and refuses, by name, every glyph
+    /// carrying one.
+    #[arg(long)]
+    secrets_key_file: Option<PathBuf>,
 }
 
 /// Read the secret golemd will require, once, at startup — an unreadable or
@@ -70,6 +77,19 @@ fn load_required_token(path: Option<PathBuf>) -> Result<Option<Arc<String>>> {
     Ok(Some(Arc::new(trimmed.to_string())))
 }
 
+/// Read the fleet secret key, once, at startup — an unreadable or malformed key
+/// file stops the daemon rather than starting it unable to unseal, so a
+/// mis-provisioned key is a boot failure and not a fleet-wide reconcile failure
+/// discovered one glyph at a time. `None` (no flag and no `[secrets]` table) is
+/// the keyless posture: every manifest carrying no secret enacts exactly as it
+/// did before ADR 0047.
+fn load_keyring(path: Option<PathBuf>) -> Result<Keyring> {
+    let Some(path) = path else {
+        return Ok(Keyring::without_key());
+    };
+    Keyring::from_key_file(&path).map_err(|e| anyhow::anyhow!(e.to_string()))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -81,9 +101,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("create {}", cli.state_dir.display()))?;
 
     let planroom = SqlitePlanRoom::open(&cli.state_dir.join("planroom.db"))?;
+    let config =
+        golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
+    let keyring = load_keyring(cli.secrets_key_file.or(config.secrets.key_file.clone()))?;
     let reconciler: Box<dyn Reconciler> = match cli.reconciler {
-        ReconcilerKind::Host => Box::new(HostReconciler::system()),
-        ReconcilerKind::Fake => Box::new(FakeReconciler::new()),
+        ReconcilerKind::Host => Box::new(HostReconciler::system().with_keyring(keyring)),
+        ReconcilerKind::Fake => Box::new(FakeReconciler::new().with_keyring(keyring)),
     };
     // Contain a host-adapter panic at the port so it never unwinds across the
     // foreman's write lock and wedges the daemon (ADR 0033, panic-guard). Tests
@@ -91,8 +114,6 @@ async fn main() -> Result<()> {
     // uncaught panic still models a crash for the recovery path (ADR 0020 §3).
     let reconciler: Box<dyn Reconciler> =
         Box::new(golemd::reconciler::PanicCatching::new(reconciler));
-    let config =
-        golemd::config::load(cli.config.as_deref()).with_context(|| "load golemd config")?;
     let foreman = Arc::new(
         Foreman::new(cli.host.clone(), Box::new(planroom), reconciler)
             .with_retry_config(config.retry)
@@ -145,5 +166,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing-token");
         assert!(load_required_token(Some(path)).is_err());
+    }
+
+    #[test]
+    fn none_path_gives_a_keyless_keyring() {
+        assert!(load_keyring(None).unwrap().key_id().is_none());
+    }
+
+    #[test]
+    fn a_key_file_is_read_and_identified_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fleet.key");
+        std::fs::write(&path, format!("{}\n", "ab".repeat(64))).unwrap();
+        assert!(load_keyring(Some(path)).unwrap().key_id().is_some());
+    }
+
+    #[test]
+    fn a_malformed_key_file_stops_the_daemon_naming_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fleet.key");
+        std::fs::write(&path, "not a key").unwrap();
+        let err = load_keyring(Some(path.clone())).unwrap_err();
+        assert!(err.to_string().contains(&path.display().to_string()));
     }
 }

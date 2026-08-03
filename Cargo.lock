@@ -1030,12 +1030,14 @@ dependencies = [
 name = "golemd"
 version = "0.1.0"
 dependencies = [
+ "aes-siv",
  "anyhow",
  "axum",
  "blake3",
  "chrono",
  "clap",
  "fastrand",
+ "hex",
  "nix",
  "postcard",
  "reqwest",
