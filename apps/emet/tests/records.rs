@@ -69,8 +69,7 @@ main = [ scroll { name = "x", glyphs = [ lineInFile { path = "/p", line = getPor
         rs[0],
         Glyph::LineInFile {
             path: "/p".into(),
-            line: "9".into(),
-            perms: None
+            line: "9".into()
         }
     );
 }

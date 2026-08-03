@@ -69,15 +69,12 @@ fn only_glyph(compiled: &Compiled) -> &Glyph {
     }
 }
 
-fn line_of(compiled: &Compiled) -> &Text {
-    match only_glyph(compiled) {
-        Glyph::LineInFile { line, .. } => line,
-        other => panic!("expected a lineInFile glyph, got {other:?}"),
-    }
+fn contents_of(compiled: &Compiled) -> &Text {
+    file_contents(only_glyph(compiled))
 }
 
-fn contents_of(compiled: &Compiled) -> &Text {
-    match only_glyph(compiled) {
+fn file_contents(glyph: &Glyph) -> &Text {
+    match glyph {
         Glyph::Filesystem {
             entry: Entry::File { contents, .. },
             ..
@@ -100,9 +97,9 @@ main =
   [ scroll
       { name = "app"
       , glyphs =
-          [ lineInFile
+          [ file
               { path = "/etc/app.env"
-              , line = "Environment=PW=${Secretspec.get "DB_PASSWORD"}"
+              , contents = "Environment=PW=${Secretspec.get "DB_PASSWORD"}"
               , mode = "0600"
               }
           ]
@@ -118,7 +115,7 @@ fn interpolating_a_secret_keeps_the_literal_chunks_and_seals_only_the_secret() {
 
     let compiled = compile_file_all_with(&entry, project.options()).unwrap();
 
-    match line_of(&compiled) {
+    match contents_of(&compiled) {
         Text::Composed(chunks) => match &chunks[..] {
             [Chunk::Lit(literal), Chunk::Hole(Secret::Sealed { ciphertext, .. })] => {
                 assert_eq!(literal, "Environment=PW=");
@@ -320,9 +317,9 @@ main =
   [ scroll
       { name = "app"
       , glyphs =
-          [ lineInFile
+          [ file
               { path = "/etc/app.env"
-              , line = "PW=" ++ String.replace "\"" "_" (Secretspec.get "DB_PASSWORD")
+              , contents = "PW=" ++ String.replace "\"" "_" (Secretspec.get "DB_PASSWORD")
               , mode = "0600"
               }
           ]
@@ -333,7 +330,7 @@ main =
 
     let compiled = compile_file_all_with(&entry, project.options()).unwrap();
 
-    match line_of(&compiled) {
+    match contents_of(&compiled) {
         Text::Composed(chunks) => match &chunks[..] {
             [Chunk::Lit(literal), Chunk::Hole(_)] => assert_eq!(literal, "PW="),
             other => panic!("expected one literal and one sealed hole, got {other:?}"),
@@ -356,8 +353,8 @@ main =
   [ scroll
       { name = "app"
       , glyphs =
-          [ lineInFile { path = "/etc/a", line = marked (Secretspec.get "DB_PASSWORD"), mode = "0600" }
-          , lineInFile { path = "/etc/b", line = marked "public" }
+          [ file { path = "/etc/a", contents = marked (Secretspec.get "DB_PASSWORD"), mode = "0600" }
+          , file { path = "/etc/b", contents = marked "public", mode = "0644" }
           ]
       }
   ]
@@ -370,17 +367,11 @@ main =
         other => panic!("expected a leaf scroll, got {other:?}"),
     };
 
-    match &glyphs[0] {
-        Glyph::LineInFile {
-            line: Text::Composed(chunks),
-            ..
-        } => assert_eq!(chunks[0], Chunk::Lit("sealed:".to_string())),
-        other => panic!("expected a composed line, got {other:?}"),
+    match file_contents(&glyphs[0]) {
+        Text::Composed(chunks) => assert_eq!(chunks[0], Chunk::Lit("sealed:".to_string())),
+        other => panic!("expected composed contents, got {other:?}"),
     }
-    match &glyphs[1] {
-        Glyph::LineInFile { line, .. } => assert_eq!(line.plain(), Some("plain:public")),
-        other => panic!("expected a plain line, got {other:?}"),
-    }
+    assert_eq!(file_contents(&glyphs[1]).plain(), Some("plain:public"));
 }
 
 #[test]
@@ -481,8 +472,8 @@ main =
   [ scroll
       { name = "app"
       , glyphs =
-          [ lineInFile { path = "/etc/a", line = "PW=" ++ Secretspec.get "DB_PASSWORD", mode = "0600" }
-          , lineInFile { path = "/etc/b", line = "PW=" ++ Secretspec.get "DB_PASSWORD", mode = "0600" }
+          [ file { path = "/etc/a", contents = "PW=" ++ Secretspec.get "DB_PASSWORD", mode = "0600" }
+          , file { path = "/etc/b", contents = "PW=" ++ Secretspec.get "DB_PASSWORD", mode = "0600" }
           ]
       }
   ]
@@ -494,18 +485,15 @@ main =
         Contents::Glyphs(glyphs) => glyphs,
         other => panic!("expected a leaf scroll, got {other:?}"),
     };
-    let sealed = |glyph: &Glyph| match glyph {
-        Glyph::LineInFile {
-            line: Text::Composed(chunks),
-            ..
-        } => chunks
+    let sealed = |glyph: &Glyph| match file_contents(glyph) {
+        Text::Composed(chunks) => chunks
             .iter()
             .filter_map(|chunk| match chunk {
                 Chunk::Hole(Secret::Sealed { ciphertext, .. }) => Some(ciphertext.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        other => panic!("expected a composed line, got {other:?}"),
+        other => panic!("expected composed contents, got {other:?}"),
     };
 
     assert_eq!(sealed(&glyphs[0]), sealed(&glyphs[1]));
@@ -786,50 +774,38 @@ main =
 }
 
 #[test]
-fn a_secret_in_a_world_readable_line_in_file_is_refused() {
-    let project = Project::declaring("linemode644", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
-    let entry = project.write(
-        "app.emet",
-        &secret_line_at("\n              , mode = \"0644\""),
-    );
-
-    let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
-
-    let msg = &errors[0].msg;
-    assert!(msg.contains("/etc/app.env"), "{msg}");
-    assert!(msg.contains("mode 0644"), "{msg}");
-    assert!(msg.contains("`mode = \"0600\"`"), "{msg}");
-}
-
-#[test]
-fn a_secret_in_a_line_in_file_with_no_mode_is_refused_and_asks_for_one() {
-    let project = Project::declaring("linenomode", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+fn a_secret_in_a_line_in_file_is_refused_because_golem_does_not_own_the_file() {
+    let project = Project::declaring("linesecret", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
     let entry = project.write("app.emet", &secret_line_at(""));
 
     let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
 
     let msg = &errors[0].msg;
     assert!(msg.contains("/etc/app.env"), "{msg}");
-    assert!(msg.contains("no `mode`"), "{msg}");
-    assert!(msg.contains("umask"), "{msg}");
+    assert!(msg.contains("does not own"), "{msg}");
+    assert!(msg.contains("`file`"), "{msg}");
     assert!(msg.contains("`mode = \"0600\"`"), "{msg}");
+    assert!(!msg.contains("hunter2"), "{msg}");
 }
 
 #[test]
-fn a_secret_in_a_line_in_file_at_0600_compiles_cleanly() {
-    let project = Project::declaring("linemode600", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+fn a_secret_in_a_line_in_file_is_refused_even_at_an_owner_only_mode() {
+    let project = Project::declaring("linesecret600", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
     let entry = project.write(
         "app.emet",
         &secret_line_at("\n              , mode = \"0600\""),
     );
 
-    let compiled = compile_file_all_with(&entry, project.options()).unwrap();
+    let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
 
-    assert_eq!(line_of(&compiled).holes().count(), 1);
+    assert!(
+        !errors.is_empty(),
+        "a secret reached a lineInFile unrefused"
+    );
 }
 
 #[test]
-fn a_secret_free_line_in_file_with_no_mode_still_compiles() {
+fn a_secret_free_line_in_file_still_compiles() {
     let project = Project::new("plainline");
     let entry = project.write(
         "app.emet",

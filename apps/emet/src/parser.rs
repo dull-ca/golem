@@ -1291,7 +1291,6 @@ fn build_constructor(
         "lineInFile" => Expr::LineInFile {
             path: Box::new(take_field(ctor, fields, "path", span)?),
             line: Box::new(take_field(ctor, fields, "line", span)?),
-            mode: fields.remove("mode").map(Box::new),
         },
         "scroll" => {
             let name = Box::new(take_field(ctor, fields, "name", span)?);

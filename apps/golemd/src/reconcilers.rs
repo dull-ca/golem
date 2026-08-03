@@ -176,7 +176,6 @@ impl<R: CommandRunner> HostReconciler<R> {
         path: &str,
         line: &str,
         sealed: &Text,
-        perms: Option<&Perms>,
         cid: ContentId,
         glyph: &Glyph,
     ) -> EnactResult<Outcome> {
@@ -187,7 +186,7 @@ impl<R: CommandRunner> HostReconciler<R> {
                 .clone()
         };
         let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-        apply_line_in_file(path, line, sealed, perms, cid, glyph)
+        apply_line_in_file(path, line, sealed, cid, glyph)
     }
 
     #[cfg(test)]
@@ -447,9 +446,9 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
                 Entry::Directory { perms } => apply_directory(path, perms, cid, glyph),
                 Entry::Symlink { target } => apply_symlink(path, target, cid, glyph),
             },
-            Glyph::LineInFile { path, line, perms } => {
+            Glyph::LineInFile { path, line } => {
                 let opened = self.keyring.open(line, &glyph.key())?;
-                self.apply_line_in_file_locked(path, &opened, line, perms.as_ref(), cid, glyph)
+                self.apply_line_in_file_locked(path, &opened, line, cid, glyph)
             }
         }
     }
@@ -929,14 +928,13 @@ fn apply_line_in_file(
     path: &str,
     line: &str,
     sealed: &Text,
-    perms: Option<&Perms>,
     cid: ContentId,
     glyph: &Glyph,
 ) -> EnactResult<Outcome> {
     if file_has_line(path, line)? {
         return Ok(outcome(glyph, cid, Inverse::Nothing, false));
     }
-    append_line(path, line, perms)?;
+    append_line(path, line)?;
     Ok(outcome(
         glyph,
         cid,
@@ -956,23 +954,19 @@ fn file_has_line(path: &str, line: &str) -> EnactResult<bool> {
     }
 }
 
-fn append_line(path: &str, line: &str, perms: Option<&Perms>) -> EnactResult<()> {
+fn append_line(path: &str, line: &str) -> EnactResult<()> {
     let target = Path::new(path);
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)
         .map_err(|e| EnactError::Retryable(format!("mkdir {}: {e}", dir.display())))?;
-    let creating = !target.exists();
-    let mut appended = fs::read_to_string(path).unwrap_or_default();
-    if !appended.is_empty() && !appended.ends_with('\n') {
-        appended.push('\n');
+    let mut existing = fs::read_to_string(path).unwrap_or_default();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        existing.push('\n');
     }
-    appended.push_str(line);
-    appended.push('\n');
-    match perms.filter(|_| creating) {
-        Some(perms) => write_file_atomic(path, &appended, perms),
-        None => fs::write(path, appended)
-            .map_err(|e| EnactError::Retryable(format!("append {path}: {e}"))),
-    }
+    existing.push_str(line);
+    existing.push('\n');
+    fs::write(path, existing).map_err(|e| EnactError::Retryable(format!("append {path}: {e}")))?;
+    Ok(())
 }
 
 /// Remove the **first** occurrence of `line` from the file — the one golem
@@ -1102,7 +1096,6 @@ mod tests {
         Glyph::LineInFile {
             path: path.into(),
             line: line.into(),
-            perms: None,
         }
     }
 

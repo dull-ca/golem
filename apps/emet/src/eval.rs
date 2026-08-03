@@ -247,12 +247,7 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
                     let contents = as_text(eval(env, contents, depth)?, &contents.1)?;
                     let perms =
                         perms_from_mode(as_identifier(eval(env, mode, depth)?, "mode", &mode.1)?)?;
-                    reject_secret_at_loose_mode(
-                        format!("the contents golem writes to `{path}` carry a secret"),
-                        &contents,
-                        Some(&perms),
-                        &mode.1,
-                    )?;
+                    reject_secret_at_loose_mode(&path, &contents, &perms, &mode.1)?;
                     Entry::File { contents, perms }
                 }
                 EntryExpr::Directory { mode } => Entry::Directory {
@@ -268,28 +263,12 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             };
             glyph_value(Glyph::Filesystem { path, entry }, &e.1)
         }
-        Expr::LineInFile { path, line, mode } => {
+        Expr::LineInFile { path, line } => {
+            let blame = line.1.clone();
             let path = as_identifier(eval(env, path, depth)?, "path", &path.1)?;
             let line = as_text(eval(env, line, depth)?, &line.1)?;
-            let perms = match mode {
-                Some(mode) => Some(perms_from_mode(as_identifier(
-                    eval(env, mode, depth)?,
-                    "mode",
-                    &mode.1,
-                )?)?),
-                None => None,
-            };
-            let blame = match mode {
-                Some(mode) => &mode.1,
-                None => &e.1,
-            };
-            reject_secret_at_loose_mode(
-                format!("the line golem ensures in `{path}` carries a secret"),
-                &line,
-                perms.as_ref(),
-                blame,
-            )?;
-            glyph_value(Glyph::LineInFile { path, line, perms }, &e.1)
+            reject_secret_in_a_file_golem_does_not_own(&path, &line, &blame)?;
+            glyph_value(Glyph::LineInFile { path, line }, &e.1)
         }
         // A leaf lowers its glyph list, a branch recurses into its sub-scrolls;
         // the `ContentsExpr` arm already fixed which (ADR 0031 §7).
@@ -535,12 +514,11 @@ fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
                 ("entry", entry_value(entry)),
             ]),
         ),
-        Glyph::LineInFile { path, line, perms } => (
+        Glyph::LineInFile { path, line } => (
             "LineInFile",
             record_value(&[
                 ("path", Value::Str(path.clone())),
                 ("line", text_value(line)),
-                ("perms", maybe_perms_value(perms)),
             ]),
         ),
     }
@@ -582,19 +560,6 @@ fn perms_value(perms: &Perms) -> Value {
         ("owner", maybe_str_value(&perms.owner)),
         ("group", maybe_str_value(&perms.group)),
     ])
-}
-
-fn maybe_perms_value(perms: &Option<Perms>) -> Value {
-    match perms {
-        Some(perms) => Value::Data {
-            ctor: "Just".to_string(),
-            args: vec![perms_value(perms)],
-        },
-        None => Value::Data {
-            ctor: "Nothing".to_string(),
-            args: Vec::new(),
-        },
-    }
 }
 
 fn maybe_str_value(s: &Option<String>) -> Value {
@@ -877,31 +842,40 @@ fn readable_beyond_owner(perms: &Perms) -> bool {
 }
 
 fn reject_secret_at_loose_mode(
-    lede: String,
-    text: &Text,
-    perms: Option<&Perms>,
+    path: &str,
+    contents: &Text,
+    perms: &Perms,
     span: &Span,
 ) -> Result<(), EvalError> {
-    if !matches!(text, Text::Composed(_)) {
+    if !matches!(contents, Text::Composed(_)) || !readable_beyond_owner(perms) {
         return Ok(());
     }
-    let msg = match perms {
-        Some(perms) if readable_beyond_owner(perms) => format!(
-            "{lede}, but mode {:04o} lets group or other read it — write a secret at \
-             `mode = \"0600\"`, or at `mode = \"0640\"` once the entry also names the group \
-             allowed to read it",
+    Err(EvalError {
+        msg: format!(
+            "the contents golem writes to `{path}` carry a secret, but mode {:04o} lets group or \
+             other read it — write a secret at `mode = \"0600\"`, or at `mode = \"0640\"` once \
+             the entry also names the group allowed to read it",
             perms.mode
         ),
-        Some(_) => return Ok(()),
-        None => format!(
-            "{lede}, and this `lineInFile` sets no `mode` — if golem has to create the file, the \
-             host's umask decides who can read the credential — add `mode = \"0600\"` (or \
-             `\"0640\"` once the entry also names the group allowed to read it) so the file is \
-             protected however it comes to exist"
-        ),
-    };
+        span: span.clone(),
+    })
+}
+
+fn reject_secret_in_a_file_golem_does_not_own(
+    path: &str,
+    line: &Text,
+    span: &Span,
+) -> Result<(), EvalError> {
+    if !matches!(line, Text::Composed(_)) {
+        return Ok(());
+    }
     Err(EvalError {
-        msg,
+        msg: format!(
+            "the line golem ensures in `{path}` carries a secret, but a `lineInFile` owns only \
+             that line and not the file it appends to — golem does not own `{path}`, so it \
+             cannot promise who is allowed to read the credential — write the secret with a \
+             `file` glyph at `mode = \"0600\"`, which owns the whole file and enforces its mode"
+        ),
         span: span.clone(),
     })
 }
@@ -1065,7 +1039,10 @@ fn as_float(v: Value) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{readable_beyond_owner, reject_secret_at_loose_mode};
+    use super::{
+        readable_beyond_owner, reject_secret_at_loose_mode,
+        reject_secret_in_a_file_golem_does_not_own,
+    };
     use crate::ir::{Chunk, Perms, Secret, Text};
 
     fn perms(mode: u16, group: Option<&str>) -> Perms {
@@ -1103,34 +1080,29 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_value_is_accepted_at_any_mode_and_with_no_mode_at_all() {
+    fn a_plain_file_is_accepted_at_any_mode() {
         let plain = Text::Plain("public".to_string());
-        assert!(reject_secret_at_loose_mode(
-            "x".into(),
-            &plain,
-            Some(&perms(0o666, None)),
-            &(0..0)
-        )
-        .is_ok());
-        assert!(reject_secret_at_loose_mode("x".into(), &plain, None, &(0..0)).is_ok());
+        assert!(reject_secret_at_loose_mode("/x", &plain, &perms(0o666, None), &(0..0)).is_ok());
     }
 
     #[test]
-    fn a_sealed_value_is_accepted_only_at_a_mode_no_one_else_can_read() {
-        assert!(reject_secret_at_loose_mode(
-            "x".into(),
-            &sealed(),
-            Some(&perms(0o600, None)),
-            &(0..0)
-        )
-        .is_ok());
-        assert!(reject_secret_at_loose_mode(
-            "x".into(),
-            &sealed(),
-            Some(&perms(0o644, None)),
-            &(0..0)
-        )
-        .is_err());
-        assert!(reject_secret_at_loose_mode("x".into(), &sealed(), None, &(0..0)).is_err());
+    fn a_sealed_file_is_accepted_only_at_a_mode_no_one_else_can_read() {
+        assert!(reject_secret_at_loose_mode("/x", &sealed(), &perms(0o600, None), &(0..0)).is_ok());
+        assert!(
+            reject_secret_at_loose_mode("/x", &sealed(), &perms(0o644, None), &(0..0)).is_err()
+        );
+    }
+
+    #[test]
+    fn a_plain_line_is_accepted_in_a_file_golem_does_not_own() {
+        let plain = Text::Plain("127.0.0.1 local".to_string());
+        assert!(reject_secret_in_a_file_golem_does_not_own("/etc/hosts", &plain, &(0..0)).is_ok());
+    }
+
+    #[test]
+    fn a_sealed_line_is_refused_whatever_the_file_it_would_join() {
+        assert!(
+            reject_secret_in_a_file_golem_does_not_own("/etc/hosts", &sealed(), &(0..0)).is_err()
+        );
     }
 }

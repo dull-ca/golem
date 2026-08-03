@@ -56,8 +56,7 @@ main =
             },
             Glyph::LineInFile {
                 path: "/p".to_string(),
-                line: "e".into(),
-                perms: None
+                line: "e".into()
             }
         ]
     );

@@ -1318,14 +1318,7 @@ fn glyph_ctors() -> Vec<Ctor> {
             arity: 1,
             scheme: scheme(
                 &[],
-                fun(
-                    record(&[
-                        ("path", string()),
-                        ("line", string()),
-                        ("perms", maybe(perms())),
-                    ]),
-                    glyph(),
-                ),
+                fun(record(&[("path", string()), ("line", string())]), glyph()),
             ),
             run: None,
         },

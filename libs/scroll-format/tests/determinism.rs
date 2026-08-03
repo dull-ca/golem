@@ -29,7 +29,6 @@ fn fixed_scroll() -> Scroll {
             Glyph::LineInFile {
                 path: "/etc/hosts".to_string(),
                 line: "127.0.0.1 localhost".into(),
-                perms: None,
             },
         ]),
     }
@@ -62,10 +61,10 @@ const GOLDEN_SCROLL_BYTES: &[u8] = &[
     110, 103, 105, 110, 120, 46, 99, 111, 110, 102, 0, 0, 22, 119, 111, 114, 107, 101, 114, 95,
     112, 114, 111, 99, 101, 115, 115, 101, 115, 32, 97, 117, 116, 111, 59, 164, 3, 0, 0, 3, 10, 47,
     101, 116, 99, 47, 104, 111, 115, 116, 115, 0, 19, 49, 50, 55, 46, 48, 46, 48, 46, 49, 32, 108,
-    111, 99, 97, 108, 104, 111, 115, 116, 0,
+    111, 99, 97, 108, 104, 111, 115, 116,
 ];
 
-const GOLDEN_CONTENT_ID: &str = "78e50292e06f2c7cfdd7722323315783d25e6f961c6bc5b40067174fc5d1eb74";
+const GOLDEN_CONTENT_ID: &str = "f0f42965824b5ab73cef5c3295cb2bcce8a5199dac60588328b34e2cfe1cfd13";
 
 // Captured from the v3 code *before* the bump: ADR 0036's "glyph cids are
 // untouched" promise written down, which is what makes the first v4 apply a

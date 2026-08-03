@@ -82,12 +82,9 @@ fn free_vars_expr(
                 }
             }
         }
-        Expr::LineInFile { path, line, mode } => {
+        Expr::LineInFile { path, line } => {
             free_vars_expr(path, bound, names, refs);
             free_vars_expr(line, bound, names, refs);
-            if let Some(mode) = mode {
-                free_vars_expr(mode, bound, names, refs);
-            }
         }
         Expr::Scroll {
             name,
