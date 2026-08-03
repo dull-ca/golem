@@ -250,7 +250,7 @@ pub fn inverse_of(glyph: &Glyph) -> Inverse {
             },
             Entry::Symlink { .. } => Inverse::RemoveSymlink { path: path.clone() },
         },
-        Glyph::LineInFile { path, line } => Inverse::RemoveLineInFile {
+        Glyph::LineInFile { path, line, .. } => Inverse::RemoveLineInFile {
             path: path.clone(),
             line: line.clone(),
         },

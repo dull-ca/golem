@@ -103,6 +103,7 @@ main =
           [ lineInFile
               { path = "/etc/app.env"
               , line = "Environment=PW=${Secretspec.get "DB_PASSWORD"}"
+              , mode = "0600"
               }
           ]
       }
@@ -322,6 +323,7 @@ main =
           [ lineInFile
               { path = "/etc/app.env"
               , line = "PW=" ++ String.replace "\"" "_" (Secretspec.get "DB_PASSWORD")
+              , mode = "0600"
               }
           ]
       }
@@ -354,7 +356,7 @@ main =
   [ scroll
       { name = "app"
       , glyphs =
-          [ lineInFile { path = "/etc/a", line = marked (Secretspec.get "DB_PASSWORD") }
+          [ lineInFile { path = "/etc/a", line = marked (Secretspec.get "DB_PASSWORD"), mode = "0600" }
           , lineInFile { path = "/etc/b", line = marked "public" }
           ]
       }
@@ -479,8 +481,8 @@ main =
   [ scroll
       { name = "app"
       , glyphs =
-          [ lineInFile { path = "/etc/a", line = "PW=" ++ Secretspec.get "DB_PASSWORD" }
-          , lineInFile { path = "/etc/b", line = "PW=" ++ Secretspec.get "DB_PASSWORD" }
+          [ lineInFile { path = "/etc/a", line = "PW=" ++ Secretspec.get "DB_PASSWORD", mode = "0600" }
+          , lineInFile { path = "/etc/b", line = "PW=" ++ Secretspec.get "DB_PASSWORD", mode = "0600" }
           ]
       }
   ]
@@ -688,4 +690,160 @@ main =
         "{}",
         errors[0].msg
     );
+}
+
+fn secret_file_at(mode: &str) -> String {
+    format!(
+        r#"main : List Scroll
+main =
+  [ scroll
+      {{ name = "app"
+      , glyphs =
+          [ file
+              {{ path = "/etc/app.conf"
+              , contents = "password=${{Secretspec.get "DB_PASSWORD"}}\n"
+              , mode = "{mode}"
+              }}
+          ]
+      }}
+  ]
+"#
+    )
+}
+
+fn secret_line_at(mode_field: &str) -> String {
+    format!(
+        r#"main : List Scroll
+main =
+  [ scroll
+      {{ name = "app"
+      , glyphs =
+          [ lineInFile
+              {{ path = "/etc/app.env"
+              , line = "token=${{Secretspec.get "DB_PASSWORD"}}"{mode_field}
+              }}
+          ]
+      }}
+  ]
+"#
+    )
+}
+
+#[test]
+fn a_secret_in_a_world_readable_file_is_refused_naming_the_path_the_mode_and_the_repair() {
+    let project = Project::declaring("filemode644", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+    let entry = project.write("app.emet", &secret_file_at("0644"));
+
+    let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
+
+    let msg = &errors[0].msg;
+    assert!(msg.contains("/etc/app.conf"), "{msg}");
+    assert!(msg.contains("mode 0644"), "{msg}");
+    assert!(msg.contains("group or other"), "{msg}");
+    assert!(msg.contains("`mode = \"0600\"`"), "{msg}");
+    assert!(msg.contains("0640"), "{msg}");
+    assert!(!msg.contains("hunter2"), "{msg}");
+}
+
+#[test]
+fn a_secret_in_a_group_readable_file_is_refused_too() {
+    let project = Project::declaring("filemode640", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+    let entry = project.write("app.emet", &secret_file_at("0640"));
+
+    let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
+
+    assert!(errors[0].msg.contains("mode 0640"), "{}", errors[0].msg);
+}
+
+#[test]
+fn a_secret_in_a_file_at_0600_compiles_cleanly() {
+    let project = Project::declaring("filemode600", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+    let entry = project.write("app.emet", &secret_file_at("0600"));
+
+    let compiled = compile_file_all_with(&entry, project.options()).unwrap();
+
+    assert_eq!(contents_of(&compiled).holes().count(), 1);
+}
+
+#[test]
+fn a_secret_free_file_at_0644_is_untouched_by_the_rule() {
+    let project = Project::new("plainfile644");
+    let entry = project.write(
+        "app.emet",
+        r#"main : List Scroll
+main =
+  [ scroll
+      { name = "app"
+      , glyphs = [ file { path = "/etc/motd", contents = "hi\n", mode = "0644" } ]
+      }
+  ]
+"#,
+    );
+
+    let compiled = compile_file_all(&entry).unwrap();
+
+    assert_eq!(compiled.scrolls[0].all_glyphs().len(), 1);
+}
+
+#[test]
+fn a_secret_in_a_world_readable_line_in_file_is_refused() {
+    let project = Project::declaring("linemode644", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+    let entry = project.write(
+        "app.emet",
+        &secret_line_at("\n              , mode = \"0644\""),
+    );
+
+    let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
+
+    let msg = &errors[0].msg;
+    assert!(msg.contains("/etc/app.env"), "{msg}");
+    assert!(msg.contains("mode 0644"), "{msg}");
+    assert!(msg.contains("`mode = \"0600\"`"), "{msg}");
+}
+
+#[test]
+fn a_secret_in_a_line_in_file_with_no_mode_is_refused_and_asks_for_one() {
+    let project = Project::declaring("linenomode", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+    let entry = project.write("app.emet", &secret_line_at(""));
+
+    let errors = compile_file_all_with(&entry, project.options()).unwrap_err();
+
+    let msg = &errors[0].msg;
+    assert!(msg.contains("/etc/app.env"), "{msg}");
+    assert!(msg.contains("no `mode`"), "{msg}");
+    assert!(msg.contains("umask"), "{msg}");
+    assert!(msg.contains("`mode = \"0600\"`"), "{msg}");
+}
+
+#[test]
+fn a_secret_in_a_line_in_file_at_0600_compiles_cleanly() {
+    let project = Project::declaring("linemode600", declared_db(), "DB_PASSWORD=\"hunter2\"\n");
+    let entry = project.write(
+        "app.emet",
+        &secret_line_at("\n              , mode = \"0600\""),
+    );
+
+    let compiled = compile_file_all_with(&entry, project.options()).unwrap();
+
+    assert_eq!(line_of(&compiled).holes().count(), 1);
+}
+
+#[test]
+fn a_secret_free_line_in_file_with_no_mode_still_compiles() {
+    let project = Project::new("plainline");
+    let entry = project.write(
+        "app.emet",
+        r#"main : List Scroll
+main =
+  [ scroll
+      { name = "app"
+      , glyphs = [ lineInFile { path = "/etc/hosts", line = "127.0.0.1 local" } ]
+      }
+  ]
+"#,
+    );
+
+    let compiled = compile_file_all(&entry).unwrap();
+
+    assert_eq!(compiled.scrolls[0].all_glyphs().len(), 1);
 }

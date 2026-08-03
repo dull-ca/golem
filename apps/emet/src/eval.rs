@@ -243,14 +243,18 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
         Expr::Filesystem { path, entry } => {
             let path = as_identifier(eval(env, path, depth)?, "path", &path.1)?;
             let entry = match entry {
-                EntryExpr::File { contents, mode } => Entry::File {
-                    contents: as_text(eval(env, contents, depth)?, &contents.1)?,
-                    perms: perms_from_mode(as_identifier(
-                        eval(env, mode, depth)?,
-                        "mode",
+                EntryExpr::File { contents, mode } => {
+                    let contents = as_text(eval(env, contents, depth)?, &contents.1)?;
+                    let perms =
+                        perms_from_mode(as_identifier(eval(env, mode, depth)?, "mode", &mode.1)?)?;
+                    reject_secret_at_loose_mode(
+                        format!("the contents golem writes to `{path}` carry a secret"),
+                        &contents,
+                        Some(&perms),
                         &mode.1,
-                    )?)?,
-                },
+                    )?;
+                    Entry::File { contents, perms }
+                }
                 EntryExpr::Directory { mode } => Entry::Directory {
                     perms: perms_from_mode(as_identifier(
                         eval(env, mode, depth)?,
@@ -264,13 +268,29 @@ fn eval(env: &Env, e: &Spanned<Expr>, depth: &mut u64) -> Result<Value, EvalErro
             };
             glyph_value(Glyph::Filesystem { path, entry }, &e.1)
         }
-        Expr::LineInFile { path, line } => glyph_value(
-            Glyph::LineInFile {
-                path: as_identifier(eval(env, path, depth)?, "path", &path.1)?,
-                line: as_text(eval(env, line, depth)?, &line.1)?,
-            },
-            &e.1,
-        ),
+        Expr::LineInFile { path, line, mode } => {
+            let path = as_identifier(eval(env, path, depth)?, "path", &path.1)?;
+            let line = as_text(eval(env, line, depth)?, &line.1)?;
+            let perms = match mode {
+                Some(mode) => Some(perms_from_mode(as_identifier(
+                    eval(env, mode, depth)?,
+                    "mode",
+                    &mode.1,
+                )?)?),
+                None => None,
+            };
+            let blame = match mode {
+                Some(mode) => &mode.1,
+                None => &e.1,
+            };
+            reject_secret_at_loose_mode(
+                format!("the line golem ensures in `{path}` carries a secret"),
+                &line,
+                perms.as_ref(),
+                blame,
+            )?;
+            glyph_value(Glyph::LineInFile { path, line, perms }, &e.1)
+        }
         // A leaf lowers its glyph list, a branch recurses into its sub-scrolls;
         // the `ContentsExpr` arm already fixed which (ADR 0031 §7).
         Expr::Scroll {
@@ -515,11 +535,12 @@ fn glyph_reified(g: &Glyph) -> (&'static str, Value) {
                 ("entry", entry_value(entry)),
             ]),
         ),
-        Glyph::LineInFile { path, line } => (
+        Glyph::LineInFile { path, line, perms } => (
             "LineInFile",
             record_value(&[
                 ("path", Value::Str(path.clone())),
                 ("line", text_value(line)),
+                ("perms", maybe_perms_value(perms)),
             ]),
         ),
     }
@@ -561,6 +582,19 @@ fn perms_value(perms: &Perms) -> Value {
         ("owner", maybe_str_value(&perms.owner)),
         ("group", maybe_str_value(&perms.group)),
     ])
+}
+
+fn maybe_perms_value(perms: &Option<Perms>) -> Value {
+    match perms {
+        Some(perms) => Value::Data {
+            ctor: "Just".to_string(),
+            args: vec![perms_value(perms)],
+        },
+        None => Value::Data {
+            ctor: "Nothing".to_string(),
+            args: Vec::new(),
+        },
+    }
 }
 
 fn maybe_str_value(s: &Option<String>) -> Value {
@@ -835,6 +869,43 @@ fn perms_from_mode(mode: String) -> Result<Perms, EvalError> {
     })
 }
 
+const GROUP_READ: u16 = 0o040;
+const OTHER_READ: u16 = 0o004;
+
+fn readable_beyond_owner(perms: &Perms) -> bool {
+    perms.mode & OTHER_READ != 0 || (perms.mode & GROUP_READ != 0 && perms.group.is_none())
+}
+
+fn reject_secret_at_loose_mode(
+    lede: String,
+    text: &Text,
+    perms: Option<&Perms>,
+    span: &Span,
+) -> Result<(), EvalError> {
+    if !matches!(text, Text::Composed(_)) {
+        return Ok(());
+    }
+    let msg = match perms {
+        Some(perms) if readable_beyond_owner(perms) => format!(
+            "{lede}, but mode {:04o} lets group or other read it — write a secret at \
+             `mode = \"0600\"`, or at `mode = \"0640\"` once the entry also names the group \
+             allowed to read it",
+            perms.mode
+        ),
+        Some(_) => return Ok(()),
+        None => format!(
+            "{lede}, and this `lineInFile` sets no `mode` — if golem has to create the file, the \
+             host's umask decides who can read the credential — add `mode = \"0600\"` (or \
+             `\"0640\"` once the entry also names the group allowed to read it) so the file is \
+             protected however it comes to exist"
+        ),
+    };
+    Err(EvalError {
+        msg,
+        span: span.clone(),
+    })
+}
+
 /// Evaluate the module's `main` to a scroll list, alongside the glyph-span side
 /// channel `analyze` consumes to locate a conflicting-key error (ADR 0032 §3).
 pub fn run_module(m: &Module) -> Result<(Vec<Scroll>, GlyphSpans), EvalError> {
@@ -989,5 +1060,77 @@ fn as_float(v: Value) -> f64 {
     match v {
         Value::Float(x) => x,
         _ => unreachable!("expected Float"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{readable_beyond_owner, reject_secret_at_loose_mode};
+    use crate::ir::{Chunk, Perms, Secret, Text};
+
+    fn perms(mode: u16, group: Option<&str>) -> Perms {
+        Perms {
+            mode,
+            owner: None,
+            group: group.map(str::to_string),
+        }
+    }
+
+    fn sealed() -> Text {
+        Text::composed(vec![Chunk::Hole(Secret::Sealed {
+            key_id: "fleet".to_string(),
+            ciphertext: vec![1, 2, 3],
+        })])
+    }
+
+    #[test]
+    fn owner_only_modes_are_readable_by_nobody_else() {
+        for mode in [0o600, 0o400, 0o700] {
+            assert!(!readable_beyond_owner(&perms(mode, None)), "{mode:04o}");
+        }
+    }
+
+    #[test]
+    fn an_other_read_bit_is_loose_even_when_a_group_is_named() {
+        assert!(readable_beyond_owner(&perms(0o644, Some("golem"))));
+        assert!(readable_beyond_owner(&perms(0o604, Some("golem"))));
+    }
+
+    #[test]
+    fn a_group_read_bit_is_loose_until_the_group_is_named() {
+        assert!(readable_beyond_owner(&perms(0o640, None)));
+        assert!(!readable_beyond_owner(&perms(0o640, Some("golem"))));
+    }
+
+    #[test]
+    fn a_plain_value_is_accepted_at_any_mode_and_with_no_mode_at_all() {
+        let plain = Text::Plain("public".to_string());
+        assert!(reject_secret_at_loose_mode(
+            "x".into(),
+            &plain,
+            Some(&perms(0o666, None)),
+            &(0..0)
+        )
+        .is_ok());
+        assert!(reject_secret_at_loose_mode("x".into(), &plain, None, &(0..0)).is_ok());
+    }
+
+    #[test]
+    fn a_sealed_value_is_accepted_only_at_a_mode_no_one_else_can_read() {
+        assert!(reject_secret_at_loose_mode(
+            "x".into(),
+            &sealed(),
+            Some(&perms(0o600, None)),
+            &(0..0)
+        )
+        .is_ok());
+        assert!(reject_secret_at_loose_mode(
+            "x".into(),
+            &sealed(),
+            Some(&perms(0o644, None)),
+            &(0..0)
+        )
+        .is_err());
+        assert!(reject_secret_at_loose_mode("x".into(), &sealed(), None, &(0..0)).is_err());
     }
 }

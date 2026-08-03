@@ -73,7 +73,55 @@ fn line_in_file_produces_a_line_in_file_glyph() {
         vec![Glyph::LineInFile {
             path: "/etc/hosts".into(),
             line: "127.0.0.1 local".into(),
+            perms: None,
         }]
+    );
+}
+
+#[test]
+fn line_in_file_with_a_mode_carries_perms() {
+    let rs = glyphs(r#"[ lineInFile { path = "/etc/app.env", line = "TOKEN=x", mode = "0600" } ]"#);
+    assert_eq!(
+        rs,
+        vec![Glyph::LineInFile {
+            path: "/etc/app.env".into(),
+            line: "TOKEN=x".into(),
+            perms: Some(perms(0o600)),
+        }]
+    );
+}
+
+#[test]
+fn line_in_file_with_a_bad_mode_is_an_eval_error() {
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ lineInFile { path = "/x", line = "l", mode = "nope" } ] } ]"#,
+    );
+    assert_eq!(e.phase, Phase::Analyze);
+    assert!(e.msg.contains("invalid mode `nope`"), "got: {}", e.msg);
+}
+
+#[test]
+fn a_line_in_files_mode_is_matchable_as_a_maybe_perms() {
+    let src = r#"
+modeOf : Glyph -> String
+modeOf g =
+  case g of
+    LineInFile l ->
+      case l.perms of
+        Just p -> String.fromInt p.mode
+        Nothing -> "unset"
+    _ -> "other"
+
+main = [ scroll { name = "test", glyphs = [ lineInFile { path = "/a", line = "l", mode = "0600" }, lineInFile { path = "/b", line = modeOf (lineInFile { path = "/a", line = "l" }) } ] } ]
+"#;
+    let rs = single_scroll_glyphs(src);
+    assert_eq!(
+        rs[1],
+        Glyph::LineInFile {
+            path: "/b".into(),
+            line: "unset".into(),
+            perms: None,
+        }
     );
 }
 
@@ -241,6 +289,7 @@ main =
             Glyph::LineInFile {
                 path: "/etc/hosts".into(),
                 line: "127.0.0.1 local".into(),
+                perms: None,
             },
         ]
     );

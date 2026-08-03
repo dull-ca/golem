@@ -60,6 +60,7 @@ fn a_secret_bearing_glyph_round_trips_through_a_manifest() {
                 Glyph::LineInFile {
                     path: "/etc/app/app.env".to_string(),
                     line: sealed(&[4, 5, 6]),
+                    perms: None,
                 },
             ]),
         }],
@@ -131,14 +132,18 @@ fn wrapping_a_value_in_plain_prepends_a_variant_tag_to_the_v4_encoding() {
     let at_v5 = postcard::to_stdvec(&Glyph::LineInFile {
         path: "/etc/hosts".to_string(),
         line: Text::Plain("127.0.0.1 localhost".to_string()),
+        perms: None,
     })
     .unwrap();
 
+    const TEXT_PLAIN_TAG: u8 = 0;
+    const NO_PERMS: u8 = 0;
     let tag_offset = at_v4.len() - "\x13127.0.0.1 localhost".len();
     let (prefix, v4_line) = at_v4.split_at(tag_offset);
     let mut tagged = prefix.to_vec();
-    tagged.push(0);
+    tagged.push(TEXT_PLAIN_TAG);
     tagged.extend_from_slice(v4_line);
+    tagged.push(NO_PERMS);
 
     assert_eq!(at_v5, tagged);
     assert_ne!(at_v5, at_v4);
@@ -156,6 +161,7 @@ fn a_plain_value_does_not_keep_its_v4_content_id() {
     let at_v5 = content_id_of_glyph(&Glyph::LineInFile {
         path: "/etc/hosts".to_string(),
         line: Text::Plain("127.0.0.1 localhost".to_string()),
+        perms: None,
     });
     assert_ne!(at_v5.as_bytes(), at_v4.as_bytes());
 }
@@ -213,6 +219,7 @@ fn a_composed_value_keeps_its_literal_chunks_readable_and_only_seals_the_hole() 
     let glyph = Glyph::LineInFile {
         path: "/etc/app.env".to_string(),
         line: line.clone(),
+        perms: None,
     };
     assert_eq!(
         from_bytes(&to_bytes(&manifest_of(glyph))).unwrap().scrolls[0]
@@ -220,7 +227,8 @@ fn a_composed_value_keeps_its_literal_chunks_readable_and_only_seals_the_hole() 
             .glyphs()[0],
         Glyph::LineInFile {
             path: "/etc/app.env".to_string(),
-            line
+            line,
+            perms: None
         }
     );
 }

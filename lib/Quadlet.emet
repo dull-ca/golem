@@ -218,7 +218,9 @@ publishPortLine p =
       "PublishPort=${String.fromInt spec.host}:${String.fromInt spec.container}/${protoSuffix spec.proto}"
 
 -- One environment variable for the container — an `Environment=name=value` line
--- in the unit file, so it is world-readable on the host. Not for secrets.
+-- in the unit file, which golem writes at mode 0600 so only root can read it.
+-- A `Secretspec.get` value is allowed here and ships sealed in the manifest;
+-- it is plaintext in the unit file once golem has written it.
 type EnvVar = EnvVar { name : String, value : String }
 
 -- `env name value` — one environment variable for the container.
@@ -489,7 +491,7 @@ containerUnitGlyphs u =
         , [ file
               { path = "/etc/containers/systemd/${spec.name}.container"
               , contents = containerUnitContents u
-              , mode = "0644"
+              , mode = "0600"
               }
           , systemdService { unit = "${spec.name}.service" }
           ]

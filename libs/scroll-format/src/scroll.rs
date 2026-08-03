@@ -37,7 +37,11 @@ pub enum Glyph {
     /// new glyphs (ADR 0019).
     Filesystem { path: String, entry: Entry },
     /// A single line ensured present in a file. Key `fileline:<path>:<line>`.
-    LineInFile { path: String, line: Text },
+    LineInFile {
+        path: String,
+        line: Text,
+        perms: Option<Perms>,
+    },
 }
 
 /// What lives at a [`Glyph::Filesystem`]'s `path`: a file, a directory, or a
@@ -452,7 +456,7 @@ impl Glyph {
             Glyph::AptPackage { name } => format!("apt:{name}"),
             Glyph::SystemdService { unit } => format!("systemd:{unit}"),
             Glyph::Filesystem { path, .. } => format!("file:{path}"),
-            Glyph::LineInFile { path, line } => {
+            Glyph::LineInFile { path, line, .. } => {
                 format!("fileline:{path}:{}", line.key_fragment())
             }
         }
@@ -479,9 +483,13 @@ impl Glyph {
                     format!("ensure symlink `{path}` -> `{target}`")
                 }
             },
-            Glyph::LineInFile { path, line } => {
-                format!("ensure line `{line}` present in file `{path}`")
-            }
+            Glyph::LineInFile { path, line, perms } => match perms {
+                Some(perms) => format!(
+                    "ensure line `{line}` present in file `{path}` (mode {:04o} if created)",
+                    perms.mode
+                ),
+                None => format!("ensure line `{line}` present in file `{path}`"),
+            },
         }
     }
 }

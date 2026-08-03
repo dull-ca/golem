@@ -182,6 +182,7 @@ pub enum Expr {
     LineInFile {
         path: Box<Spanned<Expr>>,
         line: Box<Spanned<Expr>>,
+        mode: Option<Box<Spanned<Expr>>>,
     },
     /// `scroll { name = …, policy = …, notifies = …, glyphs | groups = … }` — a
     /// node in the recursive scroll tree (ADR 0031 §7). A leaf carries `glyphs`,

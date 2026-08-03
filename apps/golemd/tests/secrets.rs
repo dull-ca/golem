@@ -36,18 +36,19 @@ const SECRET_PLAINTEXT: &str = "hunter2-correct-horse";
 /// either side of the seal — `emetc`'s cipher, nonce, key-file format, or
 /// `key_id` derivation — fails here rather than on a host.
 const SEALED_BY_EMETC: &[u8] = &[
-    5, 5, 48, 46, 49, 46, 48, 1, 174, 244, 43, 126, 213, 33, 18, 13, 60, 186, 38, 87, 246, 159, 2,
-    26, 77, 230, 150, 254, 239, 39, 139, 147, 122, 31, 188, 255, 120, 52, 231, 118, 5, 115, 99, 97,
-    108, 121, 0, 0, 0, 2, 2, 27, 47, 101, 116, 99, 47, 103, 111, 108, 101, 109, 45, 102, 105, 120,
-    116, 117, 114, 101, 47, 97, 112, 112, 46, 99, 111, 110, 102, 0, 1, 3, 0, 9, 112, 97, 115, 115,
-    119, 111, 114, 100, 61, 1, 0, 16, 54, 102, 98, 54, 99, 54, 48, 48, 53, 51, 53, 53, 97, 98, 102,
-    51, 37, 11, 165, 174, 218, 187, 220, 68, 113, 44, 214, 116, 178, 49, 132, 127, 237, 143, 234,
-    122, 202, 172, 149, 58, 84, 196, 34, 53, 239, 169, 102, 61, 241, 147, 174, 144, 15, 64, 0, 1,
-    10, 128, 3, 0, 0, 3, 29, 47, 101, 116, 99, 47, 103, 111, 108, 101, 109, 45, 102, 105, 120, 116,
-    117, 114, 101, 47, 101, 120, 116, 114, 97, 46, 99, 111, 110, 102, 1, 2, 0, 6, 116, 111, 107,
-    101, 110, 61, 1, 0, 16, 54, 102, 98, 54, 99, 54, 48, 48, 53, 51, 53, 53, 97, 98, 102, 51, 37,
-    11, 165, 174, 218, 187, 220, 68, 113, 44, 214, 116, 178, 49, 132, 127, 237, 143, 234, 122, 202,
-    172, 149, 58, 84, 196, 34, 53, 239, 169, 102, 61, 241, 147, 174, 144, 15, 64,
+    5, 5, 48, 46, 49, 46, 48, 1, 36, 61, 193, 253, 202, 158, 54, 18, 80, 109, 207, 155, 251, 122,
+    92, 197, 192, 211, 83, 55, 173, 47, 176, 116, 160, 172, 118, 180, 167, 219, 219, 97, 5, 115,
+    99, 97, 108, 121, 0, 0, 0, 2, 2, 27, 47, 101, 116, 99, 47, 103, 111, 108, 101, 109, 45, 102,
+    105, 120, 116, 117, 114, 101, 47, 97, 112, 112, 46, 99, 111, 110, 102, 0, 1, 3, 0, 9, 112, 97,
+    115, 115, 119, 111, 114, 100, 61, 1, 0, 16, 54, 102, 98, 54, 99, 54, 48, 48, 53, 51, 53, 53,
+    97, 98, 102, 51, 37, 11, 165, 174, 218, 187, 220, 68, 113, 44, 214, 116, 178, 49, 132, 127,
+    237, 143, 234, 122, 202, 172, 149, 58, 84, 196, 34, 53, 239, 169, 102, 61, 241, 147, 174, 144,
+    15, 64, 0, 1, 10, 128, 3, 0, 0, 3, 29, 47, 101, 116, 99, 47, 103, 111, 108, 101, 109, 45, 102,
+    105, 120, 116, 117, 114, 101, 47, 101, 120, 116, 114, 97, 46, 99, 111, 110, 102, 1, 2, 0, 6,
+    116, 111, 107, 101, 110, 61, 1, 0, 16, 54, 102, 98, 54, 99, 54, 48, 48, 53, 51, 53, 53, 97, 98,
+    102, 51, 37, 11, 165, 174, 218, 187, 220, 68, 113, 44, 214, 116, 178, 49, 132, 127, 237, 143,
+    234, 122, 202, 172, 149, 58, 84, 196, 34, 53, 239, 169, 102, 61, 241, 147, 174, 144, 15, 64, 1,
+    128, 3, 0, 0,
 ];
 
 struct Fixture {
@@ -97,11 +98,20 @@ fn seal(plaintext: &str, key_hex: &str) -> Secret {
 }
 
 fn perms() -> Perms {
+    perms_at(0o600)
+}
+
+fn perms_at(mode: u16) -> Perms {
     Perms {
-        mode: 0o600,
+        mode,
         owner: None,
         group: None,
     }
+}
+
+fn mode_of(path: &str) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
 fn file_glyph(path: &str, contents: Text) -> Glyph {
@@ -364,6 +374,7 @@ fn no_plaintext_reaches_the_report_the_events_or_the_plan() {
                 Chunk::Lit("token=".into()),
                 Chunk::Hole(seal(SECRET_PLAINTEXT, FLEET_KEY)),
             ]),
+            perms: None,
         },
     ]);
 
@@ -455,6 +466,7 @@ fn a_sealed_line_is_journalled_sealed_and_reverses_from_the_ciphertext() {
         .apply_manifest(&manifest(vec![Glyph::LineInFile {
             path: target.clone(),
             line: line.clone(),
+            perms: None,
         }]))
         .unwrap();
 
@@ -543,8 +555,6 @@ fn a_rotated_secrets_prior_plaintext_is_journalled_sealed_and_still_reverses() {
 /// rename.
 #[test]
 fn a_sealed_files_mode_is_the_authored_one_and_is_set_before_the_rename() {
-    use std::os::unix::fs::PermissionsExt;
-
     let fixture = Fixture::new("mode");
     let key = fixture.key_file(FLEET_KEY);
     let tight = fixture.path("tight.conf");
@@ -574,7 +584,6 @@ fn a_sealed_files_mode_is_the_authored_one_and_is_set_before_the_rename() {
         ]))
         .unwrap();
 
-    let mode_of = |p: &str| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode_of(&tight), 0o600);
     assert_eq!(
         mode_of(&loose),
@@ -583,15 +592,68 @@ fn a_sealed_files_mode_is_the_authored_one_and_is_set_before_the_rename() {
     );
 }
 
-/// A `lineInFile` glyph has no `mode` field, so a secret-bearing line appended
-/// to a file golem has to create lands at the process umask's default — 0644 on
-/// a stock host. Pinned as the fact it is: the only glyph kind that can write a
-/// credential without the author being able to say how it should be protected.
-#[test]
-fn a_sealed_line_creating_a_new_file_lands_at_the_umask_default() {
-    use std::os::unix::fs::PermissionsExt;
+fn sealed_line() -> Text {
+    Text::composed(vec![
+        Chunk::Lit("token=".into()),
+        Chunk::Hole(seal(SECRET_PLAINTEXT, FLEET_KEY)),
+    ])
+}
 
-    let fixture = Fixture::new("linemode");
+#[test]
+fn a_line_in_files_authored_mode_is_what_the_file_golem_creates_lands_at() {
+    let fixture = Fixture::new("linemodecreate");
+    let key = fixture.key_file(FLEET_KEY);
+    let target = fixture.path("created.conf");
+    let foreman = host_foreman(Some(&key));
+
+    let report = foreman
+        .apply_manifest(&manifest(vec![Glyph::LineInFile {
+            path: target.clone(),
+            line: sealed_line(),
+            perms: Some(perms_at(0o600)),
+        }]))
+        .unwrap();
+
+    assert_eq!(report.outcome, TopOutcome::Settled, "{report:?}");
+    assert_eq!(mode_of(&target), 0o600);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        format!("token={SECRET_PLAINTEXT}\n")
+    );
+}
+
+#[test]
+fn a_line_in_file_never_changes_the_mode_of_a_file_that_already_exists() {
+    let fixture = Fixture::new("linemodeexisting");
+    let key = fixture.key_file(FLEET_KEY);
+    let target = fixture.path("existing.conf");
+    std::fs::write(&target, "kept=yes\n").unwrap();
+    set_mode(&target, 0o664);
+    let foreman = host_foreman(Some(&key));
+
+    let report = foreman
+        .apply_manifest(&manifest(vec![Glyph::LineInFile {
+            path: target.clone(),
+            line: sealed_line(),
+            perms: Some(perms_at(0o600)),
+        }]))
+        .unwrap();
+
+    assert_eq!(report.outcome, TopOutcome::Settled, "{report:?}");
+    assert_eq!(
+        mode_of(&target),
+        0o664,
+        "an append is not golem's licence to re-permission a file it did not create"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        format!("kept=yes\ntoken={SECRET_PLAINTEXT}\n")
+    );
+}
+
+#[test]
+fn a_line_in_file_with_no_authored_mode_still_creates_at_the_umask_default() {
+    let fixture = Fixture::new("linemodeumask");
     let key = fixture.key_file(FLEET_KEY);
     let target = fixture.path("created.conf");
     let foreman = host_foreman(Some(&key));
@@ -599,19 +661,19 @@ fn a_sealed_line_creating_a_new_file_lands_at_the_umask_default() {
     foreman
         .apply_manifest(&manifest(vec![Glyph::LineInFile {
             path: target.clone(),
-            line: Text::composed(vec![
-                Chunk::Lit("token=".into()),
-                Chunk::Hole(seal(SECRET_PLAINTEXT, FLEET_KEY)),
-            ]),
+            line: sealed_line(),
+            perms: None,
         }]))
         .unwrap();
 
-    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-    assert_eq!(
-        mode & 0o077,
-        0o044,
-        "the created file is group- and world-readable: {mode:04o}"
-    );
+    let probe = fixture.path("probe.conf");
+    std::fs::write(&probe, "").unwrap();
+    assert_eq!(mode_of(&target), mode_of(&probe));
+}
+
+fn set_mode(path: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
 /// The claim the whole redaction effort rests on, checked against the bytes on
@@ -652,6 +714,7 @@ fn nothing_golemd_persists_holds_the_plaintext() {
                         Chunk::Lit("token=".into()),
                         Chunk::Hole(seal(plaintext, FLEET_KEY)),
                     ]),
+                    perms: None,
                 },
             ]))
             .unwrap();

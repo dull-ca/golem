@@ -1367,8 +1367,9 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
             Ok(con("Filesystem"))
         }
 
-        Expr::LineInFile { path, line } => {
-            for field in [path, line] {
+        Expr::LineInFile { path, line, mode } => {
+            let fields = [Some(path), Some(line), mode.as_ref()];
+            for field in fields.into_iter().flatten() {
                 let ft = infer_expr(inf, env, field)?;
                 inf.unify(&ft, &con("String"), &field.1)?;
             }
