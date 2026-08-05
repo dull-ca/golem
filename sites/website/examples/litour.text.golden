@@ -2,17 +2,17 @@ main : List Scroll
 planned scrolls (6):
   scroll `scaly` (3 glyphs):
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0600)
     * enable + start systemd unit `fishnet.service`
   scroll `manta` (46 glyphs):
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/leroyjenkins-lila.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/leroyjenkins-lila.container` (mode 0600)
     * enable + start systemd unit `leroyjenkins-lila.service`
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/leroyjenkins-nginx.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/leroyjenkins-nginx.container` (mode 0600)
     * enable + start systemd unit `leroyjenkins-nginx.service`
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila.container` (mode 0600)
     * enable + start systemd unit `lila.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -22,7 +22,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/lila-9663.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/redis-server.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/redis-server.container` (mode 0600)
     * enable + start systemd unit `redis-server.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -54,7 +54,7 @@ planned scrolls (6):
     ↻ manta notifies golem-nftables.service
   scroll `orbit` (80 glyphs):
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila-http.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila-http.container` (mode 0600)
     * enable + start systemd unit `lila-http.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -64,7 +64,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/lila-http-9080.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila-engine.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila-engine.container` (mode 0600)
     * enable + start systemd unit `lila-engine.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -74,7 +74,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/lila-engine-9666.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila-gif.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila-gif.container` (mode 0600)
     * enable + start systemd unit `lila-gif.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -84,7 +84,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/lila-gif-6175.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila-fishnet.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila-fishnet.container` (mode 0600)
     * enable + start systemd unit `lila-fishnet.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -94,7 +94,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/lila-fishnet-9665.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila-ip2proxy.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila-ip2proxy.container` (mode 0600)
     * enable + start systemd unit `lila-ip2proxy.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -104,7 +104,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/lila-ip2proxy-1929.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/lila-push.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/lila-push.container` (mode 0600)
     * enable + start systemd unit `lila-push.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -136,10 +136,10 @@ planned scrolls (6):
     ↻ orbit notifies golem-nftables.service
   scroll `talos` (103 glyphs):
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/fishnet.container` (mode 0600)
     * enable + start systemd unit `fishnet.service`
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/influxd.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/influxd.container` (mode 0600)
     * enable + start systemd unit `influxd.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -149,7 +149,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/influxd-8086.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/alertmanager.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/alertmanager.container` (mode 0600)
     * enable + start systemd unit `alertmanager.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -159,7 +159,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/alertmanager-9093.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/prometheus.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/prometheus.container` (mode 0600)
     * enable + start systemd unit `prometheus.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -169,7 +169,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/prometheus-9090.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/loki.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/loki.container` (mode 0600)
     * enable + start systemd unit `loki.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -179,7 +179,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/loki-3100.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/dns.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/dns.container` (mode 0600)
     * enable + start systemd unit `dns.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -189,7 +189,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/dns-5353.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/ntpd.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/ntpd.container` (mode 0600)
     * enable + start systemd unit `ntpd.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -199,7 +199,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/ntpd-123.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/rsyslogd.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/rsyslogd.container` (mode 0600)
     * enable + start systemd unit `rsyslogd.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -241,7 +241,7 @@ planned scrolls (6):
     ↻ talos notifies golem-nftables.service
   scroll `kaiju` (10 glyphs):
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/mongod-lichess-primary.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/mongod-lichess-primary.container` (mode 0600)
     * enable + start systemd unit `mongod-lichess-primary.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -253,7 +253,7 @@ planned scrolls (6):
     ↻ kaiju notifies golem-nftables.service
   scroll `remora` (50 glyphs):
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/zulip.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/zulip.container` (mode 0600)
     * enable + start systemd unit `zulip.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -263,7 +263,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/zulip-80.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/zulip-email.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/zulip-email.container` (mode 0600)
     * enable + start systemd unit `zulip-email.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -273,7 +273,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/zulip-email-25.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/postgresql.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/postgresql.container` (mode 0600)
     * enable + start systemd unit `postgresql.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)
@@ -283,7 +283,7 @@ planned scrolls (6):
     * enable + start systemd unit `golem-nftables.service`
     * ensure file `/etc/nftables.d/postgresql-5432.nft` (mode 0644)
     * ensure apt package `podman` installed
-    * ensure file `/etc/containers/systemd/redis.container` (mode 0644)
+    * ensure file `/etc/containers/systemd/redis.container` (mode 0600)
     * enable + start systemd unit `redis.service`
     * ensure apt package `nftables` installed
     * ensure directory `/etc/nftables.d` (mode 0755)

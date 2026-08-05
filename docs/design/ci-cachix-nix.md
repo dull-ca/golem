@@ -83,9 +83,11 @@ yet; this is the shape, not a built fleet.**
      `nix build --impure .#website-container`.
 - **`systemdService` glyph — a timer/service pair** that runs the script.
   Polling is the first cut; a GitHub webhook trigger is a later refinement.
-- **`file` / `lineInFile` glyphs — the cachix auth token**, placed at mode
-  `0600`, owned by root or a dedicated `ci` user. The write token from the
-  one-time setup lives here and nowhere in the repo.
+- **A `file` glyph — the cachix auth token**, placed at mode `0600`, owned by
+  root or a dedicated `ci` user. The write token from the one-time setup lives
+  here and nowhere in the repo. It has to be a `file` and not a `lineInFile`:
+  a `lineInFile` owns one line and not the file it appends to, so it cannot
+  promise a mode, and `emetc` refuses a secret written that way (ADR 0047).
 
 golem provisioning the box that runs golem's CI is the dogfood ADR 0035 §2
 names. Webhook-triggered rather than polled, and a dedicated `ci` user rather

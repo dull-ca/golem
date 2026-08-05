@@ -262,10 +262,18 @@ user types cross module boundaries (`register_type_decls`, ADR 0016).
   contract, ADR 0013); those types' field/variant order is a versioned contract,
   not a free refactor. Adding capability = new IR variants + reconcilers; the
   *language* is unchanged.
-- **No JSON/YAML, no templating.** Every glyph field is a concrete `String`
-  produced by the language.
-- **Small dependency footprint.** `ariadne` for diagnostics, `chumsky` for the
-  parser — that's it.
+- **No JSON/YAML, no templating.** Every glyph field is a concrete value
+  produced by the language — a `String`, or a `Text` carrying sealed secrets
+  (ADR 0047). Still no placeholder-substitution pass.
+- **A small dependency footprint, with one deliberate exception.** The
+  language itself costs almost nothing: `ariadne` for diagnostics, `chumsky`
+  for the parser, ~18 crates between them. Secrets cost far more —
+  `secretspec` brings ~198 crates including a full async stack, and `aes-siv`
+  another 27, taking `emetc` to ~283. That was weighed and accepted (ADR
+  0047): resolving secrets through a real provider, with typed errors, is
+  worth it, and shelling out to the CLI would have traded the link for a
+  runtime binary dependency and untyped output. Anything else joining this
+  list needs the same argument.
 
 ## The two subtle subsystems
 

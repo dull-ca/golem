@@ -9,6 +9,8 @@
 //! subsystems, leaves are units of glyphs (ADR 0009, ADR 0031). The compiler
 //! (`emet`) re-exports both through `emet::ir`.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// A single OS-resource primitive. Adding a capability means a new variant
@@ -35,7 +37,7 @@ pub enum Glyph {
     /// new glyphs (ADR 0019).
     Filesystem { path: String, entry: Entry },
     /// A single line ensured present in a file. Key `fileline:<path>:<line>`.
-    LineInFile { path: String, line: String },
+    LineInFile { path: String, line: Text },
 }
 
 /// What lives at a [`Glyph::Filesystem`]'s `path`: a file, a directory, or a
@@ -54,7 +56,7 @@ pub enum Glyph {
 // glyph is what took the manifest from format_version 1 to 2 (ADR 0012/0013/0019).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Entry {
-    File { contents: String, perms: Perms },
+    File { contents: Text, perms: Perms },
     Directory { perms: Perms },
     Symlink { target: String },
 }
@@ -76,6 +78,127 @@ pub struct Perms {
     pub mode: u16,
     pub owner: Option<String>,
     pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Text {
+    Plain(String),
+    Composed(Vec<Chunk>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Chunk {
+    Lit(String),
+    Hole(Secret),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Secret {
+    Sealed { key_id: String, ciphertext: Vec<u8> },
+    Reference { provider: String, key: String },
+}
+
+impl Text {
+    /// The only way to build a [`Text::Composed`], because it is also the only
+    /// way to reach the canonical form content addressing depends on: empty
+    /// literals dropped, adjacent literals merged, and a chunk list with no hole
+    /// left collapsed to [`Text::Plain`]. Two chunk lists that mean the same
+    /// text therefore encode to the same bytes and hash to the same content id.
+    pub fn composed(chunks: Vec<Chunk>) -> Text {
+        let mut canonical: Vec<Chunk> = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            match (chunk, canonical.last_mut()) {
+                (Chunk::Lit(s), _) if s.is_empty() => {}
+                (Chunk::Lit(s), Some(Chunk::Lit(prior))) => prior.push_str(&s),
+                (chunk, _) => canonical.push(chunk),
+            }
+        }
+        if canonical.iter().any(|c| matches!(c, Chunk::Hole(_))) {
+            Text::Composed(canonical)
+        } else {
+            match canonical.pop() {
+                Some(Chunk::Lit(s)) => Text::Plain(s),
+                _ => Text::Plain(String::new()),
+            }
+        }
+    }
+
+    pub fn plain(&self) -> Option<&str> {
+        match self {
+            Text::Plain(s) => Some(s),
+            Text::Composed(_) => None,
+        }
+    }
+
+    pub fn holes(&self) -> impl Iterator<Item = &Secret> {
+        self.chunks().filter_map(|chunk| match chunk {
+            Chunk::Lit(_) => None,
+            Chunk::Hole(secret) => Some(secret),
+        })
+    }
+
+    pub fn chunks(&self) -> std::slice::Iter<'_, Chunk> {
+        match self {
+            Text::Plain(_) => [].iter(),
+            Text::Composed(chunks) => chunks.iter(),
+        }
+    }
+
+    pub fn key_fragment(&self) -> String {
+        match self {
+            Text::Plain(s) => s.clone(),
+            Text::Composed(chunks) => chunks.iter().map(Chunk::key_fragment).collect(),
+        }
+    }
+}
+
+impl Chunk {
+    fn key_fragment(&self) -> String {
+        match self {
+            Chunk::Lit(s) => s.clone(),
+            Chunk::Hole(Secret::Sealed { key_id, ciphertext }) => {
+                format!("<sealed:{key_id}:{}>", hex::encode(ciphertext))
+            }
+            Chunk::Hole(Secret::Reference { provider, key }) => {
+                format!("<secret:{provider}:{key}>")
+            }
+        }
+    }
+}
+
+impl From<String> for Text {
+    fn from(s: String) -> Text {
+        Text::Plain(s)
+    }
+}
+
+impl From<&str> for Text {
+    fn from(s: &str) -> Text {
+        Text::Plain(s.to_string())
+    }
+}
+
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Text::Plain(s) => f.write_str(s),
+            Text::Composed(chunks) => chunks.iter().try_for_each(|chunk| match chunk {
+                Chunk::Lit(s) => f.write_str(s),
+                Chunk::Hole(secret) => write!(f, "{secret}"),
+            }),
+        }
+    }
+}
+
+impl fmt::Display for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Secret::Sealed { key_id, .. } => write!(f, "<sealed secret under key {key_id}>"),
+            Secret::Reference { provider, key } => {
+                write!(f, "<secret {key} from provider {provider}>")
+            }
+        }
+    }
 }
 
 /// One host's worth of desired state, as a recursive, strict tree (ADR 0031).
@@ -329,7 +452,9 @@ impl Glyph {
             Glyph::AptPackage { name } => format!("apt:{name}"),
             Glyph::SystemdService { unit } => format!("systemd:{unit}"),
             Glyph::Filesystem { path, .. } => format!("file:{path}"),
-            Glyph::LineInFile { path, line } => format!("fileline:{path}:{line}"),
+            Glyph::LineInFile { path, line } => {
+                format!("fileline:{path}:{}", line.key_fragment())
+            }
         }
     }
 

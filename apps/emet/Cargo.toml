@@ -6,9 +6,13 @@ license.workspace = true
 default-run = "emetc"
 
 [dependencies]
+aes-siv = { workspace = true }
 ariadne = "0.4.1"
+blake3 = { workspace = true }
 chumsky = "0.10"
 clap = { workspace = true }
+hex = { workspace = true }
+secretspec = { workspace = true }
 scroll-format = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .config import GOLEMD_GUEST_PORT, Paths
 from .state import VmRecord
-from .token import ensure_token
+from .token import ensure_secret_key, ensure_token
 from .vm import FleetError, ssh_argv
 
 
@@ -30,6 +30,7 @@ SERVICE_REMOTE_PATH = "/etc/systemd/system/golemd.service"
 GOLEMD_CONFIG_DIR = "/etc/golem"
 CONFIG_REMOTE_PATH = "/etc/golem/golemd.toml"
 TOKEN_REMOTE_PATH = "/etc/golem/token"
+SECRET_KEY_REMOTE_PATH = "/etc/golem/secret-key"
 SECRET_FILE_MODE = "0600"
 
 
@@ -68,6 +69,13 @@ def compile_manifest(paths: Paths, source: Path) -> Path:
     if source.suffix != ".emet":
         return source
     out = Path(tempfile.mkdtemp(prefix="fleet-manifest-")) / "manifest.bin"
+    # The compile has to seal with the same key the guests unseal with, so the
+    # harness names its own key file rather than letting emetc search. The path
+    # travels in the environment and the key itself never does: emetc reads the
+    # file, so a failing build's argv and error text hold a path and no bytes.
+    ensure_secret_key(paths)
+    environment = dict(os.environ)
+    environment["GOLEM_SECRET_KEY_FILE"] = str(paths.secret_key_file)
     result = subprocess.run(
         [
             "cargo",
@@ -82,6 +90,7 @@ def compile_manifest(paths: Paths, source: Path) -> Path:
             str(out),
         ],
         cwd=str(paths.root),
+        env=environment,
     )
     if result.returncode != 0:
         raise FleetError(f"emet build of {source} failed")
@@ -141,13 +150,17 @@ def resolve_golemctl(paths: Paths) -> Path:
 
 
 def golemd_config_toml() -> str:
-    """The guest's `golemd.toml`: nothing but where the bearer secret lives. The
-    retry and enact defaults are left to golemd, so this file says only what the
-    harness had to decide (ADR 0042)."""
+    """The guest's `golemd.toml`: where the bearer secret lives, and where the
+    key for unsealing a manifest's secrets does. The retry and enact defaults are
+    left to golemd, so this file says only what the harness had to decide
+    (ADR 0042, ADR 0047)."""
     return "\n".join(
         [
             "[auth]",
             f'token_file = "{TOKEN_REMOTE_PATH}"',
+            "",
+            "[secrets]",
+            f'key_file = "{SECRET_KEY_REMOTE_PATH}"',
             "",
         ]
     )
@@ -294,8 +307,12 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
     survives under other ownership.
 
     The token is the fleet's, not this guest's: every guest is deployed the same
-    secret, which is what lets one `golemctl fleet` run span them (ADR 0042)."""
+    secret, which is what lets one `golemctl fleet` run span them (ADR 0042). The
+    AES-SIV key rides the same channel for the same reason — one manifest is
+    compiled once and applied to many hosts, so every guest must be able to
+    unseal what one `emetc` sealed (ADR 0047)."""
     token = ensure_token(paths)
+    secret_key = ensure_secret_key(paths)
     staging = f"/home/golem/golemd.staging-{uuid.uuid4().hex[:8]}"
     scp = subprocess.run(_scp_argv(paths, record, binary, f"golem@127.0.0.1:{staging}"), capture_output=True, text=True)
     if scp.returncode != 0:
@@ -317,6 +334,9 @@ def deploy_golemd(paths: Paths, record: VmRecord, binary: Path) -> None:
     _ssh_write_secret(paths, record, TOKEN_REMOTE_PATH, token)
     _ssh_check(paths, record, ["sudo", "chown", "root:root", TOKEN_REMOTE_PATH])
     _ssh_check(paths, record, ["sudo", "chmod", "0600", TOKEN_REMOTE_PATH])
+    _ssh_write_secret(paths, record, SECRET_KEY_REMOTE_PATH, secret_key)
+    _ssh_check(paths, record, ["sudo", "chown", "root:root", SECRET_KEY_REMOTE_PATH])
+    _ssh_check(paths, record, ["sudo", "chmod", "0600", SECRET_KEY_REMOTE_PATH])
     _ssh_check(
         paths,
         record,

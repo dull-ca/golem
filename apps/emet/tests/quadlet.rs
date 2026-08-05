@@ -42,7 +42,7 @@ fn file_contents<'a>(s: &'a emet::ir::Scroll, path: &str) -> &'a str {
             Glyph::Filesystem {
                 path: p,
                 entry: Entry::File { contents, .. },
-            } if p == path => Some(contents.as_str()),
+            } if p == path => contents.plain(),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no file glyph at {path}"))
@@ -267,7 +267,7 @@ fn no_drop_in_declares_a_table_golem_does_not_own() {
             {
                 if path.starts_with("/etc/nftables.d/") {
                     assert!(
-                        contents.contains("table inet golem"),
+                        contents.to_string().contains("table inet golem"),
                         "{path} declares a foreign table; got:\n{contents}"
                     );
                 }

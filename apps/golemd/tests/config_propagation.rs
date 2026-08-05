@@ -34,7 +34,7 @@ impl Reconciler for RestartRecorder {
                 entry: Entry::File { contents, perms },
             } => {
                 let prior = self.files.lock().unwrap().get(path).cloned();
-                if prior.as_deref() == Some(contents.as_str()) {
+                if prior.as_deref() == contents.plain() {
                     return Ok(Outcome {
                         op: GlyphOp::Install {
                             cid,
@@ -48,11 +48,11 @@ impl Reconciler for RestartRecorder {
                 self.files
                     .lock()
                     .unwrap()
-                    .insert(path.clone(), contents.clone());
+                    .insert(path.clone(), contents.to_string());
                 let inverse = match prior {
                     Some(p) => Inverse::RestoreFile {
                         path: path.clone(),
-                        contents: p,
+                        contents: p.into(),
                         perms: perms.clone(),
                     },
                     None => Inverse::DeleteFile { path: path.clone() },

@@ -78,6 +78,18 @@ fn line_in_file_produces_a_line_in_file_glyph() {
 }
 
 #[test]
+fn line_in_file_takes_no_mode_because_it_does_not_own_the_file() {
+    let e = err(
+        r#"main = [ scroll { name = "test", glyphs = [ lineInFile { path = "/x", line = "l", mode = "0600" } ] } ]"#,
+    );
+    assert!(
+        e.msg.contains("unknown lineInFile field `mode`"),
+        "got: {}",
+        e.msg
+    );
+}
+
+#[test]
 fn interpolated_contents_arrive_as_a_concrete_string() {
     let src = r#"
 port = 8080

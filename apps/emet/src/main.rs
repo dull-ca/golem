@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use emet::{compile_all, compile_file_all, Compiled, Error, Phase};
+use emet::secrets::SecretOptions;
+use emet::{compile_all, compile_file_all_with, Compiled, Error, Phase};
 use scroll_format::{to_bytes, to_json, Manifest};
 
 const EMET_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,6 +67,15 @@ struct BuildArgs {
 
     #[arg(long = "json", conflicts_with_all = ["text", "human"])]
     json: bool,
+
+    #[arg(long = "secret-key", env = "GOLEM_SECRET_KEY_FILE")]
+    secret_key: Option<PathBuf>,
+
+    #[arg(long = "secret-provider", env = "SECRETSPEC_PROVIDER")]
+    secret_provider: Option<String>,
+
+    #[arg(long = "secret-profile", env = "SECRETSPEC_PROFILE")]
+    secret_profile: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -76,6 +86,14 @@ enum OutputFormat {
 }
 
 impl BuildArgs {
+    fn secret_options(&self) -> SecretOptions {
+        SecretOptions {
+            key_file: self.secret_key.clone(),
+            provider: self.secret_provider.clone(),
+            profile: self.secret_profile.clone(),
+        }
+    }
+
     fn resolved_format(&self) -> OutputFormat {
         if self.text || self.human {
             OutputFormat::Text
@@ -98,6 +116,9 @@ fn main() -> ExitCode {
             text: false,
             human: false,
             json: false,
+            secret_key: None,
+            secret_provider: None,
+            secret_profile: None,
         }),
     }
 }
@@ -112,7 +133,7 @@ fn run_build(args: BuildArgs) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            match compile_file_all(p) {
+            match compile_file_all_with(p, args.secret_options()) {
                 Ok(compiled) => emit(compiled, &args),
                 Err(errors) => {
                     report_errors(&p.display().to_string(), &src, &errors);
@@ -200,21 +221,58 @@ fn report_error(name: &str, src: &str, e: &Error) {
         Phase::Type => "type error",
         Phase::Analyze => "analysis error",
     };
-    let span = if e.span.start == e.span.end && e.span.start == 0 {
-        0..src.len().min(1)
-    } else {
-        e.span.clone()
-    };
-    let mut label = Label::new((name, span))
+    let span = underline(&e.span, src);
+    let mut label = Label::new((name, span.clone()))
         .with_message(&e.msg)
         .with_color(Color::Red);
     if let Some(note) = &e.note {
         label = label.with_message(format!("{}\n  note: {note}", e.msg));
     }
-    Report::build(ReportKind::Error, name, e.span.start)
+    Report::build(ReportKind::Error, name, span.start)
         .with_message(kind)
         .with_label(label)
         .finish()
         .eprint((name, Source::from(src)))
         .ok();
+}
+
+fn underline(span: &std::ops::Range<usize>, src: &str) -> std::ops::Range<usize> {
+    let unlocated = span.start == 0 && span.end == 0;
+    let reaches_past_this_source = span.end > src.len();
+    if unlocated || reaches_past_this_source {
+        0..src.len().min(1)
+    } else {
+        span.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::underline;
+
+    #[test]
+    fn a_span_inside_the_source_underlines_itself() {
+        assert_eq!(underline(&(2..5), "abcdefg"), 2..5);
+    }
+
+    #[test]
+    fn the_unlocated_span_underlines_the_first_character() {
+        assert_eq!(underline(&(0..0), "abcdefg"), 0..1);
+    }
+
+    #[test]
+    fn a_span_reaching_past_the_end_of_the_source_underlines_the_first_character() {
+        assert_eq!(underline(&(120..140), "abcdefg"), 0..1);
+        assert_eq!(underline(&(5..9), "abcdefg"), 0..1);
+    }
+
+    #[test]
+    fn a_zero_width_span_at_the_end_of_input_is_left_alone() {
+        assert_eq!(underline(&(7..7), "abcdefg"), 7..7);
+    }
+
+    #[test]
+    fn an_empty_source_underlines_nothing_rather_than_panicking() {
+        assert_eq!(underline(&(3..9), ""), 0..0);
+    }
 }

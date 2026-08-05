@@ -33,12 +33,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use nix::unistd::{chown, Gid, Group, Uid, User};
-use scroll_format::{ContentId, Entry, Glyph, Perms};
+use scroll_format::{ContentId, Entry, Glyph, Perms, Text};
 use tracing::warn;
 
 use crate::host::{CommandRunner, CommandSink, SystemCommandRunner};
 use crate::journal::{GlyphOp, Inverse, Outcome};
 use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
+use crate::secrets::Keyring;
 
 /// Enacts the four glyph kinds on a real host, driving apt and systemd through a
 /// [`CommandRunner`] `R` (the `system()` constructor uses the real one; tests
@@ -68,6 +69,7 @@ use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
 /// The locks serialize host commands, not in-memory invariants.
 pub struct HostReconciler<R: CommandRunner> {
     runner: R,
+    keyring: Keyring,
     apt: std::sync::Mutex<()>,
     daemon_reload: std::sync::Mutex<()>,
     line_locks:
@@ -84,10 +86,16 @@ impl<R: CommandRunner> HostReconciler<R> {
     pub fn with_runner(runner: R) -> Self {
         Self {
             runner,
+            keyring: Keyring::without_key(),
             apt: std::sync::Mutex::new(()),
             daemon_reload: std::sync::Mutex::new(()),
             line_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn with_keyring(mut self, keyring: Keyring) -> Self {
+        self.keyring = keyring;
+        self
     }
 
     /// Install `names` in one `apt-get install` invocation, falling back to a
@@ -167,6 +175,7 @@ impl<R: CommandRunner> HostReconciler<R> {
         &self,
         path: &str,
         line: &str,
+        sealed: &Text,
         cid: ContentId,
         glyph: &Glyph,
     ) -> EnactResult<Outcome> {
@@ -177,7 +186,7 @@ impl<R: CommandRunner> HostReconciler<R> {
                 .clone()
         };
         let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-        apply_line_in_file(path, line, cid, glyph)
+        apply_line_in_file(path, line, sealed, cid, glyph)
     }
 
     #[cfg(test)]
@@ -430,12 +439,16 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
             Glyph::AptPackage { name } => self.apply_apt(name, cid, glyph, sink),
             Glyph::SystemdService { unit } => self.apply_systemd(unit, cid, glyph, sink),
             Glyph::Filesystem { path, entry } => match entry {
-                Entry::File { contents, perms } => apply_file(path, contents, perms, cid, glyph),
+                Entry::File { contents, perms } => {
+                    let opened = self.keyring.open(contents, &glyph.key())?;
+                    apply_file(path, &opened, perms, cid, glyph, &self.keyring)
+                }
                 Entry::Directory { perms } => apply_directory(path, perms, cid, glyph),
                 Entry::Symlink { target } => apply_symlink(path, target, cid, glyph),
             },
             Glyph::LineInFile { path, line } => {
-                self.apply_line_in_file_locked(path, line, cid, glyph)
+                let opened = self.keyring.open(line, &glyph.key())?;
+                self.apply_line_in_file_locked(path, &opened, line, cid, glyph)
             }
         }
     }
@@ -492,12 +505,18 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
                 path,
                 contents,
                 perms,
-            } => restore_file(path, contents, perms),
+            } => {
+                let opened = self.keyring.open(contents, &outcome.op.key())?;
+                restore_file(path, &opened, perms)
+            }
             Inverse::DeleteFile { path } => delete_file(path),
             Inverse::RemoveDirectory { path, created } => remove_directory(path, created),
             Inverse::RestoreDirMeta { path, prior_perms } => apply_perms(path, prior_perms),
             Inverse::RemoveSymlink { path } => remove_symlink(path),
-            Inverse::RemoveLineInFile { path, line } => remove_line_in_file(path, line),
+            Inverse::RemoveLineInFile { path, line } => {
+                let opened = self.keyring.open(line, &outcome.op.key())?;
+                remove_line_in_file(path, &opened)
+            }
         }
     }
 
@@ -573,6 +592,7 @@ fn apply_file(
     perms: &Perms,
     cid: ContentId,
     glyph: &Glyph,
+    keyring: &Keyring,
 ) -> EnactResult<Outcome> {
     let prior = read_file(path)?;
     if let Some((prior_contents, prior_perms)) = &prior {
@@ -584,7 +604,7 @@ fn apply_file(
     let inverse = match prior {
         Some((prior_contents, prior_perms)) => Inverse::RestoreFile {
             path: path.to_string(),
-            contents: prior_contents,
+            contents: keyring.seal(&prior_contents, &glyph.key())?,
             perms: prior_perms,
         },
         None => Inverse::DeleteFile {
@@ -907,6 +927,7 @@ fn remove_symlink(path: &str) -> EnactResult<()> {
 fn apply_line_in_file(
     path: &str,
     line: &str,
+    sealed: &Text,
     cid: ContentId,
     glyph: &Glyph,
 ) -> EnactResult<Outcome> {
@@ -919,7 +940,7 @@ fn apply_line_in_file(
         cid,
         Inverse::RemoveLineInFile {
             path: path.to_string(),
-            line: line.to_string(),
+            line: sealed.clone(),
         },
         true,
     ))
