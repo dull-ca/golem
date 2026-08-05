@@ -61,3 +61,18 @@ fn a_header_that_disagrees_with_its_path_is_an_error_naming_both() {
         err.msg
     );
 }
+
+/// Phase 2 of ADR 0049. Nesting alone does not make a module splittable: two
+/// submodules that each declare `Config` are rejected, because type identity is
+/// still the bare name (ADR 0045). Ignored until qualified identity lands —
+/// the fixtures are real and the assertion is what "fixed" has to mean.
+#[test]
+#[ignore = "ADR 0049 phase 2: type identity is still the bare name"]
+fn two_submodules_may_each_declare_a_type_of_the_same_name() {
+    let c = compile_file(&fixtures_dir().join("SplitEntry.emet"))
+        .expect("two submodules may each declare a `Config`");
+    assert_eq!(
+        scroll_names(&c),
+        vec!["mysql".to_string(), "limesurvey".to_string()]
+    );
+}

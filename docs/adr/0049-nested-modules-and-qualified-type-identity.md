@@ -93,6 +93,33 @@ be shadowed by one.
 one version globally; a library's submodules live under its own name and are
 part of it. `Quadlet.Network` is not a separate resolution unit.
 
+## Implementation notes
+
+Phase 1 (dotted names) shipped in `6f81a61`. Phase 2 is scoped but unbuilt;
+`apps/emet/tests/nested_modules.rs` pins its acceptance case, ignored.
+
+There is **no conversion funnel**. `ast.rs` declares the only `Type`, and
+inference uses it directly, so there is no single point where source syntax
+becomes an internal type and could be qualified in passing. The cheapest shape
+found is a **pre-pass over the module AST**, run before inference at all three
+entry points (`analyze_module`, `check_library`, `check_entry`): rewrite every
+`Type::Con` in a `TypeDecl`'s variant fields and in every `Decl` signature from
+its bare name to its qualified identity, leaving `TypeDecl::name` bare so the
+`exposing` list still matches on the name the author wrote. `register_type_decls`
+then needs only the owning module name, to build `result_ty` qualified and to
+register the arity under that identity.
+
+The alias map is bare name → qualified identity, built from the module's own
+declarations plus everything its imports contribute. Where a bare name has two
+candidates it maps to both, and *referencing* it is the error ADR 0045 used to
+raise at import time.
+
+`Interface::type_owners` becomes redundant and should be removed rather than
+maintained: a qualified identity is `Owner.Bare`, so both halves are recoverable
+by splitting at the last dot. What the interface needs instead is the set of
+qualified type names on its exposed surface, which `interface_of` already
+computes as `surface_type_names`.
+
 ## Consequences
 
 - Splitting a large module stops requiring flattened names. The
