@@ -83,6 +83,10 @@ class Paths:
         return self.fleet_dir / "golem-token"
 
     @property
+    def secret_key_file(self) -> Path:
+        return self.fleet_dir / "golem-secret-key"
+
+    @property
     def ssh_key(self) -> Path:
         return self.fleet_dir / "id_ed25519"
 
