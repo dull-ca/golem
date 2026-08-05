@@ -1,7 +1,19 @@
-module Limesurvey exposing (Config, config, withAdministrator, withAdministratorEmail, route, workload, units)
+module Limesurvey exposing
+  ( LimeConfig(..)
+  , LimeSurvey(..)
+  , LimeSurveyDatabase(..)
+  , defaults
+  , limesurvey
+  , limesurveyDatabase
+  , config
+  , route
+  , workload
+  , units
+  )
 
 import Quadlet exposing
-  ( image
+  ( Image
+  , image
   , env
   , Network(..)
   , Restart(..)
@@ -16,85 +28,171 @@ import Quadlet exposing
 import Routing exposing (Route)
 import Routing as R
 
-type Config = Config
-  { domain                : String
-  , administrator         : String
-  , administratorEmail    : String
-  , administratorPassword : String
-  , databasePassword      : String
+type LimeSurveyDatabase = LimeSurveyDatabase
+  { image     : Image
+  , container : String
+  , name      : String
+  , volume    : String
+  , password  : String
   }
 
-config : { domain : String, databasePassword : String, administratorPassword : String } -> Config
+type LimeSurvey = LimeSurvey
+  { image              : Image
+  , container          : String
+  , port               : Int
+  , administrator      : String
+  , administratorUser  : String
+  , administratorEmail : String
+  , password           : String
+  , pluginsPath        : String
+  , uploadPath         : String
+  }
+
+type LimeConfig = LimeConfig
+  { domain     : String
+  , network    : Network
+  , survey     : LimeSurvey
+  , database   : LimeSurveyDatabase
+  }
+
+defaults :
+  { database : { image : Image, container : String, name : String, volume : String }
+  , survey : { image : Image, container : String, port : Int, administrator : String, administratorUser : String, pluginsPath : String, uploadPath : String }
+  }
+defaults =
+  { database =
+      { image = image "docker.io/library" "mariadb" "11.4"
+      , container = "mysql"
+      , name = "limesurvey"
+      , volume = "limesurvey-db-data"
+      }
+  , survey =
+      { image = image "docker.io" "adamzammit/limesurvey" "7.0.7"
+      , container = "limesurvey"
+      , port = 80
+      , administrator = "Lime Administrator"
+      , administratorUser = "admin"
+      , pluginsPath = "/data/limesurvey/plugins"
+      , uploadPath = "/data/limesurvey/upload"
+      }
+  }
+
+limesurveyDatabase :
+  { image : Image, container : String, name : String, volume : String }
+  -> { password : String }
+  -> LimeSurveyDatabase
+limesurveyDatabase defaults required =
+  LimeSurveyDatabase
+    { image = defaults.image
+    , container = defaults.container
+    , name = defaults.name
+    , volume = defaults.volume
+    , password = required.password
+    }
+
+
+limesurvey :
+  { image             : Image
+  , container         : String
+  , port              : Int
+  , administrator     : String
+  , administratorUser : String
+  , pluginsPath       : String
+  , uploadPath        : String
+  }
+  -> { administratorEmail : String, password : String }
+  -> LimeSurvey
+limesurvey defaults required =
+  LimeSurvey
+    { image = defaults.image
+    , container = defaults.container
+    , port = defaults.port
+    , administrator = defaults.administrator
+    , administratorUser = defaults.administratorUser
+    , administratorEmail = required.administratorEmail
+    , password = required.password
+    , pluginsPath = defaults.pluginsPath
+    , uploadPath = defaults.uploadPath
+    }
+
+config :
+  { domain     : String
+  , network    : Network
+  , survey     : LimeSurvey
+  , database   : LimeSurveyDatabase
+  }
+  -> LimeConfig
 config required =
-  Config
+  LimeConfig
     { domain = required.domain
-    , administrator = "Lime Administrator"
-    , administratorEmail = "admin@${required.domain}"
-    , administratorPassword = required.administratorPassword
-    , databasePassword = required.databasePassword
+    , network = required.network
+    , survey = required.survey
+    , database = required.database
     }
 
-withAdministrator : String -> Config -> Config
-withAdministrator name (Config spec) =
-  Config { spec | administrator = name }
+route : LimeConfig -> Route
+route (LimeConfig spec) =
+  case spec.survey of
+    LimeSurvey app ->
+      R.route app.container spec.domain app.port
 
-withAdministratorEmail : String -> Config -> Config
-withAdministratorEmail address (Config spec) =
-  Config { spec | administratorEmail = address }
+workload : LimeConfig -> Workload
+workload (LimeConfig spec) =
+  case spec.survey of
+    LimeSurvey app ->
+      case spec.database of
+        LimeSurveyDatabase db ->
+          Workload
+            { name = app.container
+            , image = app.image
+            , env =
+                [ env "LIMESURVEY_DB_HOST" db.container
+                , env "LIMESURVEY_DB_NAME" db.name
+                , env "LIMESURVEY_DB_PASSWORD" db.password
+                , env "LIMESURVEY_ADMIN_USER" app.administratorUser
+                , env "LIMESURVEY_ADMIN_PASSWORD" app.password
+                , env "LIMESURVEY_ADMIN_NAME" app.administrator
+                , env "LIMESURVEY_ADMIN_EMAIL" app.administratorEmail
+                ]
+            , labels = []
+            , ports = []
+            , networks = [ spec.network ]
+            , volumes =
+                [ fromHost app.pluginsPath "/var/www/html/plugins" ReadWrite NoRelabel
+                , fromHost app.uploadPath "/var/www/html/upload" ReadWrite NoRelabel
+                ]
+            , restart = Always
+            , expose = Unexposed
+            }
 
-databaseNetwork = "limesurvey"
-databaseContainer = "mysql"
-databaseName = "limesurvey"
+databaseWorkload : LimeConfig -> Workload
+databaseWorkload (LimeConfig spec) =
+  case spec.database of
+    LimeSurveyDatabase db ->
+      Workload
+        { name = db.container
+        , image = db.image
+        , env =
+            [ env "MARIADB_ROOT_PASSWORD" db.password
+            , env "MARIADB_DATABASE" db.name
+            ]
+        , labels = []
+        , ports = []
+        , networks = [ spec.network ]
+        , volumes =
+            [ fromVolume db.volume "/var/lib/mysql" ReadWrite Private ]
+        , restart = Always
+        , expose = Unexposed
+        }
 
-route : Config -> Route
-route (Config spec) =
-  R.route "limesurvey" spec.domain 80
-
-workload : Config -> Workload
-workload (Config spec) =
-  Workload
-    { name = "limesurvey"
-    , image = image "docker.io" "adamzammit/limesurvey" "7.0.7"
-    , env =
-        [ env "LIMESURVEY_DB_HOST" databaseContainer
-        , env "LIMESURVEY_DB_NAME" databaseName
-        , env "LIMESURVEY_DB_PASSWORD" spec.databasePassword
-        , env "LIMESURVEY_ADMIN_USER" "admin"
-        , env "LIMESURVEY_ADMIN_PASSWORD" spec.administratorPassword
-        , env "LIMESURVEY_ADMIN_NAME" spec.administrator
-        , env "LIMESURVEY_ADMIN_EMAIL" spec.administratorEmail
-        ]
-    , labels = []
-    , ports = []
-    , networks = [ ManagedNetwork databaseNetwork ]
-    , volumes =
-        [ fromHost "/data/limesurvey/plugins" "/var/www/html/plugins" ReadWrite NoRelabel
-        , fromHost "/data/limesurvey/upload" "/var/www/html/upload" ReadWrite NoRelabel
-        ]
-    , restart = Always
-    , expose = Unexposed
-    }
-
-database : Config -> Workload
-database (Config spec) =
-  Workload
-    { name = databaseContainer
-    , image = image "docker.io/library" "mariadb" "11.4"
-    , env =
-        [ env "MARIADB_ROOT_PASSWORD" spec.databasePassword
-        , env "MARIADB_DATABASE" databaseName
-        ]
-    , labels = []
-    , ports = []
-    , networks = [ ManagedNetwork databaseNetwork ]
-    , volumes =
-        [ fromVolume "limesurvey-db-data" "/var/lib/mysql" ReadWrite Private ]
-    , restart = Always
-    , expose = Unexposed
-    }
-
-units : Config -> Workload -> List Scroll
+units : LimeConfig -> Workload -> List Scroll
 units c published =
-  [ scroll { name = "database", glyphs = workloadGlyphs (database c) }
-  , scroll { name = "limesurvey", glyphs = workloadGlyphs published }
-  ]
+  case c of
+    LimeConfig spec ->
+      case spec.database of
+        LimeSurveyDatabase db ->
+          case spec.survey of
+            LimeSurvey app ->
+              [ scroll { name = db.container, glyphs = workloadGlyphs (databaseWorkload c) }
+              , scroll { name = app.container, glyphs = workloadGlyphs published }
+              ]

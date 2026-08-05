@@ -2,14 +2,21 @@ module Main exposing (..)
 
 import Ingress
 import Limesurvey
+import Quadlet exposing (Network(..))
 
 survey =
-  Limesurvey.withAdministratorEmail "bigbeards@lichess.org"
-    (Limesurvey.config
-      { domain = "survey.lichess.app"
-      , databasePassword = "NOT-REAL-THEY-EXAMPLES-dYuhc5QoWgadDN7hwYqWmWSkcF01yHcL"
-      , administratorPassword = "NOT-REAL-THEY-EXAMPLES-u0w93QIjbHNTTI0sa3UNH71EyVfEChus"
-      })
+  Limesurvey.config
+    { domain = "survey.lichess.app"
+    , network = ManagedNetwork "limesurvey"
+    , survey =
+        Limesurvey.limesurvey Limesurvey.defaults.survey
+          { administratorEmail = "bigbeards@lichess.org"
+          , password = Secretspec.get "LIMESURVEY_ADMIN_PASSWORD"
+          }
+    , database =
+        Limesurvey.limesurveyDatabase Limesurvey.defaults.database
+          { password = Secretspec.get "LIMESURVEY_DB_PASSWORD" }
+    }
 
 deployment : String -> Scroll
 deployment name =

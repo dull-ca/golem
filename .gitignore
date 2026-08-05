@@ -43,5 +43,11 @@ sites/website/bun.lockb
 /.fleet/
 apps/fleet/__pycache__/
 
+# secretspec dotenv provider files. These hold resolved secret values in
+# plaintext next to the secretspec.toml that declares them (ADR 0047).
+.env
+.env.*
+!.env.example
+
 __pycache__/
 *.pyc
