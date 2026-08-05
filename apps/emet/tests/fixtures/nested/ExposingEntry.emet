@@ -1,0 +1,6 @@
+module Main exposing (..)
+
+import Limesurvey.Database exposing (containerName)
+
+main : List Scroll
+main = [ scroll { name = containerName, glyphs = [] } ]

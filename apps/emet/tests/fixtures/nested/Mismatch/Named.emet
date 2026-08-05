@@ -1,0 +1,4 @@
+module Mismatch.Wrong exposing (thing)
+
+thing : String
+thing = "x"

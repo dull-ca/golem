@@ -367,14 +367,45 @@ fn load_module(
                 file: Some(path.to_path_buf()),
             }]
         })?;
-        load_graph(&import_path, search_path, loaded)?;
+        let declared = load_graph(&import_path, search_path, loaded)?;
+        if declared != import.module {
+            return Err(vec![Error {
+                phase: Phase::Parse,
+                msg: format!(
+                    "`{}` resolves to {}, which declares `module {declared}`",
+                    import.module,
+                    import_path.display()
+                ),
+                span: import.span.clone(),
+                note: Some(format!(
+                    "a module's header has to agree with where its file sits — rename the \
+                     header to `module {}`, or import `{declared}` from where that module's \
+                     name says it lives",
+                    import.module
+                )),
+                file: Some(path.to_path_buf()),
+            }]);
+        }
     }
     Ok(name)
 }
 
+/// A module name's file, relative to a search root: each dot is a directory
+/// separator, so `Limesurvey.Database` is `Limesurvey/Database.emet` (ADR 0049).
+/// An undotted name keeps its existing meaning, a file in the root itself.
+fn module_relative_path(module: &str) -> PathBuf {
+    let mut path = PathBuf::new();
+    for segment in module.split('.') {
+        path.push(segment);
+    }
+    path.set_extension("emet");
+    path
+}
+
 fn find_module(module: &str, search_path: &SearchPath) -> Option<PathBuf> {
+    let relative = module_relative_path(module);
     for dir in search_path.directories() {
-        let candidate = dir.join(format!("{module}.emet"));
+        let candidate = dir.join(&relative);
         if candidate.exists() {
             return Some(candidate);
         }
@@ -383,10 +414,11 @@ fn find_module(module: &str, search_path: &SearchPath) -> Option<PathBuf> {
 }
 
 fn missing_module_message(module: &str, search_path: &SearchPath) -> String {
+    let relative = module_relative_path(module);
     let searched = search_path
         .directories()
         .iter()
-        .map(|dir| dir.join(format!("{module}.emet")).display().to_string())
+        .map(|dir| dir.join(&relative).display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
     format!("cannot find imported module `{module}` (searched {searched})")

@@ -1,0 +1,4 @@
+module Limesurvey.Database exposing (containerName)
+
+containerName : String
+containerName = "mysql"
