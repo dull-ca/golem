@@ -184,9 +184,40 @@ where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     recursive(|ty| {
-        let con_head = select! { Tok::Upper(u) => u };
+        // A type name may be qualified — `Split.Database.Config` — which is how
+        // an annotation names one of two same-named types in scope (ADR 0049).
+        // Adjacent segments only, so `A.B` is one name and `A . B` is not.
+        let con_head = select! { Tok::Upper(u) => u }
+            .map_with(|u, e| (u, span_range(e.span())))
+            .then(
+                just(Tok::Dot)
+                    .map_with(|_, e| span_range(e.span()))
+                    .then(select! { Tok::Upper(u) => u }.map_with(|u, e| (u, span_range(e.span()))))
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .filter(|((_, head_span), segments): &((String, Span), Vec<(Span, (String, Span))>)| {
+                let mut previous_end = head_span.end;
+                for (dot, (_, segment_span)) in segments {
+                    if dot.start != previous_end || segment_span.start != dot.end {
+                        return false;
+                    }
+                    previous_end = segment_span.end;
+                }
+                true
+            })
+            .map(|((head, _), segments)| {
+                let mut name = head;
+                for (_, (segment, _)) in &segments {
+                    name.push('.');
+                    name.push_str(segment);
+                }
+                name
+            });
 
-        let nullary = con_head.map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
+        let nullary = con_head
+            .clone()
+            .map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
 
         let type_var = select! { Tok::Ident(name) => name }
             .map_with(|name, e| Spanned(Type::Rigid(name), span_range(e.span())));

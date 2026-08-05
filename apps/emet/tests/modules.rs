@@ -230,31 +230,50 @@ fn assert_names_both_modules(err: &emet::Error, name: &str, first: &str, second:
 }
 
 #[test]
-fn same_named_types_from_two_imports_are_rejected() {
+fn same_named_types_from_two_imports_stay_distinct() {
     let err = compile_fixture("ShadowCaseEntry.emet")
-        .expect_err("two imports defining `Thing` must not compile");
-    assert_names_both_modules(&err, "Thing", "ShadowMulti", "ShadowSingle");
+        .expect_err("two imports' `Thing`s are two types, so mixing them is a mismatch");
+    assert_eq!(err.phase, Phase::Type);
+    assert!(
+        err.msg.contains("`ShadowSingle.Thing`") && err.msg.contains("`ShadowMulti.Thing`"),
+        "a mismatch between two same-named types has to qualify both, got: {}",
+        err.msg
+    );
 }
 
 #[test]
-fn same_named_types_are_rejected_before_the_argument_pattern_gate() {
+fn same_named_types_from_two_imports_stay_distinct_at_the_argument_gate() {
     let err = compile_fixture("ShadowParamEntry.emet")
-        .expect_err("two imports defining `Thing` must not compile");
-    assert_names_both_modules(&err, "Thing", "ShadowMulti", "ShadowSingle");
+        .expect_err("destructuring a multi-constructor type in an argument is still refused");
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
+    assert!(
+        rendered.contains("`Thing`"),
+        "the argument-pattern message names the type as written, got: {rendered}"
+    );
 }
 
 #[test]
-fn a_local_type_may_not_share_a_name_with_an_imported_one() {
+fn a_local_type_and_an_imported_one_of_the_same_name_stay_distinct() {
     let err = compile_fixture("ShadowLocalEntry.emet")
-        .expect_err("a local `Thing` must not collide with an imported `Thing`");
-    assert_names_both_modules(&err, "Thing", "Main", "ShadowMulti");
+        .expect_err("a local `Thing` is not the imported `Thing`, so mixing them is a mismatch");
+    assert_eq!(err.phase, Phase::Type);
+    assert!(
+        err.msg.contains("`Main.Thing`") && err.msg.contains("`ShadowMulti.Thing`"),
+        "a mismatch between two same-named types has to qualify both, got: {}",
+        err.msg
+    );
 }
 
 #[test]
-fn same_named_opaque_types_from_two_imports_are_rejected() {
+fn same_named_opaque_types_from_two_imports_stay_distinct() {
     let err = compile_fixture("ShadowOpaqueEntry.emet")
-        .expect_err("two imports whose signatures mention a private `Thing` must not compile");
-    assert_names_both_modules(&err, "Thing", "ShadowOpaqueA", "ShadowOpaqueB");
+        .expect_err("two private `Thing`s are two types, so passing one for the other is an error");
+    assert_eq!(err.phase, Phase::Type);
+    assert!(
+        err.msg.contains("`ShadowOpaqueA.Thing`") && err.msg.contains("`ShadowOpaqueB.Thing`"),
+        "a mismatch between two same-named types has to qualify both, got: {}",
+        err.msg
+    );
 }
 
 #[test]

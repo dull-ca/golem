@@ -1,0 +1,10 @@
+module Main exposing (..)
+
+import Amb.A
+import Amb.B
+
+pick : Amb.A.Thing -> String
+pick _ = "x"
+
+main : List Scroll
+main = [ scroll { name = pick Amb.A.make, glyphs = [] } ]

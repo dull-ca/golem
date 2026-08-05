@@ -50,6 +50,12 @@ pub enum Type {
 
 /// The tail of a record type — what, if anything, sits beyond its known
 /// fields (ADR 0010, the Elm row model).
+/// A type identity is `Owner.Bare` (ADR 0049); every surface that shows a type
+/// to a reader — hover, document symbols, `--text` — shows the name as written.
+pub(crate) fn written_type_name(identity: &str) -> &str {
+    identity.rsplit('.').next().unwrap_or(identity)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     /// Exactly the known fields, no more. Record literals are closed.
@@ -82,9 +88,9 @@ impl std::fmt::Display for Type {
         match self {
             Type::Var(n, _) => write!(f, "t{n}"),
             Type::Rigid(name) => write!(f, "{name}"),
-            Type::Con(name, args) if args.is_empty() => write!(f, "{name}"),
+            Type::Con(name, args) if args.is_empty() => write!(f, "{}", written_type_name(name)),
             Type::Con(name, args) => {
-                write!(f, "{name}")?;
+                write!(f, "{}", written_type_name(name))?;
                 for arg in args {
                     match arg {
                         Type::Con(_, inner) if !inner.is_empty() => write!(f, " ({arg})")?,

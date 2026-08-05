@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed 2026-08-05. Extends ADR 0016 (the module system) and ADR 0024 (the
+Accepted 2026-08-05. Extends ADR 0016 (the module system) and ADR 0024 (the
 library search path). Closes ADR 0045's deferred option (b) and keeps its
 rejection rule. Bears on ADR 0006 (dotted-name resolution), ADR 0046
 (constructor collisions), and ADR 0048 (flat library resolution).
@@ -95,8 +95,7 @@ part of it. `Quadlet.Network` is not a separate resolution unit.
 
 ## Implementation notes
 
-Phase 1 (dotted names) shipped in `6f81a61`. Phase 2 is scoped but unbuilt;
-`apps/emet/tests/nested_modules.rs` pins its acceptance case, ignored.
+Both phases shipped: dotted names in `6f81a61`, qualified identity after it.
 
 There is **no conversion funnel**. `ast.rs` declares the only `Type`, and
 inference uses it directly, so there is no single point where source syntax
@@ -114,11 +113,17 @@ declarations plus everything its imports contribute. Where a bare name has two
 candidates it maps to both, and *referencing* it is the error ADR 0045 used to
 raise at import time.
 
-`Interface::type_owners` becomes redundant and should be removed rather than
-maintained: a qualified identity is `Owner.Bare`, so both halves are recoverable
-by splitting at the last dot. What the interface needs instead is the set of
-qualified type names on its exposed surface, which `interface_of` already
-computes as `surface_type_names`.
+`reject_type_name_collisions` and its two message builders are deleted:
+identity now carries what the rule used to guard. `Interface` instead carries
+`exposed_type_identity`, the bare name each exposed type is written as mapped to
+the identity it holds — the `exposing` list, `import_type_arities` and the
+constructor-visibility check all read it.
+
+Every surface that shows a type to a reader de-qualifies: `render_type`,
+`ast::Type`'s `Display` (hover and document symbols read it), and the messages
+that name a constructor's type. `render_types_shared` is the exception — when
+two identities in one message share a bare tail it prints both in full, which is
+the case qualification exists for.
 
 ## Consequences
 
