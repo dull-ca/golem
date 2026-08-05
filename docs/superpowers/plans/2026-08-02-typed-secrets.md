@@ -68,10 +68,32 @@ That means a secret-derived value must be distinguishable from an ordinary strin
 - Generate `.fleet/golem-secret-key` once (0600), deploy to `/etc/golem/secret-key` root:root 0600, and point `golemd.toml` at it — the same shape `ensure_token`/`_ssh_write_secret` already use, including never letting the value reach an error message.
 - `emetc` must find the same key when the harness drives a build.
 
-- [ ] Tests mirroring the token ones; commit.
+- [x] Tests mirroring the token ones; commit.
+
+Done. `ensure_secret_key` sits beside `ensure_token` in `apps/fleet/token.py`
+(64 random bytes as 128 hex characters, `O_EXCL` at 0600, validated on read
+back); `Paths.secret_key_file` is `.fleet/golem-secret-key`; `deploy_golemd`
+writes `/etc/golem/secret-key` root:root 0600 through the same
+`_ssh_write_secret` the token uses, and `golemd_config_toml` names it under
+`[secrets]`. `compile_manifest` exports `GOLEM_SECRET_KEY_FILE` so the harness
+seals with the key its guests unseal with — the path travels, the bytes never
+do.
 
 ### Task 5: Use it, prove it, document it
 
-- Convert `examples/limesurvey/` from literal passwords to `Secretspec.get`, with a `secretspec.toml` declaring the keys.
-- Live on the VM fleet: apply to `manta`, confirm the container starts and the value inside it is correct, then confirm the *manifest* contains no plaintext (grep the bytes).
-- `lw:documenter`: ADR 0047 Proposed → Accepted; `apps/emet/CLAUDE.md`; the language reference; a site page on the trust boundary that says plainly what this does and does not protect.
+- [x] Convert `examples/limesurvey/` from literal passwords to `Secretspec.get`, with a `secretspec.toml` declaring the keys.
+- [ ] Live on the VM fleet: apply to `manta`, confirm the container starts and the value inside it is correct, then confirm the *manifest* contains no plaintext (grep the bytes).
+- [x] `lw:documenter`: ADR 0047 Proposed → Accepted; `apps/emet/CLAUDE.md`; the language reference; a site page on the trust boundary that says plainly what this does and does not protect.
+
+The conversion also restructured the example onto nested config types
+(`LimeConfig` holding `LimeSurvey` and `LimeSurveyDatabase`), each pairing a
+defaults record with a required-fields argument so a caller overrides a default
+by record update (ADR 0044) and a password has no default to omit. The trust
+boundary went into the existing `explanation/trust.mdx` rather than a new page,
+and `Secretspec.get` into `reference/language/prelude.mdx`.
+
+**The manifest-has-no-plaintext half is proven, the live half is not.** Compiling
+`examples/limesurvey/main.emet` against a dotenv provider and grepping the
+manifest bytes finds neither canary value, and two builds are byte-identical
+(BLAKE3 `7ce34c05…`), pinning determinism. Applying to `manta` and reading the
+value back out of the running container is still owed.

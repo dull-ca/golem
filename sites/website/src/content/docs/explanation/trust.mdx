@@ -61,6 +61,53 @@ so one fan-out can span hosts holding different secrets.
   with or without a token — publishes root-equivalent control of that host.
 </Aside>
 
+## Secrets in a manifest
+
+A manifest is compiled once and applied to many hosts, so it gets stored,
+cached, and handed to CI. `Secretspec.get "DB_PASSWORD"` keeps a password out
+of it: `emetc` resolves the value through secretspec at compile time and
+encrypts it to the fleet's key, and the manifest carries ciphertext.
+
+```emet
+, env = [ env "DB_PASSWORD" (Secretspec.get "DB_PASSWORD") ]
+```
+
+Interpolating a secret into a string does not seal the string. The value
+becomes literal chunks with sealed holes, so a config file with one password
+in it stays reviewable in the manifest and in `golemctl plan` while only the
+password is opaque.
+
+Encryption is deterministic, which is what keeps content addressing meaning
+what it says: the same secret always produces the same bytes, so an unchanged
+password is a `Noop` rather than a rebuild-triggered churn, and a rotated one
+produces a new content id that re-enacts exactly the units depending on it.
+
+A secret may only be a *value*. A path, a unit name, a scroll name, or a mode
+is an identifier, and `emetc` rejects a secret reaching one rather than
+silently unsealing it. It also refuses a secret in a `lineInFile`: that glyph
+owns one line and not the file it appends to, so it can promise nothing about
+who may read the result — write it with a `file` glyph at `mode = "0600"`,
+which owns the whole file and enforces its mode.
+
+<Aside type="caution" title="Sealing protects the artifact, not the box">
+  `golemd` decrypts at enact to write `Environment=…` or a config file, and
+  its journal records prior contents so removal stays exact. The plaintext is
+  on the host, readable by root, exactly as it would be without any of this.
+  "My secrets are encrypted" means the *manifest* is safe to store and ship —
+  it says nothing about the machine.
+</Aside>
+
+The fleet key rides the same channel as the bearer token: root-owned, mode
+`0600`, named by `[secrets] key_file` in `golemd.toml`. `emetc` reads it from
+`--secret-key` or `GOLEM_SECRET_KEY_FILE`. Rotating it means recompiling every
+manifest that carries a secret — a manifest sealed to the old key is
+undecodable by the new one, and golemd reports a key mismatch rather than
+enacting a stale credential.
+
+Compiling a program that uses a secret needs both provider access and the key,
+so `emetc` is no longer hermetic for those programs. One that uses no secret
+needs neither.
+
 ## What golem does not do
 
 Confidentiality, host authenticity, and reachability are the

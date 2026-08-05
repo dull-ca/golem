@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed 2026-08-02. Extends the manifest model (ADR 0012/0013) and bumps
+Accepted 2026-08-05. Extends the manifest model (ADR 0012/0013) and bumps
 `format_version` 4 → 5. Depends on ADR 0042's key-distribution channel.
 Constrained by ADR 0004 (the IR is inert, fully-evaluated data) and by
 content addressing (ADR 0012/0015), which this must not weaken.

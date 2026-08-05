@@ -286,3 +286,32 @@ itself see [Values and types](/reference/language/values-and-types/#tuples-and-u
 Tuple.first (Tuple.pair 7 9)         -- 7
 Tuple.mapSecond (\n -> n + 1) (1, 2) -- (1, 3)
 ```
+
+## Secretspec
+
+Resolve a secret declared in `secretspec.toml`. Unlike every other name on this
+page, this one runs at **compile time**: `emetc` reads the value from the
+configured provider and seals it into the manifest, so the result is a `String`
+the program can interpolate but the manifest never carries in the clear.
+
+| Signature | Behavior |
+| --- | --- |
+| `Secretspec.get : String -> String` | the value of a declared secret, sealed into the manifest |
+
+```emet
+env "DB_PASSWORD" (Secretspec.get "DB_PASSWORD")
+```
+
+The key must be declared in `secretspec.toml`; an undeclared one is a compile
+error naming it and listing the declared keys, raised before any provider is
+consulted. A declared key the provider cannot supply is a separate error naming
+the provider.
+
+Compiling a program that calls this needs provider access and the fleet key
+(`--secret-key`, or `GOLEM_SECRET_KEY_FILE`). A program that never calls it
+needs neither.
+
+A sealed value may only be used where a *value* is expected. Reaching a path,
+a unit name, a scroll name, or a mode is a compile error, as is writing one
+through `lineInFile`. See [Trust model](/explanation/trust/#secrets-in-a-manifest)
+for what sealing does and does not protect.

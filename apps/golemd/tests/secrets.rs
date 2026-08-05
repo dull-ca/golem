@@ -583,10 +583,14 @@ fn a_sealed_files_mode_is_the_authored_one_and_is_set_before_the_rename() {
     );
 }
 
-/// A `lineInFile` glyph has no `mode` field, so a secret-bearing line appended
-/// to a file golem has to create lands at the process umask's default — 0644 on
-/// a stock host. Pinned as the fact it is: the only glyph kind that can write a
-/// credential without the author being able to say how it should be protected.
+/// A `lineInFile` glyph has no `mode` field, so a line appended to a file golemd
+/// has to create lands at the process umask's default — 0644 on a stock host.
+/// Pinned because golemd enacts whatever a manifest holds: nothing here rejects
+/// a sealed line. What closes the exposure is upstream, in `emetc`, which
+/// refuses a secret in a `lineInFile` outright (ADR 0047) — a `lineInFile` owns
+/// one line and not the file it appends to, so it can promise nothing about who
+/// may read it. A v5 manifest reaching this path carries a sealed line only if
+/// it was not written by `emetc`.
 #[test]
 fn a_sealed_line_creating_a_new_file_lands_at_the_umask_default() {
     use std::os::unix::fs::PermissionsExt;
