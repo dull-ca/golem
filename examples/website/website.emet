@@ -40,6 +40,7 @@ website =
     { name = "golem-website"
     , image = image registryEndpoint "golem-website" "latest"
     , env = []
+    , envFiles = []
     , labels = []
     , ports = [ tcp 80 80 ]
     , networks = []

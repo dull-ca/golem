@@ -15,6 +15,7 @@ fromRef host reference =
     { name = host
     , image = imageRef reference
     , env = []
+    , envFiles = []
     , labels = []
     , ports = []
     , networks = []

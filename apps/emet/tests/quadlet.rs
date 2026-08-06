@@ -335,3 +335,86 @@ fn an_unexposed_workload_emits_no_firewall_glyph() {
         keys(s)
     );
 }
+
+fn dulliac() -> emet::Compiled {
+    compile_file(&fixtures_dir().join("DulliacEntry.emet")).expect("DulliacEntry.emet compiles")
+}
+
+fn group<'a>(c: &'a emet::Compiled, name: &str) -> &'a emet::ir::Scroll {
+    fn find<'a>(s: &'a emet::ir::Scroll, name: &str) -> Option<&'a emet::ir::Scroll> {
+        if s.name == name {
+            return Some(s);
+        }
+        match &s.contents {
+            emet::ir::Contents::Groups(children) => {
+                children.iter().find_map(|child| find(child, name))
+            }
+            emet::ir::Contents::Glyphs(_) => None,
+        }
+    }
+    c.scrolls
+        .iter()
+        .find_map(|s| find(s, name))
+        .unwrap_or_else(|| panic!("no scroll named {name}"))
+}
+
+#[test]
+fn a_dns_challenge_renders_its_provider_instead_of_the_tls_one() {
+    let c = dulliac();
+    let config = file_contents(group(&c, "traefik"), "/etc/traefik/traefik.yml");
+    assert!(config.contains("dnsChallenge:"), "got:\n{config}");
+    assert!(config.contains("provider: \"digitalocean\""), "got:\n{config}");
+    assert!(
+        config.contains("delayBeforeCheck: \"30\""),
+        "got:\n{config}"
+    );
+    assert!(
+        !config.contains("tlsChallenge"),
+        "a DNS challenge replaces the TLS one; got:\n{config}"
+    );
+}
+
+#[test]
+fn an_ingress_reads_its_provider_credentials_from_a_file_it_does_not_carry() {
+    let c = dulliac();
+    let unit = file_contents(
+        group(&c, "traefik"),
+        "/etc/containers/systemd/traefik.container",
+    );
+    assert!(
+        unit.contains("EnvironmentFile=/etc/golem/traefik.env"),
+        "got:\n{unit}"
+    );
+    assert!(
+        !unit.contains("DO_AUTH_TOKEN"),
+        "the token reaches the container through the file, never the manifest; got:\n{unit}"
+    );
+}
+
+#[test]
+fn a_workload_renders_its_environment_files() {
+    let c = dulliac();
+    let unit = file_contents(
+        group(&c, "firewalled"),
+        "/etc/containers/systemd/site.container",
+    );
+    assert!(
+        unit.contains("EnvironmentFile=/etc/golem/site.env"),
+        "got:\n{unit}"
+    );
+}
+
+#[test]
+fn container_glyphs_alone_carry_no_firewall_rule() {
+    let c = dulliac();
+    let bare = keys(group(&c, "bare"));
+    assert!(
+        !bare.iter().any(|k| k.contains("nftables")),
+        "a consumer owning its own firewall composes the container half alone; got: {bare:?}"
+    );
+    let firewalled = keys(group(&c, "firewalled"));
+    assert!(
+        firewalled.iter().any(|k| k.contains("nftables")),
+        "workloadGlyphs still pairs the container with golem's rules; got: {firewalled:?}"
+    );
+}

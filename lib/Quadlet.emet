@@ -48,6 +48,7 @@ module Quadlet exposing
   , ContainerUnit(..)
   , Expose(..)
   , Workload(..)
+  , publishedPorts
   , derivedVolumeUnits
   , volumeUnitGlyphs
   , containerUnitGlyphs
@@ -436,10 +437,19 @@ type ContainerUnit = ContainerUnit
   , mounts       : List Mount
   , volumeUnits  : List VolumeUnit
   , environment  : List EnvVar
+  , environmentFiles : List String
   , labels       : List Label
   , restart      : Restart
   , wantedBy     : List String
   }
+
+-- A file systemd reads environment variables from at start. golem writes the
+-- unit that names the path; whatever puts the file there is out of band, the
+-- way `/etc/golem/token` is (ADR 0042). A credential that reaches the container
+-- this way never enters the manifest at all — unlike `env`, which ships its
+-- value (sealed, under ADR 0047) to every host the scroll targets.
+environmentFileLine : String -> String
+environmentFileLine path = "EnvironmentFile=${path}"
 
 execLines : Maybe String -> List String
 execLines exec =
@@ -465,6 +475,7 @@ containerUnitContents u =
           , List.map networkLine spec.networks
           , List.map volumeLine spec.mounts
           , List.map environmentLine spec.environment
+          , List.map environmentFileLine spec.environmentFiles
           , List.map labelLine spec.labels
           , [ ""
             , "[Service]"
@@ -517,6 +528,7 @@ type Workload = Workload
   { name     : String
   , image    : Image
   , env      : List EnvVar
+  , envFiles : List String
   , labels   : List Label
   , ports    : List Port
   , networks : List Network
@@ -542,10 +554,18 @@ workloadUnit w =
         , mounts = spec.volumes
         , volumeUnits = derivedVolumeUnits spec.volumes
         , environment = spec.env
+        , environmentFiles = spec.envFiles
         , labels = spec.labels
         , restart = spec.restart
         , wantedBy = [ "multi-user.target", "default.target" ]
         }
+
+-- The ports a workload publishes, for whoever owns the firewall. `workloadGlyphs`
+-- pairs the container with golem's own `Nftables` rules; a consumer running its
+-- own firewall composes `containerUnitGlyphs (workloadUnit w)` with these
+-- instead, and golem writes no rule of its own.
+publishedPorts : Workload -> List Port
+publishedPorts (Workload spec) = spec.ports
 
 internalDropInName : String -> Port -> String
 internalDropInName name p =

@@ -1,6 +1,9 @@
 module Traefik exposing
   ( Frontend(..)
+  , Challenge(..)
   , Ingress(..)
+  , withChallenge
+  , withEnvironmentFiles
   , defaultImage
   , ingress
   , publish
@@ -34,10 +37,29 @@ type Frontend = Frontend
   , certificateResolver : String
   }
 
+-- How Let's Encrypt proves the domain is yours.
+--
+-- `TlsChallenge` answers on port 443, so the domain must already resolve to
+-- this box before the workload is deployed — and a failed challenge stays
+-- failed until Traefik restarts, because Traefik does not retry (it is
+-- protecting Let's Encrypt's rate limits) and a corrected DNS record leaves the
+-- config file byte-identical, so the file watcher sees nothing to reload.
+--
+-- `DnsChallenge` answers by writing a TXT record, so the certificate issues
+-- before any traffic moves and in any order, and a failure is retried on the
+-- next apply. It needs the provider's API credentials in the ingress
+-- container's environment; `environmentFiles` on the workload is how they get
+-- there without entering the manifest.
+type Challenge
+  = TlsChallenge
+  | DnsChallenge { provider : String, delayBeforeCheck : String }
+
 type Ingress = Ingress
   { image     : Image
   , acmeEmail : String
   , frontend  : Frontend
+  , challenge : Challenge
+  , envFiles  : List String
   }
 
 containerName : String
@@ -48,7 +70,36 @@ defaultImage = image "docker.io/library" "traefik" "v3.3"
 
 ingress : String -> Frontend -> Ingress
 ingress acmeEmail frontend =
-  Ingress { image = defaultImage, acmeEmail = acmeEmail, frontend = frontend }
+  Ingress
+    { image = defaultImage
+    , acmeEmail = acmeEmail
+    , frontend = frontend
+    , challenge = TlsChallenge
+    , envFiles = []
+    }
+
+withChallenge : Challenge -> Ingress -> Ingress
+withChallenge challenge (Ingress spec) =
+  Ingress { spec | challenge = challenge }
+
+-- Files systemd reads the ingress container's environment from. A DNS-01
+-- provider token belongs here: the unit names the path, the file is placed out
+-- of band, and the credential never enters the manifest.
+withEnvironmentFiles : List String -> Ingress -> Ingress
+withEnvironmentFiles paths (Ingress spec) =
+  Ingress { spec | envFiles = paths }
+
+challengeLines : Challenge -> List String
+challengeLines challenge =
+  case challenge of
+    TlsChallenge ->
+      [ "      tlsChallenge: {}" ]
+
+    DnsChallenge dns ->
+      [ "      dnsChallenge:"
+      , "        provider: \"${dns.provider}\""
+      , "        delayBeforeCheck: \"${dns.delayBeforeCheck}\""
+      ]
 
 plainEntryPoint : String
 plainEntryPoint = "web"
@@ -81,7 +132,7 @@ staticConfig i =
       case spec.frontend of
         Frontend front ->
           String.join "\n"
-            [ "entryPoints:"
+            ([ "entryPoints:"
             , "  ${plainEntryPoint}:"
             , "    address: \":80\""
             , "    http:"
@@ -103,9 +154,10 @@ staticConfig i =
             , "    acme:"
             , "      email: \"${spec.acmeEmail}\""
             , "      storage: \"${acmeDirectory}/acme.json\""
-            , "      tlsChallenge: {}"
-            , ""
             ]
+              ++ challengeLines spec.challenge
+              ++ [ "" ]
+            )
 
 podmanApiGlyphs : List Glyph
 podmanApiGlyphs =
@@ -123,6 +175,7 @@ ingressWorkload i =
             { name = containerName
             , image = spec.image
             , env = []
+            , envFiles = spec.envFiles
             , labels = []
             , ports = [ tcp 80 80, tcp 443 443 ]
             , networks = [ ManagedNetwork front.network ]
@@ -165,6 +218,7 @@ publish frontend target w =
         { name = spec.name
         , image = spec.image
         , env = spec.env
+        , envFiles = spec.envFiles
         , labels = spec.labels ++ routeLabels frontend target
         , ports = spec.ports
         , networks = spec.networks ++ [ frontendNetwork frontend ]
