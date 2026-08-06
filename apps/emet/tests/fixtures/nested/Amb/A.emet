@@ -1,0 +1,6 @@
+module Amb.A exposing (Thing, make)
+
+type Thing = Thing String
+
+make : Thing
+make = Thing "a"

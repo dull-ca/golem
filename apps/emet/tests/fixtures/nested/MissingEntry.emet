@@ -1,0 +1,6 @@
+module Main exposing (..)
+
+import Limesurvey.Absent
+
+main : List Scroll
+main = [ scroll { name = Limesurvey.Absent.thing, glyphs = [] } ]

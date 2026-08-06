@@ -1048,7 +1048,8 @@ pub(crate) fn render_type(t: &Type) -> String {
     let mut names: HashMap<u32, String> = HashMap::new();
     let mut next: u32 = 0;
     let mut out = String::new();
-    render_into(t, &mut names, &mut next, &mut out, false);
+    let ambiguous = ambiguous_identities(&[t]);
+    render_into(t, &mut names, &mut next, &mut out, false, &ambiguous);
     out
 }
 
@@ -1061,11 +1062,12 @@ pub(crate) fn render_type(t: &Type) -> String {
 pub(crate) fn render_types_shared(types: &[&Type]) -> Vec<String> {
     let mut names: HashMap<u32, String> = HashMap::new();
     let mut next: u32 = 0;
+    let ambiguous = ambiguous_identities(types);
     types
         .iter()
         .map(|t| {
             let mut out = String::new();
-            render_into(t, &mut names, &mut next, &mut out, false);
+            render_into(t, &mut names, &mut next, &mut out, false, &ambiguous);
             out
         })
         .collect()
@@ -1100,12 +1102,70 @@ fn var_letter(n: u32) -> String {
 /// is right-associative). `paren_fun` is the caller's request to wrap this type
 /// if it turns out to be a function — carried for nested positions where an
 /// unparenthesized arrow would rebind.
+/// A type identity is `Owner.Bare` (ADR 0049), and a reader wants the name they
+/// wrote. Render the bare tail — except where that would print one message about
+/// two different types under one name, which is the case the qualification
+/// exists for. `ambiguous` holds the identities that must stay whole.
+fn displayed_type_name<'a>(identity: &'a str, ambiguous: &HashSet<String>) -> &'a str {
+    if ambiguous.contains(identity) {
+        identity
+    } else {
+        identity.rsplit('.').next().unwrap_or(identity)
+    }
+}
+
+/// The identities in `types` whose bare tails collide, so a message naming both
+/// would be unreadable without qualification.
+pub(crate) fn bare_identity(identity: &str) -> &str {
+    identity.rsplit('.').next().unwrap_or(identity)
+}
+
+fn ambiguous_identities(types: &[&Type]) -> HashSet<String> {
+    let mut by_tail: HashMap<String, HashSet<String>> = HashMap::new();
+    for t in types {
+        collect_con_names(t, &mut by_tail);
+    }
+    by_tail
+        .into_values()
+        .filter(|identities| identities.len() > 1)
+        .flatten()
+        .collect()
+}
+
+fn collect_con_names(t: &Type, by_tail: &mut HashMap<String, HashSet<String>>) {
+    match t {
+        Type::Con(name, args) => {
+            let tail = name.rsplit('.').next().unwrap_or(name).to_string();
+            by_tail.entry(tail).or_default().insert(name.clone());
+            for arg in args {
+                collect_con_names(arg, by_tail);
+            }
+        }
+        Type::Fun(a, b) => {
+            collect_con_names(a, by_tail);
+            collect_con_names(b, by_tail);
+        }
+        Type::Record(fields, _) => {
+            for f in fields.values() {
+                collect_con_names(f, by_tail);
+            }
+        }
+        Type::Tuple(items) => {
+            for i in items {
+                collect_con_names(i, by_tail);
+            }
+        }
+        Type::Var(_, _) | Type::Rigid(_) => {}
+    }
+}
+
 fn render_into(
     t: &Type,
     names: &mut HashMap<u32, String>,
     next: &mut u32,
     out: &mut String,
     paren_fun: bool,
+    ambiguous: &HashSet<String>,
 ) {
     match t {
         Type::Var(n, _) => {
@@ -1117,19 +1177,21 @@ fn render_into(
             out.push_str(name);
         }
         Type::Rigid(name) => out.push_str(name),
-        Type::Con(name, args) if args.is_empty() => out.push_str(name),
+        Type::Con(name, args) if args.is_empty() => {
+            out.push_str(displayed_type_name(name, ambiguous))
+        }
         Type::Con(name, args) => {
-            out.push_str(name);
+            out.push_str(displayed_type_name(name, ambiguous));
             for arg in args {
                 out.push(' ');
                 let wrap = matches!(arg, Type::Con(_, inner) if !inner.is_empty())
                     || matches!(arg, Type::Fun(_, _));
                 if wrap {
                     out.push('(');
-                    render_into(arg, names, next, out, false);
+                    render_into(arg, names, next, out, false, ambiguous);
                     out.push(')');
                 } else {
-                    render_into(arg, names, next, out, false);
+                    render_into(arg, names, next, out, false, ambiguous);
                 }
             }
         }
@@ -1140,13 +1202,13 @@ fn render_into(
             }
             if wrap_a {
                 out.push('(');
-                render_into(a, names, next, out, false);
+                render_into(a, names, next, out, false, ambiguous);
                 out.push(')');
             } else {
-                render_into(a, names, next, out, false);
+                render_into(a, names, next, out, false, ambiguous);
             }
             out.push_str(" -> ");
-            render_into(b, names, next, out, false);
+            render_into(b, names, next, out, false, ambiguous);
             if paren_fun {
                 out.push(')');
             }
@@ -1159,7 +1221,7 @@ fn render_into(
                 }
                 out.push_str(k);
                 out.push_str(" : ");
-                render_into(v, names, next, out, false);
+                render_into(v, names, next, out, false, ambiguous);
             }
             if let Row::Open(_) = row {
                 out.push_str(" | ..");
@@ -1172,7 +1234,7 @@ fn render_into(
                 if i > 0 {
                     out.push_str(", ");
                 }
-                render_into(elem, names, next, out, false);
+                render_into(elem, names, next, out, false, ambiguous);
             }
             out.push(')');
         }
@@ -1862,7 +1924,10 @@ fn reject_multi_constructor_param(inf: &Infer, ctor: &str, span: &Span) -> Resul
         return Ok(());
     }
     Err(refutable_param_error(
-        &format!("`{ctor}` is one of several constructors of `{type_name}`"),
+        &format!(
+            "`{ctor}` is one of several constructors of `{}`",
+            bare_identity(&type_name)
+        ),
         &format!("the whole `{type_name}`"),
         span,
     ))

@@ -99,16 +99,49 @@ fn parse_module_header(cursor: &mut Cursor) -> Result<(Option<String>, Exposing)
 }
 
 fn parse_module_name(cursor: &mut Cursor) -> Result<String, HeaderError> {
-    match cursor.peek().clone() {
-        Tok::Upper(name) => {
+    let mut name = match cursor.peek().clone() {
+        Tok::Upper(first) => {
             cursor.bump();
-            Ok(name)
+            first
         }
-        other => Err(HeaderError {
-            msg: format!("expected a module name, found `{other}`"),
-            span: cursor.span(),
-        }),
+        other => {
+            return Err(HeaderError {
+                msg: format!("expected a module name, found `{other}`"),
+                span: cursor.span(),
+            })
+        }
+    };
+
+    // A dotted module name is one name with a `.` in it, not a name applied to
+    // something — so the segments have to touch. `A.B` is `Limesurvey.Database`;
+    // `A . B` is two tokens the header has no meaning for (ADR 0049).
+    while *cursor.peek() == Tok::Dot {
+        let previous_end = cursor.tokens[cursor.pos - 1].span.end;
+        let dot = cursor.span();
+        if dot.start != previous_end {
+            break;
+        }
+        let after_dot = cursor.tokens[(cursor.pos + 1).min(cursor.tokens.len() - 1)]
+            .span
+            .clone();
+        if after_dot.start != dot.end {
+            break;
+        }
+        match cursor.tokens[(cursor.pos + 1).min(cursor.tokens.len() - 1)]
+            .tok
+            .clone()
+        {
+            Tok::Upper(segment) => {
+                cursor.bump();
+                cursor.bump();
+                name.push('.');
+                name.push_str(&segment);
+            }
+            _ => break,
+        }
     }
+
+    Ok(name)
 }
 
 fn parse_exposing(cursor: &mut Cursor) -> Result<Exposing, HeaderError> {

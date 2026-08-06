@@ -1,0 +1,10 @@
+module Main exposing (..)
+
+import Split.Database
+import Split.Survey
+
+main : List Scroll
+main =
+  [ scroll { name = Split.Database.container Split.Database.config, glyphs = [] }
+  , scroll { name = Split.Survey.container Split.Survey.config, glyphs = [] }
+  ]

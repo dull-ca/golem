@@ -1,0 +1,9 @@
+module Split.Survey exposing (Config, config, container)
+
+type Config = Config { container : String }
+
+config : Config
+config = Config { container = "limesurvey" }
+
+container : Config -> String
+container (Config spec) = spec.container

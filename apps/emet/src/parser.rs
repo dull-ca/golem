@@ -184,9 +184,40 @@ where
     I: ValueInput<'src, Token = Tok, Span = TokSpan>,
 {
     recursive(|ty| {
-        let con_head = select! { Tok::Upper(u) => u };
+        // A type name may be qualified — `Split.Database.Config` — which is how
+        // an annotation names one of two same-named types in scope (ADR 0049).
+        // Adjacent segments only, so `A.B` is one name and `A . B` is not.
+        let con_head = select! { Tok::Upper(u) => u }
+            .map_with(|u, e| (u, span_range(e.span())))
+            .then(
+                just(Tok::Dot)
+                    .map_with(|_, e| span_range(e.span()))
+                    .then(select! { Tok::Upper(u) => u }.map_with(|u, e| (u, span_range(e.span()))))
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .filter(|((_, head_span), segments): &((String, Span), Vec<(Span, (String, Span))>)| {
+                let mut previous_end = head_span.end;
+                for (dot, (_, segment_span)) in segments {
+                    if dot.start != previous_end || segment_span.start != dot.end {
+                        return false;
+                    }
+                    previous_end = segment_span.end;
+                }
+                true
+            })
+            .map(|((head, _), segments)| {
+                let mut name = head;
+                for (_, (segment, _)) in &segments {
+                    name.push('.');
+                    name.push_str(segment);
+                }
+                name
+            });
 
-        let nullary = con_head.map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
+        let nullary = con_head
+            .clone()
+            .map_with(|u, e| Spanned(type_con(&u, vec![]), span_range(e.span())));
 
         let type_var = select! { Tok::Ident(name) => name }
             .map_with(|name, e| Spanned(Type::Rigid(name), span_range(e.span())));
@@ -424,19 +455,49 @@ where
         }
         .map_with(|name, e| Spanned(Expr::Var(name), span_range(e.span())));
 
+        // A qualified name is `Upper (. Upper)* . member`, so a nested module is
+        // reached by its whole name: `Limesurvey.Database.containerName` is
+        // member `containerName` of module `Limesurvey.Database` (ADR 0049).
+        // Every piece must touch its neighbours, which is what keeps this from
+        // swallowing `Foo . bar` or a record access spelled across a space.
         let qualified = select! { Tok::Upper(u) => u }
             .map_with(|u, e| (u, span_range(e.span())))
+            .then(
+                just(Tok::Dot)
+                    .map_with(|_, e| span_range(e.span()))
+                    .then(select! { Tok::Upper(u) => u }.map_with(|u, e| (u, span_range(e.span()))))
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
             .then(just(Tok::Dot).map_with(|_, e| span_range(e.span())))
             .then(field_name().map_with(|n, e| (n, span_range(e.span()))))
-            .filter(|(((_, module_span), dot_span), (_, member_span))| {
-                module_span.end == dot_span.start && dot_span.end == member_span.start
-            })
+            .filter(
+                |((((_, head_span), segments), dot_span), (_, member_span)): &(
+                    (((String, Span), Vec<(Span, (String, Span))>), Span),
+                    (String, Span),
+                )| {
+                    let mut previous_end = head_span.end;
+                    for (segment_dot, (_, segment_span)) in segments {
+                        if segment_dot.start != previous_end
+                            || segment_span.start != segment_dot.end
+                        {
+                            return false;
+                        }
+                        previous_end = segment_span.end;
+                    }
+                    dot_span.start == previous_end && member_span.start == dot_span.end
+                },
+            )
             .map(
-                |(((module, module_span), _dot_span), (member, member_span))| {
-                    Spanned(
-                        Expr::Var(format!("{module}.{member}")),
-                        module_span.start..member_span.end,
-                    )
+                |((((head, head_span), segments), _dot_span), (member, member_span))| {
+                    let mut name = head;
+                    for (_, (segment, _)) in &segments {
+                        name.push('.');
+                        name.push_str(segment);
+                    }
+                    name.push('.');
+                    name.push_str(&member);
+                    Spanned(Expr::Var(name), head_span.start..member_span.end)
                 },
             );
 

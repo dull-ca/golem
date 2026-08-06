@@ -166,15 +166,21 @@ pub fn record_exposing_sites(
                     ));
                 }
                 Exposed::Type { name, span, .. } => {
-                    let Some(declaration) =
-                        module.type_decls.iter().find(|decl| &decl.name == name)
+                    let Some(declaration) = module
+                        .type_decls
+                        .iter()
+                        .find(|decl| crate::infer::bare_identity(&decl.name) == name)
                     else {
                         continue;
                     };
                     defs.push((
                         span.clone(),
                         DefSite {
-                            span: name_span_within(source, &declaration.span, &declaration.name),
+                            span: name_span_within(
+                                source,
+                                &declaration.span,
+                                crate::infer::bare_identity(&declaration.name),
+                            ),
                             module: None,
                         },
                     ));
@@ -212,7 +218,7 @@ pub fn record_exposing_sites(
 /// written. `ast::Type::Record` is a `BTreeMap`; source order is retained
 /// nowhere.
 pub fn render_type_declaration(declaration: &TypeDecl, with_constructors: bool) -> String {
-    let mut rendered = format!("type {}", declaration.name);
+    let mut rendered = format!("type {}", crate::infer::bare_identity(&declaration.name));
     for param in &declaration.params {
         rendered.push_str(&format!(" {param}"));
     }
@@ -324,9 +330,10 @@ pub fn outline(module: &Module, source: &str, index: &QueryIndex) -> Vec<Symbol>
     }
 
     for declaration in &module.type_decls {
-        let name_span = name_span_within(source, &declaration.span, &declaration.name);
+        let written = crate::infer::bare_identity(&declaration.name);
+        let name_span = name_span_within(source, &declaration.span, written);
         symbols.push(Symbol {
-            name: declaration.name.clone(),
+            name: written.to_string(),
             kind: SymbolKind::Type,
             detail: type_parameters(&declaration.params),
             span: declaration.span.clone(),

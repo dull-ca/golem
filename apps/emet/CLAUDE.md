@@ -99,6 +99,21 @@ An Elm-shaped, minimal module system for reuse across files:
 - **`module Name exposing (..)`** / `exposing (a, B, Type(..))` header, one
   module per file, **file path = module name**. The header is optional: a file
   with no `module` line is a valid entry module that exposes everything.
+- **A module name may be dotted, and a dot is a directory separator (ADR
+  0049).** `module Limesurvey.Database` lives at `Limesurvey/Database.emet`,
+  found by joining the segments onto each search-path root
+  (`resolve::module_relative_path`). The segments must touch — `A.B` is one
+  name, `A . B` is not — in the header, in `import`, and in qualified access,
+  where `Limesurvey.Database.containerName` reads as member `containerName` of
+  module `Limesurvey.Database`. Nesting confers **no privilege**: a submodule is
+  an ordinary module with a dot in its name, sees nothing of its parent, and
+  does not require one to exist.
+- **An import whose file declares a different module is an error** naming both
+  and pointing at the import. This was a panic (`no entry found for key`) for
+  flat modules too, not only nested ones: the file registered under its header
+  name while the graph walk looked it up by the imported name. Entry files are
+  exempt — they are reached by path, not by name, which is why `main.emet` may
+  declare `module Main`.
 - **`import Foo` resolves over a search path (ADR 0024, `manifest.rs`):** the
   entry file's own directory first, then each `source-directories` entry of the
   nearest `emet.json` (found by walking up from the entry file), first
