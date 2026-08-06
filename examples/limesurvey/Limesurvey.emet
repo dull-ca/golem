@@ -154,6 +154,7 @@ workload (LimeConfig spec) =
                 , env "LIMESURVEY_ADMIN_NAME" app.administrator
                 , env "LIMESURVEY_ADMIN_EMAIL" app.administratorEmail
                 ]
+            , envFiles = []
             , labels = []
             , ports = []
             , networks = [ spec.network ]
@@ -176,6 +177,7 @@ databaseWorkload (LimeConfig spec) =
             [ env "MARIADB_ROOT_PASSWORD" db.password
             , env "MARIADB_DATABASE" db.name
             ]
+        , envFiles = []
         , labels = []
         , ports = []
         , networks = [ spec.network ]

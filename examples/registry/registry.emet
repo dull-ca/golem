@@ -28,6 +28,7 @@ registry =
     { name = "registry"
     , image = image "docker.io/library" "registry" "2"
     , env = []
+    , envFiles = []
     , labels = []
     , ports = [ tcp 5000 5000 ]
     , networks = []

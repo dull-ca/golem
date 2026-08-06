@@ -525,6 +525,7 @@ app =
     { name = "app"
     , image = image "docker.io/library" "postgres" "16"
     , env = [ env "POSTGRES_PASSWORD" (Secretspec.get "DB_PASSWORD") ]
+    , envFiles = []
     , labels = []
     , ports = []
     , networks = []

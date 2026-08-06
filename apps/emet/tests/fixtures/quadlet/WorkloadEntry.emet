@@ -27,6 +27,7 @@ registry =
         [ env "REGISTRY_LOG_LEVEL" "info"
         , env "REGISTRY_NOTE" "two words"
         ]
+    , envFiles = []
     , labels = [ label "golem.role" "registry" ]
     , ports = [ tcp 5000 5000 ]
     , networks = [ ManagedNetwork "golem-registry-net" ]
@@ -44,6 +45,7 @@ web =
     { name = "web"
     , image = imageAt "docker.io/library" "caddy" "sha256:abc123"
     , env = []
+    , envFiles = []
     , labels = []
     , ports = [ tcp 443 443, tcp 80 80 ]
     , networks = [ ExistingNetwork "frontend" ]
@@ -58,6 +60,7 @@ worker =
     { name = "worker"
     , image = image "docker.io/library" "fishnet" "latest"
     , env = []
+    , envFiles = []
     , labels = []
     , ports = []
     , networks = []

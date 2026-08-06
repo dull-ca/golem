@@ -1,0 +1,43 @@
+module Main exposing (..)
+
+import Quadlet exposing
+  ( image, env, Network(..), Restart(..), Access(..), Relabel(..)
+  , fromVolume, Expose(..), Workload(..), Port(..)
+  , workloadUnit, containerUnitGlyphs, workloadGlyphs, publishedPorts, tcp
+  )
+import Traefik exposing
+  ( Frontend(..), Challenge(..), ingress, withChallenge, withEnvironmentFiles, ingressUnit )
+
+edge : Frontend
+edge = Frontend { network = "frontend", certificateResolver = "digitalocean" }
+
+site : Workload
+site =
+  Workload
+    { name = "site"
+    , image = image "docker.io/library" "caddy" "2"
+    , env = []
+    , envFiles = [ "/etc/golem/site.env" ]
+    , labels = []
+    , ports = [ tcp 8080 80 ]
+    , networks = [ ManagedNetwork "web" ]
+    , volumes = []
+    , restart = Always
+    , expose = Public
+    }
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "host"
+      , groups =
+          [ ingressUnit
+              (withEnvironmentFiles [ "/etc/golem/traefik.env" ]
+                (withChallenge
+                  (DnsChallenge { provider = "digitalocean", delayBeforeCheck = "30" })
+                  (ingress "ops@dull.ca" edge)))
+          , scroll { name = "firewalled", glyphs = workloadGlyphs site }
+          , scroll { name = "bare", glyphs = containerUnitGlyphs (workloadUnit site) }
+          ]
+      }
+  ]
