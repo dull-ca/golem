@@ -1,16 +1,21 @@
 # Quickstart
 
-> **The model.** You author a fleet in **Emet** — a program that evaluates to
-> one **scroll** per host. A scroll is a recursive tree: each level holds either
-> glyphs (a leaf) or named sub-scrolls (a branch), never both. Glyphs come over
-> four kinds (`aptPackage`, `systemdService`, `file`, `lineInFile`); branches
-> group leaves into named units. `emetc` compiles it to a binary,
-> content-addressed **manifest** (`format_version` 4). A per-host `golemd`
-> ingests the manifest, selects its own scroll, diffs it by content id, and
-> enacts the difference through reversible reconcilers, journalling what it did
-> so every change can be undone. By default `golemd` runs the **fake**
-> reconciler, which records intent without touching the host — safe to run
-> anywhere.
+> **The model.** You author a fleet in **Emet**, and `emetc` runs your program
+> to completion on your own machine — every function applied, every value
+> computed — then writes the result as a binary, content-addressed **manifest**
+> (`format_version` 5) holding one **scroll** per host.
+>
+> A scroll is a tree. Its leaves hold **glyphs**, one OS resource each, over
+> four kinds: `aptPackage`, `systemdService`, the filesystem glyph
+> (`file`, `directory`, `symlink`), and `lineInFile`. Each leaf is enacted as
+> its own unit, with its own retries and its own rollback; the branches above
+> them group leaves by subsystem and hand policy down.
+>
+> A per-host `golemd` ingests the manifest, selects its own scroll, diffs it by
+> content id, and enacts the difference through reversible reconcilers,
+> journalling what it did so every change can be undone. By default `golemd`
+> runs the **fake** reconciler, which records intent without touching the
+> host — safe to run anywhere.
 
 ## Build
 
@@ -116,8 +121,9 @@ main = [ web ]
 ```
 
 That `scroll { name, glyphs }` is a **leaf** — one unit of glyphs. To run many
-distinct units on one host, nest them with `groups`; each level is `glyphs` xor
-`groups`, never both:
+distinct units on one host, nest them with `groups` — a glyph that wants to sit
+beside a group gets its own one-glyph leaf, so every level is one of the two: a
+leaf holding `glyphs`, or a branch holding `groups`.
 
 ```elm
 worker : Scroll
@@ -131,8 +137,9 @@ worker =
     }
 ```
 
-A leaf is the **failure-isolation unit**: one unit failing doesn't roll back its
-siblings. A scroll may carry an optional `policy` — `rollback` (the default),
+A leaf is the **unit of failure isolation**: each one retries and settles on its
+own, and a failure stops at that boundary while its siblings carry on. A scroll
+may carry an optional `policy` — `rollback` (the default),
 `keep`, or `retry { maxAttempts = 3, onExhaust = keep, … }` — that governs how a
 unit's enact retries and what it does when the budget is exhausted:
 
@@ -335,6 +342,7 @@ curl -H @/etc/golem/auth-header http://127.0.0.1:7474/status | jq
   operator's machine, so that machine must be able to ssh to every host and hold
   each one's secret; golem-to-golem
   propagation — submit to one, all receive — is designed but unbuilt (ADR 0039).
-- **Four glyph kinds only.** Richer shapes (workloads, services, ingress) are
-  Emet library abstractions that compile down to the four glyphs — never new
-  golemd resource kinds.
+- **Four glyph kinds only.** golemd reconciles apt packages, systemd units,
+  filesystem entries, and lines in files. Richer shapes — workloads, services,
+  ingress — are Emet libraries that lower onto those four, which is what keeps
+  the agent this small.

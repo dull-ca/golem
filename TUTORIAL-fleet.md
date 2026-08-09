@@ -117,8 +117,9 @@ nothing. `8859` is the port scaly's name-derived slot earns (`8800 + 59`), and
 it is still recorded in `.fleet/state.json`, but the only host→guest forward
 qemu creates is ssh — plus whatever you ask for with `--publish`, which Lesson 4
 uses and which has nothing to do with golemd. The hostfwd that once pointed at 8859 was
-deleted when the loopback bind made it unreachable by construction, so there is
-no longer a port to knock on — not a dead one, none.
+deleted when the loopback bind made it unreachable by construction. Nothing
+listens on 8859 on your workstation now, so the connection is refused before it
+can go anywhere.
 
 ### 5. Open a forward yourself, and get refused twice
 
@@ -304,8 +305,8 @@ fleet apply examples/fishnet-farm/farm.emet --hosts scaly
 ```
 
 Same ending. The canary resurfaces on every reconcile rather than disappearing
-into "unchanged" — a kept failure stays visible, because a unit that has never
-worked is not a unit that needs no attention.
+into "unchanged": a unit that has never worked still needs attention, so a kept
+failure stays visible.
 
 ### 4. Read the journal on the box
 
@@ -708,10 +709,10 @@ ask, and may name a different set of guests than the invocation targets.
 
 ### A guest's name is its scroll's name
 
-There is no mapping table anywhere, and that is the design. A VM named `scaly`
-gets an inventory entry `[hosts.scaly]`; the manifest carries a scroll named
-`scaly`; golemctl matches the two by name. A host the manifest names no scroll
-for is skipped, never POSTed to, and not counted against the exit code.
+A VM named `scaly` gets an inventory entry `[hosts.scaly]`; the manifest carries
+a scroll named `scaly`; golemctl matches the two by name, and no mapping table
+exists anywhere. A host the manifest names no scroll for is skipped, never
+POSTed to, and not counted against the exit code.
 
 This is why `fleet` needs no configuration file. The name is the join key
 between three otherwise-independent artifacts — the VM, the inventory, and the
