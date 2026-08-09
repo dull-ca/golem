@@ -1,0 +1,6 @@
+module Main exposing (..)
+
+import ReexportType
+
+main : List Scroll
+main = [ scroll { name = ReexportType.own, glyphs = [ aptPackage { name = "nginx" } ] } ]

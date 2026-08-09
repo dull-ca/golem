@@ -113,6 +113,17 @@ declarations plus everything its imports contribute. Where a bare name has two
 candidates it maps to both, and *referencing* it is the error ADR 0045 used to
 raise at import time.
 
+The `exposing` restriction is `resolve::reject_undeclared_exposures`, run per
+module ahead of everything else in both passes. It reads the module as parsed,
+not the qualified copy: after `qualify_module_types` the `type_decls` carry
+`Owner.Bare` while the exposing list still holds the bare names, and the two no
+longer compare. The two halves of a re-export had failed differently and neither
+had been an error — a value passed through and served the declaring module's
+value to an importer, a type dropped out of the interface silently — so one check
+at the exposing list replaces both. An uppercase item is always a type, and a
+lone constructor name gets a message pointing at `Type(..)` rather than being
+told it is undeclared.
+
 `reject_type_name_collisions` and its two message builders are deleted:
 identity now carries what the rule used to guard. `Interface` instead carries
 `exposed_type_identity`, the bare name each exposed type is written as mapped to

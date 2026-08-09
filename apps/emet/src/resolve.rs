@@ -12,7 +12,10 @@
 //! exposes. Only exposed values, exposed type names (`exposed_type_arities`),
 //! and — for a `Type(..)` export — exposed constructors are importable; the
 //! visibility gate is what distinguishes a module's public API from its
-//! internals.
+//! internals. What may pass that gate is bounded on the writing side too:
+//! `reject_undeclared_exposures` holds an `exposing` list to the module's own
+//! declarations (ADR 0049), so a module's surface is its own and never a relay
+//! for another's.
 //!
 //! A type is identified by its declaring module (ADR 0049): `qualify_module_types`
 //! rewrites each module's declarations and signatures from the bare names an
@@ -181,6 +184,12 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     for name in &order {
         let loaded_mod = &loaded[name];
 
+        // NOTE: no `continue` — an undeclared exposure says nothing about how this
+        // module's own bodies infer, so the pass goes on and the editor still gets
+        // an index for the file in front of the reader.
+        if let Err(e) = reject_undeclared_exposures(loaded_mod, name) {
+            diagnostics.push(e);
+        }
         let aliases = type_aliases(&loaded_mod.module, name, &interfaces);
         let constructors = ConstructorScope::of(&loaded_mod.module, name, &interfaces);
         let mut qualified = loaded_mod.module.clone();
@@ -257,6 +266,7 @@ fn check_and_eval(
         let loaded_mod = &loaded[name];
         let is_entry = name == &entry_name;
 
+        reject_undeclared_exposures(loaded_mod, name)?;
         let aliases = type_aliases(&loaded_mod.module, name, &interfaces);
         let constructors = ConstructorScope::of(&loaded_mod.module, name, &interfaces);
         let mut qualified = loaded_mod.module.clone();
@@ -1445,6 +1455,111 @@ fn interface_of(
         exposed_sum_ctors,
         exposed_def_spans,
         type_owners,
+    }
+}
+
+/// Enforce ADR 0049: an `exposing` list names only what this module declares.
+/// Re-export is Elm's rule adopted whole — a module that did not declare a name
+/// cannot become the door through which importers reach it.
+///
+/// The two halves of a re-export behaved differently before this check, and
+/// neither was an error. A re-exposed **value** worked: `interface_of` recorded
+/// the name, and `ty_env` / `value_env` carry the bindings an `import … exposing`
+/// brought in, so an importer wrote `B.thing` and got `A`'s value. A re-exposed
+/// **type** silently vanished instead — `interface_of` matches the list against
+/// `identity_of_bare`, built from this module's own `type_decls`, so the entry
+/// dropped and the importer was told `B` does not expose it. Rejecting at the
+/// exposing list replaces both with one message at the line that is wrong.
+///
+/// Runs on the module as parsed, before `qualify_module_types`: afterwards
+/// `type_decls` carry `Owner.Bare` identities while the exposing list still holds
+/// the bare names the author wrote, and the two would no longer compare.
+///
+/// An uppercase item is always a *type* — only `Type(..)` carries constructors,
+/// and there is no spelling for exposing one alone — so a lone constructor name
+/// gets `exposed_constructor_is_not_a_type` rather than the undeclared message,
+/// which would otherwise deny a name the reader can see declared two lines down.
+fn reject_undeclared_exposures(loaded: &Loaded, module_name: &str) -> Result<(), Error> {
+    let Exposing::Explicit(items) = &loaded.module.exposing else {
+        return Ok(());
+    };
+    let declared_values: HashSet<&str> = loaded
+        .module
+        .decls
+        .iter()
+        .map(|decl| decl.name.as_str())
+        .collect();
+    let declared_types: HashSet<&str> = loaded
+        .module
+        .type_decls
+        .iter()
+        .map(|decl| decl.name.as_str())
+        .collect();
+    for item in items {
+        match item {
+            Exposed::Value { name, .. } => {
+                if !declared_values.contains(name.as_str()) {
+                    return Err(undeclared_exposure(loaded, module_name, item));
+                }
+            }
+            Exposed::Type { name, .. } => {
+                if declared_types.contains(name.as_str()) {
+                    continue;
+                }
+                return Err(match declaring_type_of_variant(&loaded.module, name) {
+                    Some(owning_type) => {
+                        exposed_constructor_is_not_a_type(loaded, module_name, item, owning_type)
+                    }
+                    None => undeclared_exposure(loaded, module_name, item),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn declaring_type_of_variant<'a>(module: &'a Module, variant: &str) -> Option<&'a str> {
+    module
+        .type_decls
+        .iter()
+        .find(|decl| decl.variants.iter().any(|v| v.name == variant))
+        .map(|decl| decl.name.as_str())
+}
+
+fn undeclared_exposure(loaded: &Loaded, module_name: &str, item: &Exposed) -> Error {
+    let name = item.name();
+    Error {
+        phase: Phase::Type,
+        msg: format!("module `{module_name}` exposes `{name}`, which it does not declare"),
+        span: item.span().clone(),
+        note: Some(format!(
+            "an `exposing` list may name only this module's own declarations (ADR 0049) — \
+             declare `{name}` in `{module_name}`, or leave it out and let an importer take it \
+             from the module that does declare it"
+        )),
+        file: Some(loaded.path.clone()),
+    }
+}
+
+fn exposed_constructor_is_not_a_type(
+    loaded: &Loaded,
+    module_name: &str,
+    item: &Exposed,
+    owning_type: &str,
+) -> Error {
+    let name = item.name();
+    Error {
+        phase: Phase::Type,
+        msg: format!(
+            "module `{module_name}` exposes `{name}`, which is a constructor of `{owning_type}` \
+             rather than a type it declares"
+        ),
+        span: item.span().clone(),
+        note: Some(format!(
+            "an `exposing` list names types, and a type carries its constructors with it — write \
+             `{owning_type}(..)` to expose `{owning_type}` and `{name}` together"
+        )),
+        file: Some(loaded.path.clone()),
     }
 }
 

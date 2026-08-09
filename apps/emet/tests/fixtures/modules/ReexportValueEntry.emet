@@ -1,0 +1,11 @@
+module Main exposing (..)
+
+import ReexportValue
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "relayed"
+      , glyphs = [ aptPackage { name = ReexportValue.thing } ]
+      }
+  ]

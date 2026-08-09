@@ -1,0 +1,6 @@
+module Main exposing (..)
+
+import ExposeCtor
+
+main : List Scroll
+main = [ scroll { name = ExposeCtor.own, glyphs = [ aptPackage { name = "nginx" } ] } ]
