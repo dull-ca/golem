@@ -31,8 +31,8 @@ records with row-polymorphic access and update, `let`, lambdas, `case`/`if`,
 patterns in argument position, numbers with infix operators, string
 interpolation, and the offside (layout) rule. A program evaluates to a **fleet of
 scrolls** — `main : List Scroll`, one `Scroll` per host, each a recursive tree of
-glyphs or named sub-scrolls (ADR 0031). There is no JSON/YAML intermediary and no
-templating layer.
+glyphs or named sub-scrolls (ADR 0031). The whole program is evaluated on the
+author's machine; there is no JSON/YAML intermediary.
 
 ## Dev environment
 
@@ -55,7 +55,7 @@ cargo build -p emet
 cargo test -p emet                                   # emet crate tests
 cargo test -p emet -p emet-lsp                       # + the LSP crate
 cargo run -p emet                                    # built-in demo
-cargo run -p emet -- apps/emet/examples/basic.emet   # run a file (.emet extension)
+cargo run -p emet -- build --text apps/emet/examples/basic.emet   # compile a file
 ```
 
 ## Pipeline (each stage is one module)
@@ -261,8 +261,9 @@ An Elm-shaped, minimal module system for reuse across files:
   `++`. `/` is float division, `//` integer; division / `modBy` / `remainderBy`
   by zero return `0` (total).
 - **String interpolation.** `"port ${expr}"` (embedded expr must be `String`);
-  desugars to `String.concat`. The IR carries only fully-evaluated concrete
-  strings — no templating (not Ansible/Jinja).
+  desugars to `String.concat` and runs at compile time, so the IR carries the
+  resulting value: a `String`, or a `Text` whose holes are sealed secrets
+  (ADR 0047).
 
 `Maybe`, `Bool`, and `Order` are built-in sum types injected via the prelude
 constructor registry. User-facing `type Foo a = …` declarations parse and infer:
@@ -328,7 +329,8 @@ implementation, not the tests, unless a test is provably wrong.
 
 Reserved lowercase record constructors (lexed as `Tok::Ident`, special-cased
 in `parser.rs::parse_atom`), all IR fields plain `String` except a filesystem
-entry's `mode`, which lowers to a `u16` `Perms` in `eval` (ADR 0019):
+entry's `mode`, which lowers to a `u16` `Perms` in `eval` (ADR 0019), and the
+value-bearing `contents`/`line`, which lower to a `Text` (ADR 0047):
 
 ```
 aptPackage     { name }                    -> Glyph::AptPackage      key apt:<name>
