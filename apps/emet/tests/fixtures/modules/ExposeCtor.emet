@@ -1,0 +1,6 @@
+module ExposeCtor exposing (Wrap, own)
+
+type Tag = Wrap String
+
+own : String
+own = "own"

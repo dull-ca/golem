@@ -1,0 +1,6 @@
+module ReexportType exposing (Tag(..), own)
+
+import ReexportSource exposing (Tag(..))
+
+own : String
+own = "own"

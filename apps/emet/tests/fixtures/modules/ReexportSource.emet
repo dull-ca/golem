@@ -1,0 +1,6 @@
+module ReexportSource exposing (thing, Tag(..))
+
+type Tag = Tag String
+
+thing : String
+thing = "nginx"

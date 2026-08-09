@@ -1,0 +1,6 @@
+module ReexportValue exposing (thing, own)
+
+import ReexportSource exposing (thing)
+
+own : String
+own = "own"

@@ -75,6 +75,56 @@ fn exposing_a_non_exposed_name_is_rejected() {
     );
 }
 
+fn assert_undeclared_exposure(err: &emet::Error, module: &str, name: &str) {
+    assert_eq!(err.phase, Phase::Type);
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
+    for needle in [format!("`{module}`"), format!("`{name}`")] {
+        assert!(
+            rendered.contains(&needle),
+            "the diagnostic must contain {needle}, got: {rendered}"
+        );
+    }
+    assert!(
+        rendered.contains("declare"),
+        "the diagnostic must say the name has to be declared here, got: {rendered}"
+    );
+}
+
+// Before ADR 0049 the two halves of a re-export diverged, and neither was an
+// error: the value case compiled and handed the importer the declaring module's
+// value through the relay, while the type case dropped out of the interface
+// silently and surfaced later as "does not expose". Both are the exposing list's
+// error now.
+#[test]
+fn a_module_may_not_expose_a_value_it_did_not_declare() {
+    let err = compile_fixture("ReexportValueEntry.emet")
+        .expect_err("re-exposing an imported value must not compile");
+    assert_undeclared_exposure(&err, "ReexportValue", "thing");
+}
+
+#[test]
+fn a_module_may_not_expose_a_type_it_did_not_declare() {
+    let err = compile_fixture("ReexportTypeEntry.emet")
+        .expect_err("re-exposing an imported type must not compile");
+    assert_undeclared_exposure(&err, "ReexportType", "Tag");
+}
+
+#[test]
+fn exposing_a_constructor_by_itself_points_at_its_type() {
+    let err = compile_fixture("ExposeCtorEntry.emet")
+        .expect_err("a constructor is not a type, so `exposing (Wrap)` must not compile");
+    assert_eq!(err.phase, Phase::Type);
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
+    assert!(
+        rendered.contains("`Wrap`") && rendered.contains("`ExposeCtor`"),
+        "the diagnostic must name the constructor and the module exposing it, got: {rendered}"
+    );
+    assert!(
+        err.note.unwrap_or_default().contains("`Tag(..)`"),
+        "the note must point at the type whose constructors the author wants"
+    );
+}
+
 #[test]
 fn exposed_type_constructors_cross_module() {
     let c = compile_fixture("RolesEntry.emet").expect("Type(..) exposure compiles");

@@ -31,6 +31,12 @@ module Roles exposing (Role(..), glyphsFor)
 A file with **no** `module` line is a valid entry module that exposes
 everything.
 
+An `exposing` list names only what the module itself declares. Exposing a name
+that arrived through an `import` is a compile error, so a module is never a
+relay for another module's surface — importers reach a name from the module that
+declares it. An uppercase item is always a type: to expose a constructor, expose
+its type with `Type(..)`.
+
 ## Imports
 
 An `import` line, also at column zero, brings a module into scope.

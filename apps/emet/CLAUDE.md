@@ -108,6 +108,14 @@ An Elm-shaped, minimal module system for reuse across files:
   module `Limesurvey.Database`. Nesting confers **no privilege**: a submodule is
   an ordinary module with a dot in its name, sees nothing of its parent, and
   does not require one to exist.
+- **`exposing` names only local declarations (ADR 0049).** Exposing a name this
+  module did not declare is an error naming it
+  (`resolve::reject_undeclared_exposures`), so no module can be made a relay for
+  another's surface — Elm's rule. Before it, a re-exposed *value* worked and let
+  an importer read the declaring module's value through the relay, while a
+  re-exposed *type* dropped out of the interface without a word; both are now one
+  message at the exposing list. An uppercase item is always a type, so exposing a
+  bare constructor gets its own message pointing at `Type(..)`.
 - **An import whose file declares a different module is an error** naming both
   and pointing at the import. This was a panic (`no entry found for key`) for
   flat modules too, not only nested ones: the file registered under its header
