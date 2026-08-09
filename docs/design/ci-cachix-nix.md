@@ -20,9 +20,11 @@ One gate, one cache, and any machine can be CI:
   the closure to cachix. It is provisioned by golem itself (dogfood) — see the
   loop below.
 
-The cache does not exist yet (Dr. Dub is creating it), so `<cache>` is a
-placeholder throughout. Nothing here is wired into `flake.nix` until the real
-name and public key exist.
+The cache is `dull-ca`, live and repo-scoped; both `.github/workflows/ci.yml`
+and `.github/workflows/release.yml` push to it through `cachix/cachix-action`
+with the auth token in a repository secret. `<cache>` below still stands in for
+it wherever the step is a one-time setup you would run against any cache, and
+`<public-key>` is the value printed on the cache's own page.
 
 ## One-time cachix setup (Dr. Dub)
 
