@@ -7,7 +7,7 @@ Recipes. Each assumes the [tutorial](tutorial.md). Run any example with
 
 Write a `... -> Scroll` helper and map it. Over names:
 
-```elm
+```elm fragment
 main : List Scroll
 main = List.map webHost [ "web-1", "web-2", "web-3" ]
 ```
@@ -29,7 +29,7 @@ Full: [`apps/emet/examples/fleet.emet`](../../apps/emet/examples/fleet.emet).
 Take the per-host data as a record and read its fields — `h.name`, `h.port` —
 including inside a lambda passed to `List.map`:
 
-```elm
+```elm fragment
 main : List String
 main = List.map (\h -> h.name) [ { name = "a", port = 1 }, { name = "b", port = 2 } ]
 ```
@@ -122,7 +122,7 @@ not check that your recursion terminates.
 
 Different roles, different glyphs. One helper per role, joined with `List.append`:
 
-```elm
+```elm fragment
 main : List Scroll
 main =
   List.append

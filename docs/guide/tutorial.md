@@ -66,7 +66,7 @@ Application is juxtaposition — `webHost "web-1"`, no parentheses.
 `List.map` applies a function to every element. Give it `webHost` and a list of
 names to get a `List Scroll`:
 
-```elm
+```elm fragment
 main : List Scroll
 main = List.map webHost [ "web-1", "web-2", "web-3" ]
 ```

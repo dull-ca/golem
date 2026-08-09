@@ -68,7 +68,7 @@ cached, and handed to CI. `Secretspec.get "DB_PASSWORD"` keeps a password out
 of it: `emetc` resolves the value through secretspec at compile time and
 encrypts it to the fleet's key, and the manifest carries ciphertext.
 
-```emet
+```emet fragment
 , env = [ env "DB_PASSWORD" (Secretspec.get "DB_PASSWORD") ]
 ```
 
