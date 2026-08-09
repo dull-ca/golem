@@ -13,13 +13,26 @@ use crate::scroll::{Glyph, Scroll};
 /// reads (ADR 0012 §1). Distinct from `emet_version`, which is provenance and
 /// is never hashed.
 ///
-// NOTE: `4` because ADR 0036 added `notifies` to `Scroll`, between `policy` and
-// `contents`. Postcard is non-self-describing, so a field addition IS a layout
-// change: v3 bytes would misread the old `contents` tag as the new `notifies`
-// length. No glyph changed shape, so every glyph content id survives the bump
-// untouched and the first v4 apply is a Noop pass, not a Replace storm.
-// (v3 was the recursive `Scroll` tree of ADR 0031 plus ADR 0030's enriched
-// `aptPackage`; v2 was the filesystem glyph of ADR 0019.)
+// NOTE: `5` because ADR 0047 retyped the value-bearing fields — a `file`
+// entry's `contents`, a `lineInFile`'s `line` — from `String` to the `Text`
+// sum, so a value can be a sequence of literals and sealed-secret holes.
+// Postcard is non-self-describing, so an enum on the wire is a variant tag
+// followed by its payload: `Text::Plain(s)` is exactly the v4 string with a `0`
+// byte in front. The layout moves whether or not a manifest holds any secret.
+//
+// Unlike v4, this bump does NOT preserve glyph content ids. Every `file` and
+// `lineInFile` glyph hashes to a new id, so the first v5 apply is a `Replace`
+// over the value-bearing half of a host — identical content rewritten, new ids
+// recorded. `aptPackage`, `systemdService`, and the `directory`/`symlink`
+// entries carry no `Text` and keep their v4 ids, so they stay `Noop`s. Both
+// halves are pinned by `tests/secrets.rs`.
+//
+// (v4 came from ADR 0036 adding `notifies` to `Scroll`, between `policy` and
+// `contents`: v3 bytes would misread the old `contents` tag as the new
+// `notifies` length. No glyph changed shape there, so every glyph content id
+// survived untouched and the first v4 apply was a Noop pass, not a Replace
+// storm. v3 was the recursive `Scroll` tree of ADR 0031 plus ADR 0030's
+// enriched `aptPackage`; v2 was the filesystem glyph of ADR 0019.)
 pub const FORMAT_VERSION: u32 = 5;
 
 /// A scroll paired with its content address. The `content_id` is over the

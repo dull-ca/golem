@@ -102,11 +102,15 @@ impl Default for RetryConfig {
     }
 }
 
-/// How many leaf units the enact executor runs concurrently. Consumed by the
-/// coming parallel-unit executor (ADR 0034 §3), which the attempt-scoped claim
-/// and success sets are already Mutex-guarded for; the units loop is serial
-/// until it lands, so today this only sets the width it will use. `workers = 1`
-/// is the serial fallback.
+/// How many leaf units the enact executor runs concurrently.
+/// `foreman::run_reconcile` drains the units queue on a scoped pool of this
+/// many threads; a worker takes the next unit and runs that unit's whole enact
+/// — its round loop, its `on_exhaust` — before taking another (ADR 0034 §3).
+/// That is what the attempt-scoped claim and success sets, and the shared retry
+/// clock, are Mutex-guarded for. Unit reports still come back in source order;
+/// enact order between units does not. `workers = 1` is the serial fallback;
+/// `0` is clamped up to it, because a pool of no threads would drain no units
+/// and settle a reconcile that enacted nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnactConfig {
     pub workers: usize,
