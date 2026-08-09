@@ -31,6 +31,9 @@ a smoke check). With a `FILE`, it compiles that `.emet` source.
 | `--format <binary\|text\|json>` | which view to emit; default `binary` |
 | `--text` (`--human`) | emit the readable plan instead of the binary manifest |
 | `--json` | emit the JSON debug view instead of the binary manifest |
+| `--secret-key <PATH>` | the fleet key file secrets are sealed to (env `GOLEM_SECRET_KEY_FILE`) |
+| `--secret-provider <NAME>` | which secretspec provider answers `Secretspec.get` (env `SECRETSPEC_PROVIDER`) |
+| `--secret-profile <NAME>` | which secretspec profile to resolve under (env `SECRETSPEC_PROFILE`) |
 
 **Default output is the binary, content-addressed manifest** — raw postcard
 bytes to stdout (or `-o PATH`), with diagnostics on stderr so it composes in
@@ -40,6 +43,13 @@ out of the binary artifact, and each override `--format`.
 Bare `emetc` with no subcommand compiles the built-in demo as **text**;
 `emetc build` with no `FILE` compiles the same demo as the **binary**
 manifest.
+
+The three `--secret-*` flags are read only by a program that calls
+`Secretspec.get`. `--secret-key` names the fleet key the resolved value is
+sealed to — without it, and without `GOLEM_SECRET_KEY_FILE`, compiling such a
+program fails saying so. `--secret-provider` and `--secret-profile` select
+which secretspec provider and profile answer the lookup, overriding what
+`secretspec.toml` configures. See [Trust model](/explanation/trust/).
 
 ```bash
 # Compile the lichess fleet to a manifest file.
@@ -98,7 +108,9 @@ golemctl apply fleet.manifest              http://127.0.0.1:7474
 | `--reattach` | skip the POST and follow the newest attempt via `GET /reconciles/latest` |
 
 `--reattach` is what a dropped connection needs: the reconcile it started
-kept running on the agent, and reattaching resumes reading its progress.
+kept running on the agent, and reattaching resumes reading its progress. The
+`<source>` argument is still required and is never opened, so the path you
+originally applied is the one to repeat.
 
 Exit code `0` means the reconcile settled. Any other terminal outcome
 (`partial`, `rolled_back`) exits nonzero and still prints the report — a
@@ -223,8 +235,9 @@ Options:
       --state-dir <DIR>        Where to keep planroom.db [default: /var/lib/golem]
       --listen <ADDR>          HTTP listen address [default: 127.0.0.1:7474]
       --reconciler <KIND>      host | fake [default: fake] [env: GOLEM_RECONCILER]
-      --config <FILE>          golemd.toml: [retry], [enact], [auth]
+      --config <FILE>          golemd.toml: [retry], [enact], [auth], [secrets]
       --auth-token-file <FILE> Shared secret every request must present
+      --secrets-key-file <FILE> Fleet key the manifest's secrets were sealed to
 ```
 
 ### `--host <name>` (required)
@@ -263,6 +276,19 @@ it open.
 
 **With neither set, the agent answers anyone who reaches the port** — the
 local-development posture, never a deployed one. See
+[Trust model](/explanation/trust/).
+
+### `--secrets-key-file <file>`
+
+The fleet key `emetc` sealed this fleet's manifests to, which `golemd` opens
+sealed values with at enact. `[secrets] key_file` in `golemd.toml` says the
+same thing and the flag overrides it. The key is read once at startup: an
+unreadable or malformed file stops the agent, so a mis-provisioned key is a
+boot failure rather than a fleet-wide reconcile failure found one glyph at a
+time.
+
+With neither set, the agent enacts any manifest carrying no secret and refuses,
+by name, every glyph that carries one. See
 [Trust model](/explanation/trust/).
 
 ## HTTP endpoints

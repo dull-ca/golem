@@ -24,7 +24,7 @@ endpoint address p = "${address}:${String.fromInt p}"
 `exposing (..)` exposes everything. An explicit list names values and types;
 a type may expose its constructors with `Type(..)`:
 
-```emet
+```emet fragment
 module Roles exposing (Role(..), glyphsFor)
 ```
 
@@ -69,7 +69,7 @@ Names are written bare, and a bare name resolves whenever exactly one thing in
 scope answers to it. When two do, write the one you mean in full — in an
 annotation, in an expression, or in a pattern:
 
-```emet
+```emet fragment
 import IntBox exposing (Thing(..))   -- declares Thing, whose variant is Wrap
 import StrBox exposing (Thing(..))   -- also declares Thing, also with a Wrap
 
@@ -79,11 +79,14 @@ label value =
     IntBox.Wrap n -> String.fromInt n
 ```
 
-A bare `Thing` or a bare `Wrap` in that module is a compile error naming both
-candidates and offering both spellings. It is reported where the name is
-*written*, not at the `import` — the imports are fine, and only a use site can
-be ambiguous. Renaming one of the two remains available and is often the
-clearer answer.
+A bare `Thing` or a bare `Wrap` in that module is a compile error. The imports
+themselves are fine — only a use site can be ambiguous — and the two errors
+differ in how much they can tell you. A bare constructor is reported at the
+reference and offers both qualified spellings. A bare type names both owners in
+its message, but carries no span — it is reported at the top of the file — and
+its note offers one qualified spelling and the alternative of importing only
+one of the two. Renaming one of them remains available and is often the clearer
+answer.
 
 A type reached through two imports is one type, not a collision: two modules may
 both re-expose a third module's type. Constructors do not travel that way — a
@@ -136,6 +139,34 @@ directories. Without an `emet.json`, resolution is entry-directory-only.
 With that `emet.json` at the repo root, any entry resolves `import Quadlet` to
 `lib/Quadlet.emet`. The entry directory keeps precedence over
 `source-directories`.
+
+### A dot in a module name is a directory separator
+
+A module name may be dotted, and each segment is one directory level. `module
+Limesurvey.Database` lives at `Limesurvey/Database.emet`, found by joining the
+segments onto each search-path root in the same order as before:
+
+```
+lib/
+  Limesurvey.emet            -- module Limesurvey
+  Limesurvey/
+    Database.emet            -- module Limesurvey.Database
+```
+
+```emet fragment
+import Limesurvey.Database exposing (containerName)
+import Limesurvey.Database as Db
+```
+
+The segments must touch: `Limesurvey.Database` is one name, `Limesurvey
+. Database` is not. That holds in the header, in `import`, and in qualified
+access, where `Limesurvey.Database.containerName` reads as the member
+`containerName` of the module `Limesurvey.Database`.
+
+Nesting is naming and nothing else. `Limesurvey.Database` is an ordinary module
+that happens to have a dot in its name: it sees nothing of `Limesurvey` that it
+did not import, it gets no privileged access to it, and `Limesurvey.emet` need
+not exist at all.
 
 ## See also
 

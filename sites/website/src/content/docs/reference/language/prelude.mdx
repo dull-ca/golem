@@ -1,15 +1,16 @@
 ---
 title: The prelude
-description: The built-in functions every Emet module starts with — Basics, String, Char, List, and Maybe — with exact signatures.
+description: The built-in functions every Emet module starts with — Basics, String, Char, List, Maybe, Tuple, and Secretspec — with exact signatures.
 ---
 
 Every Emet module opens with these bindings already in scope; nothing imports
 them. They are total Rust functions seeded into the type and value environments
 `emetc` starts every module from — not library source. There is no prelude
 module to import, no bootstrap `.emet` file to ship, and no search path to
-resolve before a program can call `List.map`. Names carrying a `List.` / `Maybe.` /
-`String.` / `Char.` prefix are a dotted-name convention, not a module system —
-`List.map` is one identifier resolved by lookup.
+resolve before a program can call `List.map`. Names carrying a `List.` /
+`Maybe.` / `String.` / `Char.` / `Tuple.` / `Secretspec.` prefix are a
+dotted-name convention, not a module system — `List.map` is one identifier
+resolved by lookup.
 
 Signatures use Emet type syntax: `a`/`b` are type variables, `number` /
 `comparable` / `appendable` are the three bounded variables, and `->` is
@@ -57,10 +58,10 @@ name is what a partial application needs — `List.map (add 1) xs`.
 | `floor : Float -> Int` | round toward negative infinity |
 | `ceiling : Float -> Int` | round toward positive infinity |
 | `truncate : Float -> Int` | round toward zero |
-| `modBy : Int -> Int -> Int` | `modBy m x` is `x` modulo `m`, sign of `m`; `modBy 0 _` is `0` |
+| `modBy : Int -> Int -> Int` | `modBy m x` is `x` modulo `m`, never negative — Euclidean, so `modBy (0 - 3) 10` is `1` where Elm gives `-2`; `modBy 0 _` is `0` |
 | `remainderBy : Int -> Int -> Int` | `remainderBy d x` is the remainder of `x / d`, sign of `x`; `remainderBy 0 _` is `0` |
 
-```emet
+```emet fragment
 clamp 0 255 300  -- 255
 modBy 3 10       -- 1
 ```
@@ -72,8 +73,9 @@ and `remainderBy` are total: a zero divisor yields `0` rather than trapping.
 
 ### Comparison
 
-Operate on any `comparable` (`Int`, `Float`, `String`, `Char`, and orderings of
-them).
+Operate on any `comparable` — `Int`, `Float`, `String`, `Char`, and tuples
+whose every element is comparable, compared lexicographically. An `Order`, a
+`Bool`, and a `List` are not comparable.
 
 | Signature | Behavior |
 | --- | --- |
@@ -113,8 +115,9 @@ The Elm `elm/core` `String` surface: names, argument order, and total /
 clamping semantics all follow Elm. Every length, index, and slice bound is a
 **Unicode scalar** index (`String.length` counts scalars), never a byte or
 grapheme offset — a combining mark counts as its own scalar. No
-function traps: out-of-range counts clamp and empty inputs return an empty
-result or `[]`.
+function traps: an out-of-range count clamps rather than failing. `words` and
+`lines` diverge from Elm on the empty string, returning `[ "" ]` where Elm
+returns `[]`.
 
 ### Building and converting
 
@@ -138,7 +141,7 @@ result or `[]`.
 | `String.fromList : List Char -> String` | assemble a string from scalars |
 | `String.uncons : String -> Maybe (Char, String)` | split off the first scalar: `Just (first, rest)`, or `Nothing` on `""` |
 
-```emet
+```emet fragment
 String.join ", " [ "a", "b", "c" ]  -- "a, b, c"
 String.toInt "42"                   -- Just 42
 ```
@@ -154,6 +157,7 @@ String.toInt "42"                   -- Just 42
 | `String.endsWith : String -> String -> Bool` | `endsWith suffix s` |
 | `String.indexes : String -> String -> List Int` | scalar indices of every (possibly overlapping) match; empty needle → `[]` |
 | `String.indices : String -> String -> List Int` | alias of `String.indexes` |
+| `String.isSecret : String -> Bool` | whether the value carries a sealed hole rather than plain text (see [Secretspec](#secretspec)) |
 
 ### Slicing
 
@@ -168,7 +172,7 @@ for `dropLeft` / `dropRight`, the whole string).
 | `String.dropLeft : Int -> String -> String` | drop the first `n` scalars |
 | `String.dropRight : Int -> String -> String` | drop the last `n` scalars |
 
-```emet
+```emet fragment
 String.slice 1 (-1) "hello"  -- "ell"
 String.right 3 "hello"       -- "llo"
 ```
@@ -220,7 +224,7 @@ definitions.
 | `Char.isHexDigit : Char -> Bool` | ASCII `0`–`9`, `a`–`f`, `A`–`F` |
 | `Char.isSpace : Char -> Bool` | space, tab, newline, carriage return, vertical tab, or form feed |
 
-```emet
+```emet fragment
 Char.toCode 'A'      -- 65
 Char.isDigit '7'     -- True
 ```
@@ -244,7 +248,7 @@ The list combinators — Emet's only way to iterate. `List` sum functions requir
 | `List.range : Int -> Int -> List Int` | `range lo hi` is `[lo..hi]` inclusive; empty if `lo > hi` |
 | `List.sum : List number -> number` | sum of the elements; `[]` → `0` |
 
-```emet
+```emet fragment
 List.map (\x -> x * x) [ 1, 2, 3 ]   -- [ 1, 4, 9 ]
 List.foldl (\x acc -> acc + x) 0 [ 1, 2, 3 ]  -- 6
 List.range 1 5                        -- [ 1, 2, 3, 4, 5 ]
@@ -262,7 +266,7 @@ see [Values and types](/reference/language/values-and-types/).
 | `Maybe.andThen : (a -> Maybe b) -> Maybe a -> Maybe b` | chain a `Maybe`-returning function |
 | `Maybe.withDefault : a -> Maybe a -> a` | the value in a `Just`, or the default for `Nothing` |
 
-```emet
+```emet fragment
 Maybe.withDefault 0 (String.toInt "x")      -- 0
 Maybe.andThen (\n -> Just (n + 1)) (Just 4) -- Just 5
 ```
@@ -282,7 +286,7 @@ itself see [Values and types](/reference/language/values-and-types/#tuples-and-u
 | `Tuple.mapSecond : (b -> y) -> (a, b) -> (a, y)` | apply a function to the second element |
 | `Tuple.mapBoth : (a -> x) -> (b -> y) -> (a, b) -> (x, y)` | apply a function to each element |
 
-```emet
+```emet fragment
 Tuple.first (Tuple.pair 7 9)         -- 7
 Tuple.mapSecond (\n -> n + 1) (1, 2) -- (1, 3)
 ```
@@ -298,7 +302,7 @@ the program can interpolate but the manifest never carries in the clear.
 | --- | --- |
 | `Secretspec.get : String -> String` | the value of a declared secret, sealed into the manifest |
 
-```emet
+```emet fragment
 env "DB_PASSWORD" (Secretspec.get "DB_PASSWORD")
 ```
 
