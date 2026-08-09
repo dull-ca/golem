@@ -4,6 +4,7 @@ description: aptPackage, systemdService, file, lineInFile — the only resource 
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 
 A **glyph** is one bottom-level OS resource. Emet has four glyph primitives
 and `golemd` enacts those four. Every higher-level shape you write (a
@@ -35,7 +36,7 @@ is the one that may hold a secret today. See
 
 Ensure an apt package is installed.
 
-```emet
+```emet fragment
 aptPackage { name = "nginx" }
 ```
 
@@ -57,7 +58,7 @@ Golem never removes a package it did not install.
 
 Ensure a systemd unit is enabled and started.
 
-```emet
+```emet fragment
 systemdService { unit = "nginx.service" }
 ```
 
@@ -84,7 +85,7 @@ glyph.
 
 Ensure a file exists with fixed contents and mode.
 
-```emet
+```emet fragment
 file
   { path = "/etc/app/site.conf"
   , contents = "[server]\nlisten = 8080\n"
@@ -125,7 +126,7 @@ deletes the file if golem created it.
 `file` is one of three surface spellings of the filesystem glyph. The other
 two build a directory or a symlink at a path:
 
-```emet
+```emet fragment
 directory { path = "/var/lib/registry", mode = "0755" }
 
 symlink { path = "/etc/nginx/sites-enabled/site.conf", target = "/etc/nginx/sites-available/site.conf" }
@@ -141,9 +142,10 @@ its bind-mount source, which is where most of them come from.
 
 <Aside type="tip" title="Contents are built in Emet">
   A config file's body is produced by the language — string interpolation
-  and `String.join` — and fully evaluated before it reaches the `contents`
-  field. See [The config](/getting-started/the-config/) for how a port
-  number becomes a rendered config string.
+  and `String.join` — and runs to completion before it reaches the `contents`
+  field. What survives evaluation is text, plus a sealed hole wherever a
+  secret was interpolated. See [The config](/getting-started/the-config/) for
+  how a port number becomes a rendered config string.
 </Aside>
 
 ## `lineInFile`
@@ -152,7 +154,7 @@ Ensure a single line is present in a file **golem does not own** — a file the
 distro, another tool, or a human wrote, which golem needs to amend rather than
 author.
 
-```emet
+```emet fragment
 lineInFile
   { path = "/etc/hosts"
   , line = "10.0.0.7 registry.internal"
@@ -205,23 +207,13 @@ Uniqueness is never fleet-wide.
 ## Building abstractions
 
 Raw glyphs are rare beyond the smallest hosts. They compose either through a
-function returning a `List Glyph`, or through the shipped
-[`Quadlet`](/reference/workloads/) library, whose `Workload` lowers a typed
-container spec down to exactly these glyphs:
+function you write returning a `List Glyph`, or through a shipped library —
+[`Quadlet`](/reference/workloads/) for containers,
+[`Traefik`](/reference/ingress/) for the TLS front door that routes hostnames to
+them. A `Quadlet` `Workload` lowers a typed container spec down to exactly these
+glyphs:
 
-```emet
-import Quadlet exposing ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
-
-registry : List Glyph
-registry =
-  workloadGlyphs
-    (Workload
-      { name = "registry"
-      , image = image "docker.io/library" "registry" "2"
-      , env = [], ports = [ tcp 5000 5000 ], volumes = []
-      , restart = Always, expose = Internal
-      })
-```
+<Snippet file="primitives-workload.emet" region="workload" />
 
 That lowers to the podman `aptPackage`, the `.container` quadlet `file`, its
 `systemdService`, one nftables drop-in `file` for the internal port opening, and

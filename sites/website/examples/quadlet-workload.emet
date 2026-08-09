@@ -1,0 +1,58 @@
+-- #region imports
+import Quadlet exposing
+  ( image, tcp, env, label
+  , Restart(..), Access(..), Relabel(..), Expose(..)
+  , Network(..), networkUnit
+  , fromVolume, volumeUnit
+  , ContainerUnit(..), containerUnitGlyphs
+  , Workload(..), workloadGlyphs )
+-- #endregion
+
+-- #region workload
+lila : Workload
+lila =
+  Workload
+    { name     = "lila"
+    , image    = image "docker.io" "lichess-org/lila" "latest"
+    , env      = [ env "RUST_LOG" "info" ]
+    , envFiles = [ "/etc/golem/lila.env" ]
+    , labels   = [ label "golem.fleet" "lichess" ]
+    , ports    = [ tcp 9663 9663 ]
+    , networks = [ ManagedNetwork "lichess" ]
+    , volumes  = [ fromVolume "lila-data" "/var/lib/lila" ReadWrite Private ]
+    , restart  = Always
+    , expose   = Internal
+    }
+-- #endregion
+
+-- #region container-unit
+batch : ContainerUnit
+batch =
+  ContainerUnit
+    { name             = "lila-batch"
+    , image            = image "docker.io" "lichess-org/lila" "latest"
+    , exec             = Just "/usr/bin/lila-batch --once"
+    , publishPorts     = []
+    , networks         = [ ManagedNetwork "lichess" ]
+    , networkUnits     = [ networkUnit "lichess" ]
+    , mounts           = [ fromVolume "lila-data" "/var/lib/lila" ReadOnly Private ]
+    , volumeUnits      = [ volumeUnit "lila-data" ]
+    , environment      = [ env "RUST_LOG" "warn" ]
+    , environmentFiles = [ "/etc/golem/lila.env" ]
+    , labels           = [ label "golem.fleet" "lichess" ]
+    , restart          = OnFailure
+    , wantedBy         = [ "multi-user.target" ]
+    }
+-- #endregion
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "app-01"
+      , notifies = [ "golem-nftables.service" ]
+      , groups =
+          [ scroll { name = "lila", glyphs = workloadGlyphs lila }
+          , scroll { name = "batch", glyphs = containerUnitGlyphs batch }
+          ]
+      }
+  ]

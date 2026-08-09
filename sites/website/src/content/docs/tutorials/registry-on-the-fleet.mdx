@@ -10,6 +10,7 @@ description: Deploy a container registry to a VM with golem, then push to it fro
 */}
 
 import { Aside, Steps } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 import Output from "../../../components/Output.astro";
 
 `examples/registry/` runs a real Podman registry on a golem-managed box, and uses
@@ -27,33 +28,7 @@ root.
 docker.io `registry:2` image on `:5000`, backed by a named volume, internally
 exposed:
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Access(..), Relabel(..)
-  , fromVolume, Expose(..), Workload(..), workloadGlyphs )
-
-registry : Workload
-registry =
-  Workload
-    { name = "registry"
-    , image = image "docker.io/library" "registry" "2"
-    , env = []
-    , ports = [ tcp 5000 5000 ]
-    , volumes =
-        [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private ]
-    , restart = Always
-    , expose = Internal
-    }
-
-main : List Scroll
-main =
-  [ scroll
-      { name = "registry"
-      , notifies = [ "golem-nftables.service" ]
-      , glyphs = workloadGlyphs registry
-      }
-  ]
-```
+<Snippet file="registry-on-the-fleet.emet" region="program" />
 
 It lowers to eleven glyphs — the podman package, the
 `golem-registry-data.volume` unit, the `.container` quadlet, its service, the
@@ -136,7 +111,7 @@ So any guest reaches the registry's *published* port at **`10.0.2.2:5000`** — 
 connection lands on your loopback, which QEMU forwards into the registry guest.
 That rendezvous is the whole reason the builder scroll names `10.0.2.2:5000`:
 
-```emet
+```emet fragment
 registryEndpoint : String
 registryEndpoint = "10.0.2.2:5000"
 

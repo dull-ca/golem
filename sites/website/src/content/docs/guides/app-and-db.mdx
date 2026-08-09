@@ -4,6 +4,7 @@ description: Write a thin fleet helper on golem's shipped Quadlet library — a 
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 import Output from "../../../components/Output.astro";
 
 golem ships a strongly-typed container library — [`Quadlet`](/reference/workloads/)
@@ -20,22 +21,12 @@ A container is a `Workload` record. `image` takes a registry, a name, and a tag;
 `tcp host container` is a published port; `expose` derives the firewall from
 those ports. An app listening on 9663, reachable from the internal network:
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+<Snippet file="app-and-db.emet" region="workload" />
 
-lila : Workload
-lila =
-  Workload
-    { name = "lila"
-    , image = image "docker.io" "lichess-org/lila" "latest"
-    , env = []
-    , ports = [ tcp 9663 9663 ]
-    , volumes = []
-    , restart = Always
-    , expose = Internal
-    }
-```
+`envFiles`, `labels`, and `networks` are empty here because this container needs
+none of them; every field is written out because a record literal states its
+whole shape. The [Quadlet reference](/reference/workloads/) covers what each one
+carries.
 
 `workloadGlyphs lila` is a `List Glyph` — nothing golem-special, just data the
 agent already understands. Every field is checked: a `String` where a `Port`
@@ -47,20 +38,7 @@ Most services on a fleet share a shape: a docker.io image, one port, always
 restart, internally exposed. Name that shape once and the call sites shrink to
 the two things that vary:
 
-```emet
-service : String -> String -> String -> Int -> List Glyph
-service name repo tag port =
-  workloadGlyphs
-    (Workload
-      { name = name
-      , image = image "docker.io" repo tag
-      , env = []
-      , ports = [ tcp port port ]
-      , volumes = []
-      , restart = Always
-      , expose = Internal
-      })
-```
+<Snippet file="app-and-db.emet" region="service" />
 
 `service "lila" "lichess-org/lila" "latest" 9663` is now your fleet's word for
 "an internally-reachable container service." The library carries the types; your
@@ -75,16 +53,7 @@ helper carries the convention.
 
 ## Use it in a fleet
 
-```emet
-main : List Scroll
-main =
-  [ scroll
-      { name = "app-01"
-      , notifies = [ "golem-nftables.service" ]
-      , glyphs = service "lila" "lichess-org/lila" "latest" 9663
-      }
-  ]
-```
+<Snippet file="app-and-db.emet" region="fleet" />
 
 `notifies` is what loads the firewall rule the helper writes: when any glyph in
 the scroll actually changes the host, `golem-nftables.service` is reloaded once
@@ -122,24 +91,7 @@ glyphs; identical glyphs share content ids, so the host does that work once.
 Give the workload a named volume and the lowering grows a `.volume` quadlet.
 This is the registry (`examples/registry/registry.emet`):
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Access(..), Relabel(..)
-  , fromVolume, Expose(..), Workload(..), workloadGlyphs )
-
-registry : Workload
-registry =
-  Workload
-    { name = "registry"
-    , image = image "docker.io/library" "registry" "2"
-    , env = []
-    , ports = [ tcp 5000 5000 ]
-    , volumes =
-        [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private ]
-    , restart = Always
-    , expose = Internal
-    }
-```
+<Snippet file="app-and-db-registry.emet" region="registry" />
 
 Now eleven glyphs, the extra one being the named volume's `.volume` unit:
 
@@ -153,24 +105,15 @@ story.
 
 Because `service` is a function, a whole host is a `List.concat` of calls:
 
-```emet
-scaly : Scroll
-scaly =
-  scroll
-    { name = "scaly"
-    , glyphs =
-        List.concat
-          [ service "lila-http" "lichess-org/lila-http" "latest" 9080
-          , service "lila-gif"  "lichess-org/lila-gif"  "latest" 6175
-          ]
-    }
-```
+<Snippet file="app-and-db.emet" region="many-services" />
 
 Change the image tag, recompile, re-apply — only the changed glyphs get new
 content ids and are replaced. See [Applying changes](/getting-started/applying/).
 
 ## Where to next
 
+- The same `Workload`, with a front door in front of it:
+  **[An app behind Traefik](/guides/front-door/)**
 - Every `Quadlet` type and its lowering: **[The Quadlet library](/reference/workloads/)**
 - The full multi-host version, with a hand-rolled ingress too:
   **[A tour of the lichess fleet](/guides/litour/)**

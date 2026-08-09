@@ -67,8 +67,8 @@ abstractions are ordinary functions, and they lower to glyphs.
 
 ## Contents are computed here, then frozen
 
-A config file's body is built by the language and fully evaluated on your own
-machine, before it reaches the `contents` field:
+A config file's body is built by the language and runs to completion on your own
+machine before it reaches the `contents` field:
 
 <Snippet file="the-config-computed-contents.emet" region="computed-contents" />
 
@@ -136,31 +136,14 @@ uses them.
 ## Higher-level shapes are Emet functions
 
 A "container," a "service," an "ingress" — each is an Emet value that lowers
-to a `List Glyph`. Some ship with the toolchain and the rest you write for
-your own fleet and reuse across hosts. golem ships one such library —
-[`Quadlet`](/reference/workloads/), a strongly-typed model of Podman quadlets
-— and a `Workload` from it lowers to a podman package, a `.container` quadlet
+to a `List Glyph`. Some ship with the toolchain, in `lib/`, and the rest you
+write for your own fleet and reuse across hosts.
+[`Quadlet`](/reference/workloads/) is the shipped one this page uses — a
+strongly-typed model of Podman quadlets, whose `Workload` lowers to a podman
+package, a `.container` quadlet
 `file`, a `systemdService`, and any firewall openings its ports need:
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
-
-registry : Workload
-registry =
-  Workload
-    { name = "registry"
-    , image = image "docker.io/library" "registry" "2"
-    , env = []
-    , ports = [ tcp 5000 5000 ]
-    , volumes = []
-    , restart = Always
-    , expose = Internal
-    }
-
-glyphs : List Glyph
-glyphs = workloadGlyphs registry
-```
+<Snippet file="the-config-workload.emet" region="workload" />
 
 `Workload` is a record you fill in and `workloadGlyphs` is the lowering:
 data checked by the type system, landing on the same four glyphs. The

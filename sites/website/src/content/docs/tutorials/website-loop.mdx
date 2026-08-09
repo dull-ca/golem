@@ -10,6 +10,7 @@ description: golem deploying golem's own docs — build this site, ship it to a 
 */}
 
 import { Aside, Steps } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 import Output from "../../../components/Output.astro";
 
 This is golem deploying golem's own docs. Build this Starlight site into a
@@ -37,49 +38,7 @@ the box able to push.
 fragment, then a single **public** `Workload` — the `golem-website` image pulled
 from the fleet registry, published on `:80`:
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
-
-registryEndpoint : String
-registryEndpoint = "10.0.2.2:5000"
-
--- insecureConfPath and insecureConfContents elided: the drop-in's path under
--- /etc/containers/registries.conf.d, and its [[registry]] … insecure = true body.
-
-website : Workload
-website =
-  Workload
-    { name = "golem-website"
-    , image = image registryEndpoint "golem-website" "latest"
-    , env = []
-    , ports = [ tcp 80 80 ]
-    , volumes = []
-    , restart = Always
-    , expose = Public
-    }
-
-websiteGlyphs : List Glyph
-websiteGlyphs =
-  List.concat
-    [ [ file
-          { path = insecureConfPath
-          , contents = insecureConfContents
-          , mode = "0644"
-          }
-      ]
-    , workloadGlyphs website
-    ]
-
-main : List Scroll
-main =
-  [ scroll
-      { name = "web"
-      , notifies = [ "golem-nftables.service" ]
-      , glyphs = websiteGlyphs
-      }
-  ]
-```
+<Snippet file="website-loop.emet" region="program" />
 
 `expose = Public` opens `:80` to the world with one drop-in file, and pulls in
 the nftables base that loads it, so the web scroll lowers to eleven glyphs:
