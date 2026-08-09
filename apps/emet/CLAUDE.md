@@ -290,6 +290,11 @@ user types cross module boundaries (`register_type_decls`, ADR 0016).
   runtime binary dependency and untyped output. Anything else joining this
   list needs the same argument.
 
+  `aes-siv` arrives through `scroll-format`'s `secrets` feature, which owns
+  the fleet-key format `emetc` and `golemd` share. The feature is off by
+  default so the cost lands only on the two crates that seal or unseal:
+  `golemctl` depends on the same crate and links none of it.
+
 ## The two subtle subsystems
 
 Treat `apps/emet/tests/layout.rs` and `apps/emet/tests/pipeline.rs` as the spec — fix the

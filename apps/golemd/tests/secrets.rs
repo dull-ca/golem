@@ -10,7 +10,7 @@ use golemd::reconcilers::HostReconciler;
 use golemd::report::{FailClassReport, TopOutcome};
 use golemd::secrets::Keyring;
 use scroll_format::{
-    to_bytes, Chunk, Contents, Entry, Glyph, Manifest, Perms, Scroll, Secret, Text,
+    to_bytes, Chunk, Contents, Entry, FleetKey, Glyph, Manifest, Perms, Scroll, Secret, Text,
 };
 
 /// The fleet key `apps/emet/tests/secrets.rs` seals with, and the one
@@ -32,9 +32,11 @@ const SECRET_PLAINTEXT: &str = "hunter2-correct-horse";
 /// A real `emetc` output, byte for byte: `file { contents = "password=${pw}\n" }`
 /// and `lineInFile { line = "token=${pw}" }` over
 /// `pw = Secretspec.get "DB_PASSWORD"`, sealed to [`FLEET_KEY`] with the dotenv
-/// provider supplying [`SECRET_PLAINTEXT`]. Pinned as bytes so a change to
-/// either side of the seal — `emetc`'s cipher, nonce, key-file format, or
-/// `key_id` derivation — fails here rather than on a host.
+/// provider supplying [`SECRET_PLAINTEXT`]. Both ends seal through
+/// `scroll_format::FleetKey`, so this pins the whole path rather than the
+/// agreement between two implementations: an old artifact still opens, and a
+/// change to the manifest encoding around the secret fails here rather than on
+/// a host.
 const SEALED_BY_EMETC: &[u8] = &[
     5, 5, 48, 46, 49, 46, 48, 1, 174, 244, 43, 126, 213, 33, 18, 13, 60, 186, 38, 87, 246, 159, 2,
     26, 77, 230, 150, 254, 239, 39, 139, 147, 122, 31, 188, 255, 120, 52, 231, 118, 5, 115, 99, 97,
@@ -84,16 +86,10 @@ impl Drop for Fixture {
 }
 
 fn seal(plaintext: &str, key_hex: &str) -> Secret {
-    use aes_siv::aead::{Aead, KeyInit};
-    use aes_siv::{Aes256SivAead, Nonce};
-    let bytes = hex::decode(key_hex).unwrap();
-    let cipher = Aes256SivAead::new_from_slice(&bytes).unwrap();
-    Secret::Sealed {
-        key_id: hex::encode(&blake3::hash(&bytes).as_bytes()[..8]),
-        ciphertext: cipher
-            .encrypt(&Nonce::default(), plaintext.as_bytes())
-            .unwrap(),
-    }
+    FleetKey::from_hex(key_hex)
+        .unwrap()
+        .seal(plaintext.as_bytes())
+        .unwrap()
 }
 
 fn perms() -> Perms {

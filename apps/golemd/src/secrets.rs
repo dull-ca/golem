@@ -1,21 +1,12 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-use aes_siv::aead::{Aead, KeyInit};
-use aes_siv::{Aes256SivAead, Nonce};
-use scroll_format::{Chunk, Secret, Text};
+use scroll_format::{Chunk, FleetKey, MalformedFleetKey, Secret, Text, UnsealError};
 
 use crate::reconciler::{EnactError, EnactResult};
 
-const KEY_BYTES: usize = 64;
-
 pub struct Keyring {
     key: Option<FleetKey>,
-}
-
-struct FleetKey {
-    key_id: String,
-    cipher: Aes256SivAead,
 }
 
 #[derive(Debug)]
@@ -32,7 +23,7 @@ impl std::error::Error for KeyFileError {}
 impl std::fmt::Debug for Keyring {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.key {
-            Some(key) => write!(f, "Keyring(fleet key {})", key.key_id),
+            Some(key) => write!(f, "Keyring(fleet key {})", key.key_id()),
             None => f.write_str("Keyring(no fleet key)"),
         }
     }
@@ -56,21 +47,12 @@ impl Keyring {
                 path.display()
             ))
         })?;
-        let bytes = hex::decode(text.trim()).map_err(|_| malformed_key(path))?;
-        if bytes.len() != KEY_BYTES {
-            return Err(malformed_key(path));
-        }
-        let cipher = Aes256SivAead::new_from_slice(&bytes).map_err(|_| malformed_key(path))?;
-        Ok(Keyring {
-            key: Some(FleetKey {
-                key_id: hex::encode(&blake3::hash(&bytes).as_bytes()[..8]),
-                cipher,
-            }),
-        })
+        let key = FleetKey::from_hex(&text).map_err(|e| malformed_key(path, e))?;
+        Ok(Keyring { key: Some(key) })
     }
 
     pub fn key_id(&self) -> Option<&str> {
-        self.key.as_ref().map(|k| k.key_id.as_str())
+        self.key.as_ref().map(FleetKey::key_id)
     }
 
     pub fn open<'t>(&self, text: &'t Text, glyph_key: &str) -> EnactResult<Cow<'t, str>> {
@@ -101,20 +83,14 @@ impl Keyring {
         let Some(key) = &self.key else {
             return Ok(Text::Plain(plaintext.to_string()));
         };
-        let ciphertext = key
-            .cipher
-            .encrypt(&Nonce::default(), plaintext.as_bytes())
-            .map_err(|_| {
-                EnactError::Fatal(format!(
-                    "{glyph_key}: fleet key {} could not seal the prior host state for the \
-                     journal, and golem will not record it in the clear",
-                    key.key_id
-                ))
-            })?;
-        Ok(Text::composed(vec![Chunk::Hole(Secret::Sealed {
-            key_id: key.key_id.clone(),
-            ciphertext,
-        })]))
+        let sealed = key.seal(plaintext.as_bytes()).map_err(|_| {
+            EnactError::Fatal(format!(
+                "{glyph_key}: fleet key {} could not seal the prior host state for the \
+                 journal, and golem will not record it in the clear",
+                key.key_id()
+            ))
+        })?;
+        Ok(Text::composed(vec![Chunk::Hole(sealed)]))
     }
 
     fn open_hole(&self, secret: &Secret, glyph_key: &str) -> EnactResult<String> {
@@ -135,39 +111,28 @@ impl Keyring {
                  `--secrets-key-file <FILE>` or `[secrets] key_file` in golemd.toml"
             )));
         };
-        if key.key_id != *key_id {
-            return Err(EnactError::Fatal(format!(
+        key.unseal(key_id, ciphertext).map_err(|e| match e {
+            UnsealError::KeyIdMismatch => EnactError::Fatal(format!(
                 "{glyph_key}: this value is sealed under fleet key {key_id}, but this host \
                  holds fleet key {} — the manifest was compiled for a different fleet, or \
                  against a key this host has not been rotated onto",
-                key.key_id
-            )));
-        }
-        let plaintext = key
-            .cipher
-            .decrypt(&Nonce::default(), ciphertext.as_slice())
-            .map_err(|_| {
-                EnactError::Fatal(format!(
-                    "{glyph_key}: the value sealed under fleet key {key_id} did not decrypt — \
-                     the manifest is corrupt or was sealed under a different key with the \
-                     same id"
-                ))
-            })?;
-        String::from_utf8(plaintext).map_err(|_| {
-            EnactError::Fatal(format!(
+                key.key_id()
+            )),
+            UnsealError::Undecryptable => EnactError::Fatal(format!(
+                "{glyph_key}: the value sealed under fleet key {key_id} did not decrypt — \
+                 the manifest is corrupt or was sealed under a different key with the \
+                 same id"
+            )),
+            UnsealError::NotUtf8 => EnactError::Fatal(format!(
                 "{glyph_key}: the value sealed under fleet key {key_id} decrypted to bytes \
                  that are not valid UTF-8"
-            ))
+            )),
         })
     }
 }
 
-fn malformed_key(path: &Path) -> KeyFileError {
-    KeyFileError(format!(
-        "the fleet secret key {} must be {} hexadecimal characters (a {KEY_BYTES}-byte AES-SIV key)",
-        path.display(),
-        KEY_BYTES * 2
-    ))
+fn malformed_key(path: &Path, why: MalformedFleetKey) -> KeyFileError {
+    KeyFileError(format!("the fleet secret key {} {why}", path.display()))
 }
 
 #[cfg(test)]
@@ -186,14 +151,10 @@ mod tests {
     }
 
     fn sealed(plaintext: &str, key_hex: &str) -> Secret {
-        let bytes = hex::decode(key_hex).unwrap();
-        let cipher = Aes256SivAead::new_from_slice(&bytes).unwrap();
-        Secret::Sealed {
-            key_id: hex::encode(&blake3::hash(&bytes).as_bytes()[..8]),
-            ciphertext: cipher
-                .encrypt(&Nonce::default(), plaintext.as_bytes())
-                .unwrap(),
-        }
+        FleetKey::from_hex(key_hex)
+            .unwrap()
+            .seal(plaintext.as_bytes())
+            .unwrap()
     }
 
     fn message(result: EnactResult<Cow<'_, str>>) -> String {
@@ -255,6 +216,29 @@ mod tests {
                 .seal("was here", "file:/etc/x")
                 .unwrap(),
             Text::Plain("was here".into())
+        );
+    }
+
+    /// The same bytes `libs/scroll-format/tests/fleet_key.rs` pins, reached
+    /// through the [`Keyring`] instead: what golemd journals under a key is
+    /// what the shared format says, wrapping and all.
+    #[test]
+    fn a_known_key_seals_a_known_plaintext_to_known_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let keyring = Keyring::from_key_file(&key_file(&dir, KEY)).unwrap();
+        let sealed = keyring
+            .seal("hunter2-correct-horse", "file:/etc/x")
+            .unwrap();
+        let Text::Composed(chunks) = &sealed else {
+            panic!("a keyed seal is always composed");
+        };
+        let [Chunk::Hole(Secret::Sealed { key_id, ciphertext })] = &chunks[..] else {
+            panic!("a keyed seal is a single sealed hole");
+        };
+        assert_eq!(key_id, "6fb6c6005355abf3");
+        assert_eq!(
+            hex::encode(ciphertext),
+            "0ba5aedabbdc44712cd674b231847fed8fea7acaac953a54c42235efa9663df193ae900f40"
         );
     }
 

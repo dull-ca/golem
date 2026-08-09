@@ -4,8 +4,7 @@ use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use aes_siv::aead::{Aead, KeyInit};
-use aes_siv::{Aes256SivAead, Nonce};
+use scroll_format::{FleetKey, MalformedFleetKey};
 
 use crate::ir::{Chunk, Secret, Text};
 
@@ -13,7 +12,6 @@ pub const GET: &str = "Secretspec.get";
 pub const IS_SECRET: &str = "String.isSecret";
 
 const MANIFEST_FILE: &str = "secretspec.toml";
-const KEY_BYTES: usize = 64;
 
 #[derive(Clone, Debug, Default)]
 pub struct SecretOptions {
@@ -218,7 +216,7 @@ pub fn resolve(key: &str) -> Result<ResolvedSecret, String> {
         let mut borrowed = cell.borrow_mut();
         let session = borrowed.as_mut().ok_or_else(|| compiled_from_string(key))?;
         if session.key.is_none() {
-            session.key = Some(FleetKey::read(session.options.key_file.as_deref())?);
+            session.key = Some(read_key_file(session.options.key_file.as_deref())?);
         }
         if session.provider.is_none() {
             session.provider = Some(Provider::open(&session.entry, &session.options)?);
@@ -234,7 +232,9 @@ pub fn resolve(key: &str) -> Result<ResolvedSecret, String> {
 pub fn seal(plaintext: &str) -> Result<Secret, String> {
     SESSION.with(
         |cell| match cell.borrow().as_ref().and_then(|s| s.key.as_ref()) {
-            Some(key) => key.seal(plaintext),
+            Some(key) => key
+                .seal(plaintext.as_bytes())
+                .map_err(|_| "the fleet secret key could not seal a value".to_string()),
             None => {
                 Err("no fleet secret key is loaded, so this value cannot be sealed".to_string())
             }
@@ -249,49 +249,19 @@ fn compiled_from_string(key: &str) -> String {
     )
 }
 
-struct FleetKey {
-    key_id: String,
-    cipher: Aes256SivAead,
+fn read_key_file(path: Option<&Path>) -> Result<FleetKey, String> {
+    let path = path.ok_or_else(|| {
+        "no fleet secret key is configured — pass `--secret-key <FILE>` or set \
+         `GOLEM_SECRET_KEY_FILE`"
+            .to_string()
+    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read the fleet secret key {}: {e}", path.display()))?;
+    FleetKey::from_hex(&text).map_err(|why| malformed_key(path, why))
 }
 
-impl FleetKey {
-    fn read(path: Option<&Path>) -> Result<FleetKey, String> {
-        let path = path.ok_or_else(|| {
-            "no fleet secret key is configured — pass `--secret-key <FILE>` or set \
-             `GOLEM_SECRET_KEY_FILE`"
-                .to_string()
-        })?;
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read the fleet secret key {}: {e}", path.display()))?;
-        let bytes = hex::decode(text.trim()).map_err(|_| malformed_key(path))?;
-        if bytes.len() != KEY_BYTES {
-            return Err(malformed_key(path));
-        }
-        let cipher = Aes256SivAead::new_from_slice(&bytes).map_err(|_| malformed_key(path))?;
-        Ok(FleetKey {
-            key_id: hex::encode(&blake3::hash(&bytes).as_bytes()[..8]),
-            cipher,
-        })
-    }
-
-    fn seal(&self, plaintext: &str) -> Result<Secret, String> {
-        let ciphertext = self
-            .cipher
-            .encrypt(&Nonce::default(), plaintext.as_bytes())
-            .map_err(|_| "the fleet secret key could not seal a value".to_string())?;
-        Ok(Secret::Sealed {
-            key_id: self.key_id.clone(),
-            ciphertext,
-        })
-    }
-}
-
-fn malformed_key(path: &Path) -> String {
-    format!(
-        "the fleet secret key {} must be {} hexadecimal characters (a {KEY_BYTES}-byte AES-SIV key)",
-        path.display(),
-        KEY_BYTES * 2
-    )
+fn malformed_key(path: &Path, why: MalformedFleetKey) -> String {
+    format!("the fleet secret key {} {why}", path.display())
 }
 
 struct Provider {
