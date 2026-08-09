@@ -97,10 +97,70 @@ which does not exist yet ([docs/design/ci-cachix-nix.md](docs/design/ci-cachix-n
 
 A `v*` tag runs `.github/workflows/release.yml`, which re-checks the guards,
 runs the gate again — a tag can point at any commit — builds the docs image
-(`nix build .#website-container`), and publishes it to ghcr.io (ADR 0050). The
-intended way to make such a tag is `ci/release.sh`, which runs the same guards
-before pushing it (ADR 0053).
+(`nix build .#website-container`), and publishes it to ghcr.io (ADR 0050). Such
+a tag is made by `release`, below.
 
 A plain `nix build` is the developer-facing half of the same graph: it produces
 `golem-tools`, all four binaries under `./result/bin`, installable outside the
 checkout with `nix profile install <checkout>#golem-tools` ([QUICKSTART.md](QUICKSTART.md)).
+
+## Releasing
+
+`release`, in the devenv shell, from a clean checkout of `main` that is level
+with `origin/main`, with `gh` authenticated. It refuses before it does anything
+if any of that is missing.
+
+The command itself is dull-nix's `mkReleaseCommand`, pinned as a flake input.
+golem's half is two files: `ci/release-hooks.sh`, which knows about the docs
+image and the crate version, and `cliff.toml`, the changelog format (ADR 0056).
+
+```sh
+release              # the version follows from the commits
+release minor        # override the bump the commits asked for
+release v0.4.0-rc1   # name the version outright
+```
+
+The version is read from the conventional commits since the latest stable tag.
+`main` is squash-merged, so each of those commits is one pull request, and its
+subject is all the release can see of it: a `feat:` among them asks for a minor,
+any other conventional type asks for a patch — a `docs:`-only range is still a
+release, because the docs image is what golem publishes — and a `!` or a
+`BREAKING CHANGE:` footer asks for a major. Below `1.0` that major is served as
+a minor, since a `0.x` minor bump is already the incompatible one; `release
+major`, typed on purpose, is the only way to reach `v1.0.0`. A range in which
+no subject is conventional is refused rather than guessed at — reword the
+subjects, or name the version.
+
+Before asking anything, `release` prints the commit it will tag, the version and
+where that version came from, the crate version and image tag it will write, the
+merges it read with the bump each one asked for, and the changelog lines it is
+about to add. **Read the merge list.** A squash subject is typed by hand in the
+merge box and can undersell the pull request behind it, and those same words are
+what the changelog will say. Then type `Y`.
+
+What `Y` starts:
+
+1. `CHANGELOG.md` is re-rendered by [git-cliff](https://git-cliff.org) from
+   `cliff.toml`, the workspace version is written into `Cargo.toml` and relocked
+   into `Cargo.lock`, and the three land as one `chore(release): vX.Y.Z` commit.
+2. `warm-cache` runs the whole gate on that commit and pushes every output to
+   cachix, so the release run substitutes instead of rebuilding.
+3. The commit goes to `main`, the guards are asked again about the state that
+   push produced, and the annotated tag goes on it.
+4. `gh` waits up to 30 minutes for `release.yml` and reports its verdict.
+
+Anything that fails in step 1 or 2 resets the checkout to the commit you started
+from; nothing is pushed and no tag exists. Past that point the release commit is
+on `main`, and a failure leaves it there untagged — the version is unspent, and
+the next `release` carries that commit in its own range. A failure of the
+*release run* is different: the tag exists, so the version is spent, and the
+answer is to release the next one (ADR 0053).
+
+Pushing to `main` also starts `ci.yml`, so a release produces two runs. Only the
+release run is waited on.
+
+Details and trade-offs: [ADR 0053](docs/adr/0053-guarded-releases-from-a-local-command.md)
+for the guards, [ADR 0055](docs/adr/0055-the-version-and-changelog-come-from-the-commits.md)
+for the version and the changelog, and
+[ADR 0056](docs/adr/0056-the-release-command-is-a-shared-flake-input.md) for
+what moved to dull-nix and what a stale `flake.lock` costs.

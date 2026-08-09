@@ -29,10 +29,12 @@
     pkgs.curl
     (pkgs.python3.withPackages (ps: with ps; [ typer rich httpx ]))
     # `cachix.enable` above configures the cache but ships no binary, and
-    # `warm-cache` below needs one. `gh` is for the release script; both were
-    # reachable only from Dr. Dub's own NixOS profile before.
+    # `warm-cache` below needs one. `gh` waits on the release run and `git-cliff`
+    # writes the changelog, both for `release`; none of the three was reachable
+    # outside Dr. Dub's own NixOS profile before.
     pkgs.cachix
     pkgs.gh
+    pkgs.git-cliff
   ];
 
   # Freshly built workspace binaries (emet-lsp for nvim, emetc, golemctl…)
@@ -43,7 +45,7 @@
 
   scripts.build.exec = "cargo build --workspace";
   scripts.build-static.exec = "nix build .#golemd-static .#golemctl-static --print-build-logs";
-  scripts.test.exec = ''cd "$DEVENV_ROOT" && cargo test --workspace && ci/release-guards.test.sh ci/release-guards.sh'';
+  scripts.test.exec = ''cd "$DEVENV_ROOT" && cargo test --workspace'';
   scripts.site.exec = "cd sites/website && bun run dev";
   scripts.build-site.exec = "cd sites/website && bun run build";
   # Named --out-links: a second `nix build` would otherwise land on `result-1`.
@@ -123,10 +125,19 @@
 
     echo "warm-cache: gate passed, every output is in dull-ca — CI has nothing left to build."
   '';
-  # The guarded front door for a release (ADR 0050): guards, confirm, warm, tag,
-  # push, wait. A hand-pushed `v*` tag still releases and still meets the same
-  # guards in release.yml — but this is the way in.
-  scripts.release.exec = ''cd "$DEVENV_ROOT" && exec ci/release.sh "$@"'';
+  # The guarded front door for a release (ADR 0053, ADR 0055): read the version
+  # from the merges, guard, show, confirm, commit the changelog, warm, push
+  # `main`, tag, wait. `release` alone derives the version; `release major` and
+  # `release v0.4.0-rc1` are the ways to overrule it. A hand-pushed `v*` tag
+  # still releases and still meets the same guards in release.yml — but this is
+  # the way in.
+  #
+  # The sequence and the guards are dull-nix's `mkReleaseCommand`; what is
+  # golem's is `ci/release-hooks.sh` and `cliff.toml`, both wired in by
+  # `flake.nix`. Reached through `nix run` because devenv resolves its own
+  # nixpkgs and cannot see the flake's inputs — and because this script is
+  # itself named `release`, so a bare `exec release` would recurse.
+  scripts.release.exec = ''cd "$DEVENV_ROOT" && exec nix run "$DEVENV_ROOT#release" -- "$@"'';
   # `fleet` runs the harness from the repo root with apps/ on PYTHONPATH: the cd
   # anchors relative `.emet` paths (and .fleet/) at the checkout root regardless
   # of the caller's cwd, and PYTHONPATH lets `python -m fleet` import apps/fleet.
