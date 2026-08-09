@@ -5,9 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-aes-siv      = { workspace = true }
 hex          = { workspace = true }
-scroll-format = { workspace = true }
+scroll-format = { workspace = true, features = ["secrets"] }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tokio        = { workspace = true }
