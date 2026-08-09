@@ -174,12 +174,12 @@ golemctl fleet status
 ```
 
 ```
-· kaiju  rev 1  nothing applied
-· manta  rev 1  nothing applied
-· orbit  rev 1  nothing applied
-· scaly  rev 1  nothing applied
-· talos  rev 1  nothing applied
-· zulip  rev 1  nothing applied
+· kaiju   rev 1  nothing applied
+· manta   rev 1  nothing applied
+· orbit   rev 1  nothing applied
+· remora  rev 1  nothing applied
+· scaly   rev 1  nothing applied
+· talos   rev 1  nothing applied
 ```
 
 Six `·` lines, alphabetical, and not one flag or environment variable. golemctl
@@ -250,7 +250,7 @@ image (`golem-example/does-not-exist:latest`) cannot be pulled. The canary
 carries `policy = keep`.
 
 Each guest holds 2 GB. If your workstation is feeling it, `fleet down manta`
-(and orbit, kaiju, zulip) frees them; a later `fleet up --hosts manta` resumes
+(and orbit, kaiju, remora) frees them; a later `fleet up --hosts manta` resumes
 that guest off the same disk. Leave `scaly` and `talos` up — Lesson 3 wants
 both.
 
@@ -320,9 +320,9 @@ No `sudo`. cloud-init put the `golem` user in `systemd-journal` on first boot.
 
 ## Lesson 3 — Regroup one host while standing another up
 
-`examples/lichess/fleet.emet` emits six scrolls. Four of them name images that
-are not publicly pullable; `scaly` and `talos` are the live-tested pair, so
-name them explicitly.
+`examples/lichess/fleet.emet` emits six scrolls. `manta` and `orbit` name
+`ghcr.io/lichess-org` images that are not publicly pullable; `scaly` and `talos`
+are the live-tested pair, so name them explicitly.
 
 ```nushell
 fleet up --hosts talos
@@ -355,15 +355,19 @@ pull on a cold box; expect minutes.
 
 ## Lesson 4 — Build, store, and serve golem's own docs
 
-Three fresh guests, two of them publishing a port to your workstation.
+Three guests, two of them publishing a port to your workstation. `--hosts`
+matches *scroll* names, and these three programs name `kaiju` (the registry),
+`talos` (the builder), and `remora` (the web box) — so those are the guests to
+boot. `talos` is the one Lesson 3 stood up; the builder scroll replaces what it
+is running.
 
 ### 1. Boot and provision the three boxes
 
 ```nushell
-fleet up --hosts registry,builder,web --publish registry=5000:5000 --publish web=8081:80
-fleet deploy --hosts registry,builder,web
-fleet apply examples/registry/registry.emet --hosts registry
-fleet apply examples/website/builder.emet --hosts builder
+fleet up --hosts kaiju,talos,remora --publish kaiju=5000:5000 --publish remora=8081:80
+fleet deploy --hosts kaiju,talos,remora
+fleet apply examples/registry/registry.emet --hosts kaiju
+fleet apply examples/website/builder.emet --hosts talos
 ```
 
 The registry scroll lowers to podman, a named volume, a quadlet container unit,
@@ -371,8 +375,8 @@ its service, and an internal nftables drop-in. The builder scroll is two glyphs:
 podman, and a `registries.conf.d` fragment marking `10.0.2.2:5000` insecure so
 podman will push to it over plain HTTP.
 
-`web` publishes on 8081 only because 8080 was busy here; any free port works
-(`--publish web=PORT:80`).
+`remora` publishes on 8081 only because 8080 was busy here; any free port works
+(`--publish remora=PORT:80`).
 
 ### 2. Build the site on your workstation
 
@@ -386,8 +390,8 @@ The devenv script that runs `bun run build` in `sites/website`. Output lands in
 ### 3. Ship the build context to the builder and push the image
 
 ```nushell
-tar -C sites/website -cf - Containerfile nginx.conf dist | fleet ssh builder -- "mkdir -p site && tar -xf - -C site"
-fleet ssh builder -- "sudo podman build -t 10.0.2.2:5000/golem-website:latest site && sudo podman push 10.0.2.2:5000/golem-website:latest"
+tar -C sites/website -cf - Containerfile nginx.conf dist | fleet ssh talos -- "mkdir -p site && tar -xf - -C site"
+fleet ssh talos -- "sudo podman build -t 10.0.2.2:5000/golem-website:latest site && sudo podman push 10.0.2.2:5000/golem-website:latest"
 ```
 
 The quoted `&&` chains run in the guest's bash over ssh, so nushell never sees
@@ -411,8 +415,8 @@ guests trade an image with no shared network between them.
 ### 5. Serve it
 
 ```nushell
-fleet plan examples/website/website.emet --hosts web
-fleet apply examples/website/website.emet --hosts web
+fleet plan examples/website/website.emet --hosts remora
+fleet apply examples/website/website.emet --hosts remora
 curl -sI http://127.0.0.1:8081/ | lines | first
 ```
 
@@ -442,9 +446,9 @@ cargo build -p emet-lsp --release
 
 Open any `.emet` file — `examples/fishnet-farm/farm.emet` is a good one — and
 break something. Parse, type, and analysis diagnostics appear inline on every
-edit, in the Elm-style shape of ADR 0032. The server also advertises hover,
-completion, and goto-definition (ADR 0018, ADR 0037); the README's capability
-list has not caught up with that.
+edit, in the Elm-style shape of ADR 0032. The server also answers hover,
+completion, go-to-definition, and document symbols (ADR 0018, ADR 0037), each
+listed with what it returns in that README.
 
 **tree-sitter-emet.** The grammar lives in its own repo,
 [`emet.nvim`](https://github.com/dull-ca/emet.nvim), checked out alongside golem
@@ -599,16 +603,19 @@ anyone's port, and a `~/.ssh/config` stanza you wrote last week still works.
 | orbit    | 64   | 2264  |
 | talos    | 19   | 2219  |
 | kaiju    | 74   | 2274  |
-| zulip    | 10   | 2210  |
+| remora   | 93   | 2293  |
 | registry | 65   | 2265  |
 | builder  |  3   | 2203  |
 | web      | 52   | 2252  |
 
-The slots are collision-free across that set. `8800 + slot` is still computed
-and still recorded in `state.json` — it keys the name→slot map and older records
-carry it — but nothing forwards to it and nothing listens behind it. Ports for an
-already-created VM are read from its record, so a guest booted under an older
-scheme keeps the ports it was given.
+The first six are what `fleet up` boots when you pass no `--hosts`, and Lesson 4
+reuses three of them. `registry`, `builder`, and `web` are here as further
+worked examples of the same rule — any name at all hashes into the same 100
+slots, and these nine are collision-free. `8800 + slot` is
+still computed and still recorded in `state.json` — it keys the name→slot map
+and older records carry it — but nothing forwards to it and nothing listens
+behind it. Ports for an already-created VM are read from its record, so a guest
+booted under an older scheme keeps the ports it was given.
 
 ### What survives `down`, `reset`, and `reset --purge`
 
@@ -639,16 +646,17 @@ a `/nix/store` path and simply will not run on Debian; the static one is one
 Installation, per guest: `scp` to a per-deploy unique staging name under
 `/home/golem` (a fixed `/tmp` name wedges every later deploy the moment a stale
 copy survives under other ownership), `install -m 0755` into
-`/usr/local/bin/golemd`, create `/etc/golem`, write the token, write
-`golemd.toml`, write the unit, `daemon-reload`, `enable`, then `restart` —
-restart rather than `enable --now`, so a redeployed binary actually replaces the
-running process.
+`/usr/local/bin/golemd`, create `/etc/golem`, write the token, write the fleet
+secret key, write `golemd.toml`, write the unit, `daemon-reload`, `enable`, then
+`restart` — restart rather than `enable --now`, so a redeployed binary actually
+replaces the running process.
 
-The unit runs as root with
-`--listen 127.0.0.1:7474 --config /etc/golem/golemd.toml --reconciler host`.
-The config file says one thing: where the bearer secret lives. Retry and enact
-defaults are left to golemd, so the file states only what the harness had to
-decide.
+The unit runs as root with `--host <name> --state-dir /var/lib/golem --listen
+127.0.0.1:7474 --config /etc/golem/golemd.toml --reconciler host`. The config
+file says two things: `[auth] token_file`, where the bearer secret lives, and
+`[secrets] key_file`, the fleet key a sealed manifest is unsealed with (ADR
+0047). Retry and enact defaults are left to golemd, so the file states only what
+the harness had to decide.
 
 The token is written with `install -m 0600 /dev/null` first and filled second, so
 it is never briefly world-readable — and neither the create nor the write goes
@@ -665,7 +673,7 @@ Every guest runs behind qemu user-mode (SLIRP) networking, isolated from its
 siblings. Only ssh is forwarded in by default. Two facts make cross-guest
 traffic possible:
 
-- `up --publish` adds a host→guest forward. `--publish registry=5000:5000` binds
+- `up --publish` adds a host→guest forward. `--publish kaiju=5000:5000` binds
   your `127.0.0.1:5000` to the registry guest's `:5000`. A bare `--publish
   5000:5000` publishes on *every* booted host, which clashes the moment two
   share a host port — name the host for a single service. Forwards are recorded
@@ -688,6 +696,7 @@ the checkout and `reset` can wipe it wholesale.
 | `images/` | the cached Debian base image, shared by every overlay |
 | `id_ed25519`, `.pub` | the fleet keypair; the public half is injected by cloud-init |
 | `golem-token` | the shared bearer secret, mode 0600, created `O_EXCL` |
+| `golem-secret-key` | the fleet's 64-byte AES-SIV key as hex, mode 0600, created `O_EXCL`; written on the first `deploy` |
 | `state.json` | which VMs exist: name, ports, qemu pid, disk/pidfile/console paths, published forwards |
 | `inventory.toml` | the rendered golemctl inventory, written when you ask for it |
 | `vm-<name>/` | one per guest: `disk.qcow2`, `seed.iso`, `user-data`, `meta-data`, `qemu.pid`, `console.log` |

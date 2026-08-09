@@ -65,12 +65,16 @@ anyone's port, and a `~/.ssh/config` stanza you wrote last week still works.
 | `orbit` | 64 | 2264 |
 | `talos` | 19 | 2219 |
 | `kaiju` | 74 | 2274 |
-| `zulip` | 10 | 2210 |
+| `remora` | 93 | 2293 |
 | `registry` | 65 | 2265 |
 | `builder` | 3 | 2203 |
 | `web` | 52 | 2252 |
 
-The slots are collision-free across that set. `8800 + slot` is still computed and
+The first six are the default host set `fleet up` boots when you pass no
+`--hosts`, and the dogfood registry-and-website run reuses three of them.
+`registry`, `builder`, and `web` are here as further worked examples of the same
+rule — any name at all hashes into the same 100 slots, and these nine are
+collision-free. `8800 + slot` is still computed and
 still recorded in `state.json` — it keys the name-to-slot map and older records
 carry it — but nothing forwards to it and nothing listens behind it. Ports for an
 already-created VM are read from its record, so a guest booted under an older
@@ -104,15 +108,17 @@ a `/nix/store` path and simply will not run on Debian; the static one is one
 Installation, per guest: `scp` to a per-deploy unique staging name under
 `/home/golem` (a fixed `/tmp` name wedges every later deploy the moment a stale
 copy survives under other ownership), `install -m 0755` into
-`/usr/local/bin/golemd`, create `/etc/golem`, write the token, write
-`golemd.toml`, write the unit, `daemon-reload`, `enable`, then `restart` —
-restart rather than `enable --now`, so a redeployed binary actually replaces the
-running process.
+`/usr/local/bin/golemd`, create `/etc/golem`, write the token, write the fleet
+secret key, write `golemd.toml`, write the unit, `daemon-reload`, `enable`, then
+`restart` — restart rather than `enable --now`, so a redeployed binary actually
+replaces the running process.
 
-The unit runs as root with `--listen 127.0.0.1:7474 --config
-/etc/golem/golemd.toml --reconciler host`. The config file says one thing: where
-the bearer secret lives. Retry and enact defaults are left to golemd, so the file
-states only what the harness had to decide.
+The unit runs as root with `--host NAME --state-dir /var/lib/golem --listen
+127.0.0.1:7474 --config /etc/golem/golemd.toml --reconciler host`. The config
+file says two things: `[auth] token_file`, where the bearer secret lives, and
+`[secrets] key_file`, the fleet key a sealed manifest is unsealed with (ADR
+0047). Retry and enact defaults are left to golemd, so the file states only what
+the harness had to decide.
 
 The token is written with `install -m 0600 /dev/null` first and filled second, so
 it is never briefly world-readable — and neither the create nor the write goes
@@ -129,7 +135,7 @@ Every guest runs behind qemu user-mode (SLIRP) networking, isolated from its
 siblings. Only ssh is forwarded in by default. Two facts make cross-guest traffic
 possible:
 
-- `up --publish` adds a host-to-guest forward. `--publish registry=5000:5000`
+- `up --publish` adds a host-to-guest forward. `--publish kaiju=5000:5000`
   binds your `127.0.0.1:5000` to the registry guest's `:5000`. A bare `--publish
   5000:5000` publishes on *every* booted host, which clashes the moment two share
   a host port — name the host for a single service. Forwards are recorded per VM,
@@ -153,6 +159,7 @@ the checkout and `reset` can wipe it wholesale.
 | `images/` | the cached Debian base image, shared by every overlay |
 | `id_ed25519`, `.pub` | the fleet keypair; the public half is injected by cloud-init |
 | `golem-token` | the shared bearer secret, mode 0600, created `O_EXCL` |
+| `golem-secret-key` | the fleet's 64-byte AES-SIV key as hex, mode 0600, created `O_EXCL`; written on the first `deploy` |
 | `state.json` | which VMs exist: name, ports, qemu pid, disk/pidfile/console paths, published forwards |
 | `inventory.toml` | the rendered golemctl inventory, written when you ask for it |
 | `vm-NAME/` | one per guest: `disk.qcow2`, `seed.iso`, `user-data`, `meta-data`, `qemu.pid`, `console.log` |

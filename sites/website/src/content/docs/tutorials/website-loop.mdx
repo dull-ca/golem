@@ -17,7 +17,7 @@ container on one golem-managed box, push it to the golem-hosted registry, run it
 as a `Workload` on a third, and curl the homepage for a 200.
 
 It continues [A registry on the fleet](/tutorials/registry-on-the-fleet/) — the
-`registry`, `builder`, and `web` guests must be up, `golemd` deployed, and the
+`kaiju`, `talos`, and `remora` guests must be up, `golemd` deployed, and the
 registry serving on your `127.0.0.1:5000`. Commands are nushell, from the repo
 root.
 
@@ -152,7 +152,7 @@ reload at the end of the apply, after the drop-in is in place.
    settling and closes on one line under the host's heading:
 
    ```
-   web  ssh://golem@127.0.0.1:2252
+   remora  ssh://golem@127.0.0.1:2293
      apply settled — revision 2
    ```
 
@@ -186,7 +186,7 @@ markup.
   re-apply the web scroll — the `.container` glyph's content id is unchanged (the
   tag is the same), so pin a new tag or a digest with `imageAt` to make the diff
   replace it.
-- **Reverse the web box.** Apply a `web` scroll with an empty `glyphs` list and
+- **Reverse the web box.** Apply a `remora` scroll with an empty `glyphs` list and
   watch golem stop the container, remove the quadlet, and close `:80` by
   deleting its one drop-in file — leaving every other opening's file untouched.
 - **Add a second served site.** Write another public `Workload` on a different

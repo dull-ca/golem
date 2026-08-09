@@ -68,8 +68,8 @@ from it, so bring up all three now. `--publish` adds a host-to-guest forward,
 which is unrelated to golemd — golemd is still loopback-only on every guest.
 
 <Steps>
-1. **Boot and deploy.** The `web` box publishes on 8081 only because 8080 was
-   busy here; any free port works.
+1. **Boot and deploy.** `remora`, the web box, publishes on 8081 only because
+   8080 was busy here; any free port works.
 
    ```nushell
    fleet up --hosts kaiju,talos,remora --publish kaiju=5000:5000 --publish remora=8081:80
@@ -108,9 +108,10 @@ which is unrelated to golemd — golemd is still loopback-only on every guest.
 ## When it does not come up
 
 **`curl: (7) Failed to connect to 127.0.0.1:5000`**
-The guest was booted without `--publish kaiju=5000:5000`. Forwards are
-recorded per VM at boot, so re-run `fleet up --hosts kaiju --publish
-registry=5000:5000` — a resume can add forwards the stopped guest lacked.
+The guest was booted without `--publish kaiju=5000:5000`. Forwards are recorded
+per VM at boot, and `fleet up` refuses to change them under a running guest, so
+`fleet down kaiju` first and then re-run `fleet up --hosts kaiju --publish
+kaiju=5000:5000` — a resume can add forwards the stopped guest lacked.
 
 **The apply reports the registry leaf failed**
 Read the pull error in the forensics block under it, then `fleet ssh kaiju
@@ -176,10 +177,21 @@ One golem-hosted registry, reachable from a machine that shares no network
 segment with it.
 
 <Aside type="tip" title="Two clients instead of one">
-  `examples/registry/clients.emet` provisions a `builder` and a `puller` with the
-  same two glyphs, if you want to watch a third box pull what the second pushed:
-  `fleet up --hosts orbit`, then `fleet apply
-  examples/registry/clients.emet --hosts talos,puller`.
+  `examples/registry/clients.emet` gives two boxes the same two glyphs, so a
+  third box can pull what the second pushed. It binds them as `builder` and
+  `puller`, but those are Emet variable names; the hosts are the `name` fields
+  inside — `talos` and `orbit`. `--hosts` matches scroll names, so boot and
+  target `orbit`:
+
+  ```nushell
+  fleet up --hosts orbit
+  fleet deploy --hosts orbit
+  fleet apply examples/registry/clients.emet --hosts talos,orbit
+  ```
+
+  Passing `--hosts talos,puller` instead provisions only `talos`: no scroll is
+  named `puller`, and a target the manifest names no scroll for is skipped
+  rather than treated as an error.
 </Aside>
 
 ## Explore from here
@@ -187,7 +199,7 @@ segment with it.
 - **Watch the diff.** Re-apply `registry.emet` after bumping the image tag —
   only the `.container` glyph's content id changes, so only that glyph is
   replaced.
-- **Reverse it.** Apply a `registry` scroll with an empty `glyphs` list and watch
+- **Reverse it.** Apply a `kaiju` scroll with an empty `glyphs` list and watch
   golem stop the service, remove the quadlet and `.volume` units, close the
   firewall port, and remove podman — each undone because golem recorded it.
 - **Inspect the volume.** `fleet ssh kaiju -- sudo ls /var/lib/registry` — the
@@ -196,6 +208,6 @@ segment with it.
 ## Where to next
 
 - **[The website loop](/tutorials/website-loop/)** — build the docs into an
-  image, push it to this registry, and serve it from the `web` box.
+  image, push it to this registry, and serve it from `remora`.
 - **[The Quadlet library](/reference/workloads/)** — every field of the
   `Workload` this registry is.

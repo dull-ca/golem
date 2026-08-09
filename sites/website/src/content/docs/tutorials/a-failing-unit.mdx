@@ -25,7 +25,7 @@ root.
 clients, two `fishnet-analysis` clients, a `lila-gif` workload, the nftables
 firewall, a `base` leaf, and a `canary`:
 
-```emet
+```emet fragment
 canaryImage : Image
 canaryImage = image "docker.io" "golem-example/does-not-exist" "latest"
 
@@ -56,7 +56,7 @@ The canary's image cannot be pulled, and it carries `policy = keep`.
 
 <Aside type="note" title="Memory">
   Each guest holds 2 GB. If your workstation is feeling it, `fleet down manta`
-  (and orbit, kaiju, zulip) frees them; a later `fleet up --hosts manta` resumes
+  (and orbit, kaiju, remora) frees them; a later `fleet up --hosts manta` resumes
   that guest off the same disk. Leave `scaly` and `talos` up — the second half of
   this page wants both.
 </Aside>
