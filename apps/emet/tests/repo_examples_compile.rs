@@ -52,10 +52,8 @@ const TEST_FLEET_KEY: &str = "00112233445566778899aabbccddeeff\
 /// throwaway one `secrets.rs` uses.
 #[test]
 fn the_limesurvey_example_compiles_with_a_provider_and_a_key() {
-    let key_file = std::env::temp_dir().join(format!(
-        "emet_limesurvey_key_{}.hex",
-        std::process::id()
-    ));
+    let key_file =
+        std::env::temp_dir().join(format!("emet_limesurvey_key_{}.hex", std::process::id()));
     std::fs::write(&key_file, TEST_FLEET_KEY).expect("write the throwaway fleet key");
 
     std::env::set_var("LIMESURVEY_ADMIN_PASSWORD", "not-a-real-admin-password");
