@@ -122,6 +122,24 @@
           cargoExtraArgs = "--locked -p emet-lsp";
         });
 
+        # `packages.default`: a bare `nix build` leaves all four binaries under
+        # ./result/bin, and `nix profile install .#golem-tools` puts them on
+        # PATH outside this checkout — the only way emet-lsp reaches an editor
+        # opened on a consumer repo. Install the attribute, not `.`: the profile
+        # element takes its name from the flake reference, so `.` names it after
+        # the checkout directory and `nix profile remove golem-tools` misses.
+        golem-tools = pkgs.symlinkJoin {
+          name = "golem-tools-${commonArgs.version}";
+          paths = [ emetc emet-lsp golemd golemctl ];
+          meta = {
+            description =
+              "Every golem binary in one output: emetc, emet-lsp, golemd, golemctl";
+            # A joined output has no binary of its own, so `nix run .` must be
+            # told which one it means; emetc is what it ran before the join.
+            mainProgram = "emetc";
+          };
+        };
+
         # Everything the site build reads, minus the artifacts a build writes:
         # `dist/` and `.astro/` are outputs, not inputs, so an in-tree copy from
         # a `bun run build` must not change this derivation.
@@ -274,22 +292,22 @@
       in
       {
         packages = {
-          inherit golemd golemctl emetc emet-lsp;
+          inherit golemd golemctl emetc emet-lsp golem-tools;
           # Aliases, not builds: every output is static now. devenv's
           # `build-static` and apps/fleet/deploy.py still name these.
           golemd-static = golemd;
           golemctl-static = golemctl;
-          default = emetc;
+          default = golem-tools;
           inherit websiteDist website-container;
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
         # (ADR 0035 §1). The four binary builds prove the toolchain compiles;
-        # workspace-tests and fleet-tests prove it passes. `website-container` is
-        # deliberately absent — it needs `--impure` + an external dist (ADR 0035
-        # §4).
+        # workspace-tests and fleet-tests prove it passes. `website-container`
+        # is absent because `websiteDist` and `website-serves` already cover
+        # what it wraps; the image itself is built on a tag, by release.yml.
         checks = {
-          inherit golemd golemctl emetc emet-lsp;
+          inherit golemd golemctl emetc emet-lsp golem-tools;
           inherit workspace-tests fleet-tests;
           # The docs site is part of the gate now that it builds purely:
           # `websiteDist` proves it compiles, `website-serves` proves it serves.
