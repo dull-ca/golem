@@ -41,10 +41,22 @@
   scripts.test.exec = "cargo test --workspace";
   scripts.site.exec = "cd sites/website && bun run dev";
   scripts.build-site.exec = "cd sites/website && bun run build";
+  # Named --out-links: a second `nix build` would otherwise land on `result-1`.
   scripts.build-all.exec = ''
-    cargo build --workspace
-    (cd sites/website && bun run build)
+    cd "$DEVENV_ROOT"
+    nix build --print-build-logs --out-link result
+    nix build .#websiteDist --print-build-logs --out-link result-site
+    echo "binaries: $DEVENV_ROOT/result/bin"
+    echo "site:     $DEVENV_ROOT/result-site"
   '';
+  # Reinstall, not install: `nix profile install` errors on an element already
+  # there, and reinstalling is how the profile picks up new commits.
+  scripts.install-tools.exec = ''
+    nix profile remove golem-tools >/dev/null 2>&1 || true
+    nix profile install "$DEVENV_ROOT#golem-tools"
+    echo "golem-tools installed: emetc, emet-lsp, golemd, golemctl are on PATH outside this checkout"
+  '';
+  scripts.uninstall-tools.exec = ''nix profile remove golem-tools'';
   # `fleet` runs the harness from the repo root with apps/ on PYTHONPATH: the cd
   # anchors relative `.emet` paths (and .fleet/) at the checkout root regardless
   # of the caller's cwd, and PYTHONPATH lets `python -m fleet` import apps/fleet.

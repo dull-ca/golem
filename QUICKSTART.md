@@ -15,16 +15,45 @@
 ## Build
 
 ```bash
-cargo build --release -p golemd -p golemctl -p emet
+nix build
 ```
 
-`emetc` is the `emet` crate's binary; put it on `PATH` (or `cargo install
---path apps/emet`) so `golemctl apply` can invoke it on a `.emet` source.
+All four binaries land in `./result/bin`: `emetc` (the `emet` crate's compiler,
+which `golemctl apply` invokes on a `.emet` source), `emet-lsp`, `golemd`, and
+`golemctl`. Each is static-musl, so the same file runs on a Debian guest and on
+NixOS. Every command below is written against `./result/bin`.
+
+In the devenv shell, `build-all` runs that plus the docs site, which lands in
+`./result-site`. `cargo build --workspace` remains the fast inner loop while
+editing Rust — the shell puts `target/release` first on `PATH`, so a fresh cargo
+build wins inside this checkout.
+
+### Tools on `PATH` everywhere
+
+`./result/bin` only helps where you built. An editor opened on another repo
+spawns `emet-lsp` by bare name and finds nothing, so install into your nix
+profile instead:
+
+```bash
+nix profile install ~/path/to/golem#golem-tools   # `install-tools` in the devenv shell
+nix profile remove golem-tools                    # `uninstall-tools`
+```
+
+Name the `golem-tools` attribute rather than the bare flake path. A profile
+element takes its name from the flake reference it came from, so `nix profile
+install .` registers it under the checkout's directory name and `nix profile
+remove golem-tools` then matches nothing. Re-run the install to pick up new
+commits.
+
+**Syntax highlighting is not part of this.** The tree-sitter grammar for `.emet`
+lives in the separate `emet.nvim` repository and is installed by nvim itself
+(`:TSInstall! emet`). No nix output here provides it, and a working `emet-lsp`
+will not colour a buffer on its own.
 
 ## Run the agent
 
 ```bash
-./target/release/golemd --host dev-01 \
+./result/bin/golemd --host dev-01 \
   --state-dir /tmp/golem-state \
   --listen 127.0.0.1:7474
 ```
@@ -46,7 +75,7 @@ loopback and requires a shared secret on every request (ADR 0042):
 ```bash
 install -m 0600 /dev/null /etc/golem/token            # 0600 before a byte is in it
 head -c 32 /dev/urandom | base64 > /etc/golem/token   # the redirect keeps that mode
-./target/release/golemd --host dev-01 \
+./result/bin/golemd --host dev-01 \
   --listen 127.0.0.1:7474 \
   --auth-token-file /etc/golem/token
 ```
@@ -127,7 +156,7 @@ diffs the manifest against its journal and returns the ordered operations,
 collapsed one line per action, with the coalesced reload step last (ADR 0036):
 
 ```bash
-./target/release/golemctl plan examples/lichess/fleet.emet http://127.0.0.1:7474
+./result/bin/golemctl plan examples/lichess/fleet.emet http://127.0.0.1:7474
 ```
 
 Add `--detail` for per-glyph content ids, `--json` for the raw response. A
@@ -137,7 +166,7 @@ plan never writes anything and is safe to run while an apply is in flight.
 or a prebuilt `.manifest`, and POSTs the manifest bytes to the node:
 
 ```bash
-./target/release/golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
+./result/bin/golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
 ```
 
 The node selects the scroll named for its `--host`, reconciles toward it, and
@@ -146,9 +175,9 @@ rolled-back reconcile is still HTTP 200 with its failures in-band; a
 transport/daemon error is non-2xx with an actionable message.
 
 ```bash
-./target/release/golemctl state   http://127.0.0.1:7474   # current applied scroll + content id
-./target/release/golemctl history http://127.0.0.1:7474   # the revision journal
-./target/release/golemctl show    http://127.0.0.1:7474 3 # one revision by id
+./result/bin/golemctl state   http://127.0.0.1:7474   # current applied scroll + content id
+./result/bin/golemctl history http://127.0.0.1:7474   # the revision journal
+./result/bin/golemctl show    http://127.0.0.1:7474 3 # one revision by id
 ```
 
 A remote daemon is not dialed directly — it is loopback-bound. Write the target
@@ -156,8 +185,8 @@ as `ssh://[user@]host[:port]` and golemctl opens its own forward over ssh, then
 speaks HTTP through it (ADR 0042):
 
 ```bash
-./target/release/golemctl plan  examples/lichess/fleet.emet ssh://golem@scaly
-./target/release/golemctl apply examples/lichess/fleet.emet ssh://golem@scaly:2222
+./result/bin/golemctl plan  examples/lichess/fleet.emet ssh://golem@scaly
+./result/bin/golemctl apply examples/lichess/fleet.emet ssh://golem@scaly:2222
 ```
 
 The port in an `ssh://` target is **ssh's**, not golemd's; the daemon is assumed
@@ -195,9 +224,9 @@ golemctl looks for the file at `--inventory`, then `$GOLEMCTL_INVENTORY`, then
 `./fleet.toml`, then `./.fleet/inventory.toml` (the file the VM harness writes).
 
 ```bash
-./target/release/golemctl fleet plan   examples/lichess/fleet.emet
-./target/release/golemctl fleet apply  examples/lichess/fleet.emet
-./target/release/golemctl fleet status
+./result/bin/golemctl fleet plan   examples/lichess/fleet.emet
+./result/bin/golemctl fleet apply  examples/lichess/fleet.emet
+./result/bin/golemctl fleet status
 ```
 
 `fleet apply` compiles once, fires every host's `POST /manifest` concurrently,
