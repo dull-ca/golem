@@ -16,9 +16,8 @@ The artifact already existed: `flake.nix`'s `mkWebsiteContainer` builds a
 `/var/www/html`, and its config. What was missing was a channel from a build to
 a machine that pulls.
 
-That server was a general-purpose one on `:80` when this was written; ADR 0052
-replaced it with a TLS-less static nginx on `:8080`. Nothing here turns on which
-one it is.
+That server was caddy on `:80` when this was written; ADR 0052 replaced it with
+a TLS-less static nginx on `:8080`. Nothing here turns on which one it is.
 
 ADR 0035 §5 left the release mechanism open. Nothing has closed it, and a
 consumer waiting on a URL is not a reason to close it badly.

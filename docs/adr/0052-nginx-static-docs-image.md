@@ -10,7 +10,7 @@ publishing decision is untouched.
 golem builds the docs site into two images. `flake.nix`'s `mkWebsiteContainer`
 produces the one ghcr.io publishes; `sites/website/Containerfile` produces the
 one the fleet tutorials build with podman on a golem-managed box. Both served
-with a general-purpose web server that nothing chose: `1d00e89` added the
+with caddy, which nothing chose: `1d00e89` added the
 Containerfile to get the tutorial's site onto a box, and `mkWebsiteContainer`
 copied that shape into nix when the image became a published artifact. No record
 weighs it.
@@ -22,10 +22,10 @@ package costs an attribute reference.
 
 Two measurements separate the two servers.
 
-**Closure.** The incumbent is 89,262,752 bytes; `nginx-static-no-tls` is
+**Closure.** caddy is 89,262,752 bytes; `nginx-static-no-tls` is
 1,686,352 — a 53× difference, on an image whose payload is a 2.6 MB static site.
 
-**What each one can be made to do.** The incumbent's TLS is off by configuration.
+**What each one can be made to do.** caddy's TLS is off by configuration.
 It ships an ACME client, a certificate cache and a TLS stack, and a one-line
 config edit or a stray `--config` puts a public-facing HTTPS listener and a
 cert-fetching robot on a box that is supposed to be behind Traefik.
