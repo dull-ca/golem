@@ -1,8 +1,14 @@
-//! The glyph/scroll data model — the fully-evaluated, concrete desired state a
-//! program compiles to. Every field is a plain `String`: the IR carries no
-//! templates, placeholders, or DSL, because all computation happens in the
-//! typed language and is fully evaluated before a value reaches a glyph field
-//! (ADR 0004). A consumer reconciles this inert data against a real machine.
+//! The glyph/scroll data model — the desired state an Emet program compiles to.
+//! The program runs to completion on the author's machine, so what reaches this
+//! model is finished: every function applied, every branch taken, every value
+//! computed (ADR 0004). A consumer reconciles it against a real machine without
+//! evaluating anything of its own.
+//!
+//! Most fields hold a plain `String`. The value-bearing ones — a file's
+//! `contents`, a `lineInFile`'s `line` — hold a [`Text`]: either a plain string,
+//! or a sequence of literal chunks and holes, each hole carrying one secret
+//! sealed at compile time for the consumer to unseal at enact time (ADR 0047).
+//! Unsealing a hole is the only work left for the host to do.
 //!
 //! A [`Glyph`] is one bottom-level OS resource; a [`Scroll`] is a recursive tree
 //! of them for one host — the root is the host, interior branches are
@@ -71,8 +77,8 @@ pub enum Entry {
 /// uid/gid at reconcile time; `None` means "leave ownership as-is".
 ///
 // NOTE: field order IS the postcard encoding — see the `Entry` note above.
-// `mode` is the first non-`String`, non-flat glyph field in the wire model
-// (every other field is a plain `String`, ADR 0004).
+// `mode` is the first non-`String`, non-flat glyph field in the wire model;
+// every other field is a `String` or a `Text` (ADR 0004, ADR 0047).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Perms {
     pub mode: u16,
