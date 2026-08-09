@@ -210,7 +210,8 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   read back — so LSP hover shows a type that cannot be pasted into a signature.
   The fix is row-variable syntax in type position, on both sides.
 
-- **Same-named types from two imports — FIXED (ADR 0045).** Reproduction
+- **Same-named types from two imports — FIXED (ADR 0045, then ADR 0049).**
+  Reproduction
   showed the reported constructor-registry merge was the lesser half. Because
   type identity is a bare `String` in `Type::Con`, two modules' `Thing` were
   literally one type: a function typed `A.Thing -> …` accepted a `B.Thing`,
@@ -222,14 +223,16 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   (`unreachable!("refutable argument pattern survived inference")`) panics were
   downstream reports of the broken identity; the `case` route predates ADR 0044.
 
-  `resolve::reject_type_name_collisions` now enforces one owner per type name
-  per module, over each interface's `type_owners` — the exposed surface's type
-  names mapped to their declaring module. A type reached through two imports is
-  still one type; a privately-held name never mentioned in an exposed signature
-  is still free. Module-qualified type identity is the better end state and is
-  deferred, not superseded — see ADR 0045's consequences.
+  ADR 0045 rejected the collision at the `import`, one owner per type name per
+  module. **ADR 0049 then delivered the end state that ADR deferred:** a type
+  declared in `M` is `M.Name`, `resolve::qualify_module_types` rewrites source to
+  identities before inference, `M.Name` is a spelling an annotation may use, and
+  only a **bare reference with two candidates** is still an error. A type reached
+  through two imports is still one type; a privately-held name never mentioned in
+  an exposed signature is still free.
 
-- **Two imports may expose the same constructor name — FIXED (ADR 0046).**
+- **Two imports may expose the same constructor name — FIXED (ADR 0046, then
+  ADR 0051).**
   `resolve::import_constructors` keyed `ctor_schemes` by *bare constructor* name
   and `import_ty_env` bound `exposed_constructors` the same way, so with
   `CtorA.Alpha = Wrap String` and `CtorB.Beta = Wrap Int` imported together the
@@ -244,18 +247,20 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   error pointing at a type the author never wrote, so correct code read as
   broken.
 
-  `resolve::reject_constructor_name_collisions` now enforces one owner per
-  constructor name per module, over each interface's `ctor_owners` — every
-  open-exposed constructor mapped to its declaring module and the type it
-  builds. Rejection rather than owner-keyed lookup because a constructor is
-  reachable *only* by its bare name: `CtorA.Wrap` is a parse error, so a
-  disambiguated map would have no use site to disambiguate with, and the second
-  constructor was never usable in the first place. It extends across the module
-  boundary the rule `infer::register_type_decls` already applies within one
-  (`duplicate constructor`). Narrower than ADR 0045's type rule in two ways that
-  follow from constructors being gated tighter than types: only `Type(..)`
-  constructors are in scope at all, and constructor ownership never propagates
-  through a re-export, so one module imported twice is not a collision.
+  ADR 0046 fixed it by rejecting the program at the second `import`: a
+  constructor was reachable *only* by its bare name, `CtorA.Wrap` was a parse
+  error, so an owner-keyed map would have had no use site to select from and the
+  shadowed constructor was never usable in the first place.
+
+  **ADR 0051 supersedes that.** `Owner.Ctor` is now both the identity and a
+  spelling an author may write, in expression and pattern position;
+  `resolve::qualify_module_constructors` rewrites every constructor reference to
+  its identity through `resolve::ConstructorScope`, and `import_constructors` /
+  `import_ty_env` / `import_value_env` key by identity, so nothing displaces
+  anything. Importing two modules that each open-expose a `Wrap` compiles as long
+  as every mention says which. What is still rejected is a **bare reference with
+  two candidates**, reported at the reference with both spellings offered —
+  ADR 0049's narrowing of ADR 0045, applied to the constructor namespace.
 
 ### Diagnostics / tooling
 

@@ -212,6 +212,12 @@ pub enum Expr {
     /// A reference to a sum-type value constructor (`Just`, `Nothing`, `True`,
     /// `LT`, …). Distinct from `Var`: constructors live in the prelude and,
     /// when saturated, evaluate to `Value::Data` (ADR 0005).
+    ///
+    /// The name is what the author wrote, bare or qualified (`Shapes.Circle`).
+    /// In a multi-module program `resolve::qualify_module_constructors` rewrites
+    /// it to the identity `Owner.Ctor` before inference or evaluation sees it, so
+    /// two modules' `Circle` stay distinct (ADR 0051). A prelude constructor has
+    /// no owner and keeps its bare name everywhere.
     Ctor(String),
     /// `\p -> body`. The parameter is a [`Pattern`], so a lambda may
     /// destructure its argument (`\(Box spec) -> spec.label`) and a plain name
@@ -336,7 +342,9 @@ pub enum Pattern {
     /// with `Con("Char")`, exactly as `Str` does with `String` (ADR 0026,
     /// ADR 0025).
     Char(char),
-    /// `Upper p1 p2 …` — a constructor applied to sub-patterns.
+    /// `Upper p1 p2 …` — a constructor applied to sub-patterns. The name follows
+    /// [`Expr::Ctor`]'s: qualified spellings are admitted and rewritten to the
+    /// same identity, so a constructor matches by whatever name it builds by.
     Ctor(String, Vec<Spanned<Pattern>>),
     /// `[]` — matches the empty list.
     Nil,

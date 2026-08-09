@@ -56,6 +56,12 @@ impl QueryIndex {
 
     /// Every name visible at `offset`, paired with its rendered type — the
     /// completion candidates. Reads the innermost scope containing the offset.
+    ///
+    /// A constructor is offered under the shortest spelling that still names it
+    /// here: bare where nothing else in scope shares its tail, `Owner.Ctor` where
+    /// something does. Both are accepted by the grammar (ADR 0051), so this
+    /// chooses between two working completions rather than deciding which one
+    /// compiles.
     pub fn names_in_scope(&self, offset: usize) -> Vec<(String, String)> {
         let scope = self
             .scopes
@@ -64,10 +70,19 @@ impl QueryIndex {
             .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
             .map(|(_, id)| *id);
         match scope.and_then(|id| self.scope_table.get(&id)) {
-            Some(names) => names
-                .iter()
-                .map(|(name, scheme)| (name.clone(), display_scheme(scheme)))
-                .collect(),
+            Some(names) => {
+                let bare = unambiguous_constructor_spellings(names);
+                names
+                    .iter()
+                    .map(|(name, scheme)| {
+                        let spelling = bare
+                            .get(name.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| name.clone());
+                        (spelling, display_scheme(scheme))
+                    })
+                    .collect()
+            }
             None => Vec::new(),
         }
     }
@@ -86,6 +101,29 @@ impl QueryIndex {
 
 pub fn display_scheme(scheme: &Scheme) -> String {
     scheme.ty.to_string()
+}
+
+/// Each constructor identity in a scope whose bare tail nothing else there
+/// claims, mapped to that tail.
+///
+/// The uppercase test is what separates a constructor identity from a qualified
+/// *value* — `Shapes.Circle` from `Traefik.route` or `List.map` — since a value's
+/// member name is always lowercase and a constructor's always is not. Type names
+/// never reach this table; the value env holds none.
+fn unambiguous_constructor_spellings(names: &[(String, Scheme)]) -> HashMap<&str, String> {
+    let mut identities_by_bare: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, _) in names {
+        if let Some((_, bare)) = name.rsplit_once('.') {
+            if bare.starts_with(char::is_uppercase) {
+                identities_by_bare.entry(bare).or_default().push(name);
+            }
+        }
+    }
+    identities_by_bare
+        .into_iter()
+        .filter(|(_, identities)| identities.len() == 1)
+        .map(|(bare, identities)| (identities[0], bare.to_string()))
+        .collect()
 }
 
 /// The type name written at `offset`, read from the token stream rather than the

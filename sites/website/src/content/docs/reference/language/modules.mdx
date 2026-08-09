@@ -52,65 +52,55 @@ pattern-match, with the exhaustiveness checker seeing the full constructor set.
 A type exposed without `(..)` keeps its constructors private, so it cannot be
 matched in the importer.
 
-## One type name, one owner
+## Names that two modules share
 
-Within one module, a type name has exactly one owner. Importing two modules that
-each define a type named `Thing` is a compile error, as is declaring a `Thing`
-when an import already supplies one.
-
-```emet
-import IntBox   -- defines Thing
-import StrBox   -- also defines Thing: rejected
-```
-
-Emet identifies a type by its bare name, and there is no qualified spelling for
-a type in type position. Two `Thing`s in scope would therefore be one type, and
-a value of either would be accepted wherever the other is expected. Rename one
-of the two types, or import the two modules from separate modules.
-
-The rule covers every type a module's exposed surface can reach: the types it
-exposes, and the types named in the signatures of the values and constructors it
-exposes. A type counts even when the module keeps the type itself unexposed and
-only mentions it in an exposed signature. A type no exposed signature mentions
-is private and unconstrained — two modules may both hold a `Hidden` and still be
+A type and a constructor are both identified by the module that declares them.
+`IntBox`'s `Thing` is `IntBox.Thing`, and `Shapes`'s `Circle` is
+`Shapes.Circle`, so two modules may each declare a `Thing` or a `Circle` and be
 imported together.
 
-A type reached through two imports is one type, not a collision: two modules may
-both re-expose a third module's type.
-
-## One constructor name, one owner
-
-Within one module, a constructor name has exactly one owner. Importing two
-modules that each expose a constructor named `Wrap` is a compile error, as is
-declaring a variant named `Wrap` when an import already supplies one.
+Names are written bare, and a bare name resolves whenever exactly one thing in
+scope answers to it. When two do, write the one you mean in full — in an
+annotation, in an expression, or in a pattern:
 
 ```emet
-import CtorA   -- exposes Alpha(..), whose variant is Wrap
-import CtorB   -- exposes Beta(..), also with a Wrap: rejected
+import IntBox exposing (Thing(..))   -- declares Thing, whose variant is Wrap
+import StrBox exposing (Thing(..))   -- also declares Thing, also with a Wrap
+
+label : IntBox.Thing -> String
+label value =
+  case value of
+    IntBox.Wrap n -> String.fromInt n
 ```
 
-A constructor is reached only by its bare name. `CtorA.Wrap` is not a spelling
-Emet has, in expression or in pattern position, so nothing at a use site could
-say which `Wrap` is meant. Two repairs: rename one of the two constructors, or
-import the two modules from separate modules.
+A bare `Thing` or a bare `Wrap` in that module is a compile error naming both
+candidates and offering both spellings. It is reported where the name is
+*written*, not at the `import` — the imports are fine, and only a use site can
+be ambiguous. Renaming one of the two remains available and is often the
+clearer answer.
 
-The scope of this rule is the **exposing list**, which is narrower than the type
-rule above. Only a `Type(..)` export contributes constructors to an importer, so
-a type exposed without `(..)` constrains nothing — two modules may each declare
-a `Wrap` and be imported together as long as at most one of them exposes it
-openly. The type rule reaches further, past the exposing list to any type named
-in an exposed signature, because such a type still unifies by name even though
-the importer cannot write it.
+A type reached through two imports is one type, not a collision: two modules may
+both re-expose a third module's type. Constructors do not travel that way — a
+module cannot re-expose a constructor it did not declare, so a constructor's
+qualifier is always the module that declared it, and one module reached through
+two `import` lines contributes one name.
 
-Constructor ownership does not travel either: a module cannot re-expose a
-constructor it did not declare. One module reached through two `import` lines
-contributes one owner and is not a collision.
+Constructors are also gated tighter than types. Only a `Type(..)` export puts a
+constructor in an importer's scope, so a type exposed without `(..)` puts no
+constructor name in play at all. A *type* name, by contrast, is in play even
+when the module keeps the type itself unexposed and only mentions it in an
+exposed signature, because the importer's inference still unifies on it.
 
 ## Qualified access
 
 `Alias.name` (or `Module.name`) reaches an exposed member. This reuses the same
 dotted-name resolution as the built-in modules (`List.map`, `String.fromInt`).
 See the [prelude](/reference/language/prelude/).
+
+The case of what follows the last dot is what picks the namespace:
+`Limesurvey.Database.config` is the value `config`, and
+`Limesurvey.Database.Config` is the type or constructor `Config`. An `as` alias
+stands in for the module name in all three.
 
 ## The `main` entry point
 

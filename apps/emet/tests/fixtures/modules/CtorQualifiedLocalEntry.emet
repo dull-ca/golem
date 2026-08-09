@@ -1,0 +1,16 @@
+module Main exposing (..)
+
+import CtorA exposing (Alpha(..), unwrap)
+
+type Local = Wrap Int
+
+localWidth : Local -> Int
+localWidth (Main.Wrap n) = n
+
+main : List Scroll
+main =
+  [ scroll
+      { name = unwrap (CtorA.Wrap "text")
+      , glyphs = [ lineInFile { path = "/tmp/x", line = String.fromInt (localWidth (Main.Wrap 3)) } ]
+      }
+  ]

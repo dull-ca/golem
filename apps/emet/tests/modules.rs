@@ -205,28 +205,19 @@ fn imported_multi_constructor_type_may_not_destructure_in_an_argument() {
     );
 }
 
-fn assert_names_both_modules(err: &emet::Error, name: &str, first: &str, second: &str) {
+fn assert_ambiguous_constructor(err: &emet::Error, name: &str, first: &str, second: &str) {
     assert_eq!(err.phase, Phase::Type);
     let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
-    for needle in [
-        format!("`{name}`"),
-        format!("`{first}`"),
-        format!("`{second}`"),
-    ] {
+    assert!(
+        err.msg.contains(&format!("`{name}` is ambiguous")),
+        "the message must name the ambiguous constructor, got: {rendered}"
+    );
+    for needle in [format!("`{first}.{name}`"), format!("`{second}.{name}`")] {
         assert!(
             rendered.contains(&needle),
-            "the diagnostic must contain {needle}, got: {rendered}"
+            "the diagnostic must offer {needle} as a spelling, got: {rendered}"
         );
     }
-    assert!(
-        err.note
-            .clone()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("rename"),
-        "the note must tell the author what to do, got: {:?}",
-        err.note
-    );
 }
 
 #[test]
@@ -292,37 +283,95 @@ fn assert_reports_no_type_mismatch(err: &emet::Error) {
 }
 
 #[test]
-fn same_named_constructors_from_two_imports_are_rejected() {
+fn a_bare_constructor_two_imports_both_define_is_ambiguous() {
     let err = compile_fixture("CtorCollisionEntry.emet")
-        .expect_err("two imports defining `Wrap` must not compile");
-    assert_names_both_modules(&err, "Wrap", "CtorA", "CtorB");
+        .expect_err("a bare `Wrap` with two candidates has no single meaning");
+    assert_ambiguous_constructor(&err, "Wrap", "CtorA", "CtorB");
     assert_reports_no_type_mismatch(&err);
 }
 
 #[test]
-fn same_named_constructors_are_rejected_on_the_pattern_side() {
+fn a_bare_constructor_is_ambiguous_on_the_pattern_side_too() {
     let err = compile_fixture("CtorCollisionMatchEntry.emet")
-        .expect_err("two imports defining `Wrap` must not compile");
-    assert_names_both_modules(&err, "Wrap", "CtorA", "CtorB");
+        .expect_err("a bare `Wrap` with two candidates has no single meaning");
+    assert_ambiguous_constructor(&err, "Wrap", "CtorA", "CtorB");
     assert_reports_no_type_mismatch(&err);
 }
 
 #[test]
-fn a_local_constructor_may_not_share_a_name_with_an_imported_one() {
+fn a_bare_constructor_a_local_type_and_an_import_both_define_is_ambiguous() {
     let err = compile_fixture("CtorCollisionLocalEntry.emet")
-        .expect_err("a local `Wrap` must not collide with an imported `Wrap`");
-    assert_names_both_modules(&err, "Wrap", "Main", "CtorA");
+        .expect_err("a bare `Wrap` naming both a local and an imported constructor is ambiguous");
+    assert_ambiguous_constructor(&err, "Wrap", "Main", "CtorA");
     assert_reports_no_type_mismatch(&err);
 }
 
 #[test]
-fn a_collision_diagnostic_names_each_constructors_type() {
+fn an_ambiguous_constructor_is_reported_at_the_reference_not_at_the_import() {
     let err = compile_fixture("CtorCollisionEntry.emet")
-        .expect_err("two imports defining `Wrap` must not compile");
-    let note = err.note.unwrap_or_default();
+        .expect_err("a bare `Wrap` with two candidates has no single meaning");
+    let source = std::fs::read_to_string(fixtures_dir().join("CtorCollisionEntry.emet")).unwrap();
+    assert_eq!(
+        &source[err.span.clone()],
+        "Wrap",
+        "the span must underline the reference, not the `import` line"
+    );
+}
+
+#[test]
+fn a_qualified_constructor_its_module_does_not_have_names_both() {
+    let err = compile_fixture("CtorMisspelledEntry.emet")
+        .expect_err("`CtorA.Wrup` is not a constructor `CtorA` puts in scope");
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
     assert!(
-        note.contains("`Alpha`") && note.contains("`Beta`"),
-        "the note must name the type each `Wrap` builds, got: {note}"
+        err.msg.contains("`CtorA`") && err.msg.contains("`Wrup`"),
+        "the message must name the module and the constructor, got: {rendered}"
+    );
+}
+
+#[test]
+fn a_qualified_constructor_picks_one_of_two_same_named_ones() {
+    let c = compile_fixture("CtorQualifiedEntry.emet")
+        .expect("naming the constructor in full resolves the ambiguity");
+    assert_eq!(scroll_names(&c), vec!["text".to_string()]);
+}
+
+#[test]
+fn a_qualified_constructor_works_in_pattern_position() {
+    let c = compile_fixture("CtorQualifiedMatchEntry.emet")
+        .expect("a qualified constructor matches as well as it builds");
+    assert_eq!(scroll_names(&c), vec!["matched".to_string()]);
+}
+
+#[test]
+fn a_qualified_constructor_honors_the_import_alias() {
+    let c = compile_fixture("CtorQualifiedAliasEntry.emet")
+        .expect("`import CtorA as A` makes `A.Wrap` the qualified spelling");
+    assert_eq!(scroll_names(&c), vec!["aliased".to_string()]);
+}
+
+#[test]
+fn a_local_constructor_has_a_qualified_spelling_of_its_own() {
+    let c = compile_fixture("CtorQualifiedLocalEntry.emet")
+        .expect("`Main.Wrap` names this module's own constructor");
+    assert_eq!(scroll_names(&c), vec!["text".to_string()]);
+}
+
+#[test]
+fn exhaustiveness_still_sees_a_qualified_pattern_as_covering_its_constructor() {
+    let c = compile_fixture("CtorQualifiedCoverEntry.emet")
+        .expect("two qualified arms cover a two-constructor type");
+    assert_eq!(scroll_names(&c), vec!["plain".to_string()]);
+}
+
+#[test]
+fn a_qualified_case_missing_an_arm_is_still_non_exhaustive() {
+    let err = compile_fixture("CtorQualifiedExhaustEntry.emet")
+        .expect_err("one qualified arm does not cover a two-constructor type");
+    let rendered = format!("{} {}", err.msg, err.note.clone().unwrap_or_default());
+    assert!(
+        rendered.contains("non-exhaustive") && rendered.contains("Plain"),
+        "the checker must still name the missing constructor, got: {rendered}"
     );
 }
 

@@ -128,46 +128,43 @@ An Elm-shaped, minimal module system for reuse across files:
   exhaustiveness checker seeing the imported type's complete constructor set. A
   type exposed without `(..)` stays unmatchable — its constructors never enter
   the importer (`resolve::import_constructors`, `infer::seed_imported_constructors`).
-- **One type name, one owner, per module (ADR 0045).** A module may not see two
-  different types under one name. Importing two modules that each define a
-  `Thing`, or declaring a `Thing` an import already contributes, is a compile
-  error (`resolve::reject_type_name_collisions`); the author renames one of the
-  two, or imports the two modules from separate modules. This is soundness, not
-  hygiene: type identity is the **bare name** (`Type::Con` carries a `String`
-  and nothing else), so the two `Thing`s would be one type and a value of either
-  accepted wherever the other is expected — and there is no qualified spelling
-  for a type to disambiguate with, which is why the rule has to reject rather
-  than distinguish. It covers each interface's exposed **surface**
-  (`Interface::type_owners`) — the exposed type names *plus* every `Type::Con`
-  head in the schemes of exposed values and constructors — so a private type
-  named in an exposed signature counts, while a type no exposed signature
-  mentions stays free. A type reached through two imports keeps its declaring
-  owner and is one type, not a collision. Module-qualified type identity would
-  readmit these programs and is deferred, not superseded.
-- **One constructor name, one owner, per module (ADR 0046).** Importing two
-  modules that open-expose a constructor named `Wrap`, or declaring a variant
-  named `Wrap` when an import already contributes one, is a compile error
-  (`resolve::reject_constructor_name_collisions`, run right after the type
-  check). This is *not* the type rule restated. It guards **reachability**, not
-  soundness: ADR 0045 keeps the two types distinct, so no value crosses, but
-  `ctor_schemes` was keyed by bare name and the last import won, so the earlier
-  `Wrap` vanished without a word and using it reported a mismatch against the
-  surviving one's type — correct code reading as broken. Rejection rather than
-  an owner-keyed registry because `CtorA.Wrap` is a **parse** error, in
-  expression and in pattern position: no use site could disambiguate, so a
-  shadowed constructor was never reachable by any spelling. It carries across
-  the module boundary the rule `infer::register_type_decls` already applies
-  within one (`duplicate constructor`).
-  **The scope is deliberately narrower than ADR 0045's**, on two counts that
-  both follow from constructors being gated tighter than types. It covers the
-  **exposing list** (`Interface::ctor_owners`), not the exposed surface — only
-  `Type(..)` constructors are in scope at all, so a constructor behind a closed
-  export is genuinely invisible and cannot collide, whereas a private *type*
-  named in an exposed signature still unifies by name and does. And ownership
-  **never propagates** — constructors cannot be re-exposed, so there is no
-  analogue of `inherited_type_owners` and one module imported twice
-  (`examples/limesurvey/Ingress.emet` imports `Traefik` twice) is not a
-  collision.
+- **Type identity is module-qualified (ADR 0049, superseding ADR 0045's rule).**
+  A type declared in `M` is `M.Name`, so two modules' `Thing` are two types and
+  a value of either is refused where the other is proved.
+  `resolve::qualify_module_types` rewrites declarations and signatures from the
+  bare names an author writes to those identities before inference;
+  `Interface::exposed_type_identity` carries the mapping across the boundary, and
+  every surface that shows a type to a reader de-qualifies it. Annotations are
+  written bare and resolved through an alias map — and **`M.Name` is a spelling
+  an annotation may use**, which is the escape ADR 0045 said did not exist. What
+  remains an error is a **bare reference with two candidates in scope**
+  (`resolve::qualify_type`), reported at the reference, since no alias map can
+  say which one it means. A type reached through two imports keeps its declaring
+  owner and is one type, not a collision.
+- **Constructor identity is module-qualified too (ADR 0051).** A variant
+  declared in `M` is `M.Ctor`, and **`M.Ctor` is a spelling an author may
+  write** — in expression *and* in pattern position, including a parameter
+  pattern (`f (CtorA.Wrap s) = …`). `resolve::qualify_module_constructors`
+  rewrites every `Expr::Ctor` and `Pattern::Ctor` from what was written to the
+  identity it means, through `resolve::ConstructorScope`; a prelude constructor
+  or a glyph match tag has no owner and is left bare. Bare stays the ordinary
+  spelling — a bare name with exactly one candidate resolves to it — and the
+  qualified one is what you reach for when two are in scope.
+  This **supersedes ADR 0046's** one-owner-per-constructor rule, which rejected
+  the collision at the `import` precisely because no use site could disambiguate.
+  What survives is the same narrowing ADR 0049 applied to ADR 0045: a **bare
+  reference** with two candidates is the error, reported at the reference with
+  both qualified spellings offered. Importing two modules that each open-expose
+  a `Wrap` now compiles as long as every mention says which.
+  Constructors are still gated tighter than types, and it still shows: only a
+  `Type(..)` export puts one in scope, and a constructor **cannot be
+  re-exposed**, so its owner is always the module that declared it — there is no
+  constructor analogue of `inherited_type_owners`, and one module imported twice
+  (`examples/limesurvey/Ingress.emet` imports `Traefik` twice) contributes one
+  identity, not two.
+  Because a `Value::Data` tag is matched against a `Pattern::Ctor`'s name,
+  **`eval` runs on the qualified module too**, not the one as written — the only
+  stages that read the source AST are the query index and the LSP.
 - **Exactly one module has `main`** (the entry); the rest are libraries. A
   library that declares `main` is a compile error.
 - **`compile(src)`** is the single-file pipeline (imports not resolved from

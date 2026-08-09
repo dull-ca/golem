@@ -2,6 +2,11 @@
 
 ## Status
 
+Superseded by ADR 0051 (2026-08-08), which adds the qualified `Module.Ctor`
+spelling this record names as the reason it had to reject rather than
+disambiguate, and moves the rejection from the `import` to the ambiguous
+reference.
+
 Accepted 2026-08-02. Closes the item ADR 0045 left "Still open" and the
 `docs/TODO.md` backlog-A KNOWN BUG "two imports may expose the same constructor
 name". Constrains ADR 0016 (the module system) alongside ADR 0045, which it
@@ -130,6 +135,8 @@ contributes. The author renames one of the two, or splits the imports across two
 modules. There is no qualified constructor syntax to escape into — that absence
 is the reason the rule rejects rather than disambiguates, and adding such syntax
 later would be the thing that reopens this decision.
+
+*Reopened on exactly that condition: ADR 0051 adds the syntax.*
 
 **Not addressed.** A constructor name colliding with a *prelude* constructor
 across the module boundary cannot arise: `register_type_decls` already refuses

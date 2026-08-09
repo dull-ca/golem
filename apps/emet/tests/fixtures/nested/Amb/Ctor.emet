@@ -1,0 +1,3 @@
+module Amb.Ctor exposing (Held(..))
+
+type Held = Hold String

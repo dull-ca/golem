@@ -1,0 +1,11 @@
+module Main exposing (..)
+
+import Amb.Ctor exposing (Held(..))
+
+held : Held -> String
+held v =
+  case v of
+    Amb.Ctor.Hold s -> s
+
+main : List Scroll
+main = [ scroll { name = held (Amb.Ctor.Hold "nested"), glyphs = [] } ]

@@ -1,0 +1,3 @@
+module CtorMulti exposing (Multi(..))
+
+type Multi = Wrap String | Plain

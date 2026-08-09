@@ -1,0 +1,13 @@
+module Main exposing (..)
+
+import CtorMulti exposing (Multi(..))
+
+describe : Multi -> String
+describe v =
+  case v of
+    CtorMulti.Wrap s -> s
+    CtorMulti.Plain -> "plain"
+
+main : List Scroll
+main =
+  [ scroll { name = describe Plain, glyphs = [] } ]

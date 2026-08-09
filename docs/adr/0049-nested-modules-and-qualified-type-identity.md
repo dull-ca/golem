@@ -142,7 +142,8 @@ the case qualification exists for.
   identity does not by itself fix the recorded defect where two imports expose
   the same constructor name for differently-named types. It becomes reachable
   to fix — the owning type is now distinguishable — but that is a separate
-  change.
+  change. *Made in ADR 0051, which reuses this record's pre-pass, alias map and
+  de-qualifying policy in the constructor namespace.*
 - A module's name now depends on which search-path root it was found under, so
   the same file reached through two roots is two module names. The resolver
   must record the root it matched, not only the path.
