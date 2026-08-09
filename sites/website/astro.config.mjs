@@ -11,6 +11,34 @@ export default defineConfig({
       title: "Golem",
       description:
         "Small-fleet declarative orchestrator for bare-metal Debian boxes.",
+      // This is already Starlight's default path; naming it keeps the icon from
+      // looking like it works by accident, since the only other thing wiring it
+      // up is the filename under `public/`.
+      favicon: "/favicon.svg",
+      // NOTE: the PNGs are opaque dark tiles, not the SVG's transparent
+      // silhouette. The SVG flips fill on `prefers-color-scheme`; Safari and iOS
+      // ignore that media query, so a transparent fallback would render a
+      // near-black figure on Safari's dark tab bar. A tile carries its own
+      // contrast and is legible against either.
+      head: [
+        {
+          tag: "link",
+          attrs: {
+            rel: "icon",
+            href: "/favicon-32.png",
+            sizes: "32x32",
+            type: "image/png",
+          },
+        },
+        {
+          tag: "link",
+          attrs: {
+            rel: "apple-touch-icon",
+            href: "/apple-touch-icon.png",
+            sizes: "180x180",
+          },
+        },
+      ],
       expressiveCode: {
         shiki: {
           langs: [{ ...emetGrammar, aliases: ["emet"] }],

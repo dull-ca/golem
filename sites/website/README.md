@@ -41,3 +41,11 @@ sites/website/
    add the example. If you change an example, update the guide.
 3. **No unexplained jargon.** First use of "claim", "bundle", "intent",
    "capture" gets a one-line gloss. After that you can run.
+
+## Credits
+
+The favicon is ["Robot golem"](https://game-icons.net/1x1/lorc/robot-golem.html)
+by Lorc, from game-icons.net, under
+[CC BY 3.0](http://creativecommons.org/licenses/by/3.0/). It is also the source
+of `favicon-32.png` and `apple-touch-icon.png`. `public/favicon.svg` carries the
+same attribution alongside the edits made to it.
