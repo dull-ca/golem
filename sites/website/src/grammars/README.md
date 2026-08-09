@@ -4,7 +4,7 @@
 to highlight Emet code blocks on this site (imported by `astro.config.mjs`).
 
 It is a **committed, vendored** artifact — the site build does not generate it.
-It is regenerated in the [emet.nvim](https://codeberg.org/dull/emet.nvim)
+It is regenerated in the [emet.nvim](https://github.com/dull-ca/emet.nvim)
 repository from the tree-sitter grammar's `grammar.js`:
 
 ```sh

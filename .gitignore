@@ -26,13 +26,6 @@ devenv.local.nix
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Smoke-test artifacts. run.sh creates these in-tree on every invocation;
-# operator.sk is a private ed25519 key, signed-*.json are signed bundles.
-# Keep them out of commits even if their lifetime is "test only."
-smoke-test/operator.sk
-smoke-test/operator.pk
-smoke-test/signed-*.json
-
 # docs site (Astro Starlight)
 sites/website/node_modules
 sites/website/dist

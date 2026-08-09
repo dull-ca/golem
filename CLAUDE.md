@@ -2,7 +2,7 @@
 
 ## The model
 
-You author a fleet in **Emet** (`emet/`), a typed functional language. A
+You author a fleet in **Emet** (`apps/emet/`), a typed functional language. A
 program evaluates to `main : List Scroll` — one **Scroll** per host. A Scroll is
 a recursive, strict tree (ADR 0031): each level holds *either* **glyphs** (a
 leaf unit) *or* named sub-scrolls (a branch), never both. Leaf units are the
