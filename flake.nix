@@ -13,12 +13,18 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    # `buildBunPackage` / `fetchBunDeps` — the bun-in-nix machinery shared with
+    # dull.yyc.dev, so both sites build the same way and a fix lands once.
+    dull-nix.url = "github:dull-ca/nix";
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane }:
+  outputs = { self, nixpkgs, flake-utils, crane, dull-nix }:
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ dull-nix.overlays.default ];
+        };
         pkgsStatic = pkgs.pkgsStatic;
         inherit (pkgs) lib;
 
@@ -116,71 +122,31 @@
           cargoExtraArgs = "--locked -p emet-lsp";
         });
 
-        # The site's node_modules, as a fixed-output derivation. `bun install`
-        # needs the network, which only an FOD may have, so the hash below is
-        # what pins it: change `package.json` or `bun.lock` and this hash must
-        # change with them (nix reports the new one on mismatch).
-        websiteNodeModules = pkgs.stdenvNoCC.mkDerivation {
-          pname = "golem-website-node-modules";
-          version = "0";
-          src = ./sites/website;
-          nativeBuildInputs = [ pkgs.bun ];
-          dontConfigure = true;
-          buildPhase = ''
-            export HOME=$TMPDIR
-            bun install --frozen-lockfile --no-progress --ignore-scripts
-          '';
-          installPhase = ''
-            mkdir -p $out
-            cp -R node_modules/. $out/
-          '';
-          dontFixup = true;
-          outputHashAlgo = "sha256";
-          outputHashMode = "recursive";
-          outputHash = "sha256-XY0AEsZ2vmcL6OmVSvUoGCFX4MCXKwhyXd3Ly/pLJ/E=";
+        # Everything the site build reads, minus the artifacts a build writes:
+        # `dist/` and `.astro/` are outputs, not inputs, so an in-tree copy from
+        # a `bun run build` must not change this derivation.
+        websiteSrc = lib.cleanSourceWith {
+          name = "golem-website-src";
+          src = lib.cleanSource ./sites/website;
+          filter = path: type:
+            let rel = lib.removePrefix (toString ./sites/website + "/") (toString path);
+            in !(lib.hasPrefix "node_modules" rel
+              || lib.hasPrefix "dist" rel
+              || lib.hasPrefix ".astro" rel);
         };
 
-        # The built site, purely. npm ships esbuild, rollup and sharp as
-        # prebuilt ELF binaries linked against a dynamic loader that does not
-        # exist in the nix store, so `autoPatchelf` rewrites them against
-        # nixpkgs' glibc before anything runs them — that, not reproducibility,
-        # was the actual obstacle to building this in nix.
-        websiteDist = pkgs.stdenv.mkDerivation {
+        # Bump when sites/website/bun.lock or package.json changes; nix reports
+        # the replacement on mismatch (see dull-nix's fetchBunDeps).
+        websiteBunDepsHash = "sha256-XY0AEsZ2vmcL6OmVSvUoGCFX4MCXKwhyXd3Ly/pLJ/E=";
+
+        # The built docs site. `buildBunPackage` owns what used to be spelled out
+        # here by hand: the fixed-output `bun install`, `autoPatchelfHook` over
+        # npm's prebuilt ELF binaries, and `patchShebangs` over their
+        # `#!/usr/bin/env node` entry points.
+        websiteDist = pkgs.buildBunPackage {
           pname = "golem-website-dist";
-          version = "0";
-          src = ./sites/website;
-          nativeBuildInputs = [ pkgs.bun pkgs.nodejs pkgs.autoPatchelfHook ];
-          buildInputs = [ pkgs.stdenv.cc.cc.lib pkgs.vips pkgs.glib ];
-          configurePhase = ''
-            runHook preConfigure
-            cp -R ${websiteNodeModules} node_modules
-            chmod -R u+w node_modules
-            autoPatchelf node_modules
-            # npm's bin scripts are `#!/usr/bin/env node`, and neither path
-            # exists in the sandbox; patchShebangs rewrites them at the nodejs
-            # above.
-            patchShebangs node_modules
-            runHook postConfigure
-          '';
-          buildPhase = ''
-            runHook preBuild
-            export HOME=$TMPDIR
-            export ASTRO_TELEMETRY_DISABLED=1
-            bun run build
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            cp -R dist $out
-            runHook postInstall
-          '';
-          # npm ships every platform's sharp, so the musl builds land here and
-          # can never link against a glibc host's loader. They are dead weight,
-          # not a missing dependency — the glibc variants beside them are what
-          # actually loads.
-          autoPatchelfIgnoreMissingDeps = [ "libc.musl-x86_64.so.1" ];
-          dontPatchELF = true;
-          dontStrip = true;
+          src = websiteSrc;
+          bunDepsHash = websiteBunDepsHash;
         };
 
         # The docs site as a Caddy image (see sites/website/Caddyfile), built
@@ -207,6 +173,16 @@
               "caddyfile"
             ];
             ExposedPorts = { "80/tcp" = { }; };
+            # Travels in the image manifest, so `skopeo inspect` surfaces both
+            # without reading an ADR. `image.source` is also what links the
+            # published ghcr.io package back to this repository.
+            Labels = {
+              "org.opencontainers.image.description" =
+                "golem's documentation site. Serves plaintext HTTP on :80 with "
+                + "`auto_https off` and MUST sit behind a TLS-terminating "
+                + "reverse proxy.";
+              "org.opencontainers.image.source" = "https://github.com/dull-ca/golem";
+            };
           };
         };
 
@@ -304,7 +280,7 @@
           golemd-static = golemd;
           golemctl-static = golemctl;
           default = emetc;
-          inherit websiteNodeModules websiteDist website-container;
+          inherit websiteDist website-container;
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
