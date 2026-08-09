@@ -281,7 +281,7 @@ fn a_digest_pinned_image_renders_with_an_at_sign() {
     let c = compiled();
     let unit = file_contents(scroll(&c, "web"), "/etc/containers/systemd/web.container");
     assert!(
-        unit.contains("Image=docker.io/library/caddy@sha256:abc123"),
+        unit.contains("Image=docker.io/library/nginx@sha256:abc123"),
         "digest-pinned image uses @; got:\n{unit}"
     );
 }

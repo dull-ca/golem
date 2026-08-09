@@ -15,7 +15,7 @@ site : Workload
 site =
   Workload
     { name = "site"
-    , image = image "docker.io/library" "caddy" "2"
+    , image = image "docker.io/library" "nginx" "1"
     , env = []
     , envFiles = [ "/etc/golem/site.env" ]
     , labels = []

@@ -43,7 +43,7 @@ web : Workload
 web =
   Workload
     { name = "web"
-    , image = imageAt "docker.io/library" "caddy" "sha256:abc123"
+    , image = imageAt "docker.io/library" "nginx" "sha256:abc123"
     , env = []
     , envFiles = []
     , labels = []

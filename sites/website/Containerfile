@@ -1,12 +1,30 @@
-# Package the prebuilt Astro/Starlight `dist/` into caddy:2-alpine, served with
-# the sibling Caddyfile. `dist/` is built outside the image (bun-first) and only
-# copied in here — Astro pulls ~137 platform-split native deps (sharp/libvips,
-# esbuild, rollup, pagefind) that don't build reliably in a throwaway VM. The nix
-# `mkWebsiteContainer` output makes the same prebuilt-dist tradeoff (see flake.nix).
-FROM docker.io/library/caddy:2-alpine
+# Package the prebuilt Astro/Starlight `dist/` into nginx:alpine, served with the
+# sibling `nginx.conf` — the same file, unmodified, that flake.nix bakes into the
+# published ghcr.io image (docs/adr/0052-nginx-static-docs-image.md). One config,
+# two images: this one is built with podman on a golem-managed box by the fleet
+# tutorials, that one is nix-built from `nginx-static-no-tls`.
+#
+# `dist/` is built outside the image (bun-first) and only copied in here — Astro
+# pulls ~137 platform-split native deps (sharp/libvips, esbuild, rollup, pagefind)
+# that don't build reliably in a throwaway VM. The nix `mkWebsiteContainer` output
+# makes the same prebuilt-dist tradeoff (see flake.nix).
+FROM docker.io/library/nginx:alpine
 
-COPY Caddyfile /etc/caddy/Caddyfile
+# NOTE: this base compiles its client-body temp path to /var/cache/nginx, where
+# `nginx-static-no-tls` uses /tmp; the directory ships root-owned, so an
+# unprivileged master exits at startup on mkdir(). Chowning it here keeps the
+# difference in the image, which is where it originates, and leaves nginx.conf
+# byte-identical across the two.
+RUN chown nobody /var/cache/nginx
+
+COPY nginx.conf /etc/nginx/nginx.conf
 COPY dist/ /var/www/html/
 
-EXPOSE 80
-ENTRYPOINT ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+EXPOSE 8080
+USER nobody
+# NOTE: an explicit entrypoint, because the base image's default command is
+# `nginx -g "daemon off;"` and nginx.conf already sets `daemon off` — nginx
+# rejects the pair as a duplicate directive and never starts. This also skips
+# /docker-entrypoint.sh, whose only work is templating the default config that
+# nginx.conf replaces.
+ENTRYPOINT ["nginx", "-c", "/etc/nginx/nginx.conf"]

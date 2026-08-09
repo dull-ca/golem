@@ -114,7 +114,7 @@ reload at the end of the apply, after the drop-in is in place.
    between layer lines.
 
    ```nushell
-   tar -C sites/website -cf - Containerfile Caddyfile dist | fleet ssh talos -- "mkdir -p site && tar -xf - -C site"
+   tar -C sites/website -cf - Containerfile nginx.conf dist | fleet ssh talos -- "mkdir -p site && tar -xf - -C site"
    fleet ssh talos -- "sudo podman build -t 10.0.2.2:5000/golem-website:latest site && sudo podman push 10.0.2.2:5000/golem-website:latest"
    ```
 

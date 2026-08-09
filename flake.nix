@@ -13,8 +13,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
-    # `buildBunPackage` / `fetchBunDeps` — the bun-in-nix machinery shared with
-    # dull.yyc.dev, so both sites build the same way and a fix lands once.
+    # `buildBunPackage` and `nginx-static-no-tls`, shared with dull.yyc.dev so a
+    # fix to either lands once.
     dull-nix.url = "github:dull-ca/nix";
   };
 
@@ -30,9 +30,9 @@
 
         craneLibStatic = crane.mkLib pkgsStatic;
 
-        # A positive allow-list rather than crane's `cleanCargoSource`, which
-        # strips the non-`.rs` `.emet` fixtures the emet suites read. The payoff:
-        # edits outside these roots (docs/, sites/) leave every rust build cached.
+        # An allow-list rather than crane's `cleanCargoSource`, which strips the
+        # `.emet` fixtures the emet suites read. Edits outside these roots leave
+        # every rust build cached.
         rustSourceRoots = [
           "Cargo.toml"
           "Cargo.lock"
@@ -43,11 +43,9 @@
           "libs"
         ];
 
-        # The docs-owned example tree (ADR 0043). `apps/emet/tests/docs_examples.rs`
-        # compiles every program in it and asserts its rendered output, so it is
-        # rust test input even though it lives under `sites/`. Filtering it out
-        # would leave the test unable to find a single example — which it fails
-        # loudly on rather than skipping.
+        # Rust test input despite living under `sites/`:
+        # `apps/emet/tests/docs_examples.rs` compiles every program here
+        # (docs/adr/0043-docs-examples-are-real-compiled-code.md).
         docsExamplesRoot = "sites/website/examples";
 
         rustSource =
@@ -73,34 +71,26 @@
           strictDeps = true;
         };
 
-        # Every binary is a portable static-musl build, for Debian guests. A
-        # nix-dynamic binary links its interpreter as a /nix/store path, so it
-        # can't run off NixOS; pkgsStatic links everything (musl libc, bundled
-        # sqlite, rustls/ring crypto) into one file. One target, so one deps
-        # graph below and one set of outputs.
-        #
-        # crane derives CARGO_BUILD_TARGET and the cross linker/CC vars from
-        # pkgsStatic's host platform; only `+crt-static` has to be stated.
+        # Every binary is static-musl because it has to run on Debian guests: a
+        # nix-dynamic binary links its interpreter as a /nix/store path. crane
+        # derives CARGO_BUILD_TARGET and the cross linker/CC vars from
+        # pkgsStatic; only `+crt-static` has to be stated.
         staticArgs = commonArgs // {
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
           doCheck = false;
         };
 
-        # Third-party deps, compiled against dummied-out workspace sources: the
-        # store path survives any `.rs` edit here, so it stays a cachix hit.
+        # Third-party deps against dummied-out workspace sources, so the store
+        # path survives any `.rs` edit here and stays a cachix hit.
         cargoArtifacts = craneLibStatic.buildDepsOnly (staticArgs // {
           pname = "golem-workspace-static";
         });
 
-        # The golem agent (golemd) and CLI (golemctl) as their own flake
-        # outputs: each builds only its own workspace crate, off the shared
-        # Cargo.lock. These are release outputs — CI builds them via the
-        # `checks` below (`nix flake check`; ADR 0035).
         golemd = craneLibStatic.buildPackage (staticArgs // {
           pname = "golemd";
           inherit cargoArtifacts;
-          # Setting cargoExtraArgs drops crane's own `--locked`, hence the
-          # explicit one.
+          # NOTE: setting cargoExtraArgs drops crane's own `--locked`, hence the
+          # explicit one here and below.
           cargoExtraArgs = "--locked -p golemd";
         });
 
@@ -140,7 +130,6 @@
           };
         };
 
-        # Everything the site build reads, minus the artifacts a build writes:
         # `dist/` and `.astro/` are outputs, not inputs, so an in-tree copy from
         # a `bun run build` must not change this derivation.
         websiteSrc = lib.cleanSourceWith {
@@ -157,48 +146,55 @@
         # the replacement on mismatch (see dull-nix's fetchBunDeps).
         websiteBunDepsHash = "sha256-XY0AEsZ2vmcL6OmVSvUoGCFX4MCXKwhyXd3Ly/pLJ/E=";
 
-        # The built docs site. `buildBunPackage` owns what used to be spelled out
-        # here by hand: the fixed-output `bun install`, `autoPatchelfHook` over
-        # npm's prebuilt ELF binaries, and `patchShebangs` over their
-        # `#!/usr/bin/env node` entry points.
         websiteDist = pkgs.buildBunPackage {
           pname = "golem-website-dist";
           src = websiteSrc;
           bunDepsHash = websiteBunDepsHash;
         };
 
-        # The docs site as a Caddy image (see sites/website/Caddyfile), built
-        # from `websiteDist` above — purely, with no external `dist/` and no
-        # `--impure`.
+        # NOTE: `dull-nix.packages`, not the overlay — overlays.default carries
+        # only the bun builders.
+        websiteNginx = dull-nix.packages.${system}.nginx-static-no-tls;
+
+        # The published docs image (docs/adr/0052-nginx-static-docs-image.md).
+        # `sites/website/nginx.conf` is shared verbatim with the tutorials'
+        # podman-built image in `sites/website/Containerfile`.
         mkWebsiteContainer = dist: pkgs.dockerTools.buildLayeredImage {
           name = "golem-website";
           tag = "latest";
           contents = [
-            pkgs.caddy
+            websiteNginx
+            # /etc/passwd and /etc/group, absent from an empty base: nginx
+            # refuses to start when the `nobody` below does not resolve.
+            pkgs.dockerTools.fakeNss
             (pkgs.runCommand "golem-website-root" { } ''
-              mkdir -p $out/var/www/html $out/etc/caddy
+              mkdir -p $out/var/www/html $out/etc/nginx
               cp -r ${dist}/. $out/var/www/html/
-              cp ${./sites/website/Caddyfile} $out/etc/caddy/Caddyfile
+              cp ${./sites/website/nginx.conf} $out/etc/nginx/nginx.conf
+              cp ${websiteNginx}/conf/mime.types $out/etc/nginx/mime.types
             '')
           ];
+          # nginx needs a writable /tmp for its pid and client-body files.
+          # NOTE: a `chmod 1777` inside the runCommand above would not survive
+          # nix's store canonicalisation, which resets directory modes to 0555;
+          # extraCommands runs after it, so it is the only place the bit sticks.
+          extraCommands = ''
+            mkdir -p tmp
+            chmod 1777 tmp
+          '';
           config = {
-            Entrypoint = [
-              "${pkgs.caddy}/bin/caddy"
-              "run"
-              "--config"
-              "/etc/caddy/Caddyfile"
-              "--adapter"
-              "caddyfile"
-            ];
-            ExposedPorts = { "80/tcp" = { }; };
-            # Travels in the image manifest, so `skopeo inspect` surfaces both
-            # without reading an ADR. `image.source` is also what links the
-            # published ghcr.io package back to this repository.
+            Entrypoint = [ "/bin/nginx" "-c" "/etc/nginx/nginx.conf" ];
+            ExposedPorts = { "8080/tcp" = { }; };
+            User = "nobody";
+            # Travels in the image manifest, so `skopeo inspect` surfaces the
+            # no-TLS warning without reading an ADR, and ghcr.io links the
+            # published package back to this repository.
             Labels = {
               "org.opencontainers.image.description" =
-                "golem's documentation site. Serves plaintext HTTP on :80 with "
-                + "`auto_https off` and MUST sit behind a TLS-terminating "
-                + "reverse proxy.";
+                "golem's documentation site. Serves plaintext HTTP on :8080. "
+                + "nginx is built without ngx_http_ssl_module and CANNOT serve "
+                + "HTTPS — it must sit behind a TLS-terminating reverse proxy "
+                + "and must never be exposed directly to the internet.";
               "org.opencontainers.image.source" = "https://github.com/dull-ca/golem";
             };
           };
@@ -206,55 +202,61 @@
 
         website-container = mkWebsiteContainer websiteDist;
 
-        # Does the site actually serve? `nix flake check` used to prove only
-        # that the flake evaluated; this runs the real caddy against the real
-        # `Caddyfile` and the real built site, and asserts what a reader gets.
+        # The real nginx against the shipped `nginx.conf` and the real built
+        # site, asserting what a reader gets
+        # (docs/adr/0052-nginx-static-docs-image.md).
         #
-        # Two substitutions, both forced by the sandbox and neither touching
-        # behaviour: the document root moves off `/var/www/html`, which a build
-        # cannot create, and the listen port moves off `:80`, which an
-        # unprivileged build cannot bind. Every other directive — `auto_https
-        # off`, `encode`, the `handle_errors` rewrite to Starlight's 404.html —
-        # is the file as shipped, which is where the behaviour under test
-        # lives.
+        # The three substitutions are forced by the sandbox and touch no
+        # behaviour: `/var/www/html` and `/etc/nginx` are paths a build cannot
+        # create, and `/tmp` is not writable here. Every other directive is the
+        # file as shipped, which is where the behaviour under test lives.
         website-serves = pkgs.runCommand "golem-website-serves"
           {
-            nativeBuildInputs = [ pkgs.caddy pkgs.curl ];
+            nativeBuildInputs = [ pkgs.curl ];
           } ''
-          substitute ${./sites/website/Caddyfile} Caddyfile \
-            --replace-fail 'root * /var/www/html' 'root * ${websiteDist}' \
-            --replace-fail ':80 {' ':8080 {'
-          export HOME=$TMPDIR
-          export XDG_CONFIG_HOME=$TMPDIR
-          export XDG_DATA_HOME=$TMPDIR
-          caddy run --config Caddyfile --adapter caddyfile &
-          caddy_pid=$!
-          trap 'kill $caddy_pid 2>/dev/null || true' EXIT
+          substitute ${./sites/website/nginx.conf} nginx.conf \
+            --replace-fail '/etc/nginx/mime.types' '${websiteNginx}/conf/mime.types' \
+            --replace-fail '/var/www/html' '${websiteDist}' \
+            --replace-fail '/tmp/nginx.pid' "$PWD/nginx.pid"
+          ${websiteNginx}/bin/nginx -c $PWD/nginx.conf -p $PWD &
+          nginx_pid=$!
+          trap 'kill $nginx_pid 2>/dev/null || true' EXIT
 
           for _ in $(seq 1 60); do
             curl -sf -o /dev/null http://127.0.0.1:8080/ && break
             sleep 0.5
           done
 
-          root=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
+          root=$(curl -s -o index.html -w '%{http_code}' http://127.0.0.1:8080/)
           ctype=$(curl -s -o /dev/null -w '%{content_type}' http://127.0.0.1:8080/)
-          missing=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/definitely-not-here)
+          missing=$(curl -s -o missing-body.html -w '%{http_code}' http://127.0.0.1:8080/definitely-not-here)
 
           test "$root" = 200 || { echo "FAIL root: $root"; exit 1; }
-          case "$ctype" in
-            text/html*) ;;
-            *) echo "FAIL content-type: $ctype"; exit 1 ;;
-          esac
+          test "$ctype" = "text/html; charset=utf-8" || { echo "FAIL content-type: $ctype"; exit 1; }
           test "$missing" = 404 || { echo "FAIL 404: $missing"; exit 1; }
+          grep -qF '<title>404 | Golem</title>' missing-body.html \
+            || { echo "FAIL styled 404 body"; head -c 400 missing-body.html; exit 1; }
+
+          stylesheet=$(grep -o '/_astro/[^"]*\.css' index.html | head -1)
+          test -n "$stylesheet" || { echo "FAIL no stylesheet in index.html"; exit 1; }
+          curl -s -o /dev/null -D asset-headers.txt -H 'Accept-Encoding: gzip' \
+            "http://127.0.0.1:8080$stylesheet"
+          grep -qi '^content-type: text/css; charset=utf-8' asset-headers.txt \
+            || { echo "FAIL stylesheet content-type"; cat asset-headers.txt; exit 1; }
+          grep -qi '^content-encoding: gzip' asset-headers.txt \
+            || { echo "FAIL stylesheet not compressed"; cat asset-headers.txt; exit 1; }
+
+          directory=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+            http://127.0.0.1:8080/getting-started/install)
+          test "$directory" = "301 http://127.0.0.1:8080/getting-started/install/" \
+            || { echo "FAIL directory redirect: $directory"; exit 1; }
 
           echo "the site serves" > $out
         '';
 
-        # `cargo test` over the whole workspace, in one derivation — including
-        # cross-crate integration tests and the crates with no release binary
-        # (e.g. scroll-format). It is the test half of the `nix flake check`
-        # gate (ADR 0035 §1); the per-package builds are the build half, and
-        # they carry `doCheck = false` because this owns testing.
+        # The test half of the gate, so the per-package builds above carry
+        # `doCheck = false`. Covers the crates with no release binary (e.g.
+        # scroll-format) and the cross-crate integration tests.
         workspace-tests = craneLibStatic.cargoTest (staticArgs // {
           pname = "golem-workspace-tests";
           inherit cargoArtifacts;
@@ -267,19 +269,15 @@
           doInstallCargoArtifacts = false;
         });
 
-        # The `apps/fleet` python harness (fleet is a python CLI, not a Rust
-        # crate), run under `unittest` against a nix-built interpreter with its
-        # deps.
+        # `apps/fleet` is a python CLI, not a Rust crate, so it needs its own
+        # check.
         #
-        # The `| cat` is load-bearing, not filler. `apps/fleet/cli.py` builds a
-        # module-level `rich.Console()` with default tty auto-detection, and one
-        # test asserts plain-text output. Under a bare `nix build`, the builder's
-        # stdout goes straight to the build log, which `rich` reads as a tty — so
-        # it colorizes and the plain-text assertion breaks. Piping through `cat`
-        # forces a real pipe, `isatty()` reports false, and the output matches the
-        # non-nix `pytest` run. stdenv's `set -o pipefail` still fails the build on
-        # a real test failure, so the pipe hides nothing. Delete it and the gate
-        # goes flaky under nix.
+        # NOTE: the `| cat` is load-bearing. `apps/fleet/cli.py` builds a
+        # module-level `rich.Console()` with tty auto-detection, and one test
+        # asserts plain-text output; under a bare `nix build` the builder's
+        # stdout is the build log, which `rich` reads as a tty and colorizes.
+        # The pipe makes `isatty()` false. `set -o pipefail` still fails the
+        # build on a real failure, so it hides nothing.
         fleet-tests = pkgs.runCommand "golem-fleet-tests"
           {
             nativeBuildInputs = [
@@ -309,8 +307,6 @@
         checks = {
           inherit golemd golemctl emetc emet-lsp golem-tools;
           inherit workspace-tests fleet-tests;
-          # The docs site is part of the gate now that it builds purely:
-          # `websiteDist` proves it compiles, `website-serves` proves it serves.
           inherit websiteDist website-serves;
         };
 
