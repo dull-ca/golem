@@ -300,14 +300,15 @@
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
-        # (ADR 0035 §1). The four binary builds prove the toolchain compiles;
-        # workspace-tests and fleet-tests prove it passes. `website-container`
-        # is absent because `websiteDist` and `website-serves` already cover
-        # what it wraps; the image itself is built on a tag, by release.yml.
+        # (ADR 0035 §1). `website-container` is here so every push warms it in
+        # cachix — left out, only a `v*` tag ever built the image, and the tag
+        # paid for it. It costs the gate almost nothing: `websiteDist` and
+        # `website-serves` already force the built site and the static nginx
+        # into the closure, leaving the image itself about a second of tar.
         checks = {
           inherit golemd golemctl emetc emet-lsp golem-tools;
           inherit workspace-tests fleet-tests;
-          inherit websiteDist website-serves;
+          inherit websiteDist website-serves website-container;
         };
 
         lib.mkWebsiteContainer = mkWebsiteContainer;

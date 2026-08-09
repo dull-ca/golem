@@ -95,10 +95,9 @@ than root, are refinements for when the box is actually stood up.
 
 ## What stays manual / impure
 
-- **The website dist and container.** `bun run build` produces `dist/`; only then
-  does `nix build --impure .#website-container` package it. Outside the pure gate
-  by construction (ADR 0035 §4) — Astro's ~137 platform-split native packages
-  don't build purely in nix.
+- ~~The website dist and container.~~ Both build purely now and both are
+  `checks`: `websiteDist` via `buildBunPackage`, `website-container` on top of
+  it. Nothing about the docs site is impure or manual.
 - **Release publishing.** The mechanism is an open question (ADR 0035 §5): the
   Forgejo/Codeberg channel died with the move off Codeberg, and its replacement
   — GitHub Releases pushed from the box, or artifacts served from Dr. Dub's own
