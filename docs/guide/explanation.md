@@ -48,9 +48,10 @@ deliberate extensions:
 
 - **Row-polymorphic records** — `\h -> h.name` type-checks; a helper's record
   parameter only needs the fields it reads.
-- **`number` / `comparable`** — two closed constraints, taken exactly as far as
-  Elm and no further. `number` is `Int` or `Float`; `comparable` is `Int`,
-  `Float`, or `String`. No user-defined typeclasses.
+- **`number` / `comparable` / `appendable`** — three closed constraints, taken
+  exactly as far as Elm and no further. `number` is `Int` or `Float`;
+  `comparable` is `Int`, `Float`, `String`, `Char`, or a tuple of comparables;
+  `appendable` is `String` or `List a`. No user-defined typeclasses.
 - **Exhaustive `case`** — a match must cover every constructor; a missing or
   redundant arm is a compile error.
 

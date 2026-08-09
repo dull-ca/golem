@@ -9,7 +9,8 @@ enacts it on real hosts.
 - **[Tutorial](tutorial.md)** — new to Emet? Build a fleet, one runnable program
   at a time.
 - **[How-to](how-to.md)** — recipes for specific tasks.
-- **[Reference](reference.md)** — glyphs, types, prelude, operators, syntax.
+- **[Reference](reference.md)** — glyphs, scrolls, types, modules, operators,
+  syntax, secrets.
 - **[Explanation](explanation.md)** — the mental model, in one page.
 
 Every program shown compiles. Run one:
@@ -18,6 +19,6 @@ Every program shown compiles. Run one:
 cargo run -p emet -- build --text apps/emet/examples/single-host.emet
 ```
 
-Editor support lives in [`emet.nvim`](https://codeberg.org/dull/emet.nvim)
+Editor support lives in [`emet.nvim`](https://github.com/dull-ca/emet.nvim)
 (tree-sitter highlighting + Neovim plugin) and `emet-lsp` (inference,
 diagnostics).
