@@ -40,7 +40,7 @@ golem now dogfoods real containers, all hand-rolled as quadlets:
   `String.join`'d `.container` file with `Image=`, `ContainerName=`,
   `PublishPort=5000:5000`, `Volume=golem-registry-data:/var/lib/registry:Z`, plus
   a `podman` `aptPackage` and a `systemdService`.
-- The **website** Caddy/web box (`examples/website/website.emet`) — the same
+- The **website** web box (`examples/website/website.emet`) — the same
   hand-rolled quadlet shape with `PublishPort=80:80`, plus an insecure-registry
   drop-in `file`.
 - Their **clients** (`examples/registry/clients.emet`) — the insecure-registry
@@ -322,9 +322,9 @@ You cannot open a port the container does not publish, and you cannot publish a
 port and forget to open it — the illegal state the current split (a
 `Service.port : Int` beside a quadlet with no port) invites.
 
-**The nginx/Caddy reverse-proxy front door is deliberately NOT folded in.** A TLS
-terminator is *itself a `Workload`* (Caddy is the website's container, with
-`expose = Public` and `ports = [ tcp 443 443, tcp 80 80 ]`). The old `Ingress`'s
+**The reverse-proxy front door is deliberately NOT folded in.** A TLS terminator
+is *itself a `Workload`* — the website's own serving container is one, with
+`expose = Public` and `ports = [ tcp 443 443, tcp 80 80 ]`. The old `Ingress`'s
 nginx-site `file` is the config of a *different* container, not a property of the
 upstream — so reverse-proxy templating is a separate concern (see §Open), not
 part of this library.
@@ -407,7 +407,7 @@ unit + the `.container` quadlet (`PublishPort=5000:5000/tcp`,
 `Volume=golem-registry-data.volume:/var/lib/registry:Z`, `Restart=always`) + the
 service, **plus** the internal firewall opening the hand-rolled example lacked —
 no `String.join` in the fleet, and the named volume is now a real `.volume` unit
-rather than a bare string. The **website Caddy** container is the same shape with
+rather than a bare string. The **website** container is the same shape with
 `expose = Public`, TLS ports, and a `FromHost` mount for its config (whose
 `directory` source glyph is emitted for free). The insecure-registry drop-in on
 *clients* (`clients.emet`) configures the podman *client*, not a running
@@ -541,8 +541,8 @@ now the internal **`imageLine`** (used in `containerUnitContents`).
   public on one container)? (Recommendation: whole-workload now; promote to
   `Port`-level only if a dogfood needs it — Emet's lack of tuples makes a
   `List (Port, Expose)` a record anyway.)
-- **Reverse-proxy config placement.** The nginx/Caddy *site* config is left out
+- **Reverse-proxy config placement.** The proxy's *site* config is left out
   (a proxy is itself a `Workload`). Wanted as a follow-on `proxy`/`site` helper
-  (layer c), or should `Workload` carry an optional `proxyFor` and emit a
-  Caddyfile? (Recommendation: separate follow-on / user-land helper — keep the
-  library about the runtime, not proxy templating.)
+  (layer c), or should `Workload` carry an optional `proxyFor` and emit that
+  config itself? (Recommendation: separate follow-on / user-land helper — keep
+  the library about the runtime, not proxy templating.)

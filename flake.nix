@@ -13,8 +13,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
-    # `buildBunPackage` / `fetchBunDeps` — the bun-in-nix machinery shared with
-    # dull.yyc.dev, so both sites build the same way and a fix lands once.
+    # `buildBunPackage` and `nginx-static-no-tls`, shared with dull.yyc.dev so a
+    # fix to either lands once.
     dull-nix.url = "github:dull-ca/nix";
   };
 
@@ -169,13 +169,13 @@
 
         # NOTE: `dull-nix.packages`, not the overlay — overlays.default carries
         # only the bun builders. The binary is static, TLS-less nginx; see
-        # docs/adr/0052-nginx-static-docs-image.md for why the docs image runs
-        # it rather than caddy.
+        # docs/adr/0052-nginx-static-docs-image.md.
         websiteNginx = dull-nix.packages.${system}.nginx-static-no-tls;
 
-        # The docs site as an nginx image (see sites/website/nginx.conf), built
-        # from `websiteDist` above — purely, with no external `dist/` and no
-        # `--impure`.
+        # The docs site as an nginx image, built from `websiteDist` above —
+        # purely, with no external `dist/` and no `--impure`.
+        # `sites/website/nginx.conf` is shared verbatim with the tutorials'
+        # podman-built image in `sites/website/Containerfile`.
         mkWebsiteContainer = dist: pkgs.dockerTools.buildLayeredImage {
           name = "golem-website";
           tag = "latest";

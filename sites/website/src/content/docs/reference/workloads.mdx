@@ -190,10 +190,10 @@ reloaded once the files are in place.
 </Aside>
 
 <Aside type="note" title="The reverse proxy is a different container">
-  `Workload` does not carry TLS or a reverse-proxy site config. An nginx or
-  Caddy front door is *itself* a container (or hand-rolled glyphs), not a
-  property of the upstream workload — the lichess fleet keeps `ingress` as its
-  own thing. See the [lichess tour](/guides/litour/).
+  `Workload` does not carry TLS or a reverse-proxy site config. An nginx front
+  door is *itself* a container (or hand-rolled glyphs), not a property of the
+  upstream workload — the lichess fleet keeps `ingress` as its own thing. See
+  the [lichess tour](/guides/litour/).
 </Aside>
 
 ## Lowering — a `Workload` to the four glyphs

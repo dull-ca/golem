@@ -385,7 +385,7 @@ The devenv script that runs `bun run build` in `sites/website`. Output lands in
 ### 3. Ship the build context to the builder and push the image
 
 ```nushell
-tar -C sites/website -cf - Containerfile Caddyfile dist | fleet ssh builder -- "mkdir -p site && tar -xf - -C site"
+tar -C sites/website -cf - Containerfile nginx.conf dist | fleet ssh builder -- "mkdir -p site && tar -xf - -C site"
 fleet ssh builder -- "sudo podman build -t 10.0.2.2:5000/golem-website:latest site && sudo podman push 10.0.2.2:5000/golem-website:latest"
 ```
 

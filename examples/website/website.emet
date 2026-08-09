@@ -2,7 +2,8 @@
 -- `remora`, the machine that serves the website image `talos` pushed. It drops
 -- in the insecure-registry fragment marking golem's registry at 10.0.2.2:5000
 -- over plain HTTP, then runs one public `Workload` — the golem-website container
--- pulled from that registry, published on :80. Together with `kaiju` and
+-- pulled from that registry, published on :80 from the :8080 its nginx serves
+-- (docs/adr/0052-nginx-static-docs-image.md). Together with `kaiju` and
 -- `talos` this closes the loop: build and push on one golem-managed box,
 -- store on another, pull and serve on a third, all fed by golem's own registry.
 --
@@ -42,7 +43,7 @@ website =
     , env = []
     , envFiles = []
     , labels = []
-    , ports = [ tcp 80 80 ]
+    , ports = [ tcp 80 8080 ]
     , networks = []
     , volumes = []
     , restart = Always
