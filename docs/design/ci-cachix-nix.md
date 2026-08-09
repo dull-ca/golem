@@ -108,5 +108,9 @@ than root, are refinements for when the box is actually stood up.
   release goes out through `ci/release.sh`, which runs the checks in
   `ci/release-guards.sh` locally and only then pushes the `v*` tag that
   `.github/workflows/release.yml` builds from (ADR 0053, accepted 2026-08-09).
+  The version it tags is read from the conventional commits since the last
+  stable tag, and a `chore(release)` commit carrying `CHANGELOG.md` and the
+  crate version lands on `main` ahead of the tag (ADR 0055) — so a release warms
+  the cache from a commit CI has not seen yet, and starts `ci.yml` too.
   What ADR 0035 §5 still leaves open is the *channel* — where the artifacts are
   served from — not how a release is triggered.

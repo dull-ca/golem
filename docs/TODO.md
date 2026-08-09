@@ -556,7 +556,9 @@ CI moved off Codeberg's Woodpecker to a self-hosted nix + cachix gate (ADR 0035;
   GitHub. The policy survives (tag-driven, one workspace version, static-musl
   artifacts, no crates.io), and how a release *starts* is now settled: `release`
   (`ci/release.sh`) runs `ci/release-guards.sh` locally and pushes the `v*` tag
-  that `.github/workflows/release.yml` builds from (ADR 0053). What stays
+  that `.github/workflows/release.yml` builds from (ADR 0053), over a version
+  read from the conventional commits and a `CHANGELOG.md` rendered from them
+  (ADR 0055). What stays
   undecided is where the artifacts are served — GitHub Releases pushed from the
   self-hosted box, or Dr. Dub's own infrastructure.
 
