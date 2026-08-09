@@ -10,7 +10,9 @@ One gate, one cache, and any machine can be CI:
 - **The gate is `nix flake check`** on the repo flake. It runs the whole
   workspace test suite, the `apps/fleet` harness, and the four binary builds
   (`flake.nix` `checks`). Nothing about CI is a separate system — a dev machine
-  runs the identical command and gets the identical result.
+  runs the identical command and gets the identical result. `warm-cache` in
+  `devenv.nix` is that command wrapped in `cachix watch-exec`, so running it
+  before a push leaves CI with nothing to build.
 - **The cache is one cachix cache.** The CI box builds the flake outputs and
   pushes their store paths; every other machine substitutes from the cache
   instead of rebuilding golem's crates and its nixpkgs closure.
@@ -95,10 +97,9 @@ than root, are refinements for when the box is actually stood up.
 
 ## What stays manual / impure
 
-- **The website dist and container.** `bun run build` produces `dist/`; only then
-  does `nix build --impure .#website-container` package it. Outside the pure gate
-  by construction (ADR 0035 §4) — Astro's ~137 platform-split native packages
-  don't build purely in nix.
+- ~~The website dist and container.~~ Both build purely now and both are
+  `checks`: `websiteDist` via `buildBunPackage`, `website-container` on top of
+  it. Nothing about the docs site is impure or manual.
 - **Release publishing.** The mechanism is an open question (ADR 0035 §5): the
   Forgejo/Codeberg channel died with the move off Codeberg, and its replacement
   — GitHub Releases pushed from the box, or artifacts served from Dr. Dub's own

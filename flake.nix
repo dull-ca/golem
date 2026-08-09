@@ -210,6 +210,22 @@
         # behaviour: `/var/www/html` and `/etc/nginx` are paths a build cannot
         # create, and `/tmp` is not writable here. Every other directive is the
         # file as shipped, which is where the behaviour under test lives.
+        # The release guards decide what may be published, so they are gated
+        # like anything else. `ci/` only, so editing a doc does not rebuild them.
+        release-guard-tests = pkgs.runCommand "golem-release-guard-tests"
+          {
+            nativeBuildInputs = [ pkgs.bash pkgs.git ];
+          } ''
+          # The scripts are `#!/usr/bin/env bash`, and neither path exists in a
+          # build sandbox; the test runs the guards as an executable, so the
+          # shebang has to resolve.
+          cp -r ${./ci} ci
+          chmod -R u+w ci
+          patchShebangs ci
+          bash ci/release-guards.test.sh ci/release-guards.sh
+          touch $out
+        '';
+
         website-serves = pkgs.runCommand "golem-website-serves"
           {
             nativeBuildInputs = [ pkgs.curl ];
@@ -300,14 +316,15 @@
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
-        # (ADR 0035 §1). The four binary builds prove the toolchain compiles;
-        # workspace-tests and fleet-tests prove it passes. `website-container`
-        # is absent because `websiteDist` and `website-serves` already cover
-        # what it wraps; the image itself is built on a tag, by release.yml.
+        # (ADR 0035 §1). `website-container` is here so every push warms it in
+        # cachix — left out, only a `v*` tag ever built the image, and the tag
+        # paid for it. It costs the gate almost nothing: `websiteDist` and
+        # `website-serves` already force the built site and the static nginx
+        # into the closure, leaving the image itself about a second of tar.
         checks = {
           inherit golemd golemctl emetc emet-lsp golem-tools;
-          inherit workspace-tests fleet-tests;
-          inherit websiteDist website-serves;
+          inherit workspace-tests fleet-tests release-guard-tests;
+          inherit websiteDist website-serves website-container;
         };
 
         lib.mkWebsiteContainer = mkWebsiteContainer;
