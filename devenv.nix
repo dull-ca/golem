@@ -2,7 +2,7 @@
 
 {
   # Caches the devenv environment itself; golem build artifacts flow through
-  # the flake's nixConfig + cachix watch-exec instead.
+  # the flake's nixConfig and the `warm-cache` script instead.
   cachix.enable = true;
   cachix.pull = [ "dull-ca" ];
   cachix.push = "dull-ca";
@@ -63,12 +63,12 @@
   '';
   scripts.uninstall-tools.exec = ''nix profile remove golem-tools'';
   # The gate CI runs — the same `nix flake check` over the same `checks`
-  # attrset, which is the only definition of it — with every path it builds
-  # pushed to cachix, so the CI run afterwards has nothing left to build.
+  # attrset, which is the only definition of it — with every gate output pushed
+  # to cachix, so the CI run afterwards has nothing left to build.
   #
-  # NOTE: `cachix watch-exec` prints a red ✗ for a rejected push and still
-  # exits 0, hence the check that the outputs really landed. Nix caches a
-  # "not in this cache" answer for an hour, hence the zeroed negative TTL.
+  # NOTE: `cachix push` reports a rejected push with a red ✗ and still exits 0,
+  # hence the check that the outputs really landed. Nix caches a "not in this
+  # cache" answer for an hour, hence the zeroed negative TTL.
   scripts.warm-cache.exec = ''
     set -euo pipefail
     cd "$DEVENV_ROOT"
@@ -90,10 +90,17 @@
       } >&2
       exit 1
     fi
-    cachix watch-exec dull-ca -- nix flake check --print-build-logs
+    nix flake check --print-build-logs
 
     gateOutputs=$(nix eval --raw '.#checks.x86_64-linux' --apply \
       'checks: builtins.concatStringsSep "\n" (map (c: c.outPath) (builtins.attrValues checks))')
+
+    # Pushed by path, not by watching the build. `cachix watch-exec` only pushes
+    # what the wrapped command ADDS to the store, so anything already built --
+    # a second run, or a gate someone just ran by hand -- pushes nothing and
+    # says nothing. Pushing the gate's outputs explicitly is idempotent and does
+    # not care how they got there.
+    echo "$gateOutputs" | cachix push dull-ca
 
     unpushed=""
     for path in $gateOutputs; do
@@ -108,7 +115,8 @@
         echo "warm-cache: the gate passed, but these outputs never reached dull-ca:"
         printf '%s' "$unpushed"
         echo "cachix marks a rejected push with a red x and still exits 0, so scroll up."
-        echo "The usual cause is a token with no write access to dull-ca."
+        echo "The usual cause is a token without write access to dull-ca; check with:"
+        echo "    cachix push dull-ca <one of the paths above>"
       } >&2
       exit 1
     fi
