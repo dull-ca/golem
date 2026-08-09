@@ -1,0 +1,160 @@
+---
+title: An app behind Traefik
+description: An application container and its database on a private network, one hostname published over HTTPS through golem's shipped Traefik library.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
+import Output from "../../../components/Output.astro";
+
+An application and its database run as two containers on a private network. One
+hostname answers the internet over HTTPS and reaches the application across that
+network; nothing else on the host is reachable at all. golem ships both halves —
+[`Quadlet`](/reference/workloads/) builds the containers,
+[`Traefik`](/reference/ingress/) builds the front door that terminates TLS and
+routes the hostname to one of them.
+
+The program is `sites/website/examples/front-door-app.emet`, a survey
+application backed by MariaDB. Each section below is a slice of it.
+
+<Snippet file="front-door-app.emet" region="imports" />
+
+## Name the frontend once
+
+Two things have to agree for routing to work: the network the front door and the
+application share, and the name of the certificate resolver. A `Frontend` holds
+both, so they are written once and passed around:
+
+<Snippet file="front-door-app.emet" region="frontend" />
+
+`Traefik.publish` takes the frontend, a route, and a workload. Applying it to
+the frontend alone leaves a two-argument function — `publish route workload` —
+and every call site in the program is then free of the frontend entirely. That
+partial application is the whole reason the local name is worth defining.
+
+<Aside type="note" title="Two imports of one module">
+  The `exposing` list brings in the names used unqualified and deliberately
+  omits `publish`, leaving that name free for the local definition; the bare
+  `import Traefik` is what makes `Traefik.publish` reachable to define it from.
+  Both lines name one module and contribute one identity. See
+  [Modules](/reference/language/modules/).
+</Aside>
+
+## A private network for the two containers
+
+<Snippet file="front-door-app.emet" region="private-network" />
+
+`ManagedNetwork` means golem writes the `.network` quadlet that creates it. The
+database and the application both join it, which is how the application reaches
+the database by container name.
+
+## The database
+
+<Snippet file="front-door-app.emet" region="database" />
+
+`ports = []` and `expose = Unexposed` keep the database off the host entirely:
+it publishes no port, the firewall opens none, and it is reachable only from
+containers on `limesurvey`. Its data lives in a named volume, so the `.volume`
+quadlet that declares it is written for you.
+
+## The application, and the route to it
+
+<Snippet file="front-door-app.emet" region="app" />
+
+Also `Unexposed`, also publishing no ports: Traefik reaches it across the
+frontend network on the container's own port 80, which is what the `Route`
+records. `LIMESURVEY_DB_HOST` is the database's container name, resolved by the
+`aardvark-dns` resolver that `ManagedNetwork` installs.
+
+The route is defined next to the application rather than next to the front
+door. `Routing` does not depend on `Traefik`, so a module that describes an
+application can say which hostname and port it wants without knowing what will
+serve it.
+
+## The password
+
+<Snippet file="front-door-app.emet" region="secret" />
+
+A literal keeps this page compiling without a fleet key. In a real program that
+line is `Secretspec.get "LIMESURVEY_DB_PASSWORD"`, resolved on your machine at
+compile time from a key declared in `secretspec.toml` and sealed into the
+manifest — see [Secretspec](/reference/language/prelude/#secretspec) and
+[Trust model](/explanation/trust/). It flows into both containers from one
+binding, so the database's root password and the application's client password
+cannot drift apart.
+
+## The fleet
+
+<Snippet file="front-door-app.emet" region="fleet" />
+
+Three leaf units under one host. Each is a failure-isolation boundary: if the
+database unit fails, the application unit still runs, and neither rolls back the
+other.
+
+The order is deliberate, and it is a reading order: the front door owns the
+frontend `.network` file that the published application's `Network=` line
+refers to, so it comes first, and the database comes before the application it
+backs. It is not an enact order. Leaf units drain a bounded worker pool
+concurrently and source order holds only among one unit's own glyphs (ADR
+0034 §3), so what the tree buys here is isolation and legibility rather than
+sequencing.
+
+## What it lowers to
+
+31 glyphs, from
+`cargo run -q -p emet -- build sites/website/examples/front-door-app.emet --text`:
+
+<Output file="front-door-app.text.golden" />
+
+The last eleven glyphs — everything below the two `public-traefik-*` drop-ins —
+are the database and the application, and not one of them is a firewall rule.
+Those two drop-ins are the only ports this host opens.
+`limesurvey.network` appears twice because both containers declare the same
+network; identical glyphs share a content id and are enacted once (ADR 0034),
+as does the repeated `podman` package.
+
+## The same program, split across modules
+
+`examples/limesurvey/` in the golem repository is this program written as a
+fleet would write it — three files, each owning one concern:
+
+```
+examples/limesurvey/
+  Ingress.emet        the front door
+  Limesurvey.emet     the application and its database
+  main.emet           the wiring, and the secrets
+  secretspec.toml     the secret declarations
+```
+
+`Ingress.emet` holds the `Frontend` and exports two names: `publish`, the
+partially-applied router, and `units`, the front door's unit as a one-element
+`List Scroll`. It is the only file in the fleet that mentions Traefik.
+
+`Limesurvey.emet` describes the application. It imports `Quadlet` and `Routing`
+and **not** `Traefik` — it exports `route` and `workload` separately and lets
+its caller decide whether to publish them. Its `units` function takes the
+published workload as an argument, so the application module never learns what
+happened to it.
+
+Its constructors take two records: a defaults record and a required one.
+`Limesurvey.defaults.survey` carries the image, container name, port, and mount
+paths; the second argument carries the administrator's email address and the
+password, which have no defaults. A caller who forgets the password gets a
+compile error at that call site, not a container that starts with an empty one.
+
+`main.emet` is the only file that resolves secrets and the only file that knows
+both halves exist. It calls `Limesurvey.route` and `Limesurvey.workload`, hands
+the result to `Ingress.publish`, and concatenates `Ingress.units` with
+`Limesurvey.units` into the host scroll's `groups` — the same three-unit shape
+as the single-file program above.
+
+Compiling it needs the fleet key and a secretspec provider —
+`emetc build examples/limesurvey/main.emet --secret-key <FILE>`. See the
+[CLI reference](/reference/cli/).
+
+## Where to next
+
+- Every `Traefik` and `Routing` type: **[The Traefik library](/reference/ingress/)**
+- Every `Quadlet` type: **[The Quadlet library](/reference/workloads/)**
+- A fleet's own helper layer on the same libraries:
+  **[A service abstraction](/guides/app-and-db/)**

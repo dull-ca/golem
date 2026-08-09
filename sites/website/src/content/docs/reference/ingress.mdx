@@ -1,0 +1,225 @@
+---
+title: The Traefik library
+description: Traefik and Routing — golem's shipped model of a TLS front door. Frontend, Challenge, Ingress, Route, publish, and the lowering to the four glyphs.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
+import Output from "../../../components/Output.astro";
+
+A host that answers a domain over HTTPS runs one reverse proxy in front of its
+containers: a single process holding ports 80 and 443, terminating TLS, and
+forwarding each hostname to the container that serves it. `Traefik` (in
+`lib/Traefik.emet`) models that front door as a typed Emet value, and `Routing`
+(`lib/Routing.emet`) models one hostname's path to one container port. Both
+resolve from the library search path named by the repo-root `emet.json`, and
+both lower through [`Quadlet`](/reference/workloads/) onto
+[the four glyphs](/reference/primitives/).
+
+Traefik learns what to route by reading container labels over the Podman API
+socket, so the library works on two sides at once: it builds the front-door
+container, and it stamps the matching labels onto each container you publish
+through it. Naming the `Frontend` once is what keeps those two sides agreeing.
+
+<Snippet file="traefik-front-door.emet" region="imports" />
+
+## `Frontend` — the two names every route shares
+
+<Snippet file="traefik-front-door.emet" region="frontend" />
+
+| Field | Is |
+| --- | --- |
+| `network` | the Podman network the front door and every published container join. It is the provider's `network` in the generated `traefik.yml`, the `traefik.docker.network` label on each published container, and the `Network=` line on both |
+| `certificateResolver` | the name of the ACME resolver. It names a block in the generated `traefik.yml` and is the value of each router's `tls.certresolver` label |
+
+Both are free-form strings whose only requirement is that the front door and the
+published workloads use the same ones — which is why you build one `Frontend`
+and pass it around rather than spelling the names at each call site.
+
+## `Route` — one hostname to one container port
+
+`Routing` is the whole vocabulary for "this name reaches that port". `route` is
+the constructor function; the record it builds names its three fields, and
+`Route(..)` is exported, so either spelling is available:
+
+<Snippet file="traefik-front-door.emet" region="route" />
+
+| Field | Is |
+| --- | --- |
+| `name` | the Traefik router and service name. It appears inside every label key, so it must be unique among the routes on one front door |
+| `host` | the hostname the router matches, as ``Host(`host`)`` |
+| `port` | the port **inside** the container that Traefik forwards to |
+
+`route : String -> String -> Int -> Route`. `port` is the container's own port,
+not a published one: a routed container does not publish ports to the host at
+all, because Traefik reaches it across the shared network.
+
+`Routing` carries no dependency on Traefik, so a module that describes an
+application can export its `Route` without importing the front door — see
+[An app behind Traefik](/guides/front-door/).
+
+## `Ingress` — the front door itself
+
+An `Ingress` carries an `Image`, the ACME contact address, the `Frontend`, a
+`Challenge`, and a list of environment files. `ingress` builds one from the two
+that have no sensible default and fills the rest:
+
+<Snippet file="traefik-front-door.emet" region="ingress" />
+
+| Function | Signature | Does |
+| --- | --- | --- |
+| `ingress` | `String -> Frontend -> Ingress` | builds a front door from the ACME contact address and the frontend, with `defaultImage`, `TlsChallenge`, and no environment files |
+| `withChallenge` | `Challenge -> Ingress -> Ingress` | replaces the ACME challenge |
+| `withEnvironmentFiles` | `List String -> Ingress -> Ingress` | replaces the list of files systemd reads the container's environment from |
+| `defaultImage` | `Image` | `docker.io/library/traefik:v3.3`, the image `ingress` starts from |
+
+`acmeEmail` is the address Let's Encrypt sends expiry notices to. It reaches the
+host as the `email` line of the ACME resolver in `/etc/traefik/traefik.yml`.
+
+There is no `withImage` setter. To run a different Traefik version, build the
+record directly — `Ingress(..)` is exported, and the five fields are the ones
+`ingress` fills:
+
+<Snippet file="traefik-front-door.emet" region="custom-image" />
+
+## `Challenge` — how Let's Encrypt proves the domain is yours
+
+A `Challenge` is `TlsChallenge`, which carries nothing, or `DnsChallenge`, which
+carries `{ provider : String, delayBeforeCheck : String }`:
+
+| Constructor | Proves the domain by | Needs |
+| --- | --- | --- |
+| `TlsChallenge` | answering a challenge on port 443 | the domain already resolving to this host before the workload is deployed |
+| `DnsChallenge` | writing a TXT record through a DNS provider's API | the provider's API credentials in the container's environment |
+
+`provider` is a Traefik DNS provider code (`cloudflare`, `route53`, …) and
+`delayBeforeCheck` is the wait before Traefik polls for the record, as a
+duration string (`"0"`, `"30s"`).
+
+<Snippet file="traefik-front-door.emet" region="dns-challenge" />
+
+The credentials go in a file the unit names and golem never writes.
+`withEnvironmentFiles` adds `EnvironmentFile=` lines to the container unit, so
+the token is placed on the host out of band and never enters the manifest —
+the same arrangement `/etc/golem/token` uses. Compare `env`, which ships its
+value (sealed) to every host the scroll targets; see
+[Trust model](/explanation/trust/).
+
+<Aside type="caution" title="A failed TLS challenge stays failed">
+  Traefik does not retry a failed ACME challenge — it is protecting Let's
+  Encrypt's rate limits — and it reloads on file changes, so correcting a DNS
+  record leaves `/etc/traefik/traefik.yml` byte-identical and nothing prompts
+  another attempt until Traefik restarts. `DnsChallenge` has neither problem:
+  the certificate issues before any traffic moves, in any order, and a failure
+  is retried on the next apply.
+</Aside>
+
+## `publish` — a workload, routed
+
+`publish frontend route workload` returns the same workload with the front
+door's labels and network added:
+
+<Snippet file="traefik-front-door.emet" region="workload" />
+
+<Snippet file="traefik-front-door.emet" region="publish" />
+
+Every other field is carried through unchanged, `ports` and `expose` included.
+A routed workload normally sets `ports = []` and `expose = Unexposed`: Traefik
+reaches it across the frontend network on the container's own port, so nothing
+needs publishing to the host and the firewall opens nothing on its behalf. The
+only ports open to the internet are the front door's 80 and 443.
+
+`publish` is the composition of the two exports underneath it, either of which
+you can call directly:
+
+| Function | Signature | Returns |
+| --- | --- | --- |
+| `routeLabels` | `Frontend -> Route -> List Label` | the seven labels that make Traefik route a container |
+| `frontendNetwork` | `Frontend -> Network` | `ExistingNetwork` on the frontend's name |
+
+The seven labels, for a `Route` named `r` on host `h` at port `p`:
+
+| Label | Value |
+| --- | --- |
+| `traefik.enable` | `true` — the opt-in, because the generated config sets `exposedByDefault: false` |
+| `traefik.docker.network` | the frontend's network name |
+| `traefik.http.services.r.loadbalancer.server.port` | `p` |
+| `traefik.http.routers.r.rule` | ``Host(`h`)`` |
+| `traefik.http.routers.r.entrypoints` | `websecure` |
+| `traefik.http.routers.r.tls` | `true` |
+| `traefik.http.routers.r.tls.certresolver` | the frontend's certificate resolver name |
+
+Because `frontendNetwork` returns `ExistingNetwork`, a published workload emits
+a `Network=` line and **no** `.network` unit of its own. The front door owns
+that file, which is what makes its position in the scroll matter.
+
+## Placing the front door in a fleet
+
+`ingressUnit` is the ready-made leaf unit; `ingressGlyphs` is the same glyph
+list without one, for a scroll you assemble yourself.
+
+| Function | Signature | Returns |
+| --- | --- | --- |
+| `ingressGlyphs` | `Ingress -> List Glyph` | every glyph the front door needs |
+| `ingressUnit` | `Ingress -> Scroll` | a leaf unit named `traefik`, carrying those glyphs and `notifies = [ "golem-nftables.service" ]` |
+
+A scroll built on `ingressGlyphs` owns that notify itself — without it the two
+firewall drop-ins are written but never loaded.
+
+<Snippet file="traefik-front-door.emet" region="fleet" />
+
+<Aside type="note" title="Where the front door sits">
+  The front door's unit writes the frontend `.network` file that every
+  published workload's `Network=` line refers to, so it is written ahead of
+  them in `groups` — which fixes its place in the plan and in the report, not
+  in the enact. Leaf units drain a bounded worker pool concurrently, and source
+  order holds only among one unit's own glyphs (ADR 0034 §3). Its `notifies`
+  entry is what reloads the ruleset once the 80 and 443 drop-ins are on disk.
+</Aside>
+
+## Lowering — an `Ingress` to the four glyphs
+
+`ingressGlyphs` produces, in order:
+
+1. `aptPackage { name = "podman" }` and
+   `systemdService { unit = "podman.socket" }` — the API socket Traefik reads
+   container labels from.
+2. `directory /etc/traefik` and `file /etc/traefik/traefik.yml` — the static
+   configuration: the `web` entry point on `:80` redirecting to `websecure` on
+   `:443`, the Podman provider pointed at `unix:///run/podman/podman.sock` with
+   `exposedByDefault: false` and the frontend network, and the ACME resolver
+   with its email, its `/letsencrypt/acme.json` storage, and the challenge
+   lines.
+3. the glyphs of the front-door `Workload` itself — a container named `traefik`
+   publishing `80:80` and `443:443`, on a `ManagedNetwork` for the frontend,
+   mounting `/etc/traefik` and `/run/podman` read-only from the host and the
+   named volume `traefik-acme` at `/letsencrypt`, `Restart=always`, and
+   `expose = Public`, which is where the nftables base and the
+   `public-traefik-80` and `public-traefik-443` drop-ins come from.
+
+The container and the unit are both named `traefik`, so one host carries one
+front door. Several hostnames go through it as several `Route`s.
+
+The whole program above — front door plus one published workload — is 25
+glyphs. From
+`cargo run -q -p emet -- build sites/website/examples/traefik-front-door.emet --text`:
+
+<Output file="traefik-front-door.text.golden" />
+
+`/etc/traefik` appears twice — once as the configuration directory, once as the
+container's read-only mount source — and `podman` three times, once for the API
+socket and once for each of the two containers. Repeated identical glyphs share
+a content id and are enacted once (ADR 0034), so the duplication costs nothing
+on the host.
+
+The certificate is not in that list. `traefik-acme` is a named volume Traefik
+writes `acme.json` into at runtime; golem writes the volume unit, and the
+certificate lifecycle stays inside the container.
+
+## Where to next
+
+- Two containers and a front door as one program:
+  **[An app behind Traefik](/guides/front-door/)**
+- `Workload`, `Network`, `Label`, and the rest of what `publish` operates on:
+  **[The Quadlet library](/reference/workloads/)**
+- What all of it lowers to: **[The four glyphs](/reference/primitives/)**

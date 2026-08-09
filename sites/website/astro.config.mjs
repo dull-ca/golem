@@ -68,6 +68,7 @@ export default defineConfig({
           items: [
             { label: "A first glyph", link: "/guides/hello-agent/" },
             { label: "A service abstraction", link: "/guides/app-and-db/" },
+            { label: "An app behind Traefik", link: "/guides/front-door/" },
             { label: "A maintenance page", link: "/guides/maintenance-page/" },
             { label: "A tour of the lichess fleet", link: "/guides/litour/" },
           ],
@@ -106,6 +107,7 @@ export default defineConfig({
             { label: "CLI", link: "/reference/cli/" },
             { label: "The four glyphs", link: "/reference/primitives/" },
             { label: "The Quadlet library", link: "/reference/workloads/" },
+            { label: "The Traefik library", link: "/reference/ingress/" },
             { label: "Manifest format", link: "/reference/bundle-format/" },
             { label: "Status", link: "/reference/status/" },
           ],
