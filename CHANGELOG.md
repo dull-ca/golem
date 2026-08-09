@@ -9,6 +9,16 @@ v0.1.0 and v0.2.0 have no section of their own. Both tags name a commit that was
 never on `main`, so there is no range for git-cliff to walk between them and the
 work they were meant to mark is folded into v0.3.0.
 
+## v0.4.0 — 2026-08-09
+
+### Features
+
+- release from commits ([#21](https://github.com/dull-ca/golem/pull/21)) ([14b18cb](https://github.com/dull-ca/golem/commit/14b18cbc1e55d1dca9ea093e1e50cab9a0c0d0ec))
+
+### Tooling
+
+- updated docs and readme ([#20](https://github.com/dull-ca/golem/pull/20)) ([a4b78c7](https://github.com/dull-ca/golem/commit/a4b78c7caf2fa6517d32226c7c6d36f04b2830f0))
+
 ## v0.3.1 — 2026-08-09
 
 ### Features
