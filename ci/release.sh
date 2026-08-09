@@ -60,12 +60,12 @@ printf '\n'
 read -rp 'Release this? Type Y to continue: ' confirmation
 [[ $confirmation == Y ]] || refuse 'not confirmed'
 
-# NOTE: `lakin/warm-the-cache` is adding a devenv script for exactly this, and
-# adding `website-container` to `checks`. Call that script here once it lands --
-# these two commands are its contents, and a second copy will drift.
+# `warm-cache` is the gate plus the push, and it asserts the push actually
+# landed -- cachix marks a rejected push with a red x and still exits 0. The
+# image is in `checks` now, so the gate covers it and there is nothing to build
+# here beyond it.
 printf '\nwarming the cache, so the release run is a hit...\n'
-nix flake check --print-build-logs
-nix build .#website-container --print-build-logs --out-link result-container
+warm-cache
 
 git tag -a "$version" -m "Release $version" "$commit"
 git push origin "refs/tags/$version"

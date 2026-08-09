@@ -210,6 +210,22 @@
         # behaviour: `/var/www/html` and `/etc/nginx` are paths a build cannot
         # create, and `/tmp` is not writable here. Every other directive is the
         # file as shipped, which is where the behaviour under test lives.
+        # The release guards decide what may be published, so they are gated
+        # like anything else. `ci/` only, so editing a doc does not rebuild them.
+        release-guard-tests = pkgs.runCommand "golem-release-guard-tests"
+          {
+            nativeBuildInputs = [ pkgs.bash pkgs.git ];
+          } ''
+          # The scripts are `#!/usr/bin/env bash`, and neither path exists in a
+          # build sandbox; the test runs the guards as an executable, so the
+          # shebang has to resolve.
+          cp -r ${./ci} ci
+          chmod -R u+w ci
+          patchShebangs ci
+          bash ci/release-guards.test.sh ci/release-guards.sh
+          touch $out
+        '';
+
         website-serves = pkgs.runCommand "golem-website-serves"
           {
             nativeBuildInputs = [ pkgs.curl ];
@@ -307,7 +323,7 @@
         # into the closure, leaving the image itself about a second of tar.
         checks = {
           inherit golemd golemctl emetc emet-lsp golem-tools;
-          inherit workspace-tests fleet-tests;
+          inherit workspace-tests fleet-tests release-guard-tests;
           inherit websiteDist website-serves website-container;
         };
 
