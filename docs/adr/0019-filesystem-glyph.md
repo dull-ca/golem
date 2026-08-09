@@ -6,6 +6,38 @@ Accepted 2026-07-20; implementation to follow. Generalizes the `file` glyph
 introduced in ADR 0002 and reconciled in ADR 0015, superseding their `file`
 shape.
 
+Amended 2026-08-09: **§2's owner/group surface clause never shipped.** The
+decision that "owner/group are optional record fields defaulting to absent" and
+the Consequence that "owner/group arrive for *all* filesystem entries, including
+plain files" describe an authoring surface that does not exist.
+`parser::build_constructor` (`apps/emet/src/parser.rs`) accepts
+`path`/`contents`/`mode` for `file`, `path`/`mode` for `directory`, and
+`path`/`target` for `symlink` — an `owner =` or `group =` field is an
+unknown-field error on all three — and `eval::perms_from_mode`
+(`apps/emet/src/eval.rs`) returns `Perms { mode, owner: None, group: None }`
+unconditionally, which its own doc comment states.
+
+The gap is the *surface* only. Everything below it was built as decided:
+`reconcilers::apply_perms` (`apps/golemd/src/reconcilers.rs`) resolves each set
+name to a uid/gid and `chown`s that axis, `perms_match` diffs both axes against
+the host, and `Inverse::RestoreFile` / `RestoreDirMeta`
+(`apps/golemd/src/journal.rs`) carry prior ownership for reverse. golemd's half
+of this decision is complete and unreachable from Emet.
+
+What an author meets is the secret rule (ADR 0047).
+`eval::readable_beyond_owner` counts a group-read bit as loose *unless a group
+is named*, and no program can name one, so `mode = "0600"` is the only mode that
+admits a secret — `0640` and every wider mode are refused. The compiler's error
+text offers `mode = "0640"` "once the entry also names the group allowed to
+read it", a repair the language has no syntax for. Nothing pins the shortfall:
+the tests around `readable_beyond_owner` build `Perms` with a group directly,
+bypassing `perms_from_mode`, so no test covers a path a program could reach.
+
+Closing it needs the two surface fields, an `eval` lowering that reads them, and
+no wire change — `Perms` already carries the slots, so no `format_version` bump.
+The decision text below stands exactly as written; this note records what was
+built against it. Tracked in `docs/TODO.md` §B.
+
 ## Context
 
 golemd owns exactly four glyphs (root `CLAUDE.md`): `aptPackage`,

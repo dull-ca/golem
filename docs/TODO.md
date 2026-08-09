@@ -330,13 +330,14 @@ monorepo; **C** is CI and publishing. B's headline is model reconciliation.
   spellings, and `Str`/`Glyphs` in a signature is now an ordinary "unknown type
   constructor" error.
 
-- **Row polymorphism for record-parameter field access — DONE (design), see
-  ADR 0010.** Field access needs a concrete record at the access site, so
-  `\h -> h.name` and record-parameter helpers fail with "cannot infer record
-  type for field access `.name`" (a record-typed signature does not rescue it
-  either). ADR 0010 decides the fix: full row polymorphism (open/closed records,
-  row unification), making `.name` row-polymorphic even without a signature (the
-  Elm behaviour). The code change lands separately from the ADR.
+- **Row polymorphism for record-parameter field access — DONE (ADR 0010).**
+  Field access no longer needs a concrete record at the access site: it unifies
+  the base against an **open** row demanding just the accessed field, so
+  `\h -> h.name` and record-parameter helpers infer with no signature, the Elm
+  behaviour ADR 0010 chose. One helper therefore serves every record shape
+  carrying the field, and ADR 0044's record update rides the same rows. What
+  remains missing is the *syntax*: an open record type still cannot be written
+  in a signature — its own KNOWN GAP entry above.
 
 ## B. Emet ↔ golem integration backlog
 
@@ -376,7 +377,39 @@ standalone project.
   removing only the empty components it created (deepest-first, stopping at any
   non-empty or pre-existing one) and refusing to clobber a pre-existing entry.
   Unblocks host bind-mount source directories (the registry dogfood). A
-  `format_version` bump 1→2.
+  `format_version` bump 1→2. **Delivered on the wire and in golemd, but only
+  half on the surface** — `owner`/`group` cannot be authored; see the next
+  entry.
+
+- **`owner`/`group` cannot be written in Emet — KNOWN GAP (ADR 0019, status
+  amendment 2026-08-09).** ADR 0019 §2 decided owner/group would be optional
+  record fields on the filesystem constructors and §Consequences promised them
+  "for *all* filesystem entries, including plain files". That clause never
+  shipped. `parser::build_constructor` (`apps/emet/src/parser.rs`) accepts
+  `path`/`contents`/`mode` for `file`, `path`/`mode` for `directory`, and
+  `path`/`target` for `symlink` — an `owner =` or `group =` field is an unknown-
+  field error — and `eval::perms_from_mode` (`apps/emet/src/eval.rs`) returns
+  `Perms { mode, owner: None, group: None }` unconditionally, as its own doc
+  comment says.
+
+  The visible cost is in the secret rule. `readable_beyond_owner` treats a
+  group-read bit as loose *unless a group is named* (`eval.rs`), and no program
+  can name one, so **`mode = "0600"` is the only mode that admits a secret** —
+  `0640`, `0644`, `0444` are all refused. The compiler's own message offers
+  `0640` "once the entry also names the group allowed to read it", a repair the
+  language has no syntax for. Nothing pins the gap either: the tests around it
+  (`eval.rs`, `an_other_read_bit_is_loose_even_when_a_group_is_named` and
+  `a_group_read_bit_is_loose_until_the_group_is_named`) build `Perms` with a
+  group directly, bypassing `perms_from_mode`, so no test exercises a path a
+  program could reach.
+
+  Only the surface is missing. golemd has been ready the whole time:
+  `reconcilers::apply_perms` resolves each name to a uid/gid and `chown`s (an
+  unset name means leave as-is), `perms_match` diffs both axes, and
+  `Inverse::RestoreFile`/`RestoreDirMeta` carry the prior ownership for reverse.
+  Closing it is two surface fields, an `eval` lowering that reads them, and a
+  wire-compatible change — `Perms` already has the slots, so no
+  `format_version` bump.
 
 - **Emet supersedes Nickel as the authoring language — DONE (ADR 0016).** Emet
   gained a minimal Elm-shaped module system (`module … exposing`, `import`), the
@@ -403,8 +436,9 @@ standalone project.
 - **golem crates as flake outputs — DONE.** `flake.nix` exposes
   `golemd`/`golemctl` (plus static-musl `golemd-static`/`golemctl-static`),
   `emetc`, `emet-lsp`, and `website-container`; the
-  static-build specifics are worked out (`pkgsStatic`) and CI (`.woodpecker.yml`)
-  builds them.
+  static-build specifics are worked out (crane over `pkgsStatic`, one musl-static
+  target for everything) and CI builds them. CI is `.github/workflows/ci.yml`;
+  `.woodpecker.yml` was deleted with the move off Codeberg (ADR 0035 §Context).
 
 - **Unify the docs sites — SUPERSEDED.** The two-tree split is the intentional,
   current decision, not a gap to close: the public Astro/Starlight site
@@ -419,22 +453,27 @@ standalone project.
   repo was archived (`~/personal-repos/golem-lang-archive-2026-07-23.tar.gz`)
   and its working copy removed.
 
-- **Parallel apply (agreed next step, 2026-07-25).** `fleet apply` fans the
-  same manifest out to every target host sequentially today. Across-host
-  parallelism is the safe, fleet-side win: the hosts are independent machines,
-  so applying to several at once is just concurrent HTTP with per-host reports —
-  no golemd change. Within-host parallel *units* is the harder, deferred half:
-  it would need golemd to serialize the shared, non-reentrant resources two
-  units can contend on — apt/dpkg (one dpkg lock) and the apt package index —
-  and to dedupe/queue per-file `lineInFile` writes so two units editing the same
-  file don't race. So the plan is across-host parallelism first (fleet-side),
-  with within-host parallelism gated on that serialization work (Dr. Dub's
-  constraints, 2026-07-25).
+- **Parallel apply — DONE, both halves (ADR 0038 across hosts, ADR 0034 within
+  one).** Across-host: `golemctl fleet <verb>` fans one manifest out to every
+  inventory host at once, each on its own connection and its own task
+  (`apps/golemctl/src/fleet.rs::run_apply` → `apply_plain`/`apply_live`, one
+  `tokio::spawn` per target), with per-host outcomes and one host's failure
+  never stopping the others. Within-host: the half deferred as harder shipped
+  too — `run_reconcile` drains a host's leaf units on a bounded worker pool
+  (`apps/golemd/src/foreman.rs`, `let workers = self.enact.workers.max(1)`),
+  sized by `[enact] workers` (`apps/golemd/src/config.rs`; default 4,
+  `workers = 1` the serial fallback), with the contended resources serialized
+  per kind — apt/dpkg, per-path `lineInFile`, the global systemd
+  `daemon-reload` — which is exactly the gate the deferral named. The
+  convergence test for two *racing real* applies is still missing (its own
+  entry below), as is divergent-cid surfacing.
 
-- **Async apply.** `fleet apply` holds an HTTP request open for the whole
-  reconcile; golemd should instead return 202 + a reconcile id and let the
-  client poll for the report — replacing the hold-open request and
-  prerequisite-shaped for parallel apply.
+- **Async apply — DONE (ADR 0033).** `POST /manifest` ingests synchronously,
+  runs the reconcile detached, and returns `202 { reconcile_id }`
+  (`apps/golemd/src/http.rs`); the client polls `GET /reconciles/:id`, or
+  `GET /reconciles/latest` for the newest attempt. `golemctl apply --reattach`
+  (`apps/golemctl/src/main.rs`) skips the POST and resumes that newest attempt,
+  so a dropped client no longer abandons a running reconcile.
 
 - **`run_reconcile_guarded`'s outer panic branch has no direct test.**
   `run_reconcile_guarded` (`foreman.rs`) wraps `run_reconcile` in its own
@@ -512,19 +551,24 @@ CI moved off Codeberg's Woodpecker to a self-hosted nix + cachix gate (ADR 0035;
   `DULL_CA_CACHIX_PRIVATE_KEY` GitHub secret (and later on the CI box at mode
   `0600`). ADR 0035 §3.
 
-- **Release publishing mechanism — OPEN (ADR 0035 §5).** ADR 0028's
-  Forgejo/Codeberg channel is gone with the move to GitHub. The policy survives
-  (tag-driven, one workspace version, static-musl artifacts, no crates.io); the
-  channel is undecided — GitHub Releases pushed from the self-hosted box, or
-  artifacts served from Dr. Dub's own infrastructure.
+- **Release publishing mechanism — OPEN (ADR 0035 §5), narrowed to the
+  channel.** ADR 0028's Forgejo/Codeberg channel is gone with the move to
+  GitHub. The policy survives (tag-driven, one workspace version, static-musl
+  artifacts, no crates.io), and how a release *starts* is now settled: `release`
+  (`ci/release.sh`) runs `ci/release-guards.sh` locally and pushes the `v*` tag
+  that `.github/workflows/release.yml` builds from (ADR 0053). What stays
+  undecided is where the artifacts are served — GitHub Releases pushed from the
+  self-hosted box, or Dr. Dub's own infrastructure.
 
-- **Sweep remaining `codeberg.org` references → GitHub.** In both repos: golem
-  docs/site (`docs/guide/README.md`, `sites/website/astro.config.mjs`,
-  `sites/website/src/grammars/README.md`,
-  `sites/website/src/content/docs/getting-started/install.mdx`,
-  `packaging/golemd.service`, `LAKIN-TODO.md`) and `emet.nvim`
-  (`README.md`, `plugin/emet.lua`). Accepted ADRs keep their historical
-  codeberg references — they are records, not live links.
+- **Sweep remaining `codeberg.org` references → GitHub — CLOSING OUT.** In
+  golem, `sites/website/astro.config.mjs` (the social link),
+  `sites/website/src/content/docs/getting-started/install.mdx` (the clone URL),
+  `sites/website/src/grammars/README.md`, and `packaging/golemd.service` are
+  already on `github.com/dull-ca`, and `LAKIN-TODO.md` no longer exists;
+  `docs/guide/README.md`'s `emet.nvim` link is the last one, in hand. What is
+  left after that is the **`emet.nvim` repo** (`README.md`, `plugin/emet.lua`),
+  which this backlog does not own. Accepted ADRs keep their historical codeberg
+  references — they are records, not live links.
 
 ## D. Dogfooding roadmap (2026-07-30)
 

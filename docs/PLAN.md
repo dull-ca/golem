@@ -1,5 +1,32 @@
 # PLAN — Emet-native golem: binary manifest, glyph golemd, Emet authoring
 
+## Status
+
+**Completed 2026-08-09.** Every phase below shipped. The phase prose stays in
+the future tense it was planned in and is not rewritten; the `[RATIFY]` list at
+the end now records what was decided rather than what needs deciding.
+
+Retained here rather than archived: ADRs 0013, 0014, 0015, and 0016 cite
+`PLAN.md` by that path for the items they deferred to it, and an accepted ADR's
+cross-references are part of its record — moving the file would dangle four of
+them.
+
+Where the plan and the code disagree, the code is what happened:
+
+- **Phase 1** — `libs/scroll-format/` is the shared crate;
+  `libs/scroll-format/src/manifest.rs` carries `FORMAT_VERSION = 5`, four bumps
+  past the `1` this plan was written against.
+- **Phase 2** — `apps/golemd/src/foreman.rs` is the ingest/diff/enact spine and
+  `POST /manifest` its HTTP entry (`apps/golemd/src/http.rs`); `golem-types` is
+  gone from the workspace members.
+- **Phase 3** — `apps/golemd/src/reconcilers.rs` holds the four reconcilers,
+  each with `apply`/`reverse` over the `journal.rs::Inverse` it records.
+- **Phase 4** — `examples/lichess/{Fleet,Lichess,fleet}.emet` are authored
+  against the module system and resolved by `apps/emet/src/resolve.rs`.
+- **Phase 5** — the site describes the glyph/scroll/manifest model and both
+  terminology files are gone. Its third bullet was *reversed*, not delivered;
+  the note there says so.
+
 Master phased plan for the refactor that rips out Nickel and the old
 JSON-instruction path and makes golemd consume the **binary content-addressed
 output of the emetc compiler**, acting only on the four glyphs Emet produces.
@@ -190,7 +217,14 @@ value-level cross-host-ref approach proves awkward, the `ref`-helper fallback
 - **Drop the old terminology docs**: `TERMINOLOGY.md`, `TERMINOLOGY.discworld.md`,
   and the Blueprint/Workload/Service/Ingress vocabulary in the root `CLAUDE.md`
   and docs — replaced by glyph/scroll/fleet (and the reconcile/reverse/CID model).
+  *Done — both files are absent from the repo and the root `CLAUDE.md` is on the
+  glyph model.*
 - Fold Emet's markdown docs into the site (`docs/TODO.md` §B "unify docs").
+  *Reversed, not done.* The two-tree split is the standing decision: the
+  Astro/Starlight site (`sites/website/`) carries the reader-facing docs and
+  `docs/` stays the internal design record (root `CLAUDE.md` §Docs; `docs/TODO.md`
+  §B, "Unify the docs sites — SUPERSEDED"). A published page citing an ADR would
+  point at something its readers cannot reach.
 
 **Executes:** `/lw:documenter` (owns all prose) with `/lw:communicator` for any
 user-facing wording calls.
@@ -229,40 +263,72 @@ docs (5) come last because they describe the finished model.
 
 ---
 
-## [RATIFY] — decisions needing the user's sign-off
+## [RATIFY] — the decisions, and what was ratified
 
-Each: the decision, the recommendation, the key alternative.
+All ten are settled, each by the code that shipped. The original wording — the
+decision, the recommendation, the key alternative — stays; the italic line under
+each records the outcome and where to see it.
 
 - **[RATIFY 0] ADR location.** Recommend keeping 0013–0016 in `docs/adr/`
   (continue the 0012 sequence). Alternative: a separate golem-side ADR series.
+  *Ratified as recommended. One unbroken sequence — `docs/adr/` runs from 0001
+  past 0054, emet and golem decisions interleaved.*
 - **[RATIFY 1] Shared model = new `scroll-format` crate; `ir::Scroll`/`Glyph`
   move there, `emet::ir` re-exports.** Recommend as written (single definition,
   no drift). Alternative: schema in `golem-types` (rejected — that model is being
   deleted) or duplicated + version-checked (rejected — same-workspace).
+  *Ratified as recommended. `libs/scroll-format/` is a workspace member;
+  `apps/emet/src/ir.rs` re-exports the model.*
 - **[RATIFY 2] Delete golem's rich model; `golem-types` removed as a member**
   (golemd owns its journal types). Recommend remove. Alternative: repurpose
   `golem-types` for golemd-only journal types.
+  *Ratified as recommended — removed. `Cargo.toml`'s members list no longer
+  names it and `libs/` holds only `scroll-format` and `workspace-hack`; golemd's
+  journal types live in `apps/golemd/src/journal.rs`.*
 - **[RATIFY 3] `RevisionKind` collapses to `Init` / `Reconcile`** (decommission =
   reconcile toward empty scroll). Recommend as written. Alternative: keep an
   explicit `Decommission` kind.
+  *Ratified as recommended. `journal.rs::RevisionKind` has exactly those two
+  variants.*
 - **[RATIFY 4] golemd's local journal may stay JSON** for legibility even though
   the wire format is binary postcard. Recommend allow JSON locally. Alternative:
   store postcard bytes in the journal too.
+  *Ratified as recommended. The PlanRoom is SQLite and stores each state, op,
+  and inverse as `serde_json` text (`apps/golemd/src/planroom.rs`) — legible to
+  `sqlite3` with no golem-specific decoder.*
 - **[RATIFY 5] HTTP surface**: `POST /manifest` replaces `POST /blueprints`;
   decommission-by-name removed (state is a whole scroll; "remove all" = apply
   empty scroll). Recommend as written. Alternative: keep a decommission verb.
+  *Ratified as recommended, then extended by ADR 0033: `POST /manifest` returns
+  `202 { reconcile_id }` and the client polls `GET /reconciles/:id` rather than
+  holding the request open (`apps/golemd/src/http.rs`). No decommission verb was
+  ever added.*
 - **[RATIFY 6] Large `file` `Inverse` storage**: inline prior bytes in the
   journal for the first cut. Recommend inline-first. Alternative: content-address
   the prior contents into a blob store from day one.
+  *Ratified as recommended — still inline. `Inverse::RestoreFile { path,
+  contents, perms }` carries the prior contents in the journal row; no blob
+  store exists.*
 - **[RATIFY 7] Partial-failure behaviour**: LIFO-rollback the Outcomes applied
   this reconcile and journal nothing (matches the old all-or-nothing spine).
   Recommend rollback. Alternative: journal partial progress and resume.
+  *Ratified as recommended, then re-scoped rather than reversed. ADR 0029 kept
+  LIFO rollback and all-or-nothing but moved the boundary from the whole host to
+  the **leaf unit** of ADR 0031, so a failing unit rolls itself back and its
+  siblings still enact.*
 - **[RATIFY 8] Module system now, minimal + Elm-shaped** (`module/exposing/
   import/as`, file=module, qualified access reusing ADR 0006); list patterns
   **not** required for the lichess port and sequenced separately. Recommend as
   written, with a single-file 4a spike first. Alternative: no module system
   (one-file lichess), or full Elm module system now.
+  *Ratified as recommended (ADR 0016), and since grown well past minimal —
+  a library search path (0024), nested dotted modules and qualified type
+  identity (0049), qualified constructors (0051). List patterns shipped
+  separately, as sequenced.*
 - **[RATIFY 9] Cross-host references as ordinary Emet values** (shared fact table
   in an imported module), replacing Nickel's placeholder substitution. Recommend
   the value approach (no templating, ADR 0004). Alternative: a `ref`-string
   helper mirroring Nickel.
+  *Ratified as recommended; the `ref`-helper fallback was never needed.
+  `examples/lichess/Fleet.emet` is the fact module — `internalNetwork` and an
+  `endpoint` helper — that each host imports and reads as ordinary values.*
