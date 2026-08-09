@@ -1,9 +1,10 @@
 # Emet guide
 
 Emet is a typed, functional language for describing machine configuration. A
-program is `main : List Scroll` — one `Scroll` per host, each a list of *glyphs*
-(apt packages, systemd units, files). That list of scrolls is the whole output.
-Emet writes it; the `golemd` daemon enacts it on real hosts.
+program is `main : List Scroll` — one `Scroll` per host, a tree whose leaves each
+hold a list of *glyphs* (apt packages, systemd units, files, lines in files).
+That list of scrolls is the whole output. Emet writes it; the `golemd` daemon
+enacts it on real hosts.
 
 - **[Tutorial](tutorial.md)** — new to Emet? Build a fleet, one runnable program
   at a time.
@@ -14,7 +15,7 @@ Emet writes it; the `golemd` daemon enacts it on real hosts.
 Every program shown compiles. Run one:
 
 ```
-cargo run -- examples/single-host.emet
+cargo run -p emet -- build --text apps/emet/examples/single-host.emet
 ```
 
 Editor support lives in [`emet.nvim`](https://codeberg.org/dull/emet.nvim)

@@ -1,7 +1,7 @@
 # Tutorial: build a fleet
 
-Write each program into a file and run it with `cargo run -- file.emet`. Every
-step compiles.
+Write each program into a file and run it with
+`cargo run -p emet -- build --text file.emet`. Every step compiles.
 
 ## One host
 
@@ -71,7 +71,7 @@ main : List Scroll
 main = List.map webHost [ "web-1", "web-2", "web-3" ]
 ```
 
-This is [`examples/fleet.emet`](../../examples/fleet.emet) — three scrolls from
+This is [`apps/emet/examples/fleet.emet`](../../apps/emet/examples/fleet.emet) — three scrolls from
 one function.
 
 ## Per-host data with a record
@@ -103,11 +103,11 @@ main =
     ]
 ```
 
-This is [`examples/record-hosts.emet`](../../examples/record-hosts.emet). Two
+This is [`apps/emet/examples/record-hosts.emet`](../../apps/emet/examples/record-hosts.emet). Two
 things to note: `"listen = ${String.fromInt h.port}"` is string interpolation —
-`${expr}` splices a `String` into the literal, so the plan carries
-`listen = 8080`, never a placeholder. And `h.port` reads a field off the record
-parameter directly.
+`${expr}` splices a `String` into the literal, and the splice happens here, when
+you compile, so the glyph's `contents` holds `listen = 8080`. And `h.port` reads
+a field off the record parameter directly.
 
 ## Roles with your own type
 
@@ -134,7 +134,7 @@ main =
     ]
 ```
 
-This is [`examples/roles.emet`](../../examples/roles.emet).
+This is [`apps/emet/examples/roles.emet`](../../apps/emet/examples/roles.emet).
 
 ## Next
 
