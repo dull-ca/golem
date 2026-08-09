@@ -539,15 +539,11 @@ CI moved off Codeberg's Woodpecker to a self-hosted nix + cachix gate (ADR 0035;
 `docs/design/ci-cachix-nix.md`). The gate (`nix flake check`) is live on
 `lakin/ci-nix-cachix`; the automation around it is not yet stood up.
 
-- **KNOWN BUG — `flake.lock` points at a `dull-nix` without
-  `mkReleaseCommand`, so the gate is red.** `.#release` and `.#release-guards`
-  fail with `error: attribute 'mkReleaseCommand' missing` at `flake.nix:240`,
-  and both are in `checks`, so `nix flake check`, `nix flake show`, `ci.yml`,
-  and `release` all fail. `nix build` and the individual outputs still work. The
-  release command moved to `dull-ca/nix` (ADR 0056); that repository is
-  unpushed, and the lock pins `983d932`, which predates the move. Two steps in
-  order, and nothing in golem substitutes for either: push `dull-ca/nix`, then
-  `nix flake update dull-nix` here. Close this entry with that lock update.
+- ~~**KNOWN BUG — `flake.lock` points at a `dull-nix` without
+  `mkReleaseCommand`.**~~ Closed 2026-08-09: `dull-ca/nix` is pushed and the
+  lock moved `983d932` → `edd816e`, so `.#release`, `.#release-guards` and the
+  gate evaluate again. That golem's release path can only be repaired by a lock
+  update is not a bug but the standing cost of ADR 0056.
 
 - **Stand up the self-hosted CI box, provisioned by golem (dogfood).** The
   poll-build-push loop in `docs/design/ci-cachix-nix.md` — golem's own four

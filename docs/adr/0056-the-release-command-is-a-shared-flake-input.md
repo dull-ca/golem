@@ -9,6 +9,11 @@ one sentence in each: ADR 0053's "Both callers run one file,
 copy". There is still one copy; it is no longer in this repository. Runs inside
 ADR 0035's gate.
 
+Amended 2026-08-09: `dull-ca/nix` is pushed and golem's `flake.lock` moved
+`983d932` → `edd816e`, closing the gap the first consequence records. The
+dependency that consequence describes is permanent; only the red gate was
+temporary.
+
 ## Context
 
 ADR 0053 and ADR 0055 built three files — `ci/release.sh`,
@@ -96,7 +101,9 @@ release someone can reconstruct.
   outputs are unaffected — laziness spares anything that does not reach the
   attribute. Two steps, in this order: push `dull-ca/nix`, then `nix flake
   update dull-nix` here. There is no change to golem that substitutes for
-  either; the attribute does not exist at the pinned revision.
+  either; the attribute does not exist at the pinned revision. Both steps are
+  done as of 2026-08-09 (see Status); what follows is what any later stale lock
+  will cost.
 - **golem's release path now depends on another repository, and `flake.lock` is
   the whole of that dependency.** A lock pointing at a dull-nix without
   `mkReleaseCommand` is not a degraded release — it is an output that does not

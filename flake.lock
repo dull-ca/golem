@@ -21,11 +21,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1786241909,
-        "narHash": "sha256-tmgt7+rPIKU9XnKhzQdRkA91C9Xh1OR0rzlEJqcPTOg=",
+        "lastModified": 1786308675,
+        "narHash": "sha256-VwxlG4fTdCnbt5Sh9mXXArq7X4xbJCF35SkFmru1ddY=",
         "owner": "dull-ca",
         "repo": "nix",
-        "rev": "983d93204c6672ec67dbf7ec3517090356ff3639",
+        "rev": "edd816eda62fcb0e8195bb80c983c49f7ce2aa80",
         "type": "github"
       },
       "original": {

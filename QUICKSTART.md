@@ -19,15 +19,6 @@
 
 ## Build
 
-> **`nix flake check` and `release` fail on this branch** with `error:
-> attribute 'mkReleaseCommand' missing`. The release command moved to the shared
-> `dull-ca/nix` flake (ADR 0056), and golem's `flake.lock` still pins a
-> `dull-nix` from before the move, so `.#release` and `.#release-guards` do not
-> evaluate — which takes `nix flake check`, `nix flake show`, and CI with them.
-> `nix build` and every other individual output are unaffected. Two steps, in
-> order: push `dull-ca/nix`, then run `nix flake update dull-nix` here. Delete
-> this note with that commit.
-
 ```bash
 nix build
 ```
