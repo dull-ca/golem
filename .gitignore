@@ -51,3 +51,7 @@ apps/fleet/__pycache__/
 
 __pycache__/
 *.pyc
+
+# nix build output symlink
+result
+result-*
