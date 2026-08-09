@@ -44,11 +44,17 @@ what an unpinned pull gets and `dull-01` pulls unpinned.
 `golem-website`.** The destination ref in the skopeo copy is what a consumer
 reads, and it does not have to match what `mkWebsiteContainer` calls the image.
 
-**The smoke test is the gate that matters.** `nix flake check` validates
-configuration in a sandbox with no docker daemon, so it cannot show the
-assembled image serves anything. The smoke test loads the archive, runs it, and
-asserts 200 and an HTML content type on `/` plus 404 on a path that does not
-exist.
+**The site builds in nix, and so does the test.** `websiteNodeModules` is a
+fixed-output derivation running `bun install`; `websiteDist` patches the
+prebuilt ELF binaries npm ships (`autoPatchelfHook`) and their `/usr/bin/env`
+shebangs (`patchShebangs`), then builds. `website-serves` runs the real caddy
+against the real `Caddyfile` and the real built site and asserts what a reader
+gets. Both are in `checks`, so `nix flake check` covers them.
+
+ADR 0035 §4 said the dist could not be produced purely. That was wrong: the
+obstacle was never reproducibility, it was that npm's binaries link against a
+loader the nix store does not have. `autoPatchelfHook` is the standard answer
+and it took two lines. **§4 is superseded by this record.**
 
 ## Consequences
 
@@ -64,12 +70,20 @@ exist.
 - The image must stay public. A private one would need `dull-01` to hold
   registry credentials, which is the trust boundary ADR 0042 keeps deliberately
   small.
-- CI now runs bun and docker, so the gate is no longer `nix flake check` alone —
-  a runner without a docker daemon cannot run it. That is the cost of testing
-  the real artifact instead of its configuration.
-- `nix flake check` runs **before** the site build in both workflows. `siteDist`
-  falls back to an in-tree `sites/website/dist`, so building first would pull
-  `website-container` into `packages` and quietly change what the check covers
-  depending on step order.
+- CI needs nothing but nix. No bun, no docker daemon, no `--impure`, no
+  `GOLEM_SITE_DIST`, and no shell script standing in for a test — `nix flake
+  check` is the gate again, and it runs the same on a laptop as on a runner,
+  which is what ADR 0035 wanted in the first place.
+- `websiteNodeModules` carries a hash over `package.json` and `bun.lock`.
+  Changing either changes the hash, and the build fails until it is updated —
+  nix reports the correct one. That is the cost of a network fetch being
+  pinned rather than trusted.
+- npm ships every platform's sharp, so the musl builds land in the store and
+  can never link against a glibc loader. They are ignored explicitly
+  (`autoPatchelfIgnoreMissingDeps`) rather than silently, because the glibc
+  variants beside them are what actually loads.
+- `website-serves` rewrites two lines of the Caddyfile — the document root and
+  the listen port — because a build sandbox cannot create `/var/www/html` or
+  bind `:80`. Every other directive is the file as shipped.
 - No TLS in the container. Traefik terminates in front of it, which is why the
   Caddyfile already sets `auto_https off`.

@@ -116,12 +116,76 @@
           cargoExtraArgs = "--locked -p emet-lsp";
         });
 
-        # Package a pre-built Starlight `dist/` into a Caddy image (see
-        # sites/website/Caddyfile). The site is built bun-first, then packaged
-        # here, rather than built purely in Nix: Astro/Starlight pulls ~137
-        # platform-split native packages (sharp/libvips, esbuild, rollup,
-        # pagefind), which buildNpmPackage can't reproduce reliably. So CI runs
-        # `bun run build` and this only copies the resulting path into the image.
+        # The site's node_modules, as a fixed-output derivation. `bun install`
+        # needs the network, which only an FOD may have, so the hash below is
+        # what pins it: change `package.json` or `bun.lock` and this hash must
+        # change with them (nix reports the new one on mismatch).
+        websiteNodeModules = pkgs.stdenvNoCC.mkDerivation {
+          pname = "golem-website-node-modules";
+          version = "0";
+          src = ./sites/website;
+          nativeBuildInputs = [ pkgs.bun ];
+          dontConfigure = true;
+          buildPhase = ''
+            export HOME=$TMPDIR
+            bun install --frozen-lockfile --no-progress --ignore-scripts
+          '';
+          installPhase = ''
+            mkdir -p $out
+            cp -R node_modules/. $out/
+          '';
+          dontFixup = true;
+          outputHashAlgo = "sha256";
+          outputHashMode = "recursive";
+          outputHash = "sha256-XY0AEsZ2vmcL6OmVSvUoGCFX4MCXKwhyXd3Ly/pLJ/E=";
+        };
+
+        # The built site, purely. npm ships esbuild, rollup and sharp as
+        # prebuilt ELF binaries linked against a dynamic loader that does not
+        # exist in the nix store, so `autoPatchelf` rewrites them against
+        # nixpkgs' glibc before anything runs them — that, not reproducibility,
+        # was the actual obstacle to building this in nix.
+        websiteDist = pkgs.stdenv.mkDerivation {
+          pname = "golem-website-dist";
+          version = "0";
+          src = ./sites/website;
+          nativeBuildInputs = [ pkgs.bun pkgs.nodejs pkgs.autoPatchelfHook ];
+          buildInputs = [ pkgs.stdenv.cc.cc.lib pkgs.vips pkgs.glib ];
+          configurePhase = ''
+            runHook preConfigure
+            cp -R ${websiteNodeModules} node_modules
+            chmod -R u+w node_modules
+            autoPatchelf node_modules
+            # npm's bin scripts are `#!/usr/bin/env node`, and neither path
+            # exists in the sandbox; patchShebangs rewrites them at the nodejs
+            # above.
+            patchShebangs node_modules
+            runHook postConfigure
+          '';
+          buildPhase = ''
+            runHook preBuild
+            export HOME=$TMPDIR
+            export ASTRO_TELEMETRY_DISABLED=1
+            bun run build
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp -R dist $out
+            runHook postInstall
+          '';
+          # npm ships every platform's sharp, so the musl builds land here and
+          # can never link against a glibc host's loader. They are dead weight,
+          # not a missing dependency — the glibc variants beside them are what
+          # actually loads.
+          autoPatchelfIgnoreMissingDeps = [ "libc.musl-x86_64.so.1" ];
+          dontPatchELF = true;
+          dontStrip = true;
+        };
+
+        # The docs site as a Caddy image (see sites/website/Caddyfile), built
+        # from `websiteDist` above — purely, with no external `dist/` and no
+        # `--impure`.
         mkWebsiteContainer = dist: pkgs.dockerTools.buildLayeredImage {
           name = "golem-website";
           tag = "latest";
@@ -146,27 +210,51 @@
           };
         };
 
-        # `dist/` is a gitignored build artifact, so a pure flake evaluation
-        # (which only sees committed source) can't read it. Three cases, in order:
-        # `GOLEM_SITE_DIST` carries the built path (reading the env var forces
-        # `nix build --impure`); else an in-tree `dist/` if one is present; else
-        # null. Null means no dist is available, and `website-container` is then
-        # omitted from `packages` entirely (below) rather than failing eval — so a
-        # pure `nix flake check`, which walks every `packages` output, stays green.
-        siteDist =
-          let env = builtins.getEnv "GOLEM_SITE_DIST";
-          in
-          if env != "" then /. + env
-          else if builtins.pathExists ./sites/website/dist then ./sites/website/dist
-          else null;
+        website-container = mkWebsiteContainer websiteDist;
 
-        # The default website image, wired to the dist path above. Present in
-        # `packages` only when `siteDist != null` (the `optionalAttrs` below);
-        # `let` is lazy, so this binding is never forced when siteDist is null.
-        # Built (not pushed) as `nix build --impure .#website-container` — outside
-        # the `checks` gate, since Astro's dist can't be produced purely (ADR 0035
-        # §4).
-        website-container = mkWebsiteContainer siteDist;
+        # Does the site actually serve? `nix flake check` used to prove only
+        # that the flake evaluated; this runs the real caddy against the real
+        # `Caddyfile` and the real built site, and asserts what a reader gets.
+        #
+        # Two substitutions, both forced by the sandbox and neither touching
+        # behaviour: the document root moves off `/var/www/html`, which a build
+        # cannot create, and the listen port moves off `:80`, which an
+        # unprivileged build cannot bind. Every other directive — `auto_https
+        # off`, `encode`, the `handle_errors` rewrite to Starlight's 404.html —
+        # is the file as shipped, which is where the behaviour under test
+        # lives.
+        website-serves = pkgs.runCommand "golem-website-serves"
+          {
+            nativeBuildInputs = [ pkgs.caddy pkgs.curl ];
+          } ''
+          substitute ${./sites/website/Caddyfile} Caddyfile \
+            --replace-fail 'root * /var/www/html' 'root * ${websiteDist}' \
+            --replace-fail ':80 {' ':8080 {'
+          export HOME=$TMPDIR
+          export XDG_CONFIG_HOME=$TMPDIR
+          export XDG_DATA_HOME=$TMPDIR
+          caddy run --config Caddyfile --adapter caddyfile &
+          caddy_pid=$!
+          trap 'kill $caddy_pid 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:8080/ && break
+            sleep 0.5
+          done
+
+          root=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
+          ctype=$(curl -s -o /dev/null -w '%{content_type}' http://127.0.0.1:8080/)
+          missing=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/definitely-not-here)
+
+          test "$root" = 200 || { echo "FAIL root: $root"; exit 1; }
+          case "$ctype" in
+            text/html*) ;;
+            *) echo "FAIL content-type: $ctype"; exit 1 ;;
+          esac
+          test "$missing" = 404 || { echo "FAIL 404: $missing"; exit 1; }
+
+          echo "the site serves" > $out
+        '';
 
         # `cargo test` over the whole workspace, in one derivation — including
         # cross-crate integration tests and the crates with no release binary
@@ -216,8 +304,7 @@
           golemd-static = golemd;
           golemctl-static = golemctl;
           default = emetc;
-        } // pkgs.lib.optionalAttrs (siteDist != null) {
-          inherit website-container;
+          inherit websiteNodeModules websiteDist website-container;
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
@@ -228,6 +315,9 @@
         checks = {
           inherit golemd golemctl emetc emet-lsp;
           inherit workspace-tests fleet-tests;
+          # The docs site is part of the gate now that it builds purely:
+          # `websiteDist` proves it compiles, `website-serves` proves it serves.
+          inherit websiteDist website-serves;
         };
 
         lib.mkWebsiteContainer = mkWebsiteContainer;

@@ -1,11 +1,14 @@
-# Interim CI: the same gate as everywhere else (`nix flake check`, ADR 0035),
-# run by GitHub Actions until the self-hosted golem-managed box exists.
-# cachix-action configures the dull-ca cache for pull and pushes every path
-# built during the check.
+# Interim CI: the gate is `nix flake check` (ADR 0035), run by GitHub Actions
+# until the self-hosted golem-managed box exists. cachix-action configures the
+# dull-ca cache for pull and pushes every path built during the check.
 #
-# NOTE: this builds and smoke-tests the docs image but never publishes it.
-# Publishing happens only on a `v*` tag, in release.yml -- don't add a push
-# step here.
+# There is nothing here but nix. The docs site builds purely (`websiteDist`),
+# and the check that it actually serves is a derivation (`website-serves`), so
+# both run under `nix flake check` on any machine with nix -- no bun, no docker,
+# no shell script pretending to be a test.
+#
+# NOTE: this never publishes. Publishing happens only on a `v*` tag, in
+# release.yml -- don't add a push step here.
 name: CI
 
 on:
@@ -28,75 +31,4 @@ jobs:
         with:
           name: dull-ca
           authToken: ${{ secrets.DULL_CA_CACHIX_PRIVATE_KEY }}
-
-      # Before the site is built, deliberately. `flake.nix`'s `siteDist` falls
-      # back to an in-tree `sites/website/dist` when one exists, so building the
-      # site first would pull `website-container` into `packages` and change
-      # what this gate covers depending on step order. Running it here keeps the
-      # check identical to what it is on a clean checkout.
       - run: nix flake check --print-build-logs
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      # Astro pulls native packages (sharp/libvips, esbuild, rollup) that nix
-      # can't reproduce, so bun builds the site and nix only packages it. That
-      # makes `dist/` a gitignored artifact a pure evaluation can't see --
-      # GOLEM_SITE_DIST and --impure are what bridge it in below, which is why
-      # this sits outside `nix flake check` (ADR 0035 §4).
-      #
-      # There is no `bun run check`: the site has no such script, and its prose
-      # examples are already gated by the ADR 0043 docs-examples harness inside
-      # `nix flake check`.
-      - name: Build the docs site
-        working-directory: sites/website
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Build the docs image
-        run: |
-          GOLEM_SITE_DIST=$PWD/sites/website/dist \
-            nix build --impure .#website-container --print-build-logs
-
-      # `nix flake check` validates configuration in a sandbox with no docker
-      # daemon -- it can't prove the assembled image serves. This is the only
-      # step that runs the real artifact.
-      #
-      # The `trap cleanup EXIT` is load-bearing, not tidiness: with no `shell:`
-      # key GitHub Actions runs this under `bash -e {0}`, so an unreachable
-      # container aborts the script at the first failing command, and without
-      # the trap neither `docker logs` (the only evidence of why caddy died)
-      # nor `docker rm -f` would ever run.
-      - name: Smoke test the image
-        run: |
-          docker load < result
-
-          cleanup() {
-            docker logs golem-smoke || true
-            docker rm -f golem-smoke || true
-          }
-          trap cleanup EXIT
-
-          docker run -d --name golem-smoke -p 8099:80 golem-website:latest
-
-          for i in $(seq 1 30); do
-            curl -sf -o /dev/null http://127.0.0.1:8099/ && break
-            sleep 1
-          done
-          root=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/)
-          ctype=$(curl -s -o /dev/null -w '%{content_type}' http://127.0.0.1:8099/)
-          missing=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/definitely-not-here)
-          test "$root" = 200 || { echo "FAIL root: $root"; exit 1; }
-          # Prefix match, not equality: caddy answers `text/html; charset=utf-8`
-          # where the sibling repo's nginx answers a bare `text/html`. Verified
-          # against the built image, not assumed.
-          case "$ctype" in
-            text/html*) ;;
-            *) echo "FAIL ctype: $ctype"; exit 1 ;;
-          esac
-          # The Caddyfile rewrites a miss to Starlight's own 404.html; this
-          # asserts it still answers 404 rather than 200 with a pretty page.
-          test "$missing" = 404 || { echo "FAIL 404: $missing"; exit 1; }
-          echo "smoke test passed"
