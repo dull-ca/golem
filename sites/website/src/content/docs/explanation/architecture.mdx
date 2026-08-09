@@ -17,8 +17,9 @@ binary manifest  ◀── scroll-format (shared model) ──▶  golemd
 golemd selects this host's scroll ───▶ diff ───▶ reversible reconcilers ───▶ the box
 ```
 
-Two programs, one shared contract. The compiler is the *writer*; the agent
-is the *reader*; the `scroll-format` crate is the model they both depend on.
+`emetc` writes the manifest and `golemd` reads it. Both compile against the
+`scroll-format` crate, which owns the model, so the two ends stay in
+agreement.
 
 ## `emetc` — the compiler (writer)
 
@@ -37,9 +38,12 @@ is the **binary manifest**; `--text` is a readable plan and `--json` a debug
 view (see [CLI](/reference/cli/)).
 
 Everything a config computes — a rendered nginx site, a firewall rule, a
-container quadlet — is fully evaluated at this stage. The glyphs that reach
-the manifest carry only concrete strings. There is no templating layer
-downstream.
+container quadlet — is evaluated at this stage, on the author's machine. A
+glyph reaches the manifest finished, and a host enacts it without computing
+anything of its own. The one value a glyph carries unresolved is a sealed
+secret: an interpolated `Secretspec.get` compiles to literal chunks around a
+hole that `golemd` opens at enact, so a manifest can be stored and shipped
+without the plaintext. See [Trust model](/explanation/trust/).
 
 ## `scroll-format` — the shared contract
 

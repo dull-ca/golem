@@ -5,22 +5,30 @@ description: aptPackage, systemdService, file, lineInFile — the only resource 
 
 import { Aside } from "@astrojs/starlight/components";
 
-A **glyph** is one bottom-level OS resource. Emet has exactly four glyph
-primitives, and `golemd` enacts exactly these four — nothing else. Every
-higher-level shape you write (a container workload, a service, an ingress)
-is an Emet function that returns a `List Glyph` and lowers to these.
+A **glyph** is one bottom-level OS resource. Emet has four glyph primitives
+and `golemd` enacts those four. Every higher-level shape you write (a
+container workload, a service, an ingress) is an Emet function that returns
+a `List Glyph` and lowers to these.
 
-Each glyph is a reserved record constructor in Emet. Every field is a
-fully-evaluated concrete `String` — there is no templating, no placeholder
-substitution, no `${…}` in the compiled output. String interpolation and
-`String.join` run at compile time; the glyph carries only the final bytes.
+Each glyph is a reserved record constructor in Emet. `emetc` evaluates every
+field to a finished value on your own machine: string interpolation and
+`String.join` have already run by the time a glyph is written to the
+manifest, so a host receives the resulting bytes.
 
-<Aside type="note" title="Adding a fifth kind is a language decision, not an agent one">
-  The closed set of four is the whole engine surface. New capability is a
-  new **Emet abstraction** composed from these, not a new resource kind in
-  `golemd`. The one exception — a genuinely new primitive — is a change to
-  the shared `scroll-format` model plus a new reconciler, and bumps the
-  manifest `format_version`.
+Identifier fields — `path`, `name`, `unit`, `mode`, `target` — are plain
+strings. A value-bearing field — a file's `contents`, a `lineInFile`'s `line`
+— is a text value holding either plain text or the literal chunks around a
+sealed hole, which is what an interpolated `Secretspec.get` value compiles to;
+`golemd` opens the hole at enact and joins the result. Of the two, `contents`
+is the one that may hold a secret today. See
+[Trust model](/explanation/trust/) for what sealing protects.
+
+<Aside type="note" title="New capability is a new Emet abstraction">
+  These four are the whole engine surface, and they compose: a container, a
+  service, or an ingress is an Emet function returning glyphs, shipped in a
+  library or written for your own fleet. A genuinely new primitive stays
+  possible — a change to the shared `scroll-format` model plus a new
+  reconciler — and bumps the manifest `format_version`.
 </Aside>
 
 ## `aptPackage`
@@ -101,6 +109,12 @@ The wire `Perms` also carries `owner` and `group` — names, resolved to
 uid/gid at reconcile time. The surface constructors do not expose them, so
 every authored entry leaves them `None` and ownership unmanaged.
 
+`file` is the glyph that may carry a secret, and it must own the mode to
+match: `emetc` accepts a sealed value in `contents` at `mode = "0600"` and
+refuses one at any mode granting group or other read. Because the surface
+constructors leave `group` unset, `"0600"` is the mode to write today. See
+[Trust model](/explanation/trust/).
+
 **Reversibility.** On apply, `golemd` reads the prior contents and mode
 (or notes the file was absent), then writes the desired contents atomically
 (temp file + rename). On reverse it restores the prior bytes and mode, or
@@ -157,6 +171,11 @@ no-op and reverse does nothing. Otherwise `golemd` appends it and records
 that it added the line; on reverse it removes exactly that line. Golem
 never removes a line it did not add.
 
+`line` holds plain text only. This glyph owns one line and not the file
+around it, so it can promise nothing about who may read the result, and
+`emetc` refuses a secret here — write that with a `file` glyph at
+`mode = "0600"`, which owns the whole file and enforces its mode.
+
 <Aside type="caution" title="Ordering with file">
   If a later `file` glyph rewrites the same path, order matters. A leaf's
   glyphs apply in list order and reverse in the exact reverse order — a
@@ -206,8 +225,8 @@ registry =
 
 That lowers to the podman `aptPackage`, the `.container` quadlet `file`, its
 `systemdService`, one nftables drop-in `file` for the internal port opening, and
-the nftables base that loads it — glyph kinds the agent already understands, no
-fifth kind. See the
+the nftables base that loads it — every one of them a kind the agent already
+enacts. See the
 [Quadlet reference](/reference/workloads/), the
 [service abstraction guide](/guides/app-and-db/), and the
 [lichess tour](/guides/litour/) for the full pattern.

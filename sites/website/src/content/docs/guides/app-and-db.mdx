@@ -110,10 +110,11 @@ drift — and it is a **complete file** of its own, not a line added to a file
 other services share (ADR 0041). Two services on one box repeat the six base
 glyphs; identical glyphs share content ids, so the host does that work once.
 
-<Aside type="note" title="The agent never learned the word 'service'">
-  `golemd` reconciles four glyphs. "Service," "workload," and "firewall opening"
-  are vocabulary in your source and the library — they vanish at the manifest
-  boundary. That is why the agent stays small: no new resource kind, ever.
+<Aside type="note" title="Where the vocabulary stops">
+  "Service," "workload," and "firewall opening" are words in your source and in
+  the library. `golemd` receives four glyph kinds, and each of those shapes
+  arrives as some combination of them. Keeping the vocabulary in the language
+  is what keeps the agent small.
 </Aside>
 
 ## Add a volume, and a second glyph appears

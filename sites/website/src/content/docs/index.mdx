@@ -1,13 +1,18 @@
 ---
 title: Golem
-description: Author a fleet in Emet, compile it to a content-addressed manifest, and let a per-host agent reconcile each box toward it — reversibly.
+description: Author a fleet in Emet, evaluate it on your own machine into a content-addressed manifest, and let a per-host agent bring each box to the state it describes — reversibly.
 template: splash
 hero:
+  # NOTE: Starlight renders `tagline` with `set:html` (Hero.astro) — raw HTML,
+  # never markdown. A `[text](href)` link here would ship as literal brackets,
+  # so links in this field must be written as anchors.
   tagline: |
-    Write your fleet in [Emet](/getting-started/the-config/), a typed
-    functional language. It compiles to a binary, content-addressed
-    manifest of four glyphs. A small agent reconciles each box toward its
-    scroll — and can reverse every edit it made.
+    Write your fleet in <a href="/getting-started/the-config/">Emet</a>, a
+    typed functional language. It compiles on your machine to one
+    <a href="/reference/bundle-format/">scroll</a> per host — a tree of
+    <a href="/reference/primitives/">glyphs</a>, where a glyph is one OS
+    resource: a package, a service, a file, a line in a file. A small agent
+    reads the scroll, brings the box to it, and can undo exactly what it did.
   actions:
     - text: Get started
       link: /getting-started/install/
@@ -22,40 +27,61 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## What it is
 
-Golem is a pipeline with two ends and one contract between them.
+Golem keeps a small fleet of Debian machines in the state you describe.
 
-- **Emet** — a typed, Elm-modeled configuration language. A program
-  evaluates to a **fleet**: `main : List Scroll`, one `Scroll` per host. A
-  scroll is a tree: each level holds either **glyphs** — a leaf unit — or
-  named sub-scrolls, never both. There are exactly four glyph primitives —
-  `aptPackage`, `systemdService`, `file`, `lineInFile`. Every field is a
-  fully-evaluated concrete string; there is no templating layer.
-- **`golemd`** — a per-host agent. It ingests the compiled manifest,
-  selects its own host's scroll, and reconciles the box toward it. Each
-  glyph is enacted through a **reversible reconciler**: applying captures
-  the prior host state so the edit can be undone exactly.
+You write that description in **[Emet](/getting-started/the-config/)**, a
+typed functional language with generics, records, pattern matching, and
+exhaustiveness checking. `emetc` runs your program to completion on your own
+machine and emits a **[manifest](/reference/bundle-format/)** — the finished
+desired state, with every function applied, every branch taken, and every
+value computed. A host receives desired state that has already type-checked
+and already evaluated.
 
-The contract between them is the **manifest**: `emetc` (the compiler)
-emits a binary, content-addressed artifact; `golemd` consumes it. Both
-ends compile against the same shared `scroll-format` crate, so they
-cannot drift.
+A **scroll** is one host's share of that manifest, shaped as a tree. Its
+leaves hold **[glyphs](/reference/primitives/)**, and each leaf is enacted as
+its own unit: it retries on its own schedule, rolls back on its own, and
+settles independently of its siblings. The branches above the leaves group
+them by subsystem and hand down retry settings and reload obligations. Every
+scroll carries a BLAKE3 content id, so `golemd` can see which parts of a host
+changed and leave the rest alone.
 
-Higher-level shapes — a container workload, a service with a firewall, an
-ingress — are **not** engine primitives. You build them in Emet and they
-lower to the four glyphs. The agent never grows a fifth resource kind.
+Four glyph kinds cover the whole surface: `aptPackage`, `systemdService`, the
+filesystem glyph (`file`, `directory`, `symlink`), and `lineInFile`.
+
+**`golemd`** is the per-host agent. It takes the manifest, selects its own
+scroll, compares it against the journal of what it applied last time, and
+enacts the difference. Each apply first records the prior state of what it is
+about to touch, so the edit can be put back exactly — and `golemd` reverses
+only edits it recorded itself, leaving whatever was on the box before it
+arrived untouched. Both ends compile against the same shared `scroll-format`
+crate, so the writer and the reader stay in agreement.
+
+Evaluating everything up front and being able to reverse it afterward is what
+makes experiments cheap. Say state X works and you edit it into X+1. If a unit
+of X+1 fails and its policy says roll back — the default — that unit returns
+to the state it held under X, a working one, while the rest of the host
+settles on X+1. You can try a change without being sure of it first.
+
+Higher-level shapes — a container workload, a service behind a firewall, an
+ingress — are Emet functions that return glyphs. Some ship with the toolchain,
+like the [Quadlet library](/reference/workloads/); the rest you write for your
+own fleet and reuse across hosts. They are ordinary code you can read, copy,
+and adapt, and they all land on the same four glyphs, which is what keeps the
+agent small.
 
 ## Why it's shaped this way
 
 <CardGrid>
   <Card title="Abstractions live in the language" icon="puzzle">
     A "workload" or a "service" is an ordinary Emet function that returns
-    a `List Glyph`. Read it, copy it, change it. The agent stays small
-    because every abstraction compiles down to the same four primitives.
+    a `List Glyph`. You can parameterize it, share it across hosts, and see
+    exactly what it produces with `golemctl plan --detail`.
   </Card>
-  <Card title="Statically typed authoring" icon="approve-check">
+  <Card title="Evaluated before it ships" icon="approve-check">
     Emet is Hindley-Milner typed with generics, records, `case`/`if`, and
-    exhaustiveness checking. A missing field or a type mismatch is a
-    compile error, before any bytes leave your laptop.
+    exhaustiveness checking, and `emetc` runs the whole program on your
+    machine. A missing field or a type mismatch is a compile error, before
+    any bytes leave your laptop.
   </Card>
   <Card title="Content-addressed versioning" icon="seti:lock">
     Every scroll is identified by a BLAKE3 hash of its deterministic
@@ -64,10 +90,10 @@ lower to the four glyphs. The agent never grows a fifth resource kind.
     hand-typed numbers.
   </Card>
   <Card title="Reversible reconcile" icon="seti:default">
-    Applying a glyph captures what it changed. `golemd` only ever reverses
-    edits it recorded — it will not remove a package, line, or file it
-    did not add. That drives both upgrade (reverse old, apply new) and
-    removal (reverse toward an empty scroll).
+    Applying a glyph captures what it changed, and `golemd` reverses only
+    the edits it recorded. One mechanism drives upgrade (reverse the old,
+    apply the new), removal (reverse toward an empty scroll), and a failed
+    unit's rollback.
   </Card>
 </CardGrid>
 
@@ -78,8 +104,8 @@ Emet source ──emetc build──▶ binary manifest ──golemctl apply─�
   ──diff by content id──▶ reversible reconcilers ──▶ the box ──▶ journalled revision
 ```
 
-The diff is what keeps an unchanged apply free, and the journal is what makes
-the next one reversible.
+The diff is why an apply that changes nothing costs nothing, and the journal
+is what lets the next one be undone.
 
 See [Architecture](/explanation/architecture/) for each stage.
 
@@ -122,8 +148,8 @@ reconcilers, the way we ran them.
 
 ## What is not built yet
 
-Golem is honest about its edges. The following are **roadmap**, not
-working today:
+What golem does not do today — some of it planned, some of it a deliberate
+limit:
 
 - **Per-user identity.** The agent authorizes with one shared secret over
   an SSH tunnel, so it knows a caller was authorized, never which person
@@ -134,7 +160,10 @@ working today:
   an inventory, but the fan-out is entirely client-side: one connection per
   host, each `golemd` acting only on its own scroll. No coordinator, no
   ordered drain, no health-gated cross-host rollback.
-- **Any resource kind beyond the four glyphs.** Everything else is an
-  Emet abstraction that lowers to them.
+- **Container and DNS resource kinds in the agent.** These are the
+  deliberate limit: `golemd` enacts the four glyphs, and shapes like these
+  are Emet abstractions written on top of them. Secrets went a different
+  way — a value type on the wire, sealed at compile time, described in the
+  [Trust model](/explanation/trust/).
 
 See [Status](/reference/status/) for the full breakdown.

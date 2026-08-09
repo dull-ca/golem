@@ -19,7 +19,7 @@ golem's three layers at once:
 
 The example is three files: `Fleet.emet` (shared facts), `Lichess.emet` (the
 layer-c helpers), and `fleet.emet` (the six hosts). Everything higher-level
-lowers to the four glyphs — no fifth kind.
+lowers to the four glyphs.
 
 ## Layer b: the shipped `Quadlet` library
 
@@ -215,7 +215,7 @@ actually loaded.
 for real — their workloads and services name `ghcr.io/lichess-org` refs that are
 not publicly pullable. This is an illustrative topology, not a deployable one.
 
-## Cross-host facts are values, not templates
+## Cross-host facts are ordinary values
 
 `Fleet.emet` holds the shared facts every host reads — the internal CIDR, an
 `address:port` helper — as ordinary Emet values:
@@ -227,8 +227,9 @@ internalNetwork : String
 internalNetwork = "10.0.0.0/8"
 ```
 
-`service`'s firewall opening reads `internalNetwork` as imported data, checked by
-the type system — not a placeholder a resolver hopes to fill in later.
+`service`'s firewall opening reads `internalNetwork` as imported data, checked
+by the type system and substituted while the fleet compiles. The CIDR is in the
+`.nft` file before the manifest exists.
 
 `Lichess` and `Fleet` both live in `examples/lichess/` beside the entry module,
 and resolution is entry-directory-first, so those copies win — the `Fleet` in
@@ -276,10 +277,11 @@ checked by Emet's type system on the way down. The fleet reaches for no
 - **The library is shipped and typed.** `Image`, `Port`, `Mount`, `Workload`
   come from `Quadlet` — you fill in records, not `Image=` strings.
 - **Helpers are yours.** `dockerImage`, `service`, `ingress` are this fleet's
-  layer-c shortcuts, not engine features.
-- **Ingress is not a workload.** A reverse proxy is a different container's
-  config, so it stays hand-rolled glyphs — the library models runtimes, not
-  proxies.
+  own layer-c shortcuts, written in Emet like anything else and reusable
+  across its hosts.
+- **Ingress stays hand-rolled.** A reverse proxy is another container's
+  config, so this fleet writes those glyphs directly; `Quadlet` models
+  container runtimes.
 - **Upgrade and removal are content-addressed.** Bump an image tag, recompile,
   re-apply — only the changed glyphs are replaced. See
   [Reversible reconcile](/explanation/reversible-reconcile/).

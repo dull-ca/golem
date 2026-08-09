@@ -152,7 +152,7 @@ token_file = ".fleet/golem-token"
 | `ssh_args` | extra flags passed to the `ssh` command |
 | `token_file` | this host's bearer secret |
 
-A table carries `url` **or** `ssh`, never both. A bare string says the same
+A table carries `url` **or** `ssh`. A bare string says the same
 thing as `url`. The name is the join key: it matches the scroll of the same
 name in the manifest. See
 [The fleet harness](/explanation/the-fleet-harness/) for the harness that

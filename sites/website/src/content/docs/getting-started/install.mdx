@@ -41,9 +41,12 @@ callable by name from inside it — the rest of this page assumes you are.
 
 ## 2 — Run the agent
 
-`golemd` needs a `--host` name — that is how it selects its scroll from a
-fleet manifest. For a first run, use the default `fake` reconciler, which
-records what it would do without touching the box:
+`golemd` needs a `--host` name. A compiled fleet is one **manifest** holding
+every host's **scroll** — that host's own tree of glyphs — and the agent takes
+the scroll whose name matches its `--host`. See
+[The config](/getting-started/the-config/) for how you write them. For a first
+run, use the default `fake` reconciler, which records what it would do without
+touching the box:
 
 ```bash
 golemd --host web --reconciler fake --listen 127.0.0.1:7474

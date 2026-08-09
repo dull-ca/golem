@@ -117,8 +117,8 @@ The canary's image cannot be pulled, and it carries `policy = keep`.
    ```
 
    Same ending. The canary resurfaces on every reconcile rather than
-   disappearing into "unchanged" — a kept failure stays visible, because a unit
-   that has never worked is not a unit that needs no attention.
+   disappearing into "unchanged", so a unit that has never worked keeps asking
+   for attention until someone gives it some.
 
 4. **Read the journal on the box.**
 

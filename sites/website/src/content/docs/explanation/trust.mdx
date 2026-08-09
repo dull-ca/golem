@@ -5,9 +5,9 @@ description: SSH-only transport, a loopback-bound agent, and one shared-secret c
 
 import { Aside } from "@astrojs/starlight/components";
 
-Submitting a change to a host takes membership in two sets at once: people
-who can SSH to that box, and people who hold the fleet's shared secret.
-Everything below follows from that sentence.
+To submit a change to a host you need two things: SSH access to that box, and
+the fleet's shared bearer token. Golem checks the second; SSH and the
+infrastructure around it enforce the first.
 
 ## The three layers
 

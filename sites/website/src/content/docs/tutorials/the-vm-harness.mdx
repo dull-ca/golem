@@ -103,8 +103,8 @@ Two waits are worth knowing about before you think something has hung:
    host-to-guest forward qemu creates is ssh — plus whatever you ask for with
    `--publish`, which has nothing to do with golemd. The forward that once
    pointed at 8859 was deleted when the loopback bind made it unreachable by
-   construction, so there is no longer a port to knock on — not a dead one,
-   none.
+   construction, so nothing is listening on 8859 for your connection to
+   reach.
 
 5. **Open a forward yourself, and get refused twice.**
 

@@ -130,6 +130,12 @@ axis.
 golemctl apply web.emet http://127.0.0.1:7474
 ```
 
+Applying is also how you go back: edit the source to the version that worked
+and apply again. And if a unit of the new state fails, it returns to its last
+committed state on its own while the rest of the host settles forward, so
+trying a change you are unsure of costs one apply. See
+[Reversible reconcile](/explanation/reversible-reconcile/#trying-a-change-you-are-not-sure-of).
+
 ## Taking it back
 
 Remove a glyph (or a whole abstraction) from your Emet and re-apply. The

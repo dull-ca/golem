@@ -210,7 +210,7 @@ real host you reach by name.
 
 ## A guest's name is its scroll's name
 
-There is no mapping table anywhere, and that is the design. A VM named `scaly`
+The name is the whole mapping. A VM named `scaly`
 gets an inventory entry `[hosts.scaly]`; the manifest carries a scroll named
 `scaly`; golemctl matches the two by name. A host the manifest names no scroll
 for is skipped, never POSTed to, and not counted against the exit code.

@@ -12,8 +12,8 @@ mounts. `Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path 
 by the repo-root `emet.json`) models those units as typed Emet
 values, so a workload is a filled-in record rather than hand-joined `Image=`
 and `PublishPort=` strings. It is Debian + systemd + Podman specific, and it
-lowers entirely to [the four glyphs](/reference/primitives/) — it adds no
-engine kind.
+lowers entirely to [the four glyphs](/reference/primitives/), which is the
+whole of what the agent enacts.
 
 This is the middle of three layers: the four glyphs underneath, this shipped
 library, and a fleet's own helpers on top of it (see the
@@ -27,7 +27,7 @@ import Quadlet exposing
 
 ## `Image` — a typed image reference
 
-An image is a registry, a name, and a tag *xor* a digest — never both. `image`
+An image is a registry, a name, and one reference: a tag or a digest. `image`
 and `imageAt` take the three parts explicitly; `imageRef` parses one Docker
 reference string:
 
