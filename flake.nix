@@ -167,38 +167,53 @@
           bunDepsHash = websiteBunDepsHash;
         };
 
-        # The docs site as a Caddy image (see sites/website/Caddyfile), built
+        # NOTE: `dull-nix.packages`, not the overlay — overlays.default carries
+        # only the bun builders. The binary is static, TLS-less nginx; see
+        # docs/adr/0052-nginx-static-docs-image.md for why the docs image runs
+        # it rather than caddy.
+        websiteNginx = dull-nix.packages.${system}.nginx-static-no-tls;
+
+        # The docs site as an nginx image (see sites/website/nginx.conf), built
         # from `websiteDist` above — purely, with no external `dist/` and no
         # `--impure`.
         mkWebsiteContainer = dist: pkgs.dockerTools.buildLayeredImage {
           name = "golem-website";
           tag = "latest";
           contents = [
-            pkgs.caddy
+            websiteNginx
+            # Supplies /etc/passwd and /etc/group so the `nobody` below
+            # resolves — the image is built from an empty base with no distro
+            # files, and nginx refuses to start when its user does not exist.
+            pkgs.dockerTools.fakeNss
             (pkgs.runCommand "golem-website-root" { } ''
-              mkdir -p $out/var/www/html $out/etc/caddy
+              mkdir -p $out/var/www/html $out/etc/nginx
               cp -r ${dist}/. $out/var/www/html/
-              cp ${./sites/website/Caddyfile} $out/etc/caddy/Caddyfile
+              cp ${./sites/website/nginx.conf} $out/etc/nginx/nginx.conf
+              cp ${websiteNginx}/conf/mime.types $out/etc/nginx/mime.types
             '')
           ];
+          # NOTE: a `chmod 1777` inside the runCommand above would not survive —
+          # nix's store canonicalisation resets directory modes to 0555.
+          # extraCommands runs against the image layer after that, so it is the
+          # only place the bit sticks. nginx needs a writable /tmp for its pid
+          # and client-body files.
+          extraCommands = ''
+            mkdir -p tmp
+            chmod 1777 tmp
+          '';
           config = {
-            Entrypoint = [
-              "${pkgs.caddy}/bin/caddy"
-              "run"
-              "--config"
-              "/etc/caddy/Caddyfile"
-              "--adapter"
-              "caddyfile"
-            ];
-            ExposedPorts = { "80/tcp" = { }; };
+            Entrypoint = [ "/bin/nginx" "-c" "/etc/nginx/nginx.conf" ];
+            ExposedPorts = { "8080/tcp" = { }; };
+            User = "nobody";
             # Travels in the image manifest, so `skopeo inspect` surfaces both
             # without reading an ADR. `image.source` is also what links the
             # published ghcr.io package back to this repository.
             Labels = {
               "org.opencontainers.image.description" =
-                "golem's documentation site. Serves plaintext HTTP on :80 with "
-                + "`auto_https off` and MUST sit behind a TLS-terminating "
-                + "reverse proxy.";
+                "golem's documentation site. Serves plaintext HTTP on :8080. "
+                + "nginx is built without ngx_http_ssl_module and CANNOT serve "
+                + "HTTPS — it must sit behind a TLS-terminating reverse proxy "
+                + "and must never be exposed directly to the internet.";
               "org.opencontainers.image.source" = "https://github.com/dull-ca/golem";
             };
           };
@@ -207,45 +222,64 @@
         website-container = mkWebsiteContainer websiteDist;
 
         # Does the site actually serve? `nix flake check` used to prove only
-        # that the flake evaluated; this runs the real caddy against the real
-        # `Caddyfile` and the real built site, and asserts what a reader gets.
+        # that the flake evaluated; this runs the real nginx against the real
+        # `nginx.conf` and the real built site, and asserts what a reader gets.
         #
-        # Two substitutions, both forced by the sandbox and neither touching
-        # behaviour: the document root moves off `/var/www/html`, which a build
-        # cannot create, and the listen port moves off `:80`, which an
-        # unprivileged build cannot bind. Every other directive — `auto_https
-        # off`, `encode`, the `handle_errors` rewrite to Starlight's 404.html —
-        # is the file as shipped, which is where the behaviour under test
-        # lives.
+        # Three substitutions, all forced by the sandbox and none touching
+        # behaviour: the document root and the `mime.types` include move off
+        # `/var/www/html` and `/etc/nginx`, which a build cannot create, and the
+        # pid file moves off `/tmp`. The listen port needs no rewrite — it is
+        # already unprivileged. Every other directive — the gzip settings,
+        # `charset utf-8`, `absolute_redirect off`, the `error_page` fallback to
+        # Starlight's 404.html — is the file as shipped, which is where the
+        # behaviour under test lives.
+        #
+        # The four assertions are the four things a reader would notice
+        # breaking, and each one caught a real divergence while the server was
+        # being swapped (docs/adr/0052-nginx-static-docs-image.md). The 404 is
+        # asserted twice over — status AND body — because serving the styled
+        # page with a 200 would look right in a browser and be wrong to every
+        # crawler.
         website-serves = pkgs.runCommand "golem-website-serves"
           {
-            nativeBuildInputs = [ pkgs.caddy pkgs.curl ];
+            nativeBuildInputs = [ pkgs.curl ];
           } ''
-          substitute ${./sites/website/Caddyfile} Caddyfile \
-            --replace-fail 'root * /var/www/html' 'root * ${websiteDist}' \
-            --replace-fail ':80 {' ':8080 {'
-          export HOME=$TMPDIR
-          export XDG_CONFIG_HOME=$TMPDIR
-          export XDG_DATA_HOME=$TMPDIR
-          caddy run --config Caddyfile --adapter caddyfile &
-          caddy_pid=$!
-          trap 'kill $caddy_pid 2>/dev/null || true' EXIT
+          substitute ${./sites/website/nginx.conf} nginx.conf \
+            --replace-fail '/etc/nginx/mime.types' '${websiteNginx}/conf/mime.types' \
+            --replace-fail '/var/www/html' '${websiteDist}' \
+            --replace-fail '/tmp/nginx.pid' "$PWD/nginx.pid"
+          ${websiteNginx}/bin/nginx -c $PWD/nginx.conf -p $PWD &
+          nginx_pid=$!
+          trap 'kill $nginx_pid 2>/dev/null || true' EXIT
 
           for _ in $(seq 1 60); do
             curl -sf -o /dev/null http://127.0.0.1:8080/ && break
             sleep 0.5
           done
 
-          root=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
+          root=$(curl -s -o index.html -w '%{http_code}' http://127.0.0.1:8080/)
           ctype=$(curl -s -o /dev/null -w '%{content_type}' http://127.0.0.1:8080/)
-          missing=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/definitely-not-here)
+          missing=$(curl -s -o missing-body.html -w '%{http_code}' http://127.0.0.1:8080/definitely-not-here)
 
           test "$root" = 200 || { echo "FAIL root: $root"; exit 1; }
-          case "$ctype" in
-            text/html*) ;;
-            *) echo "FAIL content-type: $ctype"; exit 1 ;;
-          esac
+          test "$ctype" = "text/html; charset=utf-8" || { echo "FAIL content-type: $ctype"; exit 1; }
           test "$missing" = 404 || { echo "FAIL 404: $missing"; exit 1; }
+          grep -qF '<title>404 | Golem</title>' missing-body.html \
+            || { echo "FAIL styled 404 body"; head -c 400 missing-body.html; exit 1; }
+
+          stylesheet=$(grep -o '/_astro/[^"]*\.css' index.html | head -1)
+          test -n "$stylesheet" || { echo "FAIL no stylesheet in index.html"; exit 1; }
+          curl -s -o /dev/null -D asset-headers.txt -H 'Accept-Encoding: gzip' \
+            "http://127.0.0.1:8080$stylesheet"
+          grep -qi '^content-type: text/css; charset=utf-8' asset-headers.txt \
+            || { echo "FAIL stylesheet content-type"; cat asset-headers.txt; exit 1; }
+          grep -qi '^content-encoding: gzip' asset-headers.txt \
+            || { echo "FAIL stylesheet not compressed"; cat asset-headers.txt; exit 1; }
+
+          directory=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+            http://127.0.0.1:8080/getting-started/install)
+          test "$directory" = "301 http://127.0.0.1:8080/getting-started/install/" \
+            || { echo "FAIL directory redirect: $directory"; exit 1; }
 
           echo "the site serves" > $out
         '';

@@ -12,9 +12,12 @@ dulliac serves golem's documentation at `golem.yyc.dev` from `dull-01`, pulling
 `ghcr.io/dull-ca/golem-docs:latest`. Nothing published that image.
 
 The artifact already existed: `flake.nix`'s `mkWebsiteContainer` builds a
-`dockerTools.buildLayeredImage` holding caddy, the built site under
-`/var/www/html`, and `sites/website/Caddyfile`. What was missing was a channel
-from a build to a machine that pulls.
+`dockerTools.buildLayeredImage` holding a web server, the built site under
+`/var/www/html`, and its config. What was missing was a channel from a build to
+a machine that pulls.
+
+That server was caddy on `:80` when this was written; ADR 0052 replaced it with
+a TLS-less static nginx on `:8080`. Nothing here turns on which one it is.
 
 ADR 0035 §5 left the release mechanism open. Nothing has closed it, and a
 consumer waiting on a URL is not a reason to close it badly.
@@ -47,9 +50,9 @@ reads, and it does not have to match what `mkWebsiteContainer` calls the image.
 **The site builds in nix, and so does the test.** `websiteNodeModules` is a
 fixed-output derivation running `bun install`; `websiteDist` patches the
 prebuilt ELF binaries npm ships (`autoPatchelfHook`) and their `/usr/bin/env`
-shebangs (`patchShebangs`), then builds. `website-serves` runs the real caddy
-against the real `Caddyfile` and the real built site and asserts what a reader
-gets. Both are in `checks`, so `nix flake check` covers them.
+shebangs (`patchShebangs`), then builds. `website-serves` runs the real server
+against the real config and the real built site and asserts what a reader gets.
+Both are in `checks`, so `nix flake check` covers them.
 
 ADR 0035 §4 said the dist could not be produced purely. That was wrong: the
 obstacle was never reproducibility, it was that npm's binaries link against a
@@ -82,8 +85,8 @@ and it took two lines. **§4 is superseded by this record.**
   can never link against a glibc loader. They are ignored explicitly
   (`autoPatchelfIgnoreMissingDeps`) rather than silently, because the glibc
   variants beside them are what actually loads.
-- `website-serves` rewrites two lines of the Caddyfile — the document root and
-  the listen port — because a build sandbox cannot create `/var/www/html` or
-  bind `:80`. Every other directive is the file as shipped.
-- No TLS in the container. Traefik terminates in front of it, which is why the
-  Caddyfile already sets `auto_https off`.
+- `website-serves` rewrites the config's sandbox-impossible paths — the document
+  root among them — because a build sandbox cannot create `/var/www/html`. Every
+  other directive is the file as shipped.
+- No TLS in the container. Traefik terminates in front of it; under ADR 0052 the
+  server cannot serve TLS even if asked.

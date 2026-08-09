@@ -34,7 +34,8 @@ jobs:
           authToken: ${{ secrets.DULL_CA_CACHIX_PRIVATE_KEY }}
 
       # The whole gate, including `website-serves` -- the derivation that runs
-      # caddy against the built site and asserts what a reader gets.
+      # the docs image's nginx against the built site and asserts what a reader
+      # gets.
       - run: nix flake check --print-build-logs
 
       - name: Build the docs image

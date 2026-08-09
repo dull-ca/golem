@@ -3,6 +3,10 @@
 # copied in here — Astro pulls ~137 platform-split native deps (sharp/libvips,
 # esbuild, rollup, pagefind) that don't build reliably in a throwaway VM. The nix
 # `mkWebsiteContainer` output makes the same prebuilt-dist tradeoff (see flake.nix).
+#
+# NOTE: this is the tutorials' image, built on a golem-managed box from a docker
+# base. It is not what ghcr.io publishes — that one is nix-built and runs a
+# TLS-less nginx (docs/adr/0052-nginx-static-docs-image.md).
 FROM docker.io/library/caddy:2-alpine
 
 COPY Caddyfile /etc/caddy/Caddyfile

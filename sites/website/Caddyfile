@@ -1,7 +1,11 @@
-# Serves the pre-built static Starlight site (flake.nix packages `dist/` under
-# /var/www/html). Plain HTTP on :80 behind an external TLS terminator, so Caddy
-# does no cert management of its own: `auto_https off` (no ACME, no HTTP->HTTPS
-# redirect) and `admin off` (no local admin API / config endpoint).
+# Serves the pre-built static Starlight site in the hand-built `Containerfile`
+# image — the one the fleet tutorials build on a golem-managed box. The
+# published docs image is a different artifact: flake.nix builds it from
+# `nginx.conf` beside this file (docs/adr/0052-nginx-static-docs-image.md).
+#
+# Plain HTTP on :80 behind an external TLS terminator, so Caddy does no cert
+# management of its own: `auto_https off` (no ACME, no HTTP->HTTPS redirect) and
+# `admin off` (no local admin API / config endpoint).
 {
 	admin off
 	auto_https off
