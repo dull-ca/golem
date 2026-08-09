@@ -1,16 +1,21 @@
 # Quickstart
 
-> **The model.** You author a fleet in **Emet** — a program that evaluates to
-> one **scroll** per host. A scroll is a recursive tree: each level holds either
-> glyphs (a leaf) or named sub-scrolls (a branch), never both. Glyphs come over
-> four kinds (`aptPackage`, `systemdService`, `file`, `lineInFile`); branches
-> group leaves into named units. `emetc` compiles it to a binary,
-> content-addressed **manifest** (`format_version` 4). A per-host `golemd`
-> ingests the manifest, selects its own scroll, diffs it by content id, and
-> enacts the difference through reversible reconcilers, journalling what it did
-> so every change can be undone. By default `golemd` runs the **fake**
-> reconciler, which records intent without touching the host — safe to run
-> anywhere.
+> **The model.** You author a fleet in **Emet**, and `emetc` runs your program
+> to completion on your own machine — every function applied, every value
+> computed — then writes the result as a binary, content-addressed **manifest**
+> (`format_version` 5) holding one **scroll** per host.
+>
+> A scroll is a tree. Its leaves hold **glyphs**, one OS resource each, over
+> four kinds: `aptPackage`, `systemdService`, the filesystem glyph
+> (`file`, `directory`, `symlink`), and `lineInFile`. Each leaf is enacted as
+> its own unit, with its own retries and its own rollback; the branches above
+> them group leaves by subsystem and hand policy down.
+>
+> A per-host `golemd` ingests the manifest, selects its own scroll, diffs it by
+> content id, and enacts the difference through reversible reconcilers,
+> journalling what it did so every change can be undone. By default `golemd`
+> runs the **fake** reconciler, which records intent without touching the
+> host — safe to run anywhere.
 
 ## Build
 
@@ -46,7 +51,8 @@ remove golem-tools` then matches nothing. Re-run the install to pick up new
 commits.
 
 **Syntax highlighting is not part of this.** The tree-sitter grammar for `.emet`
-lives in the separate `emet.nvim` repository and is installed by nvim itself
+lives in the separate [emet.nvim](https://github.com/dull-ca/emet.nvim) repository
+and is installed by nvim itself
 (`:TSInstall! emet`). No nix output here provides it, and a working `emet-lsp`
 will not colour a buffer on its own.
 
@@ -63,9 +69,13 @@ will not colour a buffer on its own.
 node. Add `--reconciler host` to enact for real (apt/systemd/file); the default
 is `--reconciler fake`.
 
-`--config golemd.toml` points at a config file whose `[retry]` block sets
-fleet-wide retry defaults (backoff, jitter, attempt and wall-time limits); a
-per-scroll `policy` overrides them. Absent, built-in defaults apply.
+`--config golemd.toml` points at a config file with four tables. `[retry]` sets
+the fleet-wide retry pace (backoff, jitter, attempt and wall-time limits), which
+a per-scroll `policy` overrides. `[enact] workers` sets how many leaf units the
+node enacts at once (4 by default; `1` is serial). `[auth] token_file` names the
+shared bearer secret and `[secrets] key_file` the fleet secret key — both
+covered below, and both overridden by their flags. Absent, built-in defaults
+apply.
 
 ## Authorize the agent
 
@@ -82,9 +92,9 @@ head -c 32 /dev/urandom | base64 > /etc/golem/token   # the redirect keeps that 
 
 `[auth] token_file = "/etc/golem/token"` in `golemd.toml` says the same thing;
 the flag wins. Every route then answers only to `Authorization: Bearer <token>`
-and returns `401` otherwise. golemctl sources that token from
-`GOLEM_AUTH_TOKEN`, or from the file named by `GOLEM_AUTH_TOKEN_FILE`, or —
-per host — from an inventory `token_file`:
+and returns `401` otherwise. golemctl takes that token from the first of: a
+host's inventory `token_file`, `GOLEM_AUTH_TOKEN`, or the file named by
+`GOLEM_AUTH_TOKEN_FILE`:
 
 ```bash
 export GOLEM_AUTH_TOKEN_FILE=~/.config/golem/token
@@ -116,8 +126,9 @@ main = [ web ]
 ```
 
 That `scroll { name, glyphs }` is a **leaf** — one unit of glyphs. To run many
-distinct units on one host, nest them with `groups`; each level is `glyphs` xor
-`groups`, never both:
+distinct units on one host, nest them with `groups` — a glyph that wants to sit
+beside a group gets its own one-glyph leaf, so every level is one of the two: a
+leaf holding `glyphs`, or a branch holding `groups`.
 
 ```elm
 worker : Scroll
@@ -131,8 +142,9 @@ worker =
     }
 ```
 
-A leaf is the **failure-isolation unit**: one unit failing doesn't roll back its
-siblings. A scroll may carry an optional `policy` — `rollback` (the default),
+A leaf is the **unit of failure isolation**: each one retries and settles on its
+own, and a failure stops at that boundary while its siblings carry on. A scroll
+may carry an optional `policy` — `rollback` (the default),
 `keep`, or `retry { maxAttempts = 3, onExhaust = keep, … }` — that governs how a
 unit's enact retries and what it does when the budget is exhausted:
 
@@ -148,6 +160,92 @@ so regrouping or renaming a unit re-enacts nothing.
 A worked, multi-host, multi-module example is in `examples/lichess/` — a shared
 `Lichess` abstraction library and `Fleet` fact table, imported by the `fleet.emet`
 entry module. `examples/lichess/run.sh` drives the whole flow end to end.
+
+## Secrets
+
+A password, an API token, or any other value that must not sit in source control
+is written as `Secretspec.get "KEY"`, whose type is `String`. `emetc` resolves it
+through secretspec while your program runs and seals it into the manifest under
+a **fleet key**, so the manifest can be stored, cached, and handed to CI like any
+other build output (ADR 0047).
+
+Declare each key in a `secretspec.toml` in the entry file's directory or any
+directory above it, and then use it like the `String` it is:
+
+```toml
+# examples/limesurvey/secretspec.toml
+[project]
+name = "limesurvey"
+revision = "1.0"
+require_reason = false
+
+[profiles.default]
+LIMESURVEY_DB_PASSWORD = { description = "MariaDB root password backing LimeSurvey" }
+```
+
+```elm
+dbPassword : String
+dbPassword = Secretspec.get "LIMESURVEY_DB_PASSWORD"
+
+config =
+  file
+    { path = "/etc/app/app.conf"
+    , contents = "password=${dbPassword}\n"
+    , mode = "0600"
+    }
+```
+
+**`mode = "0600"`, and a `file` glyph.** A `file` whose contents carry a secret
+must keep it to its owner: `emetc` refuses any mode granting group or other
+read, naming the path and the mode you wrote. `lineInFile` refuses a secret
+outright — it owns one line and not the file it appends to, so it can promise
+nothing about who may read the result. A key that is not declared in
+`secretspec.toml` is a compile error listing the ones that are, raised before
+any provider is consulted.
+
+The fleet key is 64 bytes, written as hex. Generate it the way you generate the
+bearer token, and keep the same mode:
+
+```bash
+install -m 0600 /dev/null /etc/golem/secret-key            # 0600 before a byte is in it
+head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' > /etc/golem/secret-key
+```
+
+`emetc` seals with it and every host's golemd unseals with it, so both ends need
+the same file:
+
+```bash
+./result/bin/emetc build --secret-key /etc/golem/secret-key examples/limesurvey/main.emet -o limesurvey.manifest
+
+./result/bin/golemd --host manta \
+  --listen 127.0.0.1:7474 \
+  --secrets-key-file /etc/golem/secret-key
+```
+
+`[secrets] key_file = "/etc/golem/secret-key"` in `golemd.toml` says the same
+thing; the flag wins. `golemctl apply` runs `emetc` for you and passes it no
+secret flags, so point the compiler at the key through the environment instead:
+
+```bash
+export GOLEM_SECRET_KEY_FILE=~/.config/golem/secret-key
+./result/bin/golemctl apply examples/limesurvey/main.emet ssh://golem@manta
+```
+
+Provider and profile come from `--secret-provider` / `--secret-profile`, and
+from secretspec's own `SECRETSPEC_PROVIDER` and `SECRETSPEC_PROFILE` where the
+flag is absent.
+
+Sealing is deterministic: the same secret yields the same bytes and the same
+content id, so a rebuild re-enacts nothing, while a rotated secret yields new
+bytes and golem re-enacts exactly the units that depend on it. Rotating the
+fleet key itself means recompiling every manifest that carries a secret — a
+manifest sealed to the old key is undecodable by the new one, and golemd reports
+the mismatch by glyph rather than enacting a stale credential. A host with no
+key configured enacts any manifest carrying no secret and refuses, by name,
+every glyph carrying one.
+
+**This protects the artifact, not the box.** golemd decrypts to write the file,
+and the host holds the plaintext afterwards exactly as it would have anyway.
 
 ## Plan, apply, inspect
 
@@ -169,10 +267,13 @@ or a prebuilt `.manifest`, and POSTs the manifest bytes to the node:
 ./result/bin/golemctl apply examples/lichess/fleet.emet http://127.0.0.1:7474
 ```
 
-The node selects the scroll named for its `--host`, reconciles toward it, and
-returns a per-unit report of what settled and what failed. A partial or
-rolled-back reconcile is still HTTP 200 with its failures in-band; a
-transport/daemon error is non-2xx with an actionable message.
+The node selects the scroll named for its `--host`, answers `202` with a
+`reconcile_id`, and runs the reconcile detached. `golemctl apply` polls that id
+and renders what settled and what failed: a live per-unit tree on a terminal,
+deterministic plain lines under `--json` or a pipe. `--reattach` skips the POST
+and picks the newest attempt back up when a connection drops. A partial or
+rolled-back reconcile is a result, not a transport error — the report still
+prints, and the exit code is nonzero so a caller can branch on it.
 
 ```bash
 ./result/bin/golemctl state   http://127.0.0.1:7474   # current applied scroll + content id
@@ -203,10 +304,10 @@ naming each host and saying how to reach the golemd that serves it:
 ```toml
 # fleet.toml
 [hosts]
-scaly = "http://127.0.0.1:8807"          # a directly dialed daemon
+scaly = "http://127.0.0.1:7474"          # a directly dialed daemon
 
 [hosts.manta]
-url = "http://127.0.0.1:8842"            # the same, written as a table
+url = "http://127.0.0.1:7475"            # the same, written as a table
 
 [hosts.orbit]                            # the deployed shape
 ssh         = "golem@10.0.0.5"           # where to ssh
@@ -216,10 +317,14 @@ ssh_args    = ["-i", "/keys/id_ed25519"] # extra flags for the ssh command
 token_file  = "/keys/golem-token"        # this host's secret, overriding the env
 ```
 
-A bare string and a table with `url` say the same thing: dial this address. A
-table with `ssh` says the daemon is loopback-bound and golemctl must open its
-own forward (ADR 0042); `url` and `ssh` together is an error, since a host is
-reached one way. Only `ssh` is required in that form — the rest have defaults.
+A bare string and a table with `url` say the same thing: dial this address. That
+form fits a daemon you can actually reach on the address you wrote — a golemd
+you started yourself, one per loopback port. A table with `ssh` says the daemon
+is loopback-bound and golemctl must open its own forward (ADR 0042); `url` and
+`ssh` together is an error, since a host is reached one way. Only `ssh` is
+required in that form — the rest have defaults. Every guest the VM harness boots
+is the `ssh` form: golemd binds loopback inside the guest and no port is
+forwarded to it (`apps/fleet/README.md`).
 golemctl looks for the file at `--inventory`, then `$GOLEMCTL_INVENTORY`, then
 `./fleet.toml`, then `./.fleet/inventory.toml` (the file the VM harness writes).
 
@@ -296,11 +401,16 @@ install -m 0600 /dev/null /etc/golem/auth-header
 { printf 'Authorization: Bearer '; cat /etc/golem/token; } > /etc/golem/auth-header
 
 curl -H @/etc/golem/auth-header -X POST http://127.0.0.1:7474/manifest \
-  --data-binary @examples/lichess/fleet.manifest
+  --data-binary @examples/lichess/fleet.manifest       # 202 {"reconcile_id": N}
 
-curl -H @/etc/golem/auth-header http://127.0.0.1:7474/state     | jq
-curl -H @/etc/golem/auth-header http://127.0.0.1:7474/revisions | jq
+curl -H @/etc/golem/auth-header http://127.0.0.1:7474/reconciles/N | jq
+curl -H @/etc/golem/auth-header http://127.0.0.1:7474/state        | jq
+curl -H @/etc/golem/auth-header http://127.0.0.1:7474/revisions    | jq
 ```
+
+`POST /manifest` returns as soon as the manifest is ingested; the reconcile runs
+detached and `/reconciles/<id>` (or `/reconciles/latest`) is how you watch it.
+A second POST while one is running answers `409` naming the reconcile in flight.
 
 Drop the header only against an ungated dev daemon; a gated one answers `401`
 with a message naming the flag. For a remote host, open the forward yourself and
@@ -314,8 +424,10 @@ curl -H @/etc/golem/auth-header http://127.0.0.1:7474/status | jq
 ## What this isn't (yet)
 
 - **Fake by default.** `--reconciler fake` records intent without touching apt,
-  systemd, or the filesystem. `--reconciler host` enacts for real, but the
-  end-to-end run against a real Debian box is still being exercised.
+  systemd, or the filesystem, so a golemd you have just started changes nothing
+  until you ask it to. `--reconciler host` enacts for real: it is what the
+  `apps/fleet` harness runs on every Debian guest it boots, and what
+  `TUTORIAL-fleet.md` walks through end to end.
 - **One check, and the rest is the infrastructure's.** Submitting a change takes
   membership in two sets at once: people who can ssh to the box, and people who
   hold the shared secret (ADR 0042). golemd binds loopback, golemctl rides the
@@ -335,6 +447,7 @@ curl -H @/etc/golem/auth-header http://127.0.0.1:7474/status | jq
   operator's machine, so that machine must be able to ssh to every host and hold
   each one's secret; golem-to-golem
   propagation — submit to one, all receive — is designed but unbuilt (ADR 0039).
-- **Four glyph kinds only.** Richer shapes (workloads, services, ingress) are
-  Emet library abstractions that compile down to the four glyphs — never new
-  golemd resource kinds.
+- **Four glyph kinds only.** golemd reconciles apt packages, systemd units,
+  filesystem entries, and lines in files. Richer shapes — workloads, services,
+  ingress — are Emet libraries that lower onto those four, which is what keeps
+  the agent this small.

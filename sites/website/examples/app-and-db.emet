@@ -1,0 +1,61 @@
+-- #region workload
+import Quadlet exposing
+  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+lila : Workload
+lila =
+  Workload
+    { name = "lila"
+    , image = image "docker.io" "lichess-org/lila" "latest"
+    , env = []
+    , envFiles = []
+    , labels = []
+    , ports = [ tcp 9663 9663 ]
+    , networks = []
+    , volumes = []
+    , restart = Always
+    , expose = Internal
+    }
+-- #endregion
+
+-- #region service
+service : String -> String -> String -> Int -> List Glyph
+service name repo tag port =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = image "docker.io" repo tag
+      , env = []
+      , envFiles = []
+      , labels = []
+      , ports = [ tcp port port ]
+      , networks = []
+      , volumes = []
+      , restart = Always
+      , expose = Internal
+      })
+-- #endregion
+
+-- #region fleet
+main : List Scroll
+main =
+  [ scroll
+      { name = "app-01"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = service "lila" "lichess-org/lila" "latest" 9663
+      }
+  ]
+-- #endregion
+
+-- #region many-services
+scaly : Scroll
+scaly =
+  scroll
+    { name = "scaly"
+    , glyphs =
+        List.concat
+          [ service "lila-http" "lichess-org/lila-http" "latest" 9080
+          , service "lila-gif"  "lichess-org/lila-gif"  "latest" 6175
+          ]
+    }
+-- #endregion

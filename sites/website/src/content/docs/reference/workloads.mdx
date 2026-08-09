@@ -1,37 +1,37 @@
 ---
 title: The Quadlet library
-description: Quadlet — golem's shipped, strongly-typed model of Podman quadlets. Image, Port, EnvVar, Mount, Workload, and the lowering to the four glyphs.
+description: Quadlet — golem's shipped, strongly-typed model of Podman quadlets. Image, Port, EnvVar, Label, Network, Mount, Workload, ContainerUnit, and the lowering to the four glyphs.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 import Output from "../../../components/Output.astro";
 
 Running a container on a golem box means writing a Podman **quadlet** — a
-`.container` unit systemd turns into a service, plus any `.volume` units it
-mounts. `Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path named
+`.container` unit systemd turns into a service, plus the `.volume` and
+`.network` units it references.
+`Quadlet` (in `lib/Quadlet.emet`, resolved from the library search path named
 by the repo-root `emet.json`) models those units as typed Emet
 values, so a workload is a filled-in record rather than hand-joined `Image=`
 and `PublishPort=` strings. It is Debian + systemd + Podman specific, and it
-lowers entirely to [the four glyphs](/reference/primitives/) — it adds no
-engine kind.
+lowers entirely to [the four glyphs](/reference/primitives/), which is the
+whole of what the agent enacts.
 
 This is the middle of three layers: the four glyphs underneath, this shipped
 library, and a fleet's own helpers on top of it (see the
 [service abstraction guide](/guides/app-and-db/)).
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Access(..), Relabel(..)
-  , fromVolume, Expose(..), Workload(..), workloadGlyphs )
-```
+The full examples below build on this import:
+
+<Snippet file="quadlet-workload.emet" region="imports" />
 
 ## `Image` — a typed image reference
 
-An image is a registry, a name, and a tag *xor* a digest — never both. `image`
+An image is a registry, a name, and one reference: a tag or a digest. `image`
 and `imageAt` take the three parts explicitly; `imageRef` parses one Docker
 reference string:
 
-```emet
+```emet fragment
 image "docker.io/library" "registry" "2"      -- registry/library, :2 tag
 imageAt "docker.io" "app" "sha256:abc…"        -- digest-pinned
 imageRef "ghcr.io/dull/golem:v1"               -- parsed from one string
@@ -60,7 +60,7 @@ failing:
   defaults to `docker.io`;
 - a `:` after the last `/` is the tag; with none, the tag defaults to `latest`.
 
-```emet
+```emet fragment
 imageRef "registry"                 -- docker.io/registry:latest
 imageRef "library/registry:2"       -- docker.io/library/registry:2
 imageRef "ghcr.io/dull/golem:v1"    -- ghcr.io/dull/golem:v1
@@ -73,7 +73,7 @@ checked; parsing is purely structural.
 
 ## `Port` and `Proto` — published ports
 
-```emet
+```emet fragment
 tcp 5000 5000      -- PublishPort=5000:5000/tcp
 udp 53 53          -- PublishPort=53:53/udp
 ```
@@ -93,12 +93,74 @@ An environment pair is a record rather than a
 [tuple](/reference/language/values-and-types/#tuples-and-unit) so that the
 field names are visible at the call site:
 
-```emet
+```emet fragment
 env "RUST_LOG" "info"      -- Environment=RUST_LOG=info
 ```
 
 `env : String -> String -> EnvVar`. Each `EnvVar` lowers to one
-`Environment=NAME=VALUE` line.
+`Environment=NAME=VALUE` line. A value containing a space, a tab, a quote, or a
+backslash is written double-quoted with its quotes and backslashes escaped, so
+`env "GREETING" "hello world"` reaches systemd as one value. A value from
+[`Secretspec.get`](/reference/language/prelude/#secretspec) is quoted the same
+way and travels sealed in the manifest; golem writes it as plaintext into the
+`.container` file, which is why that file is mode `0600`.
+
+## `envFiles` — variables golem never carries
+
+`envFiles` is a list of paths, one `EnvironmentFile=` line each. systemd reads
+the file on the host at start:
+
+```emet
+envFiles = [ "/etc/golem/lila.env" ]
+```
+
+Whatever puts that file on the box is out of band, the way `/etc/golem/token` is
+— golem writes the unit that names the path and nothing else. A credential
+delivered this way never enters the manifest at all, which is the difference
+from `env`: an `EnvVar` ships its value (sealed) to every host the scroll
+targets.
+
+## `Label` — metadata on the container
+
+```emet fragment
+label "golem.fleet" "lichess"    -- Label=golem.fleet=lichess
+```
+
+`label : String -> String -> Label`. Each `Label` lowers to one
+`Label=NAME=VALUE` line, quoted by the same rule as `env`. Podman puts these on
+the container, where `podman ps --filter label=…` and anything reading container
+metadata can see them.
+
+## `Network` — which podman networks the container joins
+
+A container joins networks by name, and golem either writes the network's
+quadlet or leaves it to whatever already created it. That split is the sum:
+
+```emet fragment
+ManagedNetwork "lichess"     -- Network=lichess.network, and golem writes the unit
+ExistingNetwork "podman"     -- Network=podman, and golem writes nothing
+```
+
+| Constructor | `Network=` line | Also emits |
+| --- | --- | --- |
+| `ManagedNetwork` | `<name>.network` | a `NetworkUnit`, derived by `derivedNetworkUnits` |
+| `ExistingNetwork` | `<name>`, verbatim | nothing |
+
+`ExistingNetwork` is the escape for a network podman already knows — the default
+`podman` bridge, or one another tool created. `ManagedNetwork` is the one golem
+owns end to end.
+
+### `NetworkUnit` — the `.network` quadlet
+
+`networkUnit "lichess"` builds a `NetworkUnit { name, driver = "bridge" }`, the
+only driver this library writes. `networkUnitGlyphs` lowers it to two glyphs: the
+`aardvark-dns` package, which is what resolves container names on a podman
+bridge, and the `/etc/containers/systemd/<name>.network` file podman's generator
+turns into a unit.
+
+You rarely build these by hand. `Workload` derives one per `ManagedNetwork` it
+names (`derivedNetworkUnits`), the same way it derives volume units from
+`fromVolume` mounts.
 
 ## `Restart` — the systemd restart policy
 
@@ -115,7 +177,7 @@ A `.container` does not *have* volumes; it has mount *lines*, each referencing
 either a named volume or a host path. That difference is a sum, because the two
 lower differently:
 
-```emet
+```emet fragment
 fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private
 fromHost "/srv/site" "/usr/share/nginx/html" ReadOnly Shared
 ```
@@ -147,19 +209,26 @@ A named volume is its own quadlet. `volumeUnit "name"` builds a
 ## `Workload` — the ergonomic surface
 
 `Workload` is the record most fleets author. It carries the runtime shape and
-lowers, through `workloadGlyphs`, to a full quadlet plus its firewall openings:
+lowers, through `workloadGlyphs`, to a full quadlet plus its firewall openings.
+Ten fields, every one of them required — a record literal in Emet states its
+whole shape, so a workload that wants no labels writes `labels = []`:
 
-```emet
-type Workload = Workload
-  { name    : String
-  , image   : Image
-  , env     : List EnvVar
-  , ports   : List Port
-  , volumes : List Mount
-  , restart : Restart
-  , expose  : Expose
-  }
-```
+| Field | Type | Becomes |
+| --- | --- | --- |
+| `name` | `String` | the container name, the unit file name, and the `.service` |
+| `image` | `Image` | the `Image=` line |
+| `env` | `List EnvVar` | one `Environment=` line each |
+| `envFiles` | `List String` | one `EnvironmentFile=` line each |
+| `labels` | `List Label` | one `Label=` line each |
+| `ports` | `List Port` | one `PublishPort=` line each, and the firewall openings |
+| `networks` | `List Network` | one `Network=` line each, plus a `.network` unit per `ManagedNetwork` |
+| `volumes` | `List Mount` | one `Volume=` line each, plus a `.volume` unit or a host `directory` |
+| `restart` | `Restart` | the `Restart=` line |
+| `expose` | `Expose` | the nftables drop-ins, derived from `ports` |
+
+Filled in:
+
+<Snippet file="quadlet-workload.emet" region="workload" />
 
 `Expose` answers one question — who may reach the ports this container
 publishes? — and is derived from `ports`, so you cannot open a port the
@@ -181,6 +250,12 @@ are identical, so they share content ids and enact once. A scroll that writes
 drop-ins wants `notifies = [ "golem-nftables.service" ]` so the ruleset is
 reloaded once the files are in place.
 
+A fleet that owns its own firewall takes the other road: `Unexposed`, then
+`containerUnitGlyphs (workloadUnit w)` composed with rules of its own.
+`publishedPorts w` hands back the `ports` those rules need, so the two still
+read from one declaration. This is what `Lichess.emet` does — see the
+[lichess tour](/guides/litour/).
+
 <Aside type="caution" title="The base chain drops what nothing declares">
   `00-base` hooks input at `policy drop`, with standing accepts for established
   traffic, loopback, icmp, dhcp, ssh, and golemd's `7474` — the last of which
@@ -190,10 +265,12 @@ reloaded once the files are in place.
 </Aside>
 
 <Aside type="note" title="The reverse proxy is a different container">
-  `Workload` does not carry TLS or a reverse-proxy site config. An nginx front
-  door is *itself* a container (or hand-rolled glyphs), not a property of the
-  upstream workload — the lichess fleet keeps `ingress` as its own thing. See
-  the [lichess tour](/guides/litour/).
+  A front door is itself a container: one process holding ports 80 and 443,
+  terminating TLS, and forwarding each hostname to the workload that serves it.
+  golem ships [`Traefik`](/reference/ingress/) for that — it builds the
+  front-door workload and adds the routing labels and network to each `Workload`
+  you publish through it. A fleet can also write its own: lichess keeps `ingress`
+  as hand-rolled nginx glyphs. See the [lichess tour](/guides/litour/).
 </Aside>
 
 ## Lowering — a `Workload` to the four glyphs
@@ -202,14 +279,17 @@ reloaded once the files are in place.
 
 1. `aptPackage { name = "podman" }` — the runtime.
 2. one `directory` glyph per `fromHost` mount source.
-3. one `.volume` quadlet `file` per derived `VolumeUnit`.
-4. the `.container` quadlet `file` at
-   `/etc/containers/systemd/<name>.container` — its `Image=`, one
-   `PublishPort=` per `Port`, one `Volume=` per `Mount`, one `Environment=` per
-   `EnvVar`, and `Restart=`.
-5. `systemdService { unit = "<name>.service" }` — the unit Podman's generator
+3. per derived `NetworkUnit`: `aptPackage { name = "aardvark-dns" }` and the
+   `.network` quadlet `file`.
+4. one `.volume` quadlet `file` per derived `VolumeUnit`.
+5. the `.container` quadlet `file` at
+   `/etc/containers/systemd/<name>.container`, mode `0600`. Its body is
+   `Image=` and `ContainerName=`, then `Exec=` if there is one, then one line
+   each per `Port`, `Network`, `Mount`, `EnvVar`, env file, and `Label`, in that
+   order — then `Restart=` under `[Service]` and `WantedBy=` under `[Install]`.
+6. `systemdService { unit = "<name>.service" }` — the unit Podman's generator
    produces from the `.container`.
-6. the firewall glyphs from `expose` — the nftables base first, then the
+7. the firewall glyphs from `expose` — the nftables base first, then the
    drop-ins, in that order because the base carries the `/etc/nftables.d`
    directory and glyphs enact in source order.
 
@@ -223,18 +303,49 @@ The named-volume `.volume` unit (glyph 2), the whole firewall arrangement, and
 the reload that loads it all fall out of the typed spec — the hand-rolled
 registry quadlet this replaced had none of them.
 
-## Derived vs. explicit volumes
+## `ContainerUnit` — one field per line of the file
 
-`Workload` derives one `VolumeUnit` per `fromVolume` mount, always with
-`driver = "local"`. When you need a non-default driver or options, drop to
-`ContainerUnit` — the faithful `.container` model `Workload` lowers through —
-and set `volumeUnits` explicitly. `ContainerUnit` also carries `exec` (a
-`Maybe String` for the `Exec=` line) and `wantedBy` (the install target),
-which `Workload` fills with defaults. Reach for it for the uncommon container;
+`ContainerUnit` is the systemd-shaped layer underneath `Workload`: thirteen
+fields that map one-to-one onto the `.container` file, with nothing derived.
+`workloadUnit` builds one from a `Workload`, and `containerUnitGlyphs` writes it
+out.
+
+| Field | Type | Line |
+| --- | --- | --- |
+| `name` | `String` | `ContainerName=`, the file name, the `.service` |
+| `image` | `Image` | `Image=` |
+| `exec` | `Maybe String` | `Exec=`, or no line at all for `Nothing` |
+| `publishPorts` | `List Port` | `PublishPort=` |
+| `networks` | `List Network` | `Network=` |
+| `networkUnits` | `List NetworkUnit` | the `.network` files written alongside |
+| `mounts` | `List Mount` | `Volume=` |
+| `volumeUnits` | `List VolumeUnit` | the `.volume` files written alongside |
+| `environment` | `List EnvVar` | `Environment=` |
+| `environmentFiles` | `List String` | `EnvironmentFile=` |
+| `labels` | `List Label` | `Label=` |
+| `restart` | `Restart` | `Restart=` |
+| `wantedBy` | `List String` | `WantedBy=` |
+
+The two pairs are the whole reason to reach for it. `Workload` derives
+`networkUnits` from `networks` and `volumeUnits` from `volumes`, always on the
+`bridge` and `local` drivers; `ContainerUnit` takes each side separately, so a
+non-default driver, a unit shared with another container, or a mount whose unit
+someone else writes are all sayable. `exec` and `wantedBy` are the other two
+`Workload` fills in — the image's own entrypoint, and both `multi-user.target`
+and `default.target`.
+
+<Snippet file="quadlet-workload.emet" region="container-unit" />
+
+`containerUnitGlyphs` writes exactly the podman package, the mount directories,
+the network and volume unit files, the `.container`, and the service —
+everything in the lowering above except the firewall, which belongs to `expose`
+and so to `Workload`. Reach for `ContainerUnit` for the uncommon container;
 `Workload` covers the common one.
 
 ## Where to next
 
 - The glyphs everything lands on: **[The four glyphs](/reference/primitives/)**
+- The shipped library that puts a `Workload` behind a TLS front door:
+  **[The Traefik library](/reference/ingress/)**
 - A thin helper built on this library: **[A service abstraction](/guides/app-and-db/)**
 - The whole thing at fleet scale: **[A tour of the lichess fleet](/guides/litour/)**

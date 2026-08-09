@@ -1,0 +1,23 @@
+-- #region workload
+import Quadlet exposing ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registry : List Glyph
+registry =
+  workloadGlyphs
+    (Workload
+      { name = "registry"
+      , image = image "docker.io/library" "registry" "2"
+      , env = [], envFiles = [], labels = []
+      , ports = [ tcp 5000 5000 ], networks = [], volumes = []
+      , restart = Always, expose = Internal
+      })
+-- #endregion
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "kaiju"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = registry
+      }
+  ]

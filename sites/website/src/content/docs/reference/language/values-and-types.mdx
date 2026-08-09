@@ -30,9 +30,11 @@ greeting : String -> String
 greeting name = "hello ${name}"
 ```
 
-`\${` writes a literal `${`. Interpolation desugars to `String.concat` at
-compile time; the compiled value carries only the final string, never a
-placeholder.
+`\${` writes a literal `${`. Interpolation desugars to `String.concat` and
+runs at compile time, so the compiled value carries the resulting string. A
+value from [`Secretspec.get`](/reference/language/prelude/#secretspec)
+interpolates the same way and compiles to literal chunks around a sealed
+hole, which `golemd` opens as it enacts the glyph.
 
 ### Char
 

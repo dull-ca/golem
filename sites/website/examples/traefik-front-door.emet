@@ -1,0 +1,108 @@
+-- #region imports
+import Traefik exposing
+  ( Frontend(..)
+  , Challenge(..)
+  , Ingress(..)
+  , ingress
+  , ingressUnit
+  , publish
+  , withChallenge
+  , withEnvironmentFiles
+  )
+import Routing exposing (Route(..), route)
+import Quadlet exposing
+  ( image
+  , env
+  , Network(..)
+  , Restart(..)
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+-- #endregion
+
+-- #region frontend
+frontend : Frontend
+frontend =
+  Frontend
+    { network = "frontend"
+    , certificateResolver = "letsencrypt"
+    }
+-- #endregion
+
+-- #region route
+surveyRoute : Route
+surveyRoute =
+  route "limesurvey" "survey.example.com" 80
+
+theSameRoute : Route
+theSameRoute =
+  Route
+    { name = "limesurvey"
+    , host = "survey.example.com"
+    , port = 80
+    }
+-- #endregion
+
+-- #region ingress
+frontDoor : Ingress
+frontDoor =
+  ingress "ops@example.com" frontend
+-- #endregion
+
+-- #region custom-image
+onTraefik34 : Ingress
+onTraefik34 =
+  Ingress
+    { image = image "docker.io/library" "traefik" "v3.4"
+    , acmeEmail = "ops@example.com"
+    , frontend = frontend
+    , challenge = TlsChallenge
+    , envFiles = []
+    }
+-- #endregion
+
+-- #region dns-challenge
+overCloudflare : Ingress
+overCloudflare =
+  withEnvironmentFiles [ "/etc/traefik/cloudflare.env" ]
+    (withChallenge
+      (DnsChallenge { provider = "cloudflare", delayBeforeCheck = "0" })
+      (ingress "ops@example.com" frontend))
+-- #endregion
+
+-- #region workload
+survey : Workload
+survey =
+  Workload
+    { name = "limesurvey"
+    , image = image "docker.io" "adamzammit/limesurvey" "7.0.7"
+    , env = [ env "LIMESURVEY_DB_HOST" "mysql" ]
+    , envFiles = []
+    , labels = []
+    , ports = []
+    , networks = [ ManagedNetwork "limesurvey" ]
+    , volumes = []
+    , restart = Always
+    , expose = Unexposed
+    }
+-- #endregion
+
+-- #region publish
+published : Workload
+published =
+  publish frontend surveyRoute survey
+-- #endregion
+
+-- #region fleet
+main : List Scroll
+main =
+  [ scroll
+      { name = "manta"
+      , groups =
+          [ ingressUnit frontDoor
+          , scroll { name = "limesurvey", glyphs = workloadGlyphs published }
+          ]
+      }
+  ]
+-- #endregion

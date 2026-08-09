@@ -43,26 +43,50 @@
           "libs"
         ];
 
-        # Rust test input despite living under `sites/`:
-        # `apps/emet/tests/docs_examples.rs` compiles every program here
-        # (docs/adr/0043-docs-examples-are-real-compiled-code.md).
-        docsExamplesRoot = "sites/website/examples";
-
         rustSource =
           let repoRoot = toString ./.; in
           lib.cleanSourceWith {
             name = "golem-rust-source";
             src = ./.;
             filter = path: _type:
-              let
-                relative = lib.removePrefix "${repoRoot}/" (toString path);
-                isRustRoot = lib.elem (lib.head (lib.splitString "/" relative)) rustSourceRoots;
-                # Both directions: the ancestors of the docs example tree have to
-                # survive the filter for the tree itself to be reachable.
-                isDocsExamplesAncestor = lib.hasPrefix "${relative}/" "${docsExamplesRoot}/";
-                isInDocsExamples = lib.hasPrefix "${docsExamplesRoot}/" "${relative}/";
-              in
-              isRustRoot || isDocsExamplesAncestor || isInDocsExamples;
+              let relative = lib.removePrefix "${repoRoot}/" (toString path);
+              in lib.elem (lib.head (lib.splitString "/" relative)) rustSourceRoots;
+          };
+
+        # `apps/emet/tests/docs_{examples,fences,links}.rs` read the prose trees,
+        # resolve the links in them, and assert that every repository path they
+        # name exists — so the test derivation, unlike the binaries, needs the
+        # whole checkout rather than the Rust roots above. Build outputs are
+        # excluded: they are not inputs, and an in-tree `bun run build` or
+        # `cargo build` must not change this derivation.
+        #
+        # Widening `rustSource` to match would have been one filter instead of
+        # two, and would have made every prose edit rebuild the four binaries
+        # and re-resolve `cargoArtifacts` — a cachix miss on the largest thing
+        # in the closure, for a typo fix. Keeping them apart means only
+        # `workspace-tests` sees a doc change, and it takes `cargoArtifacts`
+        # from the narrow source, so the dependency build stays shared.
+        buildOutputRoots = [
+          "target"
+          "result"
+          ".direnv"
+          ".devenv"
+          ".fleet"
+          "sites/website/node_modules"
+          "sites/website/dist"
+          "sites/website/.astro"
+        ];
+
+        documentedSource =
+          let repoRoot = toString ./.; in
+          lib.cleanSourceWith {
+            name = "golem-documented-source";
+            src = lib.cleanSource ./.;
+            filter = path: _type:
+              let relative = lib.removePrefix "${repoRoot}/" (toString path);
+              in !(lib.any
+                (output: relative == output || lib.hasPrefix "${output}/" relative)
+                buildOutputRoots);
           };
 
         commonArgs = {
@@ -275,6 +299,7 @@
         # scroll-format) and the cross-crate integration tests.
         workspace-tests = craneLibStatic.cargoTest (staticArgs // {
           pname = "golem-workspace-tests";
+          src = documentedSource;
           inherit cargoArtifacts;
           # Load-bearing: crane runs the tests in the *check* phase, so
           # inheriting staticArgs' `doCheck = false` would compile the test

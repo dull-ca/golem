@@ -10,6 +10,7 @@ description: golem deploying golem's own docs — build this site, ship it to a 
 */}
 
 import { Aside, Steps } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 import Output from "../../../components/Output.astro";
 
 This is golem deploying golem's own docs. Build this Starlight site into a
@@ -17,7 +18,7 @@ container on one golem-managed box, push it to the golem-hosted registry, run it
 as a `Workload` on a third, and curl the homepage for a 200.
 
 It continues [A registry on the fleet](/tutorials/registry-on-the-fleet/) — the
-`registry`, `builder`, and `web` guests must be up, `golemd` deployed, and the
+`kaiju`, `talos`, and `remora` guests must be up, `golemd` deployed, and the
 registry serving on your `127.0.0.1:5000`. Commands are nushell, from the repo
 root.
 
@@ -37,49 +38,7 @@ the box able to push.
 fragment, then a single **public** `Workload` — the `golem-website` image pulled
 from the fleet registry, published on `:80`:
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
-
-registryEndpoint : String
-registryEndpoint = "10.0.2.2:5000"
-
--- insecureConfPath and insecureConfContents elided: the drop-in's path under
--- /etc/containers/registries.conf.d, and its [[registry]] … insecure = true body.
-
-website : Workload
-website =
-  Workload
-    { name = "golem-website"
-    , image = image registryEndpoint "golem-website" "latest"
-    , env = []
-    , ports = [ tcp 80 80 ]
-    , volumes = []
-    , restart = Always
-    , expose = Public
-    }
-
-websiteGlyphs : List Glyph
-websiteGlyphs =
-  List.concat
-    [ [ file
-          { path = insecureConfPath
-          , contents = insecureConfContents
-          , mode = "0644"
-          }
-      ]
-    , workloadGlyphs website
-    ]
-
-main : List Scroll
-main =
-  [ scroll
-      { name = "web"
-      , notifies = [ "golem-nftables.service" ]
-      , glyphs = websiteGlyphs
-      }
-  ]
-```
+<Snippet file="website-loop.emet" region="program" />
 
 `expose = Public` opens `:80` to the world with one drop-in file, and pulls in
 the nftables base that loads it, so the web scroll lowers to eleven glyphs:
@@ -152,7 +111,7 @@ reload at the end of the apply, after the drop-in is in place.
    settling and closes on one line under the host's heading:
 
    ```
-   web  ssh://golem@127.0.0.1:2252
+   remora  ssh://golem@127.0.0.1:2293
      apply settled — revision 2
    ```
 
@@ -186,7 +145,7 @@ markup.
   re-apply the web scroll — the `.container` glyph's content id is unchanged (the
   tag is the same), so pin a new tag or a digest with `imageAt` to make the diff
   replace it.
-- **Reverse the web box.** Apply a `web` scroll with an empty `glyphs` list and
+- **Reverse the web box.** Apply a `remora` scroll with an empty `glyphs` list and
   watch golem stop the container, remove the quadlet, and close `:80` by
   deleting its one drop-in file — leaving every other opening's file untouched.
 - **Add a second served site.** Write another public `Workload` on a different

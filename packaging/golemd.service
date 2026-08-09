@@ -1,20 +1,30 @@
 [Unit]
 Description=Golem bookkeeping agent
-Documentation=https://codeberg.org/dull/golem
+Documentation=https://github.com/dull-ca/golem
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+# As written this is the observe-only posture: no --reconciler, so golemd runs
+# the fake reconciler and records intent without touching apt, systemd, or the
+# filesystem; and no --auth-token-file, so every request on the loopback port is
+# answered without a bearer check (ADR 0042). Enacting for real means adding
+# `--reconciler host` and `--auth-token-file /etc/golem/token`, and relaxing the
+# sandbox below to match — see the note there.
 ExecStart=/usr/local/bin/golemd \
     --state-dir /var/lib/golem \
-    --node %H \
+    --host %H \
     --listen 127.0.0.1:7474
 Restart=on-failure
 RestartSec=5s
 
-# The agent only reads/writes its own state dir and binds a localhost
-# port. Sandbox aggressively.
+# Sized for the fake reconciler, whose only writes are its own state dir. The
+# host reconciler writes across the filesystem and drives apt and systemctl, so
+# `ProtectSystem=strict` denies it every glyph that touches a path outside
+# ReadWritePaths. A unit that enacts for real needs this section widened —
+# `ProtectSystem=full` at most, plus access to the systemd bus — and the choice
+# of how far belongs to whoever deploys it.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true

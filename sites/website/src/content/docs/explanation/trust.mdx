@@ -5,9 +5,9 @@ description: SSH-only transport, a loopback-bound agent, and one shared-secret c
 
 import { Aside } from "@astrojs/starlight/components";
 
-Submitting a change to a host takes membership in two sets at once: people
-who can SSH to that box, and people who hold the fleet's shared secret.
-Everything below follows from that sentence.
+To submit a change to a host you need two things: SSH access to that box, and
+the fleet's shared bearer token. Golem checks the second; SSH and the
+infrastructure around it enforce the first.
 
 ## The three layers
 
@@ -68,7 +68,7 @@ cached, and handed to CI. `Secretspec.get "DB_PASSWORD"` keeps a password out
 of it: `emetc` resolves the value through secretspec at compile time and
 encrypts it to the fleet's key, and the manifest carries ciphertext.
 
-```emet
+```emet fragment
 , env = [ env "DB_PASSWORD" (Secretspec.get "DB_PASSWORD") ]
 ```
 

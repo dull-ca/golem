@@ -1,37 +1,27 @@
+mod docs_gate;
+
 use std::path::{Path, PathBuf};
 
-use emet::{compile_file_all, render_text, Error, Phase};
+use docs_gate::{fail_with, relative_to_repo, render_diagnostics, repo_root};
+use emet::{compile_file_all, render_text};
 
 const GOLDEN_UPDATE_ENV: &str = "UPDATE_DOCS_GOLDEN";
 const PROGRAM_EXTENSION: &str = "emet";
 const REFERENCE_EXTENSION: &str = "emet-ref";
 const EXPECTED_ERROR_SUFFIX: &str = ".expected-error";
 const GOLDEN_SUFFIX: &str = ".text.golden";
+const MIRRORS_SUFFIX: &str = ".mirrors";
 
 struct DocsExample {
     declared_at: PathBuf,
     program: PathBuf,
     expected_error: Option<PathBuf>,
     golden: Option<PathBuf>,
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .canonicalize()
-        .expect("repo root is two levels above the emet crate")
+    mirrors: Option<PathBuf>,
 }
 
 fn docs_examples_dir() -> PathBuf {
     repo_root().join("sites").join("website").join("examples")
-}
-
-fn relative_to_repo(path: &Path) -> String {
-    path.strip_prefix(repo_root())
-        .unwrap_or(path)
-        .display()
-        .to_string()
 }
 
 fn emet_files_under(dir: &Path) -> Vec<PathBuf> {
@@ -68,6 +58,12 @@ fn sidecar(declared_at: &Path, suffix: &str) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
+fn repo_path_named_in(sidecar_at: &Path) -> PathBuf {
+    let target = std::fs::read_to_string(sidecar_at)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", sidecar_at.display()));
+    repo_root().join(target.trim())
+}
+
 fn docs_examples() -> Vec<DocsExample> {
     let dir = docs_examples_dir();
     let declarations = emet_files_under(&dir);
@@ -83,40 +79,19 @@ fn docs_examples() -> Vec<DocsExample> {
         .map(|declared_at| {
             let program =
                 if declared_at.extension().and_then(|e| e.to_str()) == Some(REFERENCE_EXTENSION) {
-                    let target = std::fs::read_to_string(&declared_at)
-                        .unwrap_or_else(|e| panic!("cannot read {}: {e}", declared_at.display()));
-                    repo_root().join(target.trim())
+                    repo_path_named_in(&declared_at)
                 } else {
                     declared_at.clone()
                 };
             DocsExample {
                 expected_error: sidecar(&declared_at, EXPECTED_ERROR_SUFFIX),
                 golden: sidecar(&declared_at, GOLDEN_SUFFIX),
+                mirrors: sidecar(&declared_at, MIRRORS_SUFFIX),
                 declared_at,
                 program,
             }
         })
         .collect()
-}
-
-fn phase_label(phase: Phase) -> &'static str {
-    match phase {
-        Phase::Lex => "lex error",
-        Phase::Parse => "parse error",
-        Phase::Type => "type error",
-        Phase::Analyze => "analysis error",
-    }
-}
-
-fn render_diagnostics(errors: &[Error]) -> String {
-    let mut rendered = String::new();
-    for e in errors {
-        rendered.push_str(&format!("{}: {}\n", phase_label(e.phase), e.msg));
-        if let Some(note) = &e.note {
-            rendered.push_str(&format!("  note: {note}\n"));
-        }
-    }
-    rendered
 }
 
 fn unified_diff(expected: &str, actual: &str) -> String {
@@ -130,21 +105,10 @@ fn unified_diff(expected: &str, actual: &str) -> String {
             continue;
         }
         diff.push_str(&format!("  line {}:\n", line + 1));
-        diff.push_str(&format!("    golden: {}\n", want.unwrap_or("<missing>")));
+        diff.push_str(&format!("    expected: {}\n", want.unwrap_or("<missing>")));
         diff.push_str(&format!("    actual: {}\n", got.unwrap_or("<missing>")));
     }
     diff
-}
-
-fn fail_with(failures: Vec<String>) {
-    if failures.is_empty() {
-        return;
-    }
-    panic!(
-        "{} docs example(s) broke (ADR 0043):\n\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
 }
 
 #[test]
@@ -183,7 +147,7 @@ fn every_docs_example_compiles_or_fails_as_recorded() {
         }
     }
 
-    fail_with(failures);
+    fail_with("docs example(s) broke", failures);
 }
 
 #[test]
@@ -227,5 +191,51 @@ fn every_docs_golden_matches_rendered_output() {
         }
     }
 
-    fail_with(failures);
+    fail_with("docs golden(s) drifted", failures);
+}
+
+// ADR 0043 says a page never carries a copy of a program, and a `.emet-ref` is
+// how a page shows the real one verbatim. A mirror is the case that cannot
+// serve: the page wants the program rearranged for teaching — declarations
+// moved so `#region` can skip the ones the lesson is not about, the module
+// header and the design comments gone — while the deployable program stays
+// under the repo-root `examples/`. Two files then exist where ADR 0043 wanted
+// one, and this is what keeps them one program: whatever the rearranging did
+// to the text, both must still plan exactly the same thing.
+#[test]
+fn every_mirrored_example_plans_what_the_real_program_plans() {
+    let mut failures = Vec::new();
+
+    for example in docs_examples() {
+        let Some(mirrors_at) = example.mirrors else {
+            continue;
+        };
+        let name = relative_to_repo(&example.declared_at);
+        let mirrored = repo_path_named_in(&mirrors_at);
+
+        let rendered = |program: &Path| match compile_file_all(program) {
+            Ok(compiled) => Ok(render_text(&compiled)),
+            Err(errors) => Err(format!(
+                "{}:\n{}",
+                relative_to_repo(program),
+                render_diagnostics(&errors)
+            )),
+        };
+
+        match (rendered(&example.program), rendered(&mirrored)) {
+            (Err(broken), _) | (_, Err(broken)) => {
+                failures.push(format!("{name}: cannot compare, because {broken}"))
+            }
+            (Ok(shown), Ok(real)) if shown != real => failures.push(format!(
+                "{name}: no longer plans what {} plans — the page is showing a rendition of a \
+                 real program, and the two have diverged in substance (formatting and comments \
+                 are free to differ; the plan is not)\n{}",
+                relative_to_repo(&mirrored),
+                unified_diff(&real, &shown)
+            )),
+            (Ok(_), Ok(_)) => {}
+        }
+    }
+
+    fail_with("mirrored example(s) drifted", failures);
 }

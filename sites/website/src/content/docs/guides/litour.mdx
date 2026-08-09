@@ -4,6 +4,7 @@ description: The real multi-host lichess deploy in Emet — the shipped Quadlet 
 ---
 
 import { Aside } from "@astrojs/starlight/components";
+import Snippet from "../../../components/Snippet.astro";
 import Output from "../../../components/Output.astro";
 
 The capstone example is the [lichess](https://lichess.org) fleet: six hosts
@@ -19,7 +20,7 @@ golem's three layers at once:
 
 The example is three files: `Fleet.emet` (shared facts), `Lichess.emet` (the
 layer-c helpers), and `fleet.emet` (the six hosts). Everything higher-level
-lowers to the four glyphs — no fifth kind.
+lowers to the four glyphs.
 
 ## Layer b: the shipped `Quadlet` library
 
@@ -39,7 +40,7 @@ image registry name tag = Image { registry = registry, name = name, ref = Tag ta
 A published port carries its protocol; the restart policy is a closed enum; a
 volume mount is a sum, because a named volume and a host path lower differently:
 
-```emet
+```emet fragment
 type Port = Port { host : Int, container : Int, proto : Proto }
 
 type Restart = Always | OnFailure | No
@@ -61,26 +62,7 @@ is that this library is *shipped* and *typed*, not hand-rolled per fleet.
 shapes it repeats, written on top of `Workload`. `dockerImage` pins the
 registry; `service` is a workload with one port, opened to the internal network:
 
-```emet
-import Quadlet exposing
-  ( Image, image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
-
-dockerImage : String -> String -> Image
-dockerImage name tag = image "docker.io" name tag
-
-service : String -> Image -> Int -> List Glyph
-service name img port =
-  workloadGlyphs
-    (Workload
-      { name = name
-      , image = img
-      , env = []
-      , ports = [ tcp port port ]
-      , volumes = []
-      , restart = Always
-      , expose = Internal
-      })
-```
+<Snippet file="litour-helpers.emet" region="helpers" />
 
 `workload` is the same with no port and `expose = Unexposed`. These are thin —
 they just pin the fields this fleet always sets the same way and delegate to the
@@ -100,7 +82,7 @@ reverse proxy is a *different* container's config — the nginx front door in fr
 of a service, not a property of the service itself — so it is its own set of
 glyphs:
 
-```emet
+```emet fragment
 import Nftables exposing (nftablesBase, nftablesDropIn)
 
 ingress : String -> String -> Int -> List Glyph
@@ -118,6 +100,10 @@ ingress name upstream port =
 The nginx package, the site-config `file`, one firewall drop-in, and the nginx
 unit — with `Nftables.nftablesBase` ahead of them. Both bodies are rendered by
 `String.join` at compile time.
+
+golem also ships [`Traefik`](/reference/ingress/), which models a TLS front door
+and per-hostname routing as typed values. lichess predates it and keeps these
+nginx glyphs; both lower to the same four.
 
 `nftablesDropIn` writes **one complete file per opening**, at
 `/etc/nftables.d/ingress-lichess.org.nft`, holding a whole `table inet golem`
@@ -164,7 +150,7 @@ SSH, so ssh is what keeps the box reachable to golem at all.
 `fleet.emet` imports the layer-c helpers and defines each host as a `Scroll` — a
 `List.concat` of helper calls:
 
-```emet
+```emet fragment
 module Main exposing (..)
 
 import Lichess exposing
@@ -215,7 +201,7 @@ actually loaded.
 for real — their workloads and services name `ghcr.io/lichess-org` refs that are
 not publicly pullable. This is an illustrative topology, not a deployable one.
 
-## Cross-host facts are values, not templates
+## Cross-host facts are ordinary values
 
 `Fleet.emet` holds the shared facts every host reads — the internal CIDR, an
 `address:port` helper — as ordinary Emet values:
@@ -225,10 +211,14 @@ module Fleet exposing (internalNetwork, endpoint)
 
 internalNetwork : String
 internalNetwork = "10.0.0.0/8"
+
+endpoint : String -> Int -> String
+endpoint address port = "${address}:${String.fromInt port}"
 ```
 
-`service`'s firewall opening reads `internalNetwork` as imported data, checked by
-the type system — not a placeholder a resolver hopes to fill in later.
+`service`'s firewall opening reads `internalNetwork` as imported data, checked
+by the type system and substituted while the fleet compiles. The CIDR is in the
+`.nft` file before the manifest exists.
 
 `Lichess` and `Fleet` both live in `examples/lichess/` beside the entry module,
 and resolution is entry-directory-first, so those copies win — the `Fleet` in
@@ -276,10 +266,11 @@ checked by Emet's type system on the way down. The fleet reaches for no
 - **The library is shipped and typed.** `Image`, `Port`, `Mount`, `Workload`
   come from `Quadlet` — you fill in records, not `Image=` strings.
 - **Helpers are yours.** `dockerImage`, `service`, `ingress` are this fleet's
-  layer-c shortcuts, not engine features.
-- **Ingress is not a workload.** A reverse proxy is a different container's
-  config, so it stays hand-rolled glyphs — the library models runtimes, not
-  proxies.
+  own layer-c shortcuts, written in Emet like anything else and reusable
+  across its hosts.
+- **Ingress stays hand-rolled.** A reverse proxy is another container's
+  config, so this fleet writes those glyphs directly; `Quadlet` models
+  container runtimes.
 - **Upgrade and removal are content-addressed.** Bump an image tag, recompile,
   re-apply — only the changed glyphs are replaced. See
   [Reversible reconcile](/explanation/reversible-reconcile/).

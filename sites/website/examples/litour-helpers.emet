@@ -1,0 +1,32 @@
+-- #region helpers
+import Quadlet exposing
+  ( Image, image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+dockerImage : String -> String -> Image
+dockerImage name tag = image "docker.io" name tag
+
+service : String -> Image -> Int -> List Glyph
+service name img port =
+  workloadGlyphs
+    (Workload
+      { name = name
+      , image = img
+      , env = []
+      , envFiles = []
+      , labels = []
+      , ports = [ tcp port port ]
+      , networks = []
+      , volumes = []
+      , restart = Always
+      , expose = Internal
+      })
+-- #endregion
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "scaly"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = service "lila" (dockerImage "lichess-org/lila" "latest") 9663
+      }
+  ]

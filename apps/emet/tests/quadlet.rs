@@ -363,7 +363,10 @@ fn a_dns_challenge_renders_its_provider_instead_of_the_tls_one() {
     let c = dulliac();
     let config = file_contents(group(&c, "traefik"), "/etc/traefik/traefik.yml");
     assert!(config.contains("dnsChallenge:"), "got:\n{config}");
-    assert!(config.contains("provider: \"digitalocean\""), "got:\n{config}");
+    assert!(
+        config.contains("provider: \"digitalocean\""),
+        "got:\n{config}"
+    );
     assert!(
         config.contains("delayBeforeCheck: \"30\""),
         "got:\n{config}"

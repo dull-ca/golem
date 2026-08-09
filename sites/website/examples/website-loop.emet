@@ -1,0 +1,61 @@
+-- #region program
+import Quadlet exposing
+  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+
+registryEndpoint : String
+registryEndpoint = "10.0.2.2:5000"
+
+-- insecureConfPath and insecureConfContents elided: the drop-in's path under
+-- /etc/containers/registries.conf.d, and its [[registry]] … insecure = true body.
+-- #endregion
+
+insecureConfPath : String
+insecureConfPath = "/etc/containers/registries.conf.d/golem-registry.conf"
+
+insecureConfContents : String
+insecureConfContents =
+  String.join "\n"
+    [ "[[registry]]"
+    , "location = \"${registryEndpoint}\""
+    , "insecure = true"
+    , ""
+    ]
+
+-- #region program
+
+website : Workload
+website =
+  Workload
+    { name = "golem-website"
+    , image = image registryEndpoint "golem-website" "latest"
+    , env = []
+    , envFiles = []
+    , labels = []
+    , ports = [ tcp 80 8080 ]
+    , networks = []
+    , volumes = []
+    , restart = Always
+    , expose = Public
+    }
+
+websiteGlyphs : List Glyph
+websiteGlyphs =
+  List.concat
+    [ [ file
+          { path = insecureConfPath
+          , contents = insecureConfContents
+          , mode = "0644"
+          }
+      ]
+    , workloadGlyphs website
+    ]
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "remora"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = websiteGlyphs
+      }
+  ]
+-- #endregion

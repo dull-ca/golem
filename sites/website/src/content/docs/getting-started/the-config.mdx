@@ -65,17 +65,17 @@ main = [ webHost "web-1", webHost "web-2" ]
 `webHost` is now your word for "a plain web host." That is the whole idea:
 abstractions are ordinary functions, and they lower to glyphs.
 
-## Contents are computed, then frozen
+## Contents are computed here, then frozen
 
-A config file's body is built by the language and fully evaluated before it
-reaches the `contents` field. There is no templating downstream — the glyph
-carries the final string:
+A config file's body is built by the language and runs to completion on your own
+machine before it reaches the `contents` field:
 
 <Snippet file="the-config-computed-contents.emet" region="computed-contents" />
 
 `${…}` is Emet string interpolation — it runs at compile time and desugars
-to `String.concat`. The compiled `file` glyph contains `listen = 8080`, not
-a placeholder.
+to `String.concat`. The compiled `file` glyph contains `listen = 8080`. The
+host receives that text and writes it; `renderConfig` ran back here, where
+calling it wrongly is a compile error.
 
 ## Types catch mistakes early
 
@@ -133,44 +133,29 @@ This is how the [lichess fleet](/guides/litour/) keeps a shared library of
 abstractions (`Lichess`, `Fleet`) separate from the fleet definition that
 uses them.
 
-## Higher-level shapes are yours to build
+## Higher-level shapes are Emet functions
 
-There is no built-in "container," "service," or "ingress." A container is an
-Emet value that lowers to a `List Glyph`. golem ships one such library —
-[`Quadlet`](/reference/workloads/), a strongly-typed model of Podman quadlets
-— and a `Workload` from it lowers to a podman package, a `.container` quadlet
+A "container," a "service," an "ingress" — each is an Emet value that lowers
+to a `List Glyph`. Some ship with the toolchain, in `lib/`, and the rest you
+write for your own fleet and reuse across hosts.
+[`Quadlet`](/reference/workloads/) is the shipped one this page uses — a
+strongly-typed model of Podman quadlets, whose `Workload` lowers to a podman
+package, a `.container` quadlet
 `file`, a `systemdService`, and any firewall openings its ports need:
 
-```emet
-import Quadlet exposing
-  ( image, tcp, Restart(..), Expose(..), Workload(..), workloadGlyphs )
+<Snippet file="the-config-workload.emet" region="workload" />
 
-registry : Workload
-registry =
-  Workload
-    { name = "registry"
-    , image = image "docker.io/library" "registry" "2"
-    , env = []
-    , ports = [ tcp 5000 5000 ]
-    , volumes = []
-    , restart = Always
-    , expose = Internal
-    }
-
-glyphs : List Glyph
-glyphs = workloadGlyphs registry
-```
-
-`Workload` is a record you fill in and `workloadGlyphs` is the lowering — no
-new engine kind, just data checked by the type system. The
+`Workload` is a record you fill in and `workloadGlyphs` is the lowering:
+data checked by the type system, landing on the same four glyphs. The
 [service abstraction guide](/guides/app-and-db/) builds a thin helper on top
 of it, and the [Quadlet reference](/reference/workloads/) documents every
 field.
 
-<Aside type="note" title="No JSON, no YAML, no templating">
-  Emet has no JSON/YAML intermediary and no Jinja-style templating. Every
-  glyph field is a concrete string produced by the language and checked by
-  the type system.
+<Aside type="note" title="Everything is evaluated before it ships">
+  `emetc` runs your program to completion on your own machine, so what
+  reaches a host is a finished glyph the type system has already checked.
+  Whatever computation a config needs — interpolation, a join, a function
+  over a record — happens here, and the host enacts the result.
 </Aside>
 
 ## Where to next

@@ -106,7 +106,7 @@ nothing forwards to it. Every daemon is in fact reached through an ssh forward
 golemctl opens itself over the ssh port (ADR 0042), never over `8800+slot`.
 
 The slots are collision-free across the default lichess host set plus the
-`registry`/`builder`/`puller` dogfood names. Ports for an already-created VM are
+`registry`/`builder`/`web` names (65, 3, and 52) kept as worked examples. Ports for an already-created VM are
 read from its `state.json` record, so VMs booted under the old positional scheme
 keep the ports they were assigned — the name→slot map only governs a fresh boot.
 

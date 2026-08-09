@@ -1,0 +1,30 @@
+-- #region program
+import Quadlet exposing
+  ( image, tcp, Restart(..), Access(..), Relabel(..)
+  , fromVolume, Expose(..), Workload(..), workloadGlyphs )
+
+registry : Workload
+registry =
+  Workload
+    { name = "registry"
+    , image = image "docker.io/library" "registry" "2"
+    , env = []
+    , envFiles = []
+    , labels = []
+    , ports = [ tcp 5000 5000 ]
+    , networks = []
+    , volumes =
+        [ fromVolume "golem-registry-data" "/var/lib/registry" ReadWrite Private ]
+    , restart = Always
+    , expose = Internal
+    }
+
+main : List Scroll
+main =
+  [ scroll
+      { name = "kaiju"
+      , notifies = [ "golem-nftables.service" ]
+      , glyphs = workloadGlyphs registry
+      }
+  ]
+-- #endregion

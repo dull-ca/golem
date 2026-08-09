@@ -1,0 +1,107 @@
+-- #region imports
+import Traefik exposing (Frontend(..), ingress, ingressUnit)
+import Traefik
+import Routing exposing (Route, route)
+import Quadlet exposing
+  ( image
+  , env
+  , Network(..)
+  , Restart(..)
+  , Access(..)
+  , Relabel(..)
+  , fromVolume
+  , Expose(..)
+  , Workload(..)
+  , workloadGlyphs
+  )
+-- #endregion
+
+-- #region frontend
+frontend : Frontend
+frontend =
+  Frontend
+    { network = "frontend"
+    , certificateResolver = "letsencrypt"
+    }
+
+publish : Route -> Workload -> Workload
+publish =
+  Traefik.publish frontend
+-- #endregion
+
+-- #region secret
+databasePassword : String
+databasePassword = "development-only"
+-- #endregion
+
+-- #region private-network
+appNetwork : Network
+appNetwork =
+  ManagedNetwork "limesurvey"
+-- #endregion
+
+-- #region database
+database : Workload
+database =
+  Workload
+    { name = "mysql"
+    , image = image "docker.io/library" "mariadb" "11.4"
+    , env =
+        [ env "MARIADB_ROOT_PASSWORD" databasePassword
+        , env "MARIADB_DATABASE" "limesurvey"
+        ]
+    , envFiles = []
+    , labels = []
+    , ports = []
+    , networks = [ appNetwork ]
+    , volumes =
+        [ fromVolume "limesurvey-db-data" "/var/lib/mysql" ReadWrite Private ]
+    , restart = Always
+    , expose = Unexposed
+    }
+-- #endregion
+
+-- #region app
+application : Workload
+application =
+  Workload
+    { name = "limesurvey"
+    , image = image "docker.io" "adamzammit/limesurvey" "7.0.7"
+    , env =
+        [ env "LIMESURVEY_DB_HOST" "mysql"
+        , env "LIMESURVEY_DB_NAME" "limesurvey"
+        , env "LIMESURVEY_DB_PASSWORD" databasePassword
+        ]
+    , envFiles = []
+    , labels = []
+    , ports = []
+    , networks = [ appNetwork ]
+    , volumes = []
+    , restart = Always
+    , expose = Unexposed
+    }
+
+surveyRoute : Route
+surveyRoute =
+  route "limesurvey" "survey.example.com" 80
+-- #endregion
+
+-- #region fleet
+main : List Scroll
+main =
+  [ scroll
+      { name = "manta"
+      , groups =
+          [ ingressUnit (ingress "ops@example.com" frontend)
+          , scroll
+              { name = "mysql"
+              , glyphs = workloadGlyphs database
+              }
+          , scroll
+              { name = "limesurvey"
+              , glyphs = workloadGlyphs (publish surveyRoute application)
+              }
+          ]
+      }
+  ]
+-- #endregion

@@ -20,9 +20,11 @@ One gate, one cache, and any machine can be CI:
   the closure to cachix. It is provisioned by golem itself (dogfood) — see the
   loop below.
 
-The cache does not exist yet (Dr. Dub is creating it), so `<cache>` is a
-placeholder throughout. Nothing here is wired into `flake.nix` until the real
-name and public key exist.
+The cache is `dull-ca`, live and repo-scoped; both `.github/workflows/ci.yml`
+and `.github/workflows/release.yml` push to it through `cachix/cachix-action`
+with the auth token in a repository secret. `<cache>` below still stands in for
+it wherever the step is a one-time setup you would run against any cache, and
+`<public-key>` is the value printed on the cache's own page.
 
 ## One-time cachix setup (Dr. Dub)
 
@@ -51,25 +53,27 @@ nix.settings = {
 };
 ```
 
-## Flake follow-up (once the cache exists)
+## The cache in the flake — done
 
-Add the cache to `flake.nix` so any `nix build` against the repo offers it
-without per-machine setup:
+`flake.nix` carries the cache, so any `nix build` against the repo offers it
+with no per-machine setup:
 
 ```nix
 nixConfig = {
-  extra-substituters = [ "https://<cache>.cachix.org" ];
-  extra-trusted-public-keys = [ "<cache>.cachix.org-1:<public-key>" ];
+  extra-substituters = [ "https://dull-ca.cachix.org" ];
+  extra-trusted-public-keys = [
+    "dull-ca.cachix.org-1:dRCsbIU6rWu2X/4+BOxwvtyVOHUXXmRp7ZmEXwne9bk="
+  ];
 };
 ```
 
 A consumer opts in with `--accept-flake-config` (or `accept-flake-config = true`
 in their `nix.conf`).
 
-**Not added yet, deliberately.** `nixConfig` with a placeholder or wrong cache
-name makes nix print a trust warning on every command run against the flake. Add
-this only when `<cache>` and `<public-key>` are the real values — this is the
-"Flake follow-up" item in `docs/TODO.md` §C.
+It was held back until `dull-ca` and its public key were the real values —
+`nixConfig` pointing at a placeholder or a wrong cache name makes nix print a
+trust warning on every command run against the flake. Both are real now and the
+block is committed, so the wait is over.
 
 ## The CI box loop (golem-managed — sketch)
 
@@ -100,7 +104,9 @@ than root, are refinements for when the box is actually stood up.
 - ~~The website dist and container.~~ Both build purely now and both are
   `checks`: `websiteDist` via `buildBunPackage`, `website-container` on top of
   it. Nothing about the docs site is impure or manual.
-- **Release publishing.** The mechanism is an open question (ADR 0035 §5): the
-  Forgejo/Codeberg channel died with the move off Codeberg, and its replacement
-  — GitHub Releases pushed from the box, or artifacts served from Dr. Dub's own
-  infrastructure — is not yet decided.
+- **Release publishing — no longer manual, and no longer wholly undecided.** A
+  release goes out through `ci/release.sh`, which runs the checks in
+  `ci/release-guards.sh` locally and only then pushes the `v*` tag that
+  `.github/workflows/release.yml` builds from (ADR 0053, accepted 2026-08-09).
+  What ADR 0035 §5 still leaves open is the *channel* — where the artifacts are
+  served from — not how a release is triggered.

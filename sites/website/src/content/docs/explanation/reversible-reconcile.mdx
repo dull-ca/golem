@@ -5,7 +5,9 @@ description: How golemd enacts glyphs so every edit has a complete inverse — d
 
 import { Aside } from "@astrojs/starlight/components";
 
-`golemd`'s job is to bring a box to its scroll and to be able to **undo
+`golemd`'s job is to bring a box to its **scroll** — the tree of glyphs the
+manifest carries for that host, see
+[Manifest format](/reference/bundle-format/) — and to be able to **undo
 exactly what it did**. Every glyph it applies records what it changed, so a
 later change or a decommission can reverse it precisely. That one property —
 `reverse(apply(x))` returns the host to its pre-apply state — is what makes
@@ -122,6 +124,20 @@ journalled fact with a revision number, not a discarded one — which is what
 lets a kept failure resurface on the next reconcile instead of vanishing into
 "unchanged". Watch it happen in
 [A failing unit](/tutorials/a-failing-unit/).
+
+## Trying a change you are not sure of
+
+This is what makes an uncertain edit cheap. Say a host is settled on state X
+and you edit your Emet into X+1. If one of X+1's units exhausts its retries
+under the default `rollback`, that unit returns to the state it held under X —
+a working one — while every other unit settles on X+1. The host ends up
+mostly on X+1 with the failing part still on ground that worked, and the
+journal names which part that was.
+
+Getting back to X entirely is the same verb you already used: edit the source
+back, recompile, apply. The glyphs whose content ids changed are replaced with
+their X versions and the rest are no-ops. There is one way to move a host, in
+both directions.
 
 ## Upgrade and removal, from one mechanism
 

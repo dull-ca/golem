@@ -42,16 +42,33 @@ Policy {
   max_elapsed_ms     : Option<u64>,
   on_exhaust         : Option<Rollback | Keep>,
 }
+
+Text = Plain String
+     | Composed [ Lit String | Hole Secret ]
+
+Secret = Sealed    { key_id : String, ciphertext : Bytes }
+       | Reference { provider : String, key : String }   // reserved; refused at enact
 ```
 
 A manifest carries the **whole fleet** — every host's scroll. Each
 `golemd` selects the one `AddressedScroll` whose `scroll.name` matches its
 own `--host` and ignores the rest.
 
-A `Scroll` is a recursive tree. Every level holds *either* glyphs (a leaf)
-*or* named sub-scrolls (a branch), never both — `contents` is a sum, so a
-level mixing loose glyphs with sub-scrolls is unrepresentable. A **leaf** is
-the unit of enact, retry, and rollback; a branch only groups.
+A `Scroll` is a recursive tree. A **leaf** holds glyphs and is the unit of
+enact, retry, and rollback; a **branch** holds named sub-scrolls and groups
+them. `contents` is a sum over those two shapes, so every level is exactly
+one of them and a level mixing loose glyphs with sub-scrolls cannot be
+written down.
+
+A value-bearing glyph field — a file's `contents`, a `lineInFile`'s `line` —
+is a `Text`. `Plain` is the whole field as literal text; `Composed` is the
+literal chunks around one or more sealed holes, which is what an interpolated
+`Secretspec.get` value compiles to. `Composed` is canonicalized as it is
+built — empty literals dropped, adjacent literals merged, a hole-free list
+collapsed back to `Plain` — so two chunk lists meaning the same text encode to
+the same bytes and hash to the same id. Every identifier field is a plain
+`String`. See [Trust model](/explanation/trust/) for what `Sealed` protects
+and what it leaves to the host.
 
 `policy` is optional at every level and resolves nearest-wins down the
 root-to-leaf chain; `notifies` **unions** down instead, so reload
@@ -102,10 +119,13 @@ Two version fields, two jobs:
   shape, any `Scroll`/`Glyph` field or variant, the postcard format, the
   BLAKE3 hash. It is checked on read: `from_bytes` rejects an unknown
   `format_version` with a typed error rather than a misparse. It is
-  currently `4`: `2` added the filesystem glyph, `3` made `Scroll`
-  recursive, `4` added `notifies` between `policy` and `contents`. Adding
-  that one field was a layout change because v3 bytes would misread the old
-  `contents` tag as the new `notifies` length.
+  currently `5`: `2` added the filesystem glyph, `3` made `Scroll`
+  recursive, `4` added `notifies` between `policy` and `contents`, and `5`
+  turned every value-bearing field from a `String` into a `Text`. Each of
+  those is a layout change. Adding `notifies` alone broke v3 because those
+  bytes would misread the old `contents` tag as the new `notifies` length;
+  `Text` moved every `file` and `lineInFile` content id because postcard
+  writes a variant tag in front of `Plain`.
 - **`emet_version`** (`String`) records which compiler build wrote the
   manifest. It is provenance only, sits deliberately **outside every
   hash**, and is never checked. Rebuilding an unchanged fleet with a newer

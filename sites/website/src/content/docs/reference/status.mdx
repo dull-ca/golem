@@ -20,14 +20,21 @@ the roadmap is a design or a deliberate deferral with no code behind it.
   fleet: `main : List Scroll`. Diagnostics are Elm-style: source spans,
   did-you-mean, one report per error.
 - **The four glyphs.** `aptPackage`, `systemdService`, the filesystem glyph
-  (`file` / `directory` / `symlink`), `lineInFile` — every field a concrete
-  string. Higher-level shapes are Emet functions that lower to these. See
-  [The four glyphs](/reference/primitives/).
+  (`file` / `directory` / `symlink`), `lineInFile` — every field evaluated to
+  a finished value before it ships. Higher-level shapes are Emet functions
+  that lower to these. See [The four glyphs](/reference/primitives/).
 - **The binary manifest.** `emetc build` emits a content-addressed
-  `Manifest` (postcard bytes, BLAKE3 per-scroll ids, `format_version` 4
+  `Manifest` (postcard bytes, BLAKE3 per-scroll ids, `format_version` 5
   guard), with `--text` and `--json` views. Determinism is enforced by
   golden-byte and round-trip tests. See
   [Manifest format](/reference/bundle-format/).
+- **Sealed secrets on the wire.** `Secretspec.get "KEY"` resolves a secret
+  declared in `secretspec.toml` at compile time and seals it to the fleet key,
+  so a manifest carries ciphertext and stays safe to store, cache, and hand to
+  CI. Interpolating one yields literal chunks around a sealed hole `golemd`
+  opens at enact, keeping the rest of a config file reviewable. Encryption is
+  deterministic, so an unchanged secret is a `Noop` and a rotated one re-enacts
+  exactly the units that read it. See [Trust model](/explanation/trust/).
 - **Recursive scrolls and per-leaf failure isolation.** A `Scroll` is a tree;
   each leaf is the unit of enact, retry, and rollback. One leaf's failure
   never rolls back a sibling. See
@@ -95,14 +102,30 @@ the roadmap is a design or a deliberate deferral with no code behind it.
   knows nothing of its peers. There is no coordinator, no ordered drain, and
   no health-gated rollback across hosts: `fleet apply` reports each host's
   outcome, and one host's failure neither stops nor reverses another's.
-- **Resource kinds beyond the four glyphs.** Containers, ingress, DNS,
-  secrets — these are Emet abstractions (or future ones) that lower to the
-  four glyphs, not new agent primitives. There is no secrets primitive and
-  no DNS provider.
+- **Resource kinds beyond the four glyphs.** Containers, ingress, and DNS are
+  Emet abstractions — shipped or still to write — that lower to the four
+  glyphs rather than becoming agent primitives. No DNS provider exists today.
+  Secrets went a different way: they are a value type on the wire, listed
+  above, rather than a resource kind.
+- **Host-side secret resolution.** A secret is sealed at compile time and
+  ships as ciphertext. The `Reference` variant, which would name a provider
+  for the *host* to answer — an instance role, a TPM, a local agent — is
+  defined on the wire and refused at enact, naming the provider and telling
+  you to recompile the manifest sealed.
 - **Large-file and binary inverses.** A `file` glyph's inverse holds the
   prior contents inline in the journal. Out-of-line blob storage for large
   or binary files is deferred, so a very large managed file is not a shape to
   rely on yet.
+- **Ownership written from Emet.** A filesystem entry's `Perms` carries
+  `owner` and `group` beside `mode` on the wire, and `golemd` enacts both:
+  it resolves each name to a uid/gid, `chown`s the path, and diffs ownership
+  the way it diffs a mode. The gap is the authoring surface — `file`,
+  `directory`, and `symlink` take no `owner` or `group` field, so every
+  authored entry ships them unset and leaves ownership to the host. This is
+  why `mode = "0600"` is the mode to write for a secret: `emetc` refuses a
+  sealed value in a file that group or other may read, and the `0640` its
+  error offers needs the entry to name a reading group, which the language
+  cannot yet say. See [The four glyphs](/reference/primitives/).
 
 ## What is gone
 

@@ -1,20 +1,47 @@
 # Design: Elm-lite type system and value language for Emet
 
-Status: **implemented through Wave 7** (this design is realized in the current
-code; the `Scroll` output container of ADR 0009 supersedes the `main : List
-Glyph` framing below).
-
-Status: **Proposed** (design only; no implementation)
+Status: **Implemented and superseded in parts.** Waves 0–7 all shipped, so the
+"Proposed (design only; no implementation)" line this document also carried is
+struck — it was left over from the first draft and contradicted the line above
+it. What the design proposed is in the code; what it *described* has since
+moved on.
 
 Author: architect pass, grounded in the code as of commit `2ba47b7`.
 
-**Caveat (ADR 0011):** this design's totality claims — "no general/self
-recursion", "guaranteed termination", "finite glyph DAG" — described the
-language as designed at the time of writing. ADR 0011 later relaxed this:
-Emet now permits general self-recursion, so termination is a soft
-preference, not a guaranteed invariant. Exhaustiveness checking for `case`
-is retained regardless. Read totality statements below as historical
-context, not current fact.
+**Read this as a record, not as a description of Emet today.** It is kept for
+the reasoning — why `Type::Con` over fixed heads, why exhaustiveness is
+non-negotiable, why interpolation is the one intentional divergence from Elm —
+and that reasoning still holds. The surface it reasons over does not. Later
+decisions that changed it, none of them folded back in:
+
+- **ADR 0011** — totality. This design's claims of "no general/self recursion",
+  "guaranteed termination", and a "finite glyph DAG" describe the language as
+  designed at the time of writing. Self- and mutual recursion are now allowed;
+  termination is a soft preference, not an invariant. Exhaustiveness checking is
+  retained regardless.
+- **ADR 0016, 0024, 0049, 0051** — a module system this design does not have at
+  all: `module … exposing` / `import`, a library search path, nested dotted
+  modules with module-qualified type identity, and qualified constructors.
+- **ADR 0019** — the `file` primitive of §11 generalized into one filesystem
+  glyph over an `Entry` sum with typed `Perms`.
+- **ADR 0025, 0027** — `Char` is a base type and tuples/unit are a product type,
+  in expression, pattern, and type position; both are absent below.
+- **ADR 0031** — `Scroll` is a recursive tree of leaf units or named sub-scrolls,
+  not the flat per-host container of §11 (itself already a correction of the
+  `main : List Glyph` framing, per ADR 0009).
+- **ADR 0044–0051** — record update, patterns in argument position, and the
+  identity rules for types and constructors across modules.
+
+**§2 "What exists today (ground truth)" is the most stale section and is
+historical in full.** It was a delta base against commit `2ba47b7` and describes
+a compiler that no longer exists: `Type` is now `Con(String, Vec<Type>)` plus
+`Tuple`, with `Str` and `Glyphs` gone as type heads (`apps/emet/src/ast.rs`);
+`type_parser` reads type variables and applied constructors rather than a fixed
+set of `Upper` names; `Value::Glyphs` is gone and `Value` carries `Char`,
+`Scroll`, `Policy`, `Tuple`, and `Data` among others (`apps/emet/src/eval.rs`);
+and inference groups declarations into dependency SCCs instead of running
+strictly left-to-right. For what the compiler does now, read `apps/emet/CLAUDE.md`
+and the ADRs — not §2.
 
 Companion ADRs (drafts in `docs/adr/`):
 - 0003 — generics: type variables, type application, `Type` representation.
@@ -72,6 +99,12 @@ qualified built-ins) onto the existing core.
 ---
 
 ## 2. What exists today (ground truth)
+
+> **Historical — "today" is commit `2ba47b7`, not now.** This section is the
+> delta base the rest of the document was written against, and every claim in it
+> has since been superseded: see the status note at the top for what changed and
+> where the current shape is written down. Nothing below describes the compiler
+> as it stands.
 
 Precise starting point, so every proposed change is a delta against real code.
 

@@ -5,6 +5,12 @@
 Accepted 2026-08-01 (decision by Dr. Dub). Bears on `sites/website/` and on
 ADR 0035 (`nix flake check` is the whole CI gate).
 
+Extended by ADR 0054 (2026-08-09), which widens the gate to every fence in both
+prose trees, to links and anchors, and to rearranged renditions of real fleet
+programs. Everything decided below stands except the last consequence: the
+migration allowance is spent, and a literal fence is now governed rather than
+merely tolerated until conversion.
+
 ## Context
 
 A four-axis review of the docs site on 2026-08-01 compiled every Emet

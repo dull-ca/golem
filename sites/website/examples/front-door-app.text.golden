@@ -1,0 +1,35 @@
+main : List Scroll
+planned scrolls (1):
+  scroll `manta` (31 glyphs):
+    * ensure apt package `podman` installed
+    * enable + start systemd unit `podman.socket`
+    * ensure directory `/etc/traefik` (mode 0755)
+    * ensure file `/etc/traefik/traefik.yml` (mode 0644)
+    * ensure apt package `podman` installed
+    * ensure directory `/etc/traefik` (mode 0755)
+    * ensure directory `/run/podman` (mode 0755)
+    * ensure apt package `aardvark-dns` installed
+    * ensure file `/etc/containers/systemd/frontend.network` (mode 0644)
+    * ensure file `/etc/containers/systemd/traefik-acme.volume` (mode 0644)
+    * ensure file `/etc/containers/systemd/traefik.container` (mode 0600)
+    * enable + start systemd unit `traefik.service`
+    * ensure apt package `nftables` installed
+    * ensure directory `/etc/nftables.d` (mode 0755)
+    * ensure file `/etc/golem-nftables.conf` (mode 0755)
+    * ensure file `/etc/nftables.d/00-base.nft` (mode 0644)
+    * ensure file `/etc/systemd/system/golem-nftables.service` (mode 0644)
+    * enable + start systemd unit `golem-nftables.service`
+    * ensure file `/etc/nftables.d/public-traefik-80.nft` (mode 0644)
+    * ensure file `/etc/nftables.d/public-traefik-443.nft` (mode 0644)
+    * ensure apt package `podman` installed
+    * ensure apt package `aardvark-dns` installed
+    * ensure file `/etc/containers/systemd/limesurvey.network` (mode 0644)
+    * ensure file `/etc/containers/systemd/limesurvey-db-data.volume` (mode 0644)
+    * ensure file `/etc/containers/systemd/mysql.container` (mode 0600)
+    * enable + start systemd unit `mysql.service`
+    * ensure apt package `podman` installed
+    * ensure apt package `aardvark-dns` installed
+    * ensure file `/etc/containers/systemd/limesurvey.network` (mode 0644)
+    * ensure file `/etc/containers/systemd/limesurvey.container` (mode 0600)
+    * enable + start systemd unit `limesurvey.service`
+    ↻ manta/traefik notifies golem-nftables.service
