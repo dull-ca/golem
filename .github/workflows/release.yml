@@ -1,16 +1,10 @@
-# Interim per ADR 0035, same terms as ci.yml: GitHub Actions only until the
-# self-hosted golem-managed box exists. Publishing to ghcr.io is itself an
-# interim choice and does NOT resolve ADR 0035 §5, where the release mechanism
-# is still open -- see docs/adr/0050-interim-ghcr-docs-image.md.
+# Publishing is interim under ADR 0035 §5, still open:
+# docs/adr/0050-interim-ghcr-docs-image.md.
 #
-# Only a `v*` tag reaches this file, and a tag can point at ANY commit --
-# nothing constrains it to one ci.yml already passed. So this workflow cannot
-# borrow ci.yml's verdict and re-runs the gate itself before the first skopeo
-# copy. Without that, tagging an unverified commit would publish a broken image
-# straight to `:latest`.
-#
-# The build and the tests are nix's; the only things this file does that nix
-# cannot are hold a registry credential and copy bytes to a registry.
+# `release` (ci/release.sh) is how a tag is meant to get here, but a hand-pushed
+# tag reaches this file just the same, so the guards run again — every one that
+# still can. The tag being unused is not among them; by now it exists.
+# docs/adr/0053-guarded-releases-from-a-local-command.md.
 name: Release
 
 on:
@@ -20,51 +14,37 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # packages: write is what lets GITHUB_TOKEN authenticate the skopeo push
-    # below; contents: read is actions/checkout's default requirement.
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@v15
         with:
           name: dull-ca
           authToken: ${{ secrets.DULL_CA_CACHIX_PRIVATE_KEY }}
 
-      # The whole gate, including `website-serves` -- the derivation that runs
-      # the docs image's nginx against the built site and asserts what a reader
-      # gets.
-      - run: nix flake check --print-build-logs
-
-      - name: Build the docs image
-        run: nix build .#website-container --print-build-logs
-
-      # NOTE: the git tag is the sole source of the version.
-      #
-      # IS_STABLE_RELEASE gates the `:latest` move below. Only a plain
-      # `vMAJOR.MINOR.PATCH` qualifies; `v1.2.3-rc1` and anything else matching
-      # the `v*` trigger publishes under its own version tag but must not become
-      # what an unpinned `docker pull` gets -- which is what dull-01 does.
-      - name: Derive version from tag
+      - name: Resolve the version and the commit
         run: |
+          ci/release-guards.sh assert-releasable "$GITHUB_REF_NAME"
           echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "RELEASE_COMMIT=$(git rev-parse "$GITHUB_SHA^{commit}")" >> "$GITHUB_ENV"
+          if ci/release-guards.sh is-stable "$GITHUB_REF_NAME"; then
             echo "IS_STABLE_RELEASE=true" >> "$GITHUB_ENV"
           else
             echo "IS_STABLE_RELEASE=false" >> "$GITHUB_ENV"
           fi
 
-      # The runner's preinstalled container tooling ships a v1
-      # /etc/containers/registries.conf; nixpkgs' skopeo only reads v2 and
-      # aborts while loading that file, before it ever reaches the registry:
-      #   fatal: get credentials: loading registries configuration
-      #   "/etc/containers/registries.conf": registries.conf must be in v2
-      #   format but is in v1
-      # -- not a credentials problem, even though that's what a failing
-      # `skopeo login` suggests. Exported via $GITHUB_ENV rather than a step
-      # `env:` because all three skopeo calls below need it.
+      - name: Refuse to release a commit that is not on main
+        run: ci/release-guards.sh assert-on-main "$RELEASE_COMMIT"
+
+      # NOTE: the runner ships a v1 /etc/containers/registries.conf and nixpkgs'
+      # skopeo reads only v2, so every skopeo call aborts while loading it,
+      # before reaching the registry — as "get credentials: ... must be in v2
+      # format but is in v1", which reads like a login failure and is not one.
       - name: Configure container registries.conf
         run: |
           cat > "$RUNNER_TEMP/registries.conf" <<'EOF'
@@ -72,10 +52,9 @@ jobs:
           EOF
           echo "CONTAINERS_REGISTRIES_CONF=$RUNNER_TEMP/registries.conf" >> "$GITHUB_ENV"
 
-      # Logging in once, with the token on stdin and the credential left in a
-      # file, keeps it out of both the step script Actions writes to disk and
-      # skopeo's argv. `--dest-creds "user:$TOKEN"` would put it in the runner's
-      # process table on every copy.
+      # Stdin in, authfile out: the token reaches neither the step script Actions
+      # writes to disk nor skopeo's argv, where `--dest-creds` would leave it on
+      # every call below.
       - name: Authenticate to ghcr.io
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,26 +64,35 @@ jobs:
             --password-stdin \
             --authfile "$RUNNER_TEMP/ghcr-auth.json" \
             ghcr.io
+          echo "GHCR_AUTHFILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
-      # skopeo reads nix's docker-archive output directly -- no docker daemon.
-      # Everything upstream of `docker-archive:result` is unaware ghcr.io exists,
-      # so retargeting to another registry is a change to these destination
-      # arguments, not a rewrite. Two copies because a version tag and `latest`
-      # are independent refs; skopeo has no "push and also tag".
-      #
-      # The published name is `golem-docs`, not the image's internal
-      # `golem-website` -- the destination ref is what dulliac reads.
+      - name: Refuse to overwrite a published version
+        run: ci/release-guards.sh assert-unpublished "$GITHUB_REF_NAME"
+
+      # The gate runs here and not only in ci.yml, because a tag can point at any
+      # commit (ADR 0050).
+      - run: nix flake check --print-build-logs
+
+      - name: Build the docs image
+        run: nix build .#website-container --print-build-logs
+
+      # skopeo reads nix's docker-archive output directly — no docker daemon —
+      # and everything upstream of `docker-archive:result` is unaware ghcr.io
+      # exists, so retargeting is an edit to these destinations (ADR 0050). Two
+      # copies: skopeo has no "push and also tag".
       - name: Publish the versioned image to ghcr.io
         run: |
           nix run nixpkgs#skopeo -- copy \
-            --dest-authfile "$RUNNER_TEMP/ghcr-auth.json" \
+            --dest-authfile "$GHCR_AUTHFILE" \
             docker-archive:result \
-            docker://ghcr.io/dull-ca/golem-docs:${VERSION}
+            "docker://$(ci/release-guards.sh image):${VERSION}"
 
+      # A prerelease publishes under its own version tag only; dull-01 pulls
+      # unpinned (ADR 0050).
       - name: Move :latest to this release
         if: env.IS_STABLE_RELEASE == 'true'
         run: |
           nix run nixpkgs#skopeo -- copy \
-            --dest-authfile "$RUNNER_TEMP/ghcr-auth.json" \
+            --dest-authfile "$GHCR_AUTHFILE" \
             docker-archive:result \
-            docker://ghcr.io/dull-ca/golem-docs:latest
+            "docker://$(ci/release-guards.sh image):latest"

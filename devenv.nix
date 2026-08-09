@@ -43,7 +43,7 @@
 
   scripts.build.exec = "cargo build --workspace";
   scripts.build-static.exec = "nix build .#golemd-static .#golemctl-static --print-build-logs";
-  scripts.test.exec = "cargo test --workspace";
+  scripts.test.exec = ''cd "$DEVENV_ROOT" && cargo test --workspace && ci/release-guards.test.sh ci/release-guards.sh'';
   scripts.site.exec = "cd sites/website && bun run dev";
   scripts.build-site.exec = "cd sites/website && bun run build";
   # Named --out-links: a second `nix build` would otherwise land on `result-1`.
@@ -115,6 +115,10 @@
 
     echo "warm-cache: gate passed, every output is in dull-ca — CI has nothing left to build."
   '';
+  # The guarded front door for a release (ADR 0050): guards, confirm, warm, tag,
+  # push, wait. A hand-pushed `v*` tag still releases and still meets the same
+  # guards in release.yml — but this is the way in.
+  scripts.release.exec = ''cd "$DEVENV_ROOT" && exec ci/release.sh "$@"'';
   # `fleet` runs the harness from the repo root with apps/ on PYTHONPATH: the cd
   # anchors relative `.emet` paths (and .fleet/) at the checkout root regardless
   # of the caller's cwd, and PYTHONPATH lets `python -m fleet` import apps/fleet.
