@@ -10,7 +10,9 @@ One gate, one cache, and any machine can be CI:
 - **The gate is `nix flake check`** on the repo flake. It runs the whole
   workspace test suite, the `apps/fleet` harness, and the four binary builds
   (`flake.nix` `checks`). Nothing about CI is a separate system — a dev machine
-  runs the identical command and gets the identical result.
+  runs the identical command and gets the identical result. `warm-cache` in
+  `devenv.nix` is that command wrapped in `cachix watch-exec`, so running it
+  before a push leaves CI with nothing to build.
 - **The cache is one cachix cache.** The CI box builds the flake outputs and
   pushes their store paths; every other machine substitutes from the cache
   instead of rebuilding golem's crates and its nixpkgs closure.
