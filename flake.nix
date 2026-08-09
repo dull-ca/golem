@@ -13,8 +13,10 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
-    # `buildBunPackage` and `nginx-static-no-tls`, shared with dull.yyc.dev so a
-    # fix to either lands once.
+    # `buildBunPackage`, `nginx-static-no-tls`, and `mkReleaseCommand` — shared
+    # with dull.yyc.dev so a fix to any of them lands once. Pinned as an input
+    # rather than reached with `nix run`, so a release is reproducible from the
+    # lockfile (ADR 0035's cache is pinned the same way).
     dull-nix.url = "github:dull-ca/nix";
   };
 
@@ -226,6 +228,26 @@
 
         website-container = mkWebsiteContainer websiteDist;
 
+        # The conventional-commit reading, the guards, and the release sequence
+        # come from dull-nix; `ci/release-hooks.sh` and `cliff.toml` are golem's
+        # half — the docs image, the crate version, `cargo update`, and the
+        # changelog format (ADR 0053, ADR 0055, ADR 0056).
+        #
+        # `cliffConfig` is passed because golem's changelog carries a paragraph
+        # about the v0.1.0/v0.2.0 mis-tags that no other repository has any use
+        # for; taking dull-nix's default would drop it. `repositoryUrl` is the
+        # argument for the default, and passing a config means not needing one.
+        release = pkgs.mkReleaseCommand {
+          hooks = ./ci/release-hooks.sh;
+          cliffConfig = ./cliff.toml;
+          warmCommand = "warm-cache";
+          releaseWorkflow = "release.yml";
+        };
+
+        # `release.yml` runs the same guards this release command runs, so the
+        # workflow puts this on PATH rather than carrying a copy.
+        release-guards = pkgs.releaseGuards;
+
         # The real nginx against the shipped `nginx.conf` and the real built
         # site, asserting what a reader gets
         # (docs/adr/0052-nginx-static-docs-image.md).
@@ -234,22 +256,6 @@
         # behaviour: `/var/www/html` and `/etc/nginx` are paths a build cannot
         # create, and `/tmp` is not writable here. Every other directive is the
         # file as shipped, which is where the behaviour under test lives.
-        # The release guards decide what may be published, so they are gated
-        # like anything else. `ci/` only, so editing a doc does not rebuild them.
-        release-guard-tests = pkgs.runCommand "golem-release-guard-tests"
-          {
-            nativeBuildInputs = [ pkgs.bash pkgs.git ];
-          } ''
-          # The scripts are `#!/usr/bin/env bash`, and neither path exists in a
-          # build sandbox; the test runs the guards as an executable, so the
-          # shebang has to resolve.
-          cp -r ${./ci} ci
-          chmod -R u+w ci
-          patchShebangs ci
-          bash ci/release-guards.test.sh ci/release-guards.sh
-          touch $out
-        '';
-
         website-serves = pkgs.runCommand "golem-website-serves"
           {
             nativeBuildInputs = [ pkgs.curl ];
@@ -338,6 +344,7 @@
           golemctl-static = golemctl;
           default = golem-tools;
           inherit websiteDist website-container;
+          inherit release release-guards;
         };
 
         # The complete CI gate: `nix flake check` builds every one of these
@@ -348,8 +355,13 @@
         # into the closure, leaving the image itself about a second of tar.
         checks = {
           inherit golemd golemctl emetc emet-lsp golem-tools;
-          inherit workspace-tests fleet-tests release-guard-tests;
+          inherit workspace-tests fleet-tests;
           inherit websiteDist website-serves website-container;
+          # The guards decide what may be published, so they are gated like
+          # anything else — at the dull-nix revision this flake pins, not at
+          # whatever dull-nix's own gate last saw.
+          release-guards-hold = pkgs.releaseGuardsTest;
+          inherit release;
         };
 
         lib.mkWebsiteContainer = mkWebsiteContainer;

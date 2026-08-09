@@ -1,9 +1,9 @@
 # Publishing is interim under ADR 0035 §5, still open:
 # docs/adr/0050-interim-ghcr-docs-image.md.
 #
-# `release` (ci/release.sh) is how a tag is meant to get here, but a hand-pushed
-# tag reaches this file just the same, so the guards run again — every one that
-# still can. The tag being unused is not among them; by now it exists.
+# `release` is how a tag is meant to get here, but a hand-pushed tag reaches
+# this file just the same, so the guards run again — every one that still can.
+# The tag being unused is not among them; by now it exists.
 # docs/adr/0053-guarded-releases-from-a-local-command.md.
 name: Release
 
@@ -27,19 +27,34 @@ jobs:
           name: dull-ca
           authToken: ${{ secrets.DULL_CA_CACHIX_PRIVATE_KEY }}
 
+      # The same guards `release` runs, built from the same pinned dull-nix —
+      # not a second copy of the version pattern or the ancestor check
+      # (docs/adr/0053-guarded-releases-from-a-local-command.md,
+      # docs/adr/0056-the-release-command-is-a-shared-flake-input.md).
+      # `flake.lock` is what makes them the same, so a lock that does not
+      # evaluate takes this job with it.
+      #
+      # NOTE: no out-link. A symlink left in the checkout is a file
+      # `documentedSource` would see, and the gate below would rebuild
+      # `workspace-tests` against a tree no commit contains.
+      - name: Put the release guards on PATH
+        run: |
+          guards=$(nix build --no-link --print-out-paths .#release-guards)
+          echo "$guards/bin" >> "$GITHUB_PATH"
+
       - name: Resolve the version and the commit
         run: |
-          ci/release-guards.sh assert-releasable "$GITHUB_REF_NAME"
+          release-guards assert-releasable "$GITHUB_REF_NAME"
           echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "RELEASE_COMMIT=$(git rev-parse "$GITHUB_SHA^{commit}")" >> "$GITHUB_ENV"
-          if ci/release-guards.sh is-stable "$GITHUB_REF_NAME"; then
+          if release-guards is-stable "$GITHUB_REF_NAME"; then
             echo "IS_STABLE_RELEASE=true" >> "$GITHUB_ENV"
           else
             echo "IS_STABLE_RELEASE=false" >> "$GITHUB_ENV"
           fi
 
       - name: Refuse to release a commit that is not on main
-        run: ci/release-guards.sh assert-on-main "$RELEASE_COMMIT"
+        run: release-guards assert-on-main "$RELEASE_COMMIT"
 
       # NOTE: the runner ships a v1 /etc/containers/registries.conf and nixpkgs'
       # skopeo reads only v2, so every skopeo call aborts while loading it,
@@ -67,7 +82,7 @@ jobs:
           echo "GHCR_AUTHFILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
       - name: Refuse to overwrite a published version
-        run: ci/release-guards.sh assert-unpublished "$GITHUB_REF_NAME"
+        run: ci/release-hooks.sh assert-unpublished "$GITHUB_REF_NAME"
 
       # The gate runs here and not only in ci.yml, because a tag can point at any
       # commit (ADR 0050).
@@ -85,7 +100,7 @@ jobs:
           nix run nixpkgs#skopeo -- copy \
             --dest-authfile "$GHCR_AUTHFILE" \
             docker-archive:result \
-            "docker://$(ci/release-guards.sh image):${VERSION}"
+            "docker://$(ci/release-hooks.sh image):${VERSION}"
 
       # A prerelease publishes under its own version tag only; dull-01 pulls
       # unpinned (ADR 0050).
@@ -95,4 +110,4 @@ jobs:
           nix run nixpkgs#skopeo -- copy \
             --dest-authfile "$GHCR_AUTHFILE" \
             docker-archive:result \
-            "docker://$(ci/release-guards.sh image):latest"
+            "docker://$(ci/release-hooks.sh image):latest"

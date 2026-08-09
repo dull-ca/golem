@@ -8,6 +8,14 @@ sequence in its decision: `release` no longer goes from the confirmation
 straight to the tag. Runs inside ADR 0035's gate; the tag it produces still
 means what ADR 0050 says it means.
 
+Extended by ADR 0056 (2026-08-09), which moves the guards and the release
+sequence into the shared `dull-ca/nix` flake. Every derivation rule below is
+unchanged. "`ci/release-guards.sh` stays the only copy" is superseded: the
+subcommands it names are `dull-nix`'s `releaseGuards`, `workspace-version` and
+`set-workspace-version` are spelled `cargo-workspace-version` and
+`set-cargo-workspace-version` there, and what stayed in golem is
+`ci/release-hooks.sh` and `cliff.toml`.
+
 ## Context
 
 ADR 0053 checked everything about a release except the one thing a release is

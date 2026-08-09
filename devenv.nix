@@ -45,7 +45,7 @@
 
   scripts.build.exec = "cargo build --workspace";
   scripts.build-static.exec = "nix build .#golemd-static .#golemctl-static --print-build-logs";
-  scripts.test.exec = ''cd "$DEVENV_ROOT" && cargo test --workspace && ci/release-guards.test.sh ci/release-guards.sh'';
+  scripts.test.exec = ''cd "$DEVENV_ROOT" && cargo test --workspace'';
   scripts.site.exec = "cd sites/website && bun run dev";
   scripts.build-site.exec = "cd sites/website && bun run build";
   # Named --out-links: a second `nix build` would otherwise land on `result-1`.
@@ -131,7 +131,13 @@
   # `release v0.4.0-rc1` are the ways to overrule it. A hand-pushed `v*` tag
   # still releases and still meets the same guards in release.yml — but this is
   # the way in.
-  scripts.release.exec = ''cd "$DEVENV_ROOT" && exec ci/release.sh "$@"'';
+  #
+  # The sequence and the guards are dull-nix's `mkReleaseCommand`; what is
+  # golem's is `ci/release-hooks.sh` and `cliff.toml`, both wired in by
+  # `flake.nix`. Reached through `nix run` because devenv resolves its own
+  # nixpkgs and cannot see the flake's inputs — and because this script is
+  # itself named `release`, so a bare `exec release` would recurse.
+  scripts.release.exec = ''cd "$DEVENV_ROOT" && exec nix run "$DEVENV_ROOT#release" -- "$@"'';
   # `fleet` runs the harness from the repo root with apps/ on PYTHONPATH: the cd
   # anchors relative `.emet` paths (and .fleet/) at the checkout root regardless
   # of the caller's cwd, and PYTHONPATH lets `python -m fleet` import apps/fleet.

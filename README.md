@@ -106,9 +106,13 @@ checkout with `nix profile install <checkout>#golem-tools` ([QUICKSTART.md](QUIC
 
 ## Releasing
 
-`release` — `ci/release.sh`, in the devenv shell — from a clean checkout of
-`main` that is level with `origin/main`, with `gh` authenticated. It refuses
-before it does anything if any of that is missing.
+`release`, in the devenv shell, from a clean checkout of `main` that is level
+with `origin/main`, with `gh` authenticated. It refuses before it does anything
+if any of that is missing.
+
+The command itself is dull-nix's `mkReleaseCommand`, pinned as a flake input.
+golem's half is two files: `ci/release-hooks.sh`, which knows about the docs
+image and the crate version, and `cliff.toml`, the changelog format (ADR 0056).
 
 ```sh
 release              # the version follows from the commits
@@ -157,4 +161,6 @@ release run is waited on.
 
 Details and trade-offs: [ADR 0053](docs/adr/0053-guarded-releases-from-a-local-command.md)
 for the guards, [ADR 0055](docs/adr/0055-the-version-and-changelog-come-from-the-commits.md)
-for the version and the changelog.
+for the version and the changelog, and
+[ADR 0056](docs/adr/0056-the-release-command-is-a-shared-flake-input.md) for
+what moved to dull-nix and what a stale `flake.lock` costs.

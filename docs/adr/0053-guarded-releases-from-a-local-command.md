@@ -12,6 +12,12 @@ stands, and so does the property that a rejected release leaves nothing to undo
 — up to the push of that commit, which is new ground the ordering below does not
 cover.
 
+Extended by ADR 0056 (2026-08-09), which moves `ci/release.sh` and
+`ci/release-guards.sh` into the shared `dull-ca/nix` flake. "Both callers run
+one file" still holds and is the reason for the move; the file is no longer in
+this repository, and the published image name it also held now lives in
+`ci/release-hooks.sh`.
+
 ## Context
 
 Under ADR 0050 a `v*` tag is the whole release interface, and a tag is

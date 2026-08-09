@@ -2,8 +2,8 @@
 
 Every version of golem released off `main`, rendered by
 [git-cliff](https://git-cliff.org) from the conventional commits behind each
-tag. `release` (ci/release.sh) rewrites this file in full on every release, so
-an edit made here is lost — edit the commit messages instead.
+tag. `release` rewrites this file in full on every release, so an edit made
+here is lost — edit the commit messages instead.
 
 v0.1.0 and v0.2.0 have no section of their own. Both tags name a commit that was
 never on `main`, so there is no range for git-cliff to walk between them and the

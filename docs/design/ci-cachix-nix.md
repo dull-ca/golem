@@ -105,9 +105,11 @@ than root, are refinements for when the box is actually stood up.
   `checks`: `websiteDist` via `buildBunPackage`, `website-container` on top of
   it. Nothing about the docs site is impure or manual.
 - **Release publishing — no longer manual, and no longer wholly undecided.** A
-  release goes out through `ci/release.sh`, which runs the checks in
-  `ci/release-guards.sh` locally and only then pushes the `v*` tag that
-  `.github/workflows/release.yml` builds from (ADR 0053, accepted 2026-08-09).
+  release goes out through `release`, which runs the guards locally and only
+  then pushes the `v*` tag that `.github/workflows/release.yml` builds from
+  (ADR 0053, accepted 2026-08-09). The command and its guards come from the
+  shared `dull-ca/nix` flake (ADR 0056); `ci/release-hooks.sh` and `cliff.toml`
+  are golem's half.
   The version it tags is read from the conventional commits since the last
   stable tag, and a `chore(release)` commit carrying `CHANGELOG.md` and the
   crate version lands on `main` ahead of the tag (ADR 0055) — so a release warms
