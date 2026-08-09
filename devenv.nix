@@ -29,10 +29,12 @@
     pkgs.curl
     (pkgs.python3.withPackages (ps: with ps; [ typer rich httpx ]))
     # `cachix.enable` above configures the cache but ships no binary, and
-    # `warm-cache` below needs one. `gh` is for the release script; both were
-    # reachable only from Dr. Dub's own NixOS profile before.
+    # `warm-cache` below needs one. `gh` waits on the release run and `git-cliff`
+    # writes the changelog, both for `release`; none of the three was reachable
+    # outside Dr. Dub's own NixOS profile before.
     pkgs.cachix
     pkgs.gh
+    pkgs.git-cliff
   ];
 
   # Freshly built workspace binaries (emet-lsp for nvim, emetc, golemctl…)
@@ -123,9 +125,12 @@
 
     echo "warm-cache: gate passed, every output is in dull-ca — CI has nothing left to build."
   '';
-  # The guarded front door for a release (ADR 0050): guards, confirm, warm, tag,
-  # push, wait. A hand-pushed `v*` tag still releases and still meets the same
-  # guards in release.yml — but this is the way in.
+  # The guarded front door for a release (ADR 0053, ADR 0055): read the version
+  # from the merges, guard, show, confirm, commit the changelog, warm, push
+  # `main`, tag, wait. `release` alone derives the version; `release major` and
+  # `release v0.4.0-rc1` are the ways to overrule it. A hand-pushed `v*` tag
+  # still releases and still meets the same guards in release.yml — but this is
+  # the way in.
   scripts.release.exec = ''cd "$DEVENV_ROOT" && exec ci/release.sh "$@"'';
   # `fleet` runs the harness from the repo root with apps/ on PYTHONPATH: the cd
   # anchors relative `.emet` paths (and .fleet/) at the checkout root regardless

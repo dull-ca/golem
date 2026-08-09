@@ -1,0 +1,83 @@
+[changelog]
+header = """
+# Changelog
+
+Every version of golem released off `main`, rendered by
+[git-cliff](https://git-cliff.org) from the conventional commits behind each
+tag. `release` (ci/release.sh) rewrites this file in full on every release, so
+an edit made here is lost — edit the commit messages instead.
+
+v0.1.0 and v0.2.0 have no section of their own. Both tags name a commit that was
+never on `main`, so there is no range for git-cliff to walk between them and the
+work they were meant to mark is folded into v0.3.0.\
+"""
+body = """
+
+{% if version %}## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}{% else %}## Unreleased{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.breaking %}**breaking** — {% endif %}\
+{% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+{{ commit.message }} \
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/dull-ca/golem/commit/{{ commit.id }}))
+{%- endfor %}
+{% endfor %}"""
+footer = ""
+trim = false
+render_always = false
+postprocessors = []
+
+[git]
+# NOTE: every full render prints `WARN ... 1 commit(s) were skipped due to parse
+# error(s)`. It is the root commit, `Initial commit`, being filtered by
+# `filter_unconventional` -- the one commit in this history that predates the
+# convention. There is nothing to fix and nothing left to warn about after it.
+conventional_commits = true
+filter_unconventional = true
+require_conventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+fail_on_unmatched_commit = false
+tag_pattern = "v[0-9]*"
+topo_order = false
+topo_order_commits = true
+sort_commits = "oldest"
+recurse_submodules = false
+
+# The trailing `(#N)` GitHub appends to a squash subject is turned into a link
+# by rewriting it, not by `[remote.github]`. That option resolves pull requests
+# over the API, which would put a network call and a token inside the release --
+# a way for `release` to fail on something that is neither the gate nor a guard
+# -- to recover a number the subject is already carrying.
+commit_preprocessors = [
+  { pattern = '(?m)\(#([0-9]+)\)$', replace = "([#${1}](https://github.com/dull-ca/golem/pull/${1}))" },
+]
+
+# Anchored, because these read subjects typed by hand into a merge box: a `fix:`
+# mentioned mid-sentence is prose, only a `fix:` that opens the subject is a
+# type. Case-insensitive for the same reason -- `Feat(emet): ...` is the same
+# intent as `feat(emet): ...` and groups with it, which is also how
+# `conventional-bump` reads it. The trailing `[(!:]` is what keeps `feature:`
+# out of Features, where a bare prefix match would put it.
+#
+# First match wins, so order is meaning here, and the `<!-- N -->` in each group
+# name is a sort key the body template strips: sections come out in this order
+# rather than alphabetically.
+commit_parsers = [
+  { message = "(?i)^chore\\(release\\)", skip = true },
+  { message = "(?i)^chore\\(deps", skip = true },
+  { message = "(?i)^feat[(!:]", group = "<!-- 0 -->Features" },
+  { message = "(?i)^fix[(!:]", group = "<!-- 1 -->Fixes" },
+  { message = "(?i)^perf[(!:]", group = "<!-- 2 -->Performance" },
+  { message = "(?i)^refactor[(!:]", group = "<!-- 3 -->Refactoring" },
+  { message = "(?i)^docs?[(!:]", group = "<!-- 4 -->Documentation" },
+  { message = "(?i)^test[(!:]", group = "<!-- 5 -->Tests" },
+  { message = "(?i)^style[(!:]", group = "<!-- 6 -->Formatting" },
+  { message = "(?i)^(build|ci|chore)[(!:]", group = "<!-- 7 -->Tooling" },
+  { message = "(?i)^revert[(!:]", group = "<!-- 8 -->Reverts" },
+  { message = ".*", group = "<!-- 9 -->Other" },
+]
+
+link_parsers = []
