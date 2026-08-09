@@ -96,3 +96,10 @@ fn a_qualified_annotation_picks_one_of_two_same_named_types() {
         .expect("naming the type in full resolves the ambiguity");
     assert_eq!(scroll_names(&c), vec!["x".to_string()]);
 }
+
+#[test]
+fn a_nested_module_qualifies_its_constructors_by_its_whole_name() {
+    let c = compile_file(&fixtures_dir().join("NestedCtorEntry.emet"))
+        .expect("`Amb.Ctor.Hold` names constructor `Hold` of module `Amb.Ctor`");
+    assert_eq!(scroll_names(&c), vec!["nested".to_string()]);
+}

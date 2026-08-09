@@ -23,16 +23,30 @@
 //! reference* with two candidates in scope still has no single meaning, and is
 //! an error naming both.
 //!
-//! Constructors are still reached by bare name alone, so
-//! `reject_constructor_name_collisions` (ADR 0046) stays as it was. It guards
-//! reachability rather than soundness — the types are distinct, so no value
-//! crosses — and it stops at the exposing list, because only a `Type(..)` export
-//! puts constructors in scope at all.
+//! A constructor is identified the same way (ADR 0051), by
+//! `qualify_module_constructors` over the same cloned AST: a variant declared in
+//! `M` is `M.Ctor`, and every `Expr::Ctor` and `Pattern::Ctor` in the module is
+//! rewritten from what the author wrote to the identity it means, through
+//! `ConstructorScope`. Bare stays the ordinary spelling; `M.Ctor` is what an
+//! author writes when two are in scope. That retires ADR 0046's
+//! one-owner-per-constructor rule, which rejected at the `import` because no use
+//! site could disambiguate — the grammar now has the spelling that rule said did
+//! not exist, so the rejection moved to the *bare reference* with two candidates,
+//! exactly as ADR 0049 moved ADR 0045's.
+//!
+//! Both passes run on a clone, and inference *and* evaluation read that clone.
+//! Constructor identity has to reach `eval` because a `Value::Data` tag is
+//! matched against the name in a `Pattern::Ctor`; leaving eval on the unqualified
+//! AST would compare `M.Ctor` against `Ctor` and match nothing. Only the query
+//! index and the LSP's type rendering read the module as written, since those
+//! report source back to a reader.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::ast::{Exposed, Exposing, Import, ImportExposing, Module, Scheme, Span};
+use crate::ast::{
+    Decl, Exposed, Exposing, Expr, Import, ImportExposing, Module, Pattern, Scheme, Span, Spanned,
+};
 use crate::eval::{self, Env};
 use crate::infer::{self, ImportedConstructors, TyEnv};
 use crate::manifest::{self, SearchPath};
@@ -67,12 +81,13 @@ impl ProjectAnalysis {
 /// `type_owners` maps every type name this module's exposed surface can put in
 /// front of an importer to the module that *declared* it, which is what makes
 /// ADR 0045's one-owner rule checkable — see `interface_of`.
-/// `ctor_owners` is the constructor namespace's counterpart, for ADR 0046, and
-/// its scope is narrower on both axes: it holds only the constructors of a
-/// `Type(..)` export, since no other constructor is in scope in an importer, and
-/// its owner is always *this* module, since a constructor cannot be re-exposed.
-/// Each entry also carries the type the constructor builds, which the diagnostic
-/// names.
+///
+/// NOTE: everything constructor-shaped here is keyed by identity, `Owner.Ctor`
+/// (ADR 0051), because `interface_of` harvests a module *after*
+/// `qualify_module_constructors` has rewritten it. The constructor namespace
+/// needs no `exposed_type_identity` counterpart: a constructor cannot be
+/// re-exposed, so its owner is always this module and the bare tail is
+/// recoverable by splitting at the last dot.
 struct Interface {
     ty_env: TyEnv,
     value_env: Env,
@@ -87,7 +102,6 @@ struct Interface {
     exposed_sum_ctors: HashMap<String, Vec<(String, usize)>>,
     exposed_def_spans: HashMap<String, Span>,
     type_owners: BTreeMap<String, String>,
-    ctor_owners: BTreeMap<String, ConstructorOrigin>,
 }
 
 /// Compile a multi-module program from its entry file to `main`'s type and the
@@ -167,13 +181,12 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
     for name in &order {
         let loaded_mod = &loaded[name];
 
-        if let Err(e) = reject_constructor_name_collisions(loaded_mod, name, &interfaces) {
-            diagnostics.push(e);
-            continue;
-        }
         let aliases = type_aliases(&loaded_mod.module, name, &interfaces);
+        let constructors = ConstructorScope::of(&loaded_mod.module, name, &interfaces);
         let mut qualified = loaded_mod.module.clone();
-        if let Err(mut e) = qualify_module_types(&mut qualified, name, &aliases) {
+        if let Err(mut e) = qualify_module_types(&mut qualified, name, &aliases)
+            .and_then(|()| qualify_module_constructors(&mut qualified, name, &constructors))
+        {
             e.file = Some(loaded_mod.path.clone());
             diagnostics.push(e);
             continue;
@@ -211,12 +224,9 @@ pub fn analyze_entry_source(entry: &Path, source: String) -> ProjectAnalysis {
         indexes.insert(loaded_mod.path.clone(), index);
 
         if name != &entry_name {
-            if let Ok(final_ty) = infer::check_library(
-                &qualified,
-                base_ty,
-                &imported_types,
-                &imported_ctors,
-            ) {
+            if let Ok(final_ty) =
+                infer::check_library(&qualified, base_ty, &imported_types, &imported_ctors)
+            {
                 let iface = interface_of(
                     &qualified,
                     name,
@@ -247,28 +257,26 @@ fn check_and_eval(
         let loaded_mod = &loaded[name];
         let is_entry = name == &entry_name;
 
-        reject_constructor_name_collisions(loaded_mod, name, &interfaces)?;
         let aliases = type_aliases(&loaded_mod.module, name, &interfaces);
+        let constructors = ConstructorScope::of(&loaded_mod.module, name, &interfaces);
         let mut qualified = loaded_mod.module.clone();
-        qualify_module_types(&mut qualified, name, &aliases).map_err(|mut e| {
-            e.file = Some(loaded_mod.path.clone());
-            e
-        })?;
+        qualify_module_types(&mut qualified, name, &aliases)
+            .and_then(|()| qualify_module_constructors(&mut qualified, name, &constructors))
+            .map_err(|mut e| {
+                e.file = Some(loaded_mod.path.clone());
+                e
+            })?;
         let base_ty = import_ty_env(&loaded_mod.module, &interfaces, loaded_mod)?;
         let base_val = import_value_env(&loaded_mod.module, &interfaces);
         let imported_types = import_type_arities(&loaded_mod.module, &interfaces);
         let imported_ctors = import_constructors(&loaded_mod.module, &interfaces);
 
         if is_entry {
-            let (_, main_ty) = infer::check_entry(
-                &qualified,
-                base_ty,
-                &imported_types,
-                &imported_ctors,
-            )
-            .map_err(|e| type_error(loaded_mod, e))?;
-            let (scrolls, glyph_spans) = eval::eval_entry(&loaded_mod.module, base_val)
-                .map_err(|e| analyze_error(loaded_mod, e))?;
+            let (_, main_ty) =
+                infer::check_entry(&qualified, base_ty, &imported_types, &imported_ctors)
+                    .map_err(|e| type_error(loaded_mod, e))?;
+            let (scrolls, glyph_spans) =
+                eval::eval_entry(&qualified, base_val).map_err(|e| analyze_error(loaded_mod, e))?;
             crate::analyze(&scrolls, &glyph_spans).map_err(|mut e| {
                 e.file = Some(loaded_mod.path.clone());
                 e
@@ -276,14 +284,10 @@ fn check_and_eval(
             entry_result = Some((main_ty, scrolls));
         } else {
             reject_library_main(loaded_mod)?;
-            let final_ty = infer::check_library(
-                &qualified,
-                base_ty,
-                &imported_types,
-                &imported_ctors,
-            )
-            .map_err(|e| type_error(loaded_mod, e))?;
-            let final_val = eval::eval_library(&loaded_mod.module, base_val)
+            let final_ty =
+                infer::check_library(&qualified, base_ty, &imported_types, &imported_ctors)
+                    .map_err(|e| type_error(loaded_mod, e))?;
+            let final_val = eval::eval_library(&qualified, base_val)
                 .map_err(|e| analyze_error(loaded_mod, e))?;
             let owners = inherited_type_owners(&loaded_mod.module, &interfaces);
             interfaces.insert(
@@ -635,15 +639,14 @@ fn import_type_arities(
 /// importer. Fed to inference so `infer_pattern` resolves imported constructors
 /// and the exhaustiveness checker sees their type's complete signature.
 ///
-/// NOTE: both maps are keyed by bare name and inserted per import in order, so
-/// the last import wins. That is safe on both sides only because this module has
-/// already passed both collision checks. `sum_ctors` is keyed by a *type* name,
-/// which `reject_type_name_collisions` gives one owner (ADR 0045); `ctor_schemes`
-/// is keyed by a bare *constructor* name, which `reject_constructor_name_collisions`
-/// gives one owner (ADR 0046). Either key can therefore arrive twice only from a
-/// single owner — one module imported twice — so an overwrite rewrites an entry
-/// with itself. Before ADR 0046 the `ctor_schemes` side did lose constructors
-/// here, silently.
+/// NOTE: both maps are keyed by identity and inserted per import in order, so
+/// the last import wins — and nothing can be lost to it, because an identity
+/// names its own owner. `sum_ctors` is keyed by a type identity (ADR 0049),
+/// `ctor_schemes` by a constructor identity (ADR 0051), so a key arriving twice
+/// arrived from one module imported twice and the overwrite rewrites an entry
+/// with itself. When these keys were bare names, two imports' `Wrap` collapsed to
+/// one here and the earlier one vanished without a word — the defect ADR 0046
+/// rejected programs to avoid and ADR 0051 fixed.
 fn import_constructors(
     module: &Module,
     interfaces: &HashMap<String, Interface>,
@@ -666,160 +669,6 @@ fn import_constructors(
         sum_ctors,
     }
 }
-
-
-
-/// How one constructor reached the module being checked: `owner` declared it, on
-/// type `type_name`. Both are in the diagnostic — two colliding constructors sit
-/// on two differently-named types, and naming only the modules would leave the
-/// author hunting for a `type` line without knowing which type to look for.
-///
-/// There is no counterpart to `TypeNameOrigin::via`: a constructor cannot be
-/// re-exposed, so the import that carried it in always declared it.
-#[derive(Clone)]
-struct ConstructorOrigin {
-    owner: String,
-    type_name: String,
-}
-
-/// Enforce ADR 0046: within one module, a constructor name has exactly one
-/// owner. Rejected are two imports contributing the same constructor name under
-/// different declaring modules, and a local `type` declaration with a variant
-/// whose name an import already contributes.
-///
-/// This guards reachability and diagnostics, not soundness: ADR 0045 keeps the
-/// two types distinct, so no value ever crosses. Without the check, the later
-/// import's constructor displaced the earlier one in `ctor_schemes` and in
-/// `import_ty_env`'s bindings; the displaced one became unreachable without a
-/// word, and writing it reported a mismatch against the surviving constructor's
-/// type — correct code indicted by a type the author never named.
-///
-/// Rejection rather than a map keyed by owning module, because no use site could
-/// select an entry from such a map: `CtorA.Wrap` is a *parse* error, in
-/// expression and in pattern position alike, so every occurrence of a
-/// constructor carries exactly its bare name. A shadowed constructor was never
-/// reachable by any spelling, so admitting it buys an author nothing. What this
-/// does is carry across the module boundary the rule
-/// `infer::register_type_decls` already applies within one module (`duplicate
-/// constructor`).
-///
-/// Narrower than `reject_type_name_collisions` on two counts — see this module's
-/// doc comment for why neither rule generalizes to the other.
-fn reject_constructor_name_collisions(
-    loaded: &Loaded,
-    module_name: &str,
-    interfaces: &HashMap<String, Interface>,
-) -> Result<(), Error> {
-    let mut origins: HashMap<String, ConstructorOrigin> = HashMap::new();
-    for import in &loaded.module.imports {
-        let Some(iface) = interfaces.get(&import.module) else {
-            continue;
-        };
-        for (ctor_name, origin) in &iface.ctor_owners {
-            match origins.get(ctor_name) {
-                Some(seen) if seen.owner != origin.owner => {
-                    return Err(imports_define_the_same_constructor(
-                        loaded,
-                        ctor_name,
-                        seen,
-                        origin,
-                        import.span.clone(),
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    origins.insert(ctor_name.clone(), origin.clone());
-                }
-            }
-        }
-    }
-    for declaration in &loaded.module.type_decls {
-        for variant in &declaration.variants {
-            if let Some(seen) = origins.get(&variant.name) {
-                return Err(local_constructor_shadows_an_imported_one(
-                    loaded,
-                    &ConstructorOrigin {
-                        owner: module_name.to_string(),
-                        type_name: declaration.name.clone(),
-                    },
-                    &variant.name,
-                    seen,
-                    variant.span.clone(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The half both collision diagnostics share: which module puts the name on
-/// which type, and why only one of the two can be reached. Each caller appends
-/// its own repair, because the repairs differ — two imports can also be split
-/// across two modules, while a local declaration against an imported
-/// constructor can only be renamed.
-fn unreachable_constructor_note(
-    ctor_name: &str,
-    first: &ConstructorOrigin,
-    second: &ConstructorOrigin,
-) -> String {
-    format!(
-        "`{}` defines `{ctor_name}` on type `{}`, and `{}` defines it on type `{}`. Emet reaches a constructor only by its bare name — there is no qualified `Module.Constructor` spelling — so only one `{ctor_name}` can be reachable here; the other vanishes, and using it reports a type error against the surviving one's type. ",
-        first.owner,
-        crate::infer::bare_identity(&first.type_name),
-        second.owner,
-        crate::infer::bare_identity(&second.type_name)
-    )
-}
-
-/// Rendered at the second `import` line — the one that brought the duplicate in
-/// — matching where `imports_define_the_same_type` renders its own.
-fn imports_define_the_same_constructor(
-    site: &Loaded,
-    ctor_name: &str,
-    first: &ConstructorOrigin,
-    second: &ConstructorOrigin,
-    span: Span,
-) -> Error {
-    let mut note = unreachable_constructor_note(ctor_name, first, second);
-    note.push_str(
-        "Rename one of the two constructors, or import the two modules from separate modules.",
-    );
-    Error {
-        phase: Phase::Type,
-        msg: format!(
-            "`{}` and `{}` both define a constructor named `{ctor_name}`",
-            first.owner, second.owner
-        ),
-        span,
-        note: Some(note),
-        file: Some(site.path.clone()),
-    }
-}
-
-/// Rendered at the offending variant rather than at the import: the import is
-/// legitimate, and the variant is the line this module wrote.
-fn local_constructor_shadows_an_imported_one(
-    site: &Loaded,
-    local: &ConstructorOrigin,
-    ctor_name: &str,
-    imported: &ConstructorOrigin,
-    span: Span,
-) -> Error {
-    let mut note = unreachable_constructor_note(ctor_name, local, imported);
-    note.push_str("Rename one of the two constructors.");
-    Error {
-        phase: Phase::Type,
-        msg: format!(
-            "`{}` and `{}` both define a constructor named `{ctor_name}`",
-            local.owner, imported.owner
-        ),
-        span,
-        note: Some(note),
-        file: Some(site.path.clone()),
-    }
-}
-
-
 
 /// The type-name ownership a module takes on from its imports. Each name keeps
 /// the module that declared it, never the one it arrived through, so a type
@@ -880,9 +729,332 @@ fn qualified_type_name(module_name: &str, bare: &str) -> String {
 
 /// The bare tail of an identity — `Split.Database.Config` is `Config`. Splitting
 /// at the last dot is enough because an identity is exactly `Owner.Bare` and a
-/// bare type name never contains one.
-fn bare_type_name(identity: &str) -> &str {
+/// bare type or constructor name never contains one.
+fn bare_name(identity: &str) -> &str {
     identity.rsplit('.').next().unwrap_or(identity)
+}
+
+fn qualified_constructor_name(module_name: &str, bare: &str) -> String {
+    format!("{module_name}.{bare}")
+}
+
+/// Everything one module can mean by a constructor name, in the two spellings a
+/// use site may write it (ADR 0051).
+///
+/// `aliases` answers the bare spelling: each bare name mapped to the identities
+/// it could stand for — this module's own variants first, then everything its
+/// imports open-expose. One candidate resolves; two is the ambiguity ADR 0046
+/// used to reject at the `import`. `modules_by_qualifier` answers the dotted
+/// spelling, mapping what an author may write in front of the dot — an `as`
+/// alias, an import's own name, or this module's — to the module that owns the
+/// constructor. `identities` is every constructor actually in scope, which is
+/// what tells `CtorA.Wrup` from `CtorA.Wrap`.
+struct ConstructorScope {
+    aliases: BTreeMap<String, Vec<String>>,
+    modules_by_qualifier: BTreeMap<String, String>,
+    identities: BTreeSet<String>,
+}
+
+impl ConstructorScope {
+    fn of(
+        module: &Module,
+        module_name: &str,
+        interfaces: &HashMap<String, Interface>,
+    ) -> ConstructorScope {
+        let mut aliases: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut identities: BTreeSet<String> = BTreeSet::new();
+        let mut modules_by_qualifier: BTreeMap<String, String> = BTreeMap::new();
+        modules_by_qualifier.insert(module_name.to_string(), module_name.to_string());
+
+        for td in &module.type_decls {
+            for variant in &td.variants {
+                let identity = qualified_constructor_name(module_name, &variant.name);
+                aliases
+                    .entry(variant.name.clone())
+                    .or_default()
+                    .push(identity.clone());
+                identities.insert(identity);
+            }
+        }
+        for import in &module.imports {
+            modules_by_qualifier.insert(
+                import
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| import.module.clone()),
+                import.module.clone(),
+            );
+            let Some(iface) = interfaces.get(&import.module) else {
+                continue;
+            };
+            for identity in &iface.exposed_constructors {
+                let slot = aliases.entry(bare_name(identity).to_string()).or_default();
+                if !slot.contains(identity) {
+                    slot.push(identity.clone());
+                }
+                identities.insert(identity.clone());
+            }
+        }
+        ConstructorScope {
+            aliases,
+            modules_by_qualifier,
+            identities,
+        }
+    }
+
+    /// The identity a written constructor name means here, or `None` for a name
+    /// this stage has no opinion about — a prelude constructor (`Just`, `True`),
+    /// a glyph match tag (`AptPackage`, `Symlink`), an unknown name. Those pass
+    /// through untouched for `infer` to bind or reject, which is also why prelude
+    /// constructors cannot be shadowed by a module: they are never in `aliases`,
+    /// and `register_type_decls` refuses a variant that would take one of their
+    /// bare names.
+    ///
+    /// Splitting the dotted spelling at the *last* dot is what makes a nested
+    /// module reachable: `Amb.Ctor.Hold` is `Hold` of module `Amb.Ctor`, never
+    /// `Ctor.Hold` of `Amb`.
+    fn resolve(&self, name: &str, span: &Span) -> Result<Option<String>, Error> {
+        if let Some((qualifier, bare)) = name.rsplit_once('.') {
+            let Some(owner) = self.modules_by_qualifier.get(qualifier) else {
+                return Ok(None);
+            };
+            let identity = qualified_constructor_name(owner, bare);
+            if !self.identities.contains(&identity) {
+                return Err(Error {
+                    phase: Phase::Type,
+                    msg: format!("`{owner}` has no constructor named `{bare}` in scope here"),
+                    span: span.clone(),
+                    note: Some(format!(
+                        "a constructor is in scope only where its type is exposed open — check that `{owner}` declares `{bare}` and exposes its type as `Type(..)`"
+                    )),
+                    file: None,
+                });
+            }
+            return Ok(Some(identity));
+        }
+        match self.aliases.get(name) {
+            None => Ok(None),
+            Some(candidates) if candidates.len() == 1 => Ok(Some(candidates[0].clone())),
+            Some(candidates) => Err(ambiguous_constructor(name, candidates, span)),
+        }
+    }
+}
+
+/// Two constructors of the same bare name are both in scope, so the bare
+/// spelling names neither. Rendered at the reference rather than at an `import`
+/// line — the imports are legitimate, and only a use site can be ambiguous —
+/// which is the whole difference between this and the ADR 0046 rule it replaces.
+/// The note offers both qualified spellings, because escaping into one is now the
+/// repair; renaming a constructor no longer has to be.
+fn ambiguous_constructor(name: &str, candidates: &[String], span: &Span) -> Error {
+    let owners = candidates
+        .iter()
+        .map(|identity| format!("`{}`", owner_of(identity)))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let spellings = candidates
+        .iter()
+        .map(|identity| format!("`{identity}`"))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    Error {
+        phase: Phase::Type,
+        msg: format!("`{name}` is ambiguous here: {owners} both define one"),
+        span: span.clone(),
+        note: Some(format!(
+            "name the one you mean in full — {spellings} — or import only one of them"
+        )),
+        file: None,
+    }
+}
+
+fn owner_of(identity: &str) -> &str {
+    identity
+        .rsplit_once('.')
+        .map(|(owner, _)| owner)
+        .unwrap_or(identity)
+}
+
+/// Rewrite a module's constructor declarations and references from the names an
+/// author writes to the identities they mean, `Owner.Ctor`, so two modules'
+/// `Wrap` are two constructors and both stay reachable (ADR 0051). The
+/// constructor-namespace twin of `qualify_module_types`.
+///
+/// References are rewritten before declarations, and the order is load-bearing:
+/// `scope` was built from the module as written, so rewriting `Variant::name`
+/// first would leave the walk resolving `M.Wrap` against a scope that only knows
+/// `Wrap`.
+///
+/// Unlike the type pass, which leaves `TypeDecl::name` bare for the `exposing`
+/// list to match on, this one qualifies the variant name outright. Nothing
+/// matches a constructor by name across the boundary — `exposing` lists types,
+/// and `interface_of` reads constructors off the type decls it already holds — so
+/// there is no bare spelling left to preserve.
+fn qualify_module_constructors(
+    module: &mut Module,
+    module_name: &str,
+    scope: &ConstructorScope,
+) -> Result<(), Error> {
+    for decl in &mut module.decls {
+        qualify_decl_constructors(decl, scope)?;
+    }
+    for td in &mut module.type_decls {
+        for variant in &mut td.variants {
+            variant.name = qualified_constructor_name(module_name, &variant.name);
+        }
+    }
+    Ok(())
+}
+
+fn qualify_decl_constructors(decl: &mut Decl, scope: &ConstructorScope) -> Result<(), Error> {
+    for param in &mut decl.params {
+        qualify_pattern_constructors(param, scope)?;
+    }
+    qualify_expr_constructors(&mut decl.body, scope)
+}
+
+/// The pattern half of the rewrite, and not an optional one: an author who can
+/// only *build* `CtorA.Wrap` and not match it has half a spelling. `Nil` and
+/// `Cons` never reach `scope` — the parser desugars `[]` and `::` into their own
+/// [`Pattern`] arms rather than into named constructors, so the list sum stays
+/// out of the constructor namespace.
+fn qualify_pattern_constructors(
+    pattern: &mut Spanned<Pattern>,
+    scope: &ConstructorScope,
+) -> Result<(), Error> {
+    let span = pattern.1.clone();
+    match &mut pattern.0 {
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Str(_)
+        | Pattern::Int(_)
+        | Pattern::Char(_)
+        | Pattern::Nil => Ok(()),
+        Pattern::Ctor(name, subpatterns) => {
+            if let Some(identity) = scope.resolve(name, &span)? {
+                *name = identity;
+            }
+            for subpattern in subpatterns {
+                qualify_pattern_constructors(subpattern, scope)?;
+            }
+            Ok(())
+        }
+        Pattern::Cons(head, tail) => {
+            qualify_pattern_constructors(head, scope)?;
+            qualify_pattern_constructors(tail, scope)
+        }
+        Pattern::Tuple(elements) => elements
+            .iter_mut()
+            .try_for_each(|element| qualify_pattern_constructors(element, scope)),
+    }
+}
+
+/// Walks every expression a declaration can hold, since a constructor can appear
+/// anywhere one does — including inside a glyph's fields and a `scroll`'s policy.
+///
+/// NOTE: the `match` is exhaustive with no catch-all deliberately. A new [`Expr`]
+/// variant that carries a sub-expression fails the build here instead of silently
+/// leaving the constructors inside it unqualified, which would surface much later
+/// as an unknown constructor or a pattern that matches nothing.
+fn qualify_expr_constructors(
+    expr: &mut Spanned<Expr>,
+    scope: &ConstructorScope,
+) -> Result<(), Error> {
+    let span = expr.1.clone();
+    match &mut expr.0 {
+        Expr::Str(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Char(_)
+        | Expr::Var(_)
+        | Expr::PolicyExhaust(_) => Ok(()),
+        Expr::Ctor(name) => {
+            if let Some(identity) = scope.resolve(name, &span)? {
+                *name = identity;
+            }
+            Ok(())
+        }
+        Expr::AptPackage(inner) | Expr::SystemdService(inner) => {
+            qualify_expr_constructors(inner, scope)
+        }
+        Expr::Filesystem { path, entry } => {
+            qualify_expr_constructors(path, scope)?;
+            match entry {
+                crate::ast::EntryExpr::File { contents, mode } => {
+                    qualify_expr_constructors(contents, scope)?;
+                    qualify_expr_constructors(mode, scope)
+                }
+                crate::ast::EntryExpr::Directory { mode } => qualify_expr_constructors(mode, scope),
+                crate::ast::EntryExpr::Symlink { target } => {
+                    qualify_expr_constructors(target, scope)
+                }
+            }
+        }
+        Expr::LineInFile { path, line } => {
+            qualify_expr_constructors(path, scope)?;
+            qualify_expr_constructors(line, scope)
+        }
+        Expr::Scroll {
+            name,
+            policy,
+            notifies,
+            contents,
+        } => {
+            qualify_expr_constructors(name, scope)?;
+            for optional in [policy, notifies].into_iter().flatten() {
+                qualify_expr_constructors(optional, scope)?;
+            }
+            match contents {
+                crate::ast::ContentsExpr::Glyphs(inner)
+                | crate::ast::ContentsExpr::Groups(inner) => {
+                    qualify_expr_constructors(inner, scope)
+                }
+            }
+        }
+        Expr::PolicyRetry(fields) => fields
+            .values_mut()
+            .try_for_each(|field| qualify_expr_constructors(field, scope)),
+        Expr::List(items) | Expr::Tuple(items) => items
+            .iter_mut()
+            .try_for_each(|item| qualify_expr_constructors(item, scope)),
+        Expr::Lam { param, body } => {
+            qualify_pattern_constructors(param, scope)?;
+            qualify_expr_constructors(body, scope)
+        }
+        Expr::App(f, x) => {
+            qualify_expr_constructors(f, scope)?;
+            qualify_expr_constructors(x, scope)
+        }
+        Expr::Let { decls, body } => {
+            for decl in decls {
+                qualify_decl_constructors(decl, scope)?;
+            }
+            qualify_expr_constructors(body, scope)
+        }
+        Expr::Record(fields) => fields
+            .values_mut()
+            .try_for_each(|field| qualify_expr_constructors(field, scope)),
+        Expr::RecordUpdate { base, fields } => {
+            qualify_expr_constructors(base, scope)?;
+            fields
+                .iter_mut()
+                .try_for_each(|(_, value)| qualify_expr_constructors(value, scope))
+        }
+        Expr::Field(inner, _) => qualify_expr_constructors(inner, scope),
+        Expr::Case { scrutinee, arms } => {
+            qualify_expr_constructors(scrutinee, scope)?;
+            for arm in arms {
+                qualify_pattern_constructors(&mut arm.pat, scope)?;
+                qualify_expr_constructors(&mut arm.body, scope)?;
+            }
+            Ok(())
+        }
+        Expr::If { cond, then_, else_ } => {
+            qualify_expr_constructors(cond, scope)?;
+            qualify_expr_constructors(then_, scope)?;
+            qualify_expr_constructors(else_, scope)
+        }
+    }
 }
 
 /// Rewrite a module's type declarations and signatures from bare names to the
@@ -1159,7 +1331,7 @@ fn interface_of(
     // list names types as the author wrote them, so match on the bare tail.
     let identity_of_bare: BTreeMap<String, String> = type_arities
         .keys()
-        .map(|identity| (bare_type_name(identity).to_string(), identity.clone()))
+        .map(|identity| (bare_name(identity).to_string(), identity.clone()))
         .collect();
     let mut exposed_type_identity: HashMap<String, String> = HashMap::new();
 
@@ -1171,7 +1343,7 @@ fn interface_of(
             }
             open_type_names.extend(ctor_names.keys().cloned());
             for (identity, arity) in &type_arities {
-                let bare = bare_type_name(identity).to_string();
+                let bare = bare_name(identity).to_string();
                 exposed_type_arities.insert(bare.clone(), *arity);
                 exposed_type_identity.insert(bare, identity.clone());
             }
@@ -1203,18 +1375,10 @@ fn interface_of(
         }
     }
 
-    let mut ctor_owners: BTreeMap<String, ConstructorOrigin> = BTreeMap::new();
     for type_name in &open_type_names {
         if let Some(variants) = ctor_names.get(type_name) {
             exposed_constructors.extend(variants.iter().cloned());
             for ctor in variants {
-                ctor_owners.insert(
-                    ctor.clone(),
-                    ConstructorOrigin {
-                        owner: module_name.to_string(),
-                        type_name: type_name.clone(),
-                    },
-                );
                 if let Some(scheme) = ty_env.scheme(ctor) {
                     exposed_ctor_schemes.insert(ctor.clone(), scheme);
                 }
@@ -1234,12 +1398,13 @@ fn interface_of(
     }
     for td in &module.type_decls {
         if exposed_type_arities.contains_key(&td.name) {
-            let name_span = td.span.start..td.span.start + td.name.len();
+            let name_span = td.span.start..td.span.start + bare_name(&td.name).len();
             exposed_def_spans.insert(td.name.clone(), name_span);
         }
         for variant in &td.variants {
             if exposed_constructors.contains(&variant.name) {
-                let name_span = variant.span.start..variant.span.start + variant.name.len();
+                let name_span =
+                    variant.span.start..variant.span.start + bare_name(&variant.name).len();
                 exposed_def_spans.insert(variant.name.clone(), name_span);
             }
         }
@@ -1280,7 +1445,6 @@ fn interface_of(
         exposed_sum_ctors,
         exposed_def_spans,
         type_owners,
-        ctor_owners,
     }
 }
 

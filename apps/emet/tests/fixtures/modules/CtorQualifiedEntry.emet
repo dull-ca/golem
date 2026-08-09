@@ -1,0 +1,14 @@
+module Main exposing (..)
+
+import CtorA exposing (Alpha(..), unwrap)
+import CtorB exposing (Beta(..))
+
+a : Alpha
+a = CtorA.Wrap "text"
+
+b : Beta
+b = CtorB.Wrap 1
+
+main : List Scroll
+main =
+  [ scroll { name = unwrap a, glyphs = [] } ]

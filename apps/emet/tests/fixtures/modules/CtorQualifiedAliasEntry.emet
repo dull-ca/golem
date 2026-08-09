@@ -1,0 +1,8 @@
+module Main exposing (..)
+
+import CtorA as A exposing (Alpha(..), unwrap)
+import CtorB exposing (Beta(..))
+
+main : List Scroll
+main =
+  [ scroll { name = unwrap (A.Wrap "aliased"), glyphs = [] } ]

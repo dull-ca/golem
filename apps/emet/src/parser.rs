@@ -34,7 +34,12 @@
 //!
 //! `Upper '.' ident` written adjacently (`List.map`) parses as one qualified
 //! `Expr::Var("List.map")` — resolved by ordinary env lookup, no new node
-//! (ADR 0006). A bare `Upper` is a data constructor (`Expr::Ctor`).
+//! (ADR 0006). `Upper ('.' Upper)*` is a data constructor (`Expr::Ctor`), so
+//! `Circle` and `Shapes.Circle` are the same node with a different name and no
+//! stage past the parser has a second constructor form to handle (ADR 0051).
+//! The lowercase-tail rule is what keeps the two apart: `qualified` requires an
+//! `ident` after the last dot and is tried first, so `Limesurvey.Database.config`
+//! is module access and `Limesurvey.Database.Config` is a constructor.
 //!
 //! The reserved lowercase words `aptPackage`, `systemdService`, `file`,
 //! `lineInFile`, and `scroll` are each parsed as a constructor atom rather than
@@ -125,6 +130,11 @@ where
 // parameters after it (`f Box x` is one destructuring or two parameters), so
 // admitting it costs a disambiguation rule for no new expressive power.
 //
+// The constructor may be qualified — `f (CtorA.Wrap s) = …` — for the same
+// reason a `case` arm's may (ADR 0051): the parameter grammar is narrower than
+// `pattern_parser` on which *shapes* it admits, never on how a constructor is
+// named.
+//
 // NOTE: the exclusion is wider than the refutability argument needs, and the two
 // halves do not coincide. `reject_refutable_param` accepts `Pattern::Tuple`
 // (single-shape, ADR 0027) and recurses through nesting, so `f (a, b) = …`,
@@ -140,7 +150,7 @@ where
     let binder = ident().map_with(|name, e| Spanned(Pattern::Var(name), span_range(e.span())));
 
     let destructure = just(Tok::LParen)
-        .ignore_then(select! { Tok::Upper(u) => u })
+        .ignore_then(dotted_upper_name())
         .then(binder.clone().repeated().collect::<Vec<_>>())
         .then_ignore(just(Tok::RParen))
         .map_with(|(ctor, fields), e| Spanned(Pattern::Ctor(ctor, fields), span_range(e.span())));
@@ -178,6 +188,48 @@ where
     select! { Tok::Ident(name) => name }
 }
 
+// `Upper ('.' Upper)*` joined into one dotted name — the single spelling behind
+// a nested module name (`Split.Database`), a qualified type (ADR 0049), and a
+// qualified constructor (ADR 0051). The three read the result differently, but
+// none of them can tell `A.B` from `A . B` on its own, which is why the
+// adjacency test lives here: every dot must touch the segment on each side, so a
+// name written across whitespace is not one name.
+fn dotted_upper_name<'src, I>(
+) -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
+where
+    I: ValueInput<'src, Token = Tok, Span = TokSpan>,
+{
+    select! { Tok::Upper(u) => u }
+        .map_with(|u, e| (u, span_range(e.span())))
+        .then(
+            just(Tok::Dot)
+                .map_with(|_, e| span_range(e.span()))
+                .then(select! { Tok::Upper(u) => u }.map_with(|u, e| (u, span_range(e.span()))))
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .filter(
+            |((_, head_span), segments): &((String, Span), Vec<(Span, (String, Span))>)| {
+                let mut previous_end = head_span.end;
+                for (dot, (_, segment_span)) in segments {
+                    if dot.start != previous_end || segment_span.start != dot.end {
+                        return false;
+                    }
+                    previous_end = segment_span.end;
+                }
+                true
+            },
+        )
+        .map(|((head, _), segments)| {
+            let mut name = head;
+            for (_, (segment, _)) in &segments {
+                name.push('.');
+                name.push_str(segment);
+            }
+            name
+        })
+}
+
 fn type_parser<'src, I>(
 ) -> impl Parser<'src, I, Spanned<Type>, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
@@ -187,33 +239,7 @@ where
         // A type name may be qualified — `Split.Database.Config` — which is how
         // an annotation names one of two same-named types in scope (ADR 0049).
         // Adjacent segments only, so `A.B` is one name and `A . B` is not.
-        let con_head = select! { Tok::Upper(u) => u }
-            .map_with(|u, e| (u, span_range(e.span())))
-            .then(
-                just(Tok::Dot)
-                    .map_with(|_, e| span_range(e.span()))
-                    .then(select! { Tok::Upper(u) => u }.map_with(|u, e| (u, span_range(e.span()))))
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .filter(|((_, head_span), segments): &((String, Span), Vec<(Span, (String, Span))>)| {
-                let mut previous_end = head_span.end;
-                for (dot, (_, segment_span)) in segments {
-                    if dot.start != previous_end || segment_span.start != dot.end {
-                        return false;
-                    }
-                    previous_end = segment_span.end;
-                }
-                true
-            })
-            .map(|((head, _), segments)| {
-                let mut name = head;
-                for (_, (segment, _)) in &segments {
-                    name.push('.');
-                    name.push_str(segment);
-                }
-                name
-            });
+        let con_head = dotted_upper_name();
 
         let nullary = con_head
             .clone()
@@ -501,8 +527,8 @@ where
                 },
             );
 
-        let ctor = select! { Tok::Upper(u) => u }
-            .map_with(|u, e| Spanned(Expr::Ctor(u), span_range(e.span())));
+        let ctor =
+            dotted_upper_name().map_with(|u, e| Spanned(Expr::Ctor(u), span_range(e.span())));
 
         let constructor_field = field_name()
             .then_ignore(just(Tok::Equals))
@@ -1011,7 +1037,7 @@ where
                 Spanned(Pattern::Wildcard, span_range(e.span()))
             });
 
-        let nullary_ctor = select! { Tok::Upper(u) => u }
+        let nullary_ctor = dotted_upper_name()
             .map_with(|u, e| Spanned(Pattern::Ctor(u, vec![]), span_range(e.span())));
 
         // A `[a, b, c]` literal pattern desugars right-to-left into nested
@@ -1067,7 +1093,7 @@ where
             paren,
         ));
 
-        let applied_ctor = select! { Tok::Upper(u) => u }
+        let applied_ctor = dotted_upper_name()
             .map_with(|u, e| (u, span_range(e.span()).start))
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
             .map(|((name, start), args)| {

@@ -177,7 +177,10 @@ impl Infer {
     /// imports, before its own `type` decls register. They land in the same
     /// `user_ctor_schemes` / `user_sum_ctors` tables the local decls use, so
     /// `constructor_scheme` and `sum_type_constructors` resolve imported and
-    /// local constructors uniformly.
+    /// local constructors uniformly. One table for both is what makes an
+    /// imported constructor as usable as a local one — and safe, because in a
+    /// multi-module program every key is a `Owner.Ctor` identity, local ones
+    /// included, so a local declaration cannot displace an import (ADR 0051).
     fn seed_imported_constructors(&mut self, imported: &ImportedConstructors) {
         for (name, scheme) in &imported.ctor_schemes {
             self.user_ctor_schemes.insert(name.clone(), scheme.clone());
@@ -1114,12 +1117,17 @@ fn displayed_type_name<'a>(identity: &'a str, ambiguous: &HashSet<String>) -> &'
     }
 }
 
-/// The identities in `types` whose bare tails collide, so a message naming both
-/// would be unreadable without qualification.
+/// The bare tail of a type or constructor identity — `Shapes.Circle` is
+/// `Circle`. What a diagnostic prints: an identity is machinery, and an author
+/// wants back the name they wrote (ADR 0049, ADR 0051). Unconditional, unlike
+/// `displayed_type_name`, because the messages that reach for this one name a
+/// single thing and have nothing to disambiguate against.
 pub(crate) fn bare_identity(identity: &str) -> &str {
     identity.rsplit('.').next().unwrap_or(identity)
 }
 
+/// The identities in `types` whose bare tails collide, so a message naming both
+/// would be unreadable without qualification.
 fn ambiguous_identities(types: &[&Type]) -> HashSet<String> {
     let mut by_tail: HashMap<String, HashSet<String>> = HashMap::new();
     for t in types {
@@ -1386,10 +1394,10 @@ fn infer_expr_inner(inf: &mut Infer, env: &TyEnv, e: &Spanned<Expr>) -> Result<T
                 Ok(inf.instantiate(s))
             }
             None => {
-                let mut msg = format!("unknown constructor `{name}`");
+                let mut msg = format!("unknown constructor `{}`", bare_identity(name));
                 let candidates = env
                     .entries()
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, _)| bare_identity(k).to_string())
                     .filter(|k| k.chars().next().is_some_and(char::is_uppercase));
                 if let Some(hint) = did_you_mean(name, candidates) {
                     msg.push_str(&format!(" — did you mean `{hint}`?"));
@@ -1810,11 +1818,11 @@ fn infer_pattern(
         }
         Pattern::Ctor(name, subpats) => {
             let scheme = inf.constructor_scheme(name).ok_or_else(|| {
-                let mut msg = format!("unknown constructor `{name}`");
+                let mut msg = format!("unknown constructor `{}`", bare_identity(name));
                 let candidates = inf
                     .user_ctor_schemes
                     .keys()
-                    .cloned()
+                    .map(|k| bare_identity(k).to_string())
                     .chain(crate::prelude::constructor_names());
                 if let Some(hint) = did_you_mean(name, candidates) {
                     msg.push_str(&format!(" — did you mean `{hint}`?"));
@@ -1826,7 +1834,8 @@ fn infer_pattern(
             if arg_types.len() != subpats.len() {
                 return Err(TypeError::new(
                     format!(
-                        "constructor `{name}` expects {} argument(s), found {}",
+                        "constructor `{}` expects {} argument(s), found {}",
+                        bare_identity(name),
                         arg_types.len(),
                         subpats.len()
                     ),
@@ -1908,9 +1917,10 @@ fn reject_refutable_param(inf: &Infer, param: &Spanned<Pattern>) -> Result<(), T
 /// "not exactly one" — rejecting a pattern that cannot be proved total is the
 /// safe direction.
 ///
-/// The verdict is only as good as the constructor set the registries hold; two
-/// imported modules exposing same-named types corrupt it, which `docs/TODO.md`
-/// records under the Emet language backlog.
+/// The verdict is only as good as the constructor set the registries hold, and
+/// that set is now exact: both registries are keyed by identity, so two imported
+/// modules' same-named types and same-named constructors each keep their own
+/// entry (ADR 0049, ADR 0051).
 fn reject_multi_constructor_param(inf: &Infer, ctor: &str, span: &Span) -> Result<(), TypeError> {
     let Some(scheme) = inf.constructor_scheme(ctor) else {
         return Ok(());
@@ -1925,7 +1935,8 @@ fn reject_multi_constructor_param(inf: &Infer, ctor: &str, span: &Span) -> Resul
     }
     Err(refutable_param_error(
         &format!(
-            "`{ctor}` is one of several constructors of `{}`",
+            "`{}` is one of several constructors of `{}`",
+            bare_identity(ctor),
             bare_identity(&type_name)
         ),
         &format!("the whole `{type_name}`"),
@@ -2244,7 +2255,7 @@ fn missing_constructors(inf: &Infer, scrutinee: &Type, matrix: &[Vec<UPat>]) -> 
                         .iter()
                         .any(|h| *h == Head::Ctor(name.clone(), *arity))
                 })
-                .map(|(name, _)| name.clone())
+                .map(|(name, _)| bare_identity(name).to_string())
                 .collect();
             if missing.is_empty() {
                 "some values are not matched".to_string()
@@ -2613,12 +2624,20 @@ fn register_type_decls(
             .collect();
         inf.user_sum_ctors.insert(td.name.clone(), members);
 
+        // NOTE: the two halves of this check read the variant name at different
+        // widths on purpose. Duplicates compare identities, because two `Wrap`s
+        // declared in one module qualify to the same `M.Wrap` and must still
+        // collide. The prelude check compares bare tails, because `M.Just` would
+        // otherwise no longer look like `Just` — and a module that shadowed a
+        // prelude constructor by qualifying it would make bare `Just` mean the
+        // local one, since `ConstructorScope` knows this module's variants and
+        // not the prelude's (ADR 0051).
         for variant in &td.variants {
             if !ctor_names.insert(variant.name.clone())
-                || crate::prelude::constructor_scheme(&variant.name).is_some()
+                || crate::prelude::constructor_scheme(bare_identity(&variant.name)).is_some()
             {
                 return Err(TypeError::new(
-                    format!("duplicate constructor `{}`", variant.name),
+                    format!("duplicate constructor `{}`", bare_identity(&variant.name)),
                     variant.span.clone(),
                 ));
             }
