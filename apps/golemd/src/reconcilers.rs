@@ -28,15 +28,11 @@
 //! golem on a real Debian box (ADR 0015 addendum).
 //!
 //! Every systemd path that starts a unit first probes `systemctl is-failed` and
-//! runs `reset-failed` when the unit is latched (ADR 0057). A unit that exhausts
-//! `StartLimitBurst` stays `Active: failed` and refuses every later start job
-//! until that latch is cleared, so `enable --now`, `start`, `restart` and
-//! `reload-or-restart` all bounce off it with "start request repeated too
-//! quickly". The restart bracket hid the refusal rather than reporting it: a
-//! `systemdService` glyph whose content id did not change diffs to a `Noop`, the
-//! only change was a drop-in file, and `try-restart` on a unit that is not
-//! running exits 0 without doing anything. golem reported the reconcile green
-//! while three sites stayed down. Found in production, not in a test.
+//! runs `reset-failed` when the unit is latched: a unit that exhausts
+//! `StartLimitBurst` refuses every later start job until that latch is cleared.
+//! A latched unit also takes the forcing verb, because `try-restart` against one
+//! exits 0 having started nothing — which reported three downed sites as green.
+//! Found in production; ADR 0057.
 
 use std::fs;
 use std::io::Write;
@@ -222,16 +218,10 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// file, so the unit is already loaded, and deleting a unit golem wrote is
     /// the `file` glyph's own inverse.
     ///
-    /// A latched failure is cleared before either command: `is-failed` is probed
-    /// and [`Self::clear_failed_latch`] runs when it answers yes, so `enable
-    /// --now` — and the generated-unit `start` fallback below — meets a unit that
-    /// can accept a start job (ADR 0057). The probe sits *after* the
-    /// enabled-and-active early return, not before it, so an already-settled unit
-    /// still issues exactly `is-enabled` and `is-active` and a no-op apply costs
-    /// no extra command. The `Inverse` recorded below is unchanged by the reset:
-    /// `prior_enabled` and `prior_active` are observed before it runs, and a
-    /// latched unit is not active, so it is recorded `prior_active: false` either
-    /// way.
+    /// A latched failure is cleared first, so `enable --now` — and the generated
+    /// `start` fallback below — meets a unit that can accept a start job (ADR
+    /// 0057). The probe sits *after* the enabled-and-active early return, so a
+    /// no-op apply still costs exactly `is-enabled` and `is-active`.
     ///
     /// A generated unit refuses `enable`. A Podman quadlet is already enabled by
     /// its generator through an `[Install]` section, so `systemctl enable --now`
@@ -321,13 +311,9 @@ impl<R: CommandRunner> HostReconciler<R> {
     }
 
     /// Whether `unit` is latched in the failed state — `systemctl is-failed`
-    /// exits 0 when it is. Sibling of [`Self::systemd_enabled`] and
-    /// [`Self::systemd_active`], and disjoint from the latter: a failed unit is
-    /// never active, so a `true` here always pairs with `is-active` saying no.
-    ///
-    /// A merely inactive unit answers `false`. That boundary is what keeps the
-    /// restart bracket's `try-` verbs (ADR 0036) intact for stopped units while
-    /// forcing a start only for units systemd is actively refusing.
+    /// exits 0 when it is. A merely inactive unit answers `false`, which is the
+    /// boundary that keeps the `try-` verbs (ADR 0036) intact for stopped units
+    /// and forces a start only for ones systemd is refusing.
     fn systemd_failed(&self, unit: &str) -> EnactResult<bool> {
         Ok(self
             .runner
@@ -336,38 +322,16 @@ impl<R: CommandRunner> HostReconciler<R> {
     }
 
     /// Run `systemctl reset-failed` on `unit` so the start job that follows is
-    /// not refused. Returns `()`, not [`EnactResult`]: a reset that itself fails
-    /// is logged at `warn` and the caller proceeds to the start anyway.
+    /// not refused. Returns `()`, not [`EnactResult`]: every caller runs a start
+    /// on the next line whose failure is already `Retryable`, so a latch that
+    /// truly blocked the start still fails the reconcile — and the operator wants
+    /// that error, not this one. A refusal is logged at `warn` instead, and
+    /// records no [`Inverse`]. ADR 0057 argues both.
     ///
-    /// Best-effort is the point. Every caller runs, on the next line, a command
-    /// whose failure already becomes `EnactError::Retryable` — so if the latch
-    /// really was the obstacle and the reset really did not clear it, the start
-    /// fails immediately and the reconcile is `Retryable` regardless. Making the
-    /// reset itself `Retryable` adds no outcome; it only removes the ones worth
-    /// keeping. `reset-failed` can fail for reasons that do not block a start —
-    /// the unit vanished between probe and reset, a transient D-Bus hiccup, a
-    /// race with another `reset-failed` — and in each of those the start would
-    /// have succeeded. Turning the preparatory step into a hard stop would fail
-    /// reconciles that otherwise work.
-    ///
-    /// The operator also wants the start's error, not this one. "Job for
-    /// foo.service failed because start request repeated too quickly" names the
-    /// symptom; "Failed to reset failed state of unit ..." says only that a
-    /// cleanup step did not land. Surfacing the reset's stderr as *the* reconcile
-    /// error would bury the diagnosis behind the housekeeping, so it goes to the
-    /// log, adjacent to the error that follows. A transport error from the runner
-    /// folds into the same `refusal` string and the same `warn`.
-    ///
-    /// Nothing is recorded in an [`Inverse`] for this, deliberately. golem's rule
-    /// is that `reverse` restores prior state golem *changed* (ADR 0015), and
-    /// three things say the latch is not that. systemd offers no `set-failed`, so
-    /// there is no operation an `Inverse` variant could enact. The latch is not
-    /// configuration anyone authored — it is systemd's own counter of how many
-    /// times a start job already failed, and zeroing it removes nothing another
-    /// owner could miss. And re-latching would be worse than a no-op: `reverse`
-    /// stops or disables the unit, and re-arming a refusal on a unit golem has
-    /// just stopped would leave the host worse than golem found it, with the next
-    /// operator-initiated start refused by a latch golem restored. See ADR 0057.
+    /// NOTE: the apply path streams this beside `daemon-reload` and `enable
+    /// --now`; the restart bracket and notify path pass a discarding closure,
+    /// having no sink to give it. Threading one through
+    /// [`Reconciler::restart_unit`] is a trait change.
     fn clear_failed_latch(&self, unit: &str, sink: &mut CommandSink<'_>) {
         let refusal = match self
             .runner
@@ -449,11 +413,13 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// glyph, not to whatever config file changed.
     ///
     /// A unit latched failed is the exception ([`restart_verb`]): the latch is
-    /// cleared and the forcing `restart` issued, because `try-restart` on a unit
-    /// that is not running exits 0 and does nothing — which is precisely how a
-    /// failed unit stayed down under a green reconcile. `daemon-reload` still runs
-    /// first and under the `daemon_reload` lock: the bracket fires because golem
-    /// rewrote a file the unit reads, and that file may be the unit's own drop-in.
+    /// cleared and the forcing `restart` issued (ADR 0057).
+    ///
+    /// NOTE: the `is-failed` probe sits *below* `daemon-reload` deliberately. It
+    /// keeps the `daemon_reload` mutex wait — unbounded under `workers > 1` — out
+    /// of the probe-to-verb window, and reads the post-reload view the verb acts
+    /// on, so a unit the reload itself fails is seen. The window is narrowed, not
+    /// closed; the residual is recorded in ADR 0057.
     fn try_restart(&self, unit: &str) -> EnactResult<()> {
         let reloaded = {
             let _guard = self.daemon_reload.lock().unwrap_or_else(|p| p.into_inner());
@@ -634,16 +600,13 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
     // `daemon_reload` mutex is not taken. A notification says the unit's *inputs*
     // changed, never its unit file, so systemd's view of the definitions is
     // already current; the lock exists only to serialize `daemon-reload`
-    // invocations. The absence is deliberate (ADR 0036) and the latch probe added
-    // below does not disturb it — the failed path issues `is-failed`,
-    // `reset-failed`, `reload-or-restart` and still no reload.
+    // invocations. The absence is deliberate (ADR 0036), and the latch path keeps
+    // it — `is-failed`, `reset-failed`, `reload-or-restart`, still no reload.
     //
-    // NOTE: the method name is now narrower than the contract. It issues
-    // `try-reload-or-restart` for a merely inactive unit and the forcing
-    // `reload-or-restart` for a latched-failed one ([`reload_or_restart_verb`]).
-    // Renaming it would ripple through `reconciler.rs`, `fake_reconciler.rs`,
-    // `foreman.rs` and four integration tests; the rename is mechanical and
-    // separate.
+    // TODO(golem): the name is narrower than the contract now — a latched unit
+    // gets the forcing verb ([`reload_or_restart_verb`]). Renaming ripples through
+    // `reconciler.rs`, `fake_reconciler.rs`, `foreman.rs` and four integration
+    // tests; mechanical, and separate.
     fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
         let latched_failed = self.systemd_failed(unit)?;
         if latched_failed {
@@ -677,15 +640,13 @@ fn is_generated_unit(stderr: &str) -> bool {
     stderr.contains("transient or generated")
 }
 
-/// Which verb the restart bracket issues. `try-restart` is the default because
-/// it restarts a running unit and leaves a stopped one stopped — starting an
-/// inactive unit is the `systemdService` glyph's job, not a config change's (ADR
-/// 0036). A latched-failed unit gets the forcing `restart` instead: `try-restart`
-/// would exit 0 and change nothing, reporting success over a unit still down.
+/// Which verb the restart bracket issues. `try-restart` is the default: starting
+/// an inactive unit is the `systemdService` glyph's job, not a config change's
+/// (ADR 0036). A latched-failed unit gets the forcing `restart`, since
+/// `try-restart` would exit 0 and change nothing.
 ///
-/// The `latched_failed` argument is the `is-failed` answer taken before
-/// `reset-failed` ran, so the choice reflects the state golem found, not the
-/// state it has just cleared.
+/// NOTE: `latched_failed` is the `is-failed` answer from before `reset-failed`
+/// ran — the state golem found, not the one it just cleared.
 fn restart_verb(latched_failed: bool) -> &'static str {
     if latched_failed {
         "restart"
@@ -694,9 +655,9 @@ fn restart_verb(latched_failed: bool) -> &'static str {
     }
 }
 
-/// Which verb the `notifies` path issues, on the same rule as [`restart_verb`]
-/// one rung lighter: reload where the unit supports it, restart otherwise, and
-/// for a merely inactive unit do nothing.
+/// [`restart_verb`] one rung lighter for the `notifies` path: reload where the
+/// unit supports it, restart otherwise. Same exception for a latched unit, and
+/// the same reason.
 fn reload_or_restart_verb(latched_failed: bool) -> &'static str {
     if latched_failed {
         "reload-or-restart"

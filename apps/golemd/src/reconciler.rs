@@ -77,8 +77,16 @@ pub trait Reconciler: Send + Sync {
     /// Poke a unit whose *unit file* golem just changed — a true restart, since
     /// systemd cannot reload a changed definition into a running service (ADR
     /// 0020 §5). What the structural config-file heuristic enacts. A unit that is
-    /// merely inactive is left alone; a unit latched in the failed state is the
-    /// one exception and is forced back up (see below).
+    /// merely inactive is left alone — `try-restart` restarts a running unit and
+    /// nothing else.
+    ///
+    /// A unit systemd has latched `failed` is the exception: the latch is cleared
+    /// with `systemctl reset-failed` and the plain `restart` issued, because the
+    /// `try-` verb against a latch exits 0 having started nothing. The gate is the
+    /// unit's state, not the desired scroll — this method receives a unit name and
+    /// no glyph — so the forcing verb can reach a unit no `systemdService` glyph
+    /// declares: a scroll that writes only a drop-in, or a `notifies` naming a
+    /// host-managed unit (ADR 0057).
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
@@ -88,11 +96,14 @@ pub trait Reconciler: Send + Sync {
     /// right. Starting an inactive unit is deliberately out of scope — an inactive
     /// unit's desired state belongs to its `systemdService` glyph.
     ///
-    /// A unit latched in the failed state is not merely inactive, and both pokes
-    /// treat it as the exception (ADR 0057): the implementation clears the latch
-    /// and issues the forcing verb, because the non-forcing one succeeds without
-    /// starting anything and would report a downed service as reconciled. The
-    /// method name says `try_` for the ordinary case only.
+    /// A unit systemd has latched `failed` is not merely inactive, and is the same
+    /// exception [`Reconciler::restart_unit`] makes: the latch is cleared with
+    /// `systemctl reset-failed` and the plain `reload-or-restart` issued, because
+    /// the `try-` verb against a latch exits 0 having started nothing and would
+    /// report a downed service as reconciled. Here too the gate is the unit's
+    /// state and not the desired scroll — a `notifies` may name a unit no
+    /// `systemdService` glyph declares, and it gets the same treatment (ADR 0057).
+    /// The method name says `try_` for the ordinary case only.
     fn try_reload_or_restart(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }

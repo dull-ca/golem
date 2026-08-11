@@ -84,8 +84,9 @@ glyph.
 **A unit latched in the failed state is cleared first.** A unit that
 restarts more times than its `StartLimitBurst` allows stops in
 `Active: failed` and refuses every later start job — `enable --now`,
-`start`, `restart` — with "start request repeated too quickly", until
-someone runs `systemctl reset-failed`. Before enabling, `golemd` probes
+`start`, `restart`, `reload-or-restart` — with "start request repeated too
+quickly", until someone runs `systemctl reset-failed`. Before enabling,
+`golemd` probes
 `systemctl is-failed` and, when the unit is latched, runs `reset-failed`
 so the start that follows can be accepted. A reset that fails is logged
 and the start is attempted anyway: the start's own error names the real
@@ -107,6 +108,12 @@ instead. A `notifies` reload does the same one rung lighter,
 `try-reload-or-restart` becoming `reload-or-restart`. Without it, a
 reconcile whose only change was a drop-in file reported success over a
 service that never came back.
+
+What decides this is the unit's state on the host, not what the scroll
+declares. A poke carries a unit name and nothing else, so the forcing verb
+reaches any latched unit it names — including one no `systemdService`
+glyph declares, such as a scroll that writes only a drop-in, or a
+`notifies` naming a host-managed unit.
 
 ## `file`
 

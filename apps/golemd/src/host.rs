@@ -148,6 +148,10 @@ pub mod fake {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Mutex;
 
+    /// Why a scripted `systemctl reset-failed` was refused. Both exit 1 and
+    /// differ only in whether the latch survives: `AccessDenied` leaves the unit
+    /// failed, so the start that follows is refused too; `UnitVanished` leaves it
+    /// unfailed, since an unloaded unit has no failed state to hold.
     pub enum RefusedReset {
         AccessDenied,
         UnitVanished,
@@ -223,6 +227,9 @@ pub mod fake {
             self
         }
 
+        /// Make `reset-failed` on `unit` exit 1 for the given reason. Chains onto
+        /// [`Self::latched_failed`], since a refused reset is only observable on a
+        /// unit that had a latch to clear.
         pub fn refusing_reset(self, unit: &str, refusal: RefusedReset) -> Self {
             {
                 let mut host = self.host.lock().unwrap();
@@ -427,10 +434,15 @@ pub mod fake {
                         })
                     }
                 }
-                // `reset-failed` clears the latch and nothing else: it does not
-                // start, enable, or otherwise touch the unit. The unit stays
-                // inactive here, so a test that sees it active afterwards saw a
-                // real start.
+                // No arm here starts, enables, or otherwise touches the unit — the
+                // unit stays inactive whatever the outcome, so a test that sees it
+                // active afterwards saw a real start.
+                //
+                // Whether the latch survives a refusal is the whole point of
+                // [`RefusedReset`]. `AccessDenied` leaves it: nothing happened, and
+                // the start that follows is refused too. `UnitVanished` drops it
+                // even though the command exited 1, because a unit systemd has
+                // unloaded has no failed state left to hold.
                 ("systemctl", _) if args.first() == Some(&"reset-failed") => {
                     let unit = args.last().copied().unwrap_or_default();
                     match host.refused_resets.get(unit) {
@@ -465,9 +477,17 @@ pub mod fake {
                             ),
                         });
                     }
-                    // Checked after the generated-unit refusal, matching real
-                    // systemd: `enable` on a generated unit is rejected before a
-                    // start job is ever queued, so the latch never gets a say.
+                    // `enable --now` is two steps, and a latched unit fails only
+                    // the second: the `[Install]` symlinks are written, then the
+                    // start job is refused. So the unit is inserted into `enabled`
+                    // before the refusal returns, leaving it enabled but inactive —
+                    // the state a real host is left in, and the state the apply's
+                    // recorded inverse has to be correct about.
+                    //
+                    // The latch is checked after the generated-unit refusal above
+                    // for the same fidelity: `enable` on a generated unit is
+                    // rejected before any symlink or start job, so the latch never
+                    // gets a say.
                     host.enabled.insert(unit.to_string());
                     if host.failed.contains(unit) {
                         return Ok(start_refused_by_rate_limit(unit));
