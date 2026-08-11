@@ -745,7 +745,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "emet"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "emet-lsp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "emet",
  "lsp-server",
@@ -1005,7 +1005,7 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "golemctl"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "golemd"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2305,7 +2305,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scroll-format"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-siv",
  "blake3",

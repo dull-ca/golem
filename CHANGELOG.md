@@ -9,6 +9,12 @@ v0.1.0 and v0.2.0 have no section of their own. Both tags name a commit that was
 never on `main`, so there is no range for git-cliff to walk between them and the
 work they were meant to mark is folded into v0.3.0.
 
+## v0.4.1 — 2026-08-11
+
+### Fixes
+
+- systemd reset failed ([#22](https://github.com/dull-ca/golem/pull/22)) ([4c36c19](https://github.com/dull-ca/golem/commit/4c36c19194b5b92616eb1d60b6f60d387c5a9abf))
+
 ## v0.4.0 — 2026-08-09
 
 ### Features
