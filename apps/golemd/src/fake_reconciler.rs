@@ -81,13 +81,18 @@ impl Reconciler for FakeReconciler {
         Ok(())
     }
 
+    // NOTE: the log lines name no `systemctl` verb. The real reconciler picks
+    // between `try-restart` and `restart` (and `try-reload-or-restart` and
+    // `reload-or-restart`) from the unit's failed state, which this fake does not
+    // model — naming either one here would put a verb in the log that the host
+    // may not have issued.
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
-        info!(unit = %unit, "try-restart unit");
+        info!(unit = %unit, "restart unit");
         Ok(())
     }
 
     fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
-        info!(unit = %unit, "try-reload-or-restart unit");
+        info!(unit = %unit, "reload-or-restart unit");
         Ok(())
     }
 }

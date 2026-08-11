@@ -188,10 +188,12 @@ pub struct AppliedState {
 /// is a sequence of steps whose `action` is the opposite of the one it undoes.
 ///
 /// `Restart` and `Reload` are non-fold directions: the config-propagation pass
-/// (`foreman::propagate_config`) records each `try-restart` of a unit whose
-/// backing file changed (ADR 0020 §5) as a `Restart` step, and each
-/// `try-reload-or-restart` of a unit an authored `notifies` named (ADR 0036) as a
-/// `Reload` step. They are operational records, not claims on the applied set — a
+/// (`foreman::propagate_config`) records each restart of a unit whose backing
+/// file changed (ADR 0020 §5) as a `Restart` step, and each reload-or-restart of
+/// a unit an authored `notifies` named (ADR 0036) as a `Reload` step. Which
+/// `systemctl` verb each becomes is the reconciler's to pick from the unit's
+/// state — `try-restart` for a running unit, the forcing verb for one latched
+/// failed (ADR 0057) — and the step is the same either way. They are operational records, not claims on the applied set — a
 /// restart of a running unit has no separate reversal, the unit's lifecycle stays
 /// owned by its `systemdService` step. So both are deliberately excluded from
 /// every fold that derives host truth (`wal::applied_outcomes`) and from rollback

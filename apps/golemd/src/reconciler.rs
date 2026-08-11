@@ -76,7 +76,9 @@ pub trait Reconciler: Send + Sync {
     }
     /// Poke a unit whose *unit file* golem just changed — a true restart, since
     /// systemd cannot reload a changed definition into a running service (ADR
-    /// 0020 §5). What the structural config-file heuristic enacts.
+    /// 0020 §5). What the structural config-file heuristic enacts. A unit that is
+    /// merely inactive is left alone; a unit latched in the failed state is the
+    /// one exception and is forced back up (see below).
     fn restart_unit(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }
@@ -85,6 +87,12 @@ pub trait Reconciler: Send + Sync {
     /// notification says the unit's *inputs* changed, so the lighter of the two is
     /// right. Starting an inactive unit is deliberately out of scope — an inactive
     /// unit's desired state belongs to its `systemdService` glyph.
+    ///
+    /// A unit latched in the failed state is not merely inactive, and both pokes
+    /// treat it as the exception (ADR 0057): the implementation clears the latch
+    /// and issues the forcing verb, because the non-forcing one succeeds without
+    /// starting anything and would report a downed service as reconciled. The
+    /// method name says `try_` for the ordinary case only.
     fn try_reload_or_restart(&self, _unit: &str) -> EnactResult<()> {
         Ok(())
     }

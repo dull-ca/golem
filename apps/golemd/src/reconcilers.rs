@@ -26,6 +26,17 @@
 //! freshly written unit file — whether golem wrote it directly or a Podman
 //! quadlet generated it — is invisible to systemd until a reload. Found running
 //! golem on a real Debian box (ADR 0015 addendum).
+//!
+//! Every systemd path that starts a unit first probes `systemctl is-failed` and
+//! runs `reset-failed` when the unit is latched (ADR 0057). A unit that exhausts
+//! `StartLimitBurst` stays `Active: failed` and refuses every later start job
+//! until that latch is cleared, so `enable --now`, `start`, `restart` and
+//! `reload-or-restart` all bounce off it with "start request repeated too
+//! quickly". The restart bracket hid the refusal rather than reporting it: a
+//! `systemdService` glyph whose content id did not change diffs to a `Noop`, the
+//! only change was a drop-in file, and `try-restart` on a unit that is not
+//! running exits 0 without doing anything. golem reported the reconcile green
+//! while three sites stayed down. Found in production, not in a test.
 
 use std::fs;
 use std::io::Write;
@@ -211,6 +222,17 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// file, so the unit is already loaded, and deleting a unit golem wrote is
     /// the `file` glyph's own inverse.
     ///
+    /// A latched failure is cleared before either command: `is-failed` is probed
+    /// and [`Self::clear_failed_latch`] runs when it answers yes, so `enable
+    /// --now` — and the generated-unit `start` fallback below — meets a unit that
+    /// can accept a start job (ADR 0057). The probe sits *after* the
+    /// enabled-and-active early return, not before it, so an already-settled unit
+    /// still issues exactly `is-enabled` and `is-active` and a no-op apply costs
+    /// no extra command. The `Inverse` recorded below is unchanged by the reset:
+    /// `prior_enabled` and `prior_active` are observed before it runs, and a
+    /// latched unit is not active, so it is recorded `prior_active: false` either
+    /// way.
+    ///
     /// A generated unit refuses `enable`. A Podman quadlet is already enabled by
     /// its generator through an `[Install]` section, so `systemctl enable --now`
     /// rejects it as "transient or generated" rather than starting it. On that
@@ -234,6 +256,9 @@ impl<R: CommandRunner> HostReconciler<R> {
         let prior_active = self.systemd_active(unit)?;
         if prior_enabled && prior_active {
             return Ok(outcome(glyph, cid, Inverse::Nothing, false));
+        }
+        if self.systemd_failed(unit)? {
+            self.clear_failed_latch(unit, sink);
         }
         let reloaded = {
             let _guard = self.daemon_reload.lock().unwrap_or_else(|p| p.into_inner());
@@ -295,6 +320,70 @@ impl<R: CommandRunner> HostReconciler<R> {
             .succeeded())
     }
 
+    /// Whether `unit` is latched in the failed state — `systemctl is-failed`
+    /// exits 0 when it is. Sibling of [`Self::systemd_enabled`] and
+    /// [`Self::systemd_active`], and disjoint from the latter: a failed unit is
+    /// never active, so a `true` here always pairs with `is-active` saying no.
+    ///
+    /// A merely inactive unit answers `false`. That boundary is what keeps the
+    /// restart bracket's `try-` verbs (ADR 0036) intact for stopped units while
+    /// forcing a start only for units systemd is actively refusing.
+    fn systemd_failed(&self, unit: &str) -> EnactResult<bool> {
+        Ok(self
+            .runner
+            .run("systemctl", &["is-failed", unit])?
+            .succeeded())
+    }
+
+    /// Run `systemctl reset-failed` on `unit` so the start job that follows is
+    /// not refused. Returns `()`, not [`EnactResult`]: a reset that itself fails
+    /// is logged at `warn` and the caller proceeds to the start anyway.
+    ///
+    /// Best-effort is the point. Every caller runs, on the next line, a command
+    /// whose failure already becomes `EnactError::Retryable` — so if the latch
+    /// really was the obstacle and the reset really did not clear it, the start
+    /// fails immediately and the reconcile is `Retryable` regardless. Making the
+    /// reset itself `Retryable` adds no outcome; it only removes the ones worth
+    /// keeping. `reset-failed` can fail for reasons that do not block a start —
+    /// the unit vanished between probe and reset, a transient D-Bus hiccup, a
+    /// race with another `reset-failed` — and in each of those the start would
+    /// have succeeded. Turning the preparatory step into a hard stop would fail
+    /// reconciles that otherwise work.
+    ///
+    /// The operator also wants the start's error, not this one. "Job for
+    /// foo.service failed because start request repeated too quickly" names the
+    /// symptom; "Failed to reset failed state of unit ..." says only that a
+    /// cleanup step did not land. Surfacing the reset's stderr as *the* reconcile
+    /// error would bury the diagnosis behind the housekeeping, so it goes to the
+    /// log, adjacent to the error that follows. A transport error from the runner
+    /// folds into the same `refusal` string and the same `warn`.
+    ///
+    /// Nothing is recorded in an [`Inverse`] for this, deliberately. golem's rule
+    /// is that `reverse` restores prior state golem *changed* (ADR 0015), and
+    /// three things say the latch is not that. systemd offers no `set-failed`, so
+    /// there is no operation an `Inverse` variant could enact. The latch is not
+    /// configuration anyone authored — it is systemd's own counter of how many
+    /// times a start job already failed, and zeroing it removes nothing another
+    /// owner could miss. And re-latching would be worse than a no-op: `reverse`
+    /// stops or disables the unit, and re-arming a refusal on a unit golem has
+    /// just stopped would leave the host worse than golem found it, with the next
+    /// operator-initiated start refused by a latch golem restored. See ADR 0057.
+    fn clear_failed_latch(&self, unit: &str, sink: &mut CommandSink<'_>) {
+        let refusal = match self
+            .runner
+            .run_streaming("systemctl", &["reset-failed", unit], sink)
+        {
+            Ok(reset) if reset.succeeded() => return,
+            Ok(reset) => reset.stderr,
+            Err(e) => format!("{e:?}"),
+        };
+        warn!(
+            unit = %unit,
+            refusal = %refusal.trim(),
+            "systemctl reset-failed did not clear the unit; starting it anyway"
+        );
+    }
+
     fn reverse_apt(&self, name: &str) -> EnactResult<()> {
         let _guard = self.apt.lock().unwrap_or_else(|p| p.into_inner());
         let removed = self.runner.run("apt-get", &["remove", "-y", name])?;
@@ -354,6 +443,17 @@ impl<R: CommandRunner> HostReconciler<R> {
 }
 
 impl<R: CommandRunner> HostReconciler<R> {
+    /// The restart bracket: reload the definitions, then poke `unit`. Ordinarily
+    /// `try-restart`, which restarts a running unit and leaves a stopped one
+    /// stopped — an inactive unit's desired state belongs to its `systemdService`
+    /// glyph, not to whatever config file changed.
+    ///
+    /// A unit latched failed is the exception ([`restart_verb`]): the latch is
+    /// cleared and the forcing `restart` issued, because `try-restart` on a unit
+    /// that is not running exits 0 and does nothing — which is precisely how a
+    /// failed unit stayed down under a green reconcile. `daemon-reload` still runs
+    /// first and under the `daemon_reload` lock: the bracket fires because golem
+    /// rewrote a file the unit reads, and that file may be the unit's own drop-in.
     fn try_restart(&self, unit: &str) -> EnactResult<()> {
         let reloaded = {
             let _guard = self.daemon_reload.lock().unwrap_or_else(|p| p.into_inner());
@@ -365,10 +465,16 @@ impl<R: CommandRunner> HostReconciler<R> {
                 reloaded.stderr
             )));
         }
-        let restarted = self.runner.run("systemctl", &["try-restart", unit])?;
+        let latched_failed = self.systemd_failed(unit)?;
+        if latched_failed {
+            let mut discard = |_level, _line: &str| {};
+            self.clear_failed_latch(unit, &mut discard);
+        }
+        let verb = restart_verb(latched_failed);
+        let restarted = self.runner.run("systemctl", &[verb, unit])?;
         if !restarted.succeeded() {
             return Err(EnactError::Retryable(format!(
-                "systemctl try-restart {unit}: {}",
+                "systemctl {verb} {unit}: {}",
                 restarted.stderr
             )));
         }
@@ -528,14 +634,27 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
     // `daemon_reload` mutex is not taken. A notification says the unit's *inputs*
     // changed, never its unit file, so systemd's view of the definitions is
     // already current; the lock exists only to serialize `daemon-reload`
-    // invocations. The absence is deliberate (ADR 0036).
+    // invocations. The absence is deliberate (ADR 0036) and the latch probe added
+    // below does not disturb it — the failed path issues `is-failed`,
+    // `reset-failed`, `reload-or-restart` and still no reload.
+    //
+    // NOTE: the method name is now narrower than the contract. It issues
+    // `try-reload-or-restart` for a merely inactive unit and the forcing
+    // `reload-or-restart` for a latched-failed one ([`reload_or_restart_verb`]).
+    // Renaming it would ripple through `reconciler.rs`, `fake_reconciler.rs`,
+    // `foreman.rs` and four integration tests; the rename is mechanical and
+    // separate.
     fn try_reload_or_restart(&self, unit: &str) -> EnactResult<()> {
-        let reloaded = self
-            .runner
-            .run("systemctl", &["try-reload-or-restart", unit])?;
+        let latched_failed = self.systemd_failed(unit)?;
+        if latched_failed {
+            let mut discard = |_level, _line: &str| {};
+            self.clear_failed_latch(unit, &mut discard);
+        }
+        let verb = reload_or_restart_verb(latched_failed);
+        let reloaded = self.runner.run("systemctl", &[verb, unit])?;
         if !reloaded.succeeded() {
             return Err(EnactError::Retryable(format!(
-                "systemctl try-reload-or-restart {unit}: {}",
+                "systemctl {verb} {unit}: {}",
                 reloaded.stderr
             )));
         }
@@ -556,6 +675,34 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
 /// why and the sturdier signal to move to.
 fn is_generated_unit(stderr: &str) -> bool {
     stderr.contains("transient or generated")
+}
+
+/// Which verb the restart bracket issues. `try-restart` is the default because
+/// it restarts a running unit and leaves a stopped one stopped — starting an
+/// inactive unit is the `systemdService` glyph's job, not a config change's (ADR
+/// 0036). A latched-failed unit gets the forcing `restart` instead: `try-restart`
+/// would exit 0 and change nothing, reporting success over a unit still down.
+///
+/// The `latched_failed` argument is the `is-failed` answer taken before
+/// `reset-failed` ran, so the choice reflects the state golem found, not the
+/// state it has just cleared.
+fn restart_verb(latched_failed: bool) -> &'static str {
+    if latched_failed {
+        "restart"
+    } else {
+        "try-restart"
+    }
+}
+
+/// Which verb the `notifies` path issues, on the same rule as [`restart_verb`]
+/// one rung lighter: reload where the unit supports it, restart otherwise, and
+/// for a merely inactive unit do nothing.
+fn reload_or_restart_verb(latched_failed: bool) -> &'static str {
+    if latched_failed {
+        "reload-or-restart"
+    } else {
+        "try-reload-or-restart"
+    }
 }
 
 fn apt_install_names(ops: &[GlyphOp]) -> Vec<String> {
@@ -1001,7 +1148,7 @@ fn remove_line_in_file(path: &str, line: &str) -> EnactResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::fake::{FakeCommandRunner, ScriptedStreamingRunner};
+    use crate::host::fake::{FakeCommandRunner, RefusedReset, ScriptedStreamingRunner};
     use crate::progress::EventLevel;
     use crate::reconcile::glyph_content_id;
 
@@ -1446,6 +1593,13 @@ mod tests {
         assert!(!outcome.changed);
         assert_eq!(outcome.inverse, Inverse::Nothing);
 
+        let log = runner_of(&rec).log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("systemctl is-failed")),
+            "a settled unit returns before the latch probe, so it costs no extra command, \
+             log was {log:?}"
+        );
+
         rec.reverse(&outcome).unwrap();
         assert!(runner_of(&rec).is_enabled("app") && runner_of(&rec).is_active("app"));
     }
@@ -1534,6 +1688,282 @@ mod tests {
                 prior_active: false,
                 started_only: false,
             }
+        );
+    }
+
+    #[test]
+    fn systemd_apply_clears_a_latched_failure_before_starting_the_unit() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_service("app", true, false).latched_failed("app"),
+        );
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+
+        assert!(outcome.changed);
+        assert!(runner_of(&rec).is_active("app"));
+        assert!(!runner_of(&rec).is_failed("app"));
+
+        let log = runner_of(&rec).log();
+        let reset = log.iter().position(|c| c == "systemctl reset-failed app");
+        let reload = log.iter().position(|c| c == "systemctl daemon-reload");
+        let enable = log.iter().position(|c| c == "systemctl enable --now app");
+        assert!(
+            reset.is_some(),
+            "expected a reset-failed for the latched unit, log was {log:?}"
+        );
+        assert!(
+            reset < reload && reload < enable,
+            "reset-failed must precede daemon-reload and enable --now, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_apply_proceeds_to_the_start_when_reset_failed_is_refused() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_service("app", true, false)
+                .latched_failed("app")
+                .refusing_reset("app", RefusedReset::AccessDenied),
+        );
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let failure = rec.apply(&glyph, cid).unwrap_err();
+
+        let log = runner_of(&rec).log();
+        let reset = log.iter().position(|c| c == "systemctl reset-failed app");
+        let enable = log.iter().position(|c| c == "systemctl enable --now app");
+        assert!(
+            reset.is_some() && reset < enable,
+            "a refused reset is not control flow: the start still runs, log was {log:?}"
+        );
+        match failure {
+            EnactError::Retryable(message) => {
+                assert!(
+                    message.starts_with("systemctl enable --now app:"),
+                    "the operator gets the start's error, got {message:?}"
+                );
+                assert!(
+                    !message.contains("reset-failed"),
+                    "the housekeeping failure must not bury the diagnosis, got {message:?}"
+                );
+            }
+            other => panic!("expected the start's Retryable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn systemd_apply_settles_when_a_refused_reset_left_nothing_latched() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_service("app", true, false)
+                .latched_failed("app")
+                .refusing_reset("app", RefusedReset::UnitVanished),
+        );
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec
+            .apply(&glyph, cid)
+            .expect("a refused reset never fails a reconcile the start itself can settle");
+
+        assert!(outcome.changed);
+        assert!(runner_of(&rec).is_active("app"));
+        let log = runner_of(&rec).log();
+        assert!(
+            log.iter().any(|c| c == "systemctl reset-failed app"),
+            "expected the reset attempt, log was {log:?}"
+        );
+        assert!(
+            log.iter().any(|c| c == "systemctl enable --now app"),
+            "expected the start after the refused reset, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_restart_bracket_proceeds_to_the_restart_when_reset_failed_is_refused() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_service("app", true, false)
+                .latched_failed("app")
+                .refusing_reset("app", RefusedReset::AccessDenied),
+        );
+
+        let failure = rec.restart_unit("app").unwrap_err();
+
+        let log = runner_of(&rec).log();
+        let reset = log.iter().position(|c| c == "systemctl reset-failed app");
+        let restart = log.iter().position(|c| c == "systemctl restart app");
+        assert!(
+            reset.is_some() && reset < restart,
+            "a refused reset is not control flow: the restart still runs, log was {log:?}"
+        );
+        match failure {
+            EnactError::Retryable(message) => assert!(
+                message.starts_with("systemctl restart app:"),
+                "the operator gets the restart's error, got {message:?}"
+            ),
+            other => panic!("expected the restart's Retryable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn systemd_apply_clears_a_latched_failure_before_the_generated_unit_start_fallback() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_generated_service("app").latched_failed("app"),
+        );
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        let outcome = rec.apply(&glyph, cid).unwrap();
+
+        assert!(outcome.changed);
+        assert!(runner_of(&rec).is_active("app"));
+        let log = runner_of(&rec).log();
+        let reset = log.iter().position(|c| c == "systemctl reset-failed app");
+        let start = log.iter().position(|c| c == "systemctl start app");
+        assert!(
+            start.is_some(),
+            "expected the start fallback after enable was refused, log was {log:?}"
+        );
+        assert!(
+            reset.is_some() && reset < start,
+            "reset-failed must precede the start fallback, log was {log:?}"
+        );
+        assert_eq!(
+            outcome.inverse,
+            Inverse::DisableSystemdService {
+                unit: "app".into(),
+                prior_enabled: true,
+                prior_active: false,
+                started_only: true,
+            }
+        );
+    }
+
+    #[test]
+    fn systemd_apply_leaves_a_merely_inactive_unit_unreset() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", true, false));
+        let glyph = systemd("app");
+        let cid = glyph_content_id(&glyph);
+
+        rec.apply(&glyph, cid).unwrap();
+
+        let log = runner_of(&rec).log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("systemctl reset-failed")),
+            "an inactive unit was never failed, so nothing is reset, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_restart_bracket_clears_a_latched_failure_and_really_restarts() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_service("app", true, false).latched_failed("app"),
+        );
+
+        rec.restart_unit("app").unwrap();
+
+        assert!(runner_of(&rec).is_active("app"));
+        assert!(!runner_of(&rec).is_failed("app"));
+        let log = runner_of(&rec).log();
+        let reset = log.iter().position(|c| c == "systemctl reset-failed app");
+        let restart = log.iter().position(|c| c == "systemctl restart app");
+        assert!(
+            restart.is_some(),
+            "a latched unit needs the forcing verb, log was {log:?}"
+        );
+        assert!(
+            reset.is_some() && reset < restart,
+            "reset-failed must precede the restart, log was {log:?}"
+        );
+        assert!(
+            !log.iter().any(|c| c == "systemctl try-restart app"),
+            "try-restart would silently no-op on a latched unit, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_restart_bracket_leaves_a_merely_inactive_unit_to_the_try_verb() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", true, false));
+
+        rec.restart_unit("app").unwrap();
+
+        assert!(!runner_of(&rec).is_active("app"));
+        let log = runner_of(&rec).log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("systemctl reset-failed")),
+            "no reset for a unit that never failed, log was {log:?}"
+        );
+        assert!(
+            !log.iter().any(|c| c == "systemctl restart app"),
+            "an inactive unit's activation stays the systemdService glyph's call, log was {log:?}"
+        );
+        let reload = log.iter().position(|c| c == "systemctl daemon-reload");
+        let try_restart = log.iter().position(|c| c == "systemctl try-restart app");
+        assert!(
+            try_restart.is_some(),
+            "expected the try- verb, log was {log:?}"
+        );
+        assert!(
+            reload < try_restart,
+            "daemon-reload must still precede the try-restart, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_notify_clears_a_latched_failure_and_really_reloads_or_restarts() {
+        let rec = HostReconciler::with_runner(
+            FakeCommandRunner::with_service("app", true, false).latched_failed("app"),
+        );
+
+        rec.try_reload_or_restart("app").unwrap();
+
+        assert!(runner_of(&rec).is_active("app"));
+        assert!(!runner_of(&rec).is_failed("app"));
+        let log = runner_of(&rec).log();
+        let reset = log.iter().position(|c| c == "systemctl reset-failed app");
+        let reload_or_restart = log
+            .iter()
+            .position(|c| c == "systemctl reload-or-restart app");
+        assert!(
+            reload_or_restart.is_some(),
+            "a latched unit needs the forcing verb, log was {log:?}"
+        );
+        assert!(
+            reset.is_some() && reset < reload_or_restart,
+            "reset-failed must precede the reload-or-restart, log was {log:?}"
+        );
+        assert!(
+            !log.iter()
+                .any(|c| c == "systemctl try-reload-or-restart app"),
+            "try-reload-or-restart would silently no-op on a latched unit, log was {log:?}"
+        );
+        assert!(
+            !log.iter().any(|c| c == "systemctl daemon-reload"),
+            "the notify path still never reloads the definitions, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn systemd_notify_leaves_a_merely_inactive_unit_to_the_try_verb() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", true, false));
+
+        rec.try_reload_or_restart("app").unwrap();
+
+        assert!(!runner_of(&rec).is_active("app"));
+        let log = runner_of(&rec).log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("systemctl reset-failed")),
+            "no reset for a unit that never failed, log was {log:?}"
+        );
+        assert!(
+            !log.iter().any(|c| c == "systemctl reload-or-restart app"),
+            "an inactive unit's activation stays the systemdService glyph's call, log was {log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|c| c == "systemctl try-reload-or-restart app"),
+            "expected the try- verb, log was {log:?}"
         );
     }
 

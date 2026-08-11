@@ -7,6 +7,18 @@ deferred (an authored notify edge beyond the structural config-file
 heuristic). Implementation plan:
 `docs/superpowers/plans/2026-07-31-plan-verb-and-notify-reload.md`.
 
+Narrowed by
+[ADR 0057](0057-clearing-a-latched-failure-before-starting-a-unit.md)
+(2026-08-11): a unit systemd has latched `failed` is cleared with `systemctl
+reset-failed` and then poked with the non-`try` verb. The rejected alternative
+below still stands for the case it was about — a merely *inactive* unit is left
+alone by the `try-` verbs. It does **not** still stand as written for a failed
+one: the gate is the unit's state, not the scroll's declaration, so a
+`notifies` naming a unit no `systemdService` glyph declares can now restart it
+when it is latched. ADR 0057 argues why (`failed` means something already asked
+the unit to run) and records what that exposes. Everything else here, the absent
+`daemon-reload` included, is unchanged.
+
 ## Context
 
 golemctl can apply a manifest and watch it enact, but cannot answer "what
@@ -107,7 +119,12 @@ bumps 3 → 4.
   `notifies nginx.service` once.
 - **`reload-or-restart` (start-if-inactive) instead of `try-`.** Rejected:
   activation policy belongs to the `systemdService` glyph, not to a
-  notification side effect.
+  notification side effect. Amended by ADR 0057 for the failed case only: a unit
+  that is *failed* rather than inactive is reset and forced, because the `try-`
+  verb is a silent no-op against a latch and no glyph can express its way past
+  one. That forcing is gated on the unit's state, so it can reach a notified
+  unit this scroll never declared — the sentence above holds for inactive units,
+  not for failed ones.
 - **Client-side plan (golemctl computes the diff).** Rejected: the diff
   needs the host's journal (prior outcomes), which lives with golemd; the
   daemon owning it keeps one code path (`reconcile::plan`) authoritative.

@@ -214,6 +214,13 @@ quadlet generated it — is invisible to systemd until a reload; without it,
 `enable` fails on a unit systemd has never seen. Found running golem on a real
 Debian box via the fleet harness (`apps/fleet/`).
 
+The sequence gained one step in
+[ADR 0057](0057-clearing-a-latched-failure-before-starting-a-unit.md): after the
+already-enabled-and-active early return and before the reload, a unit systemd
+has latched `failed` is cleared with `systemctl reset-failed`, or `enable --now`
+would be refused outright by the start rate limit. The captured inverse is
+unchanged, and deliberately records nothing about the latch.
+
 The reverse path deliberately does not reload. Reverse never writes a unit
 file, so the unit is already loaded; deleting a unit golem wrote is the `file`
 glyph's own inverse, not something the systemd reverse needs to account for.

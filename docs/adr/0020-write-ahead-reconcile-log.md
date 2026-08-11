@@ -12,6 +12,20 @@ ordering of persistence relative to the side effect — and folds two ADR 0015
 open items (rollback-vs-resume on partial failure; the applied-state snapshot)
 into one write-ahead structure.
 
+Narrowed by
+[ADR 0057](0057-clearing-a-latched-failure-before-starting-a-unit.md)
+(2026-08-11) in one place: §5's propagation pass runs `systemctl try-restart`
+only for a unit that is **not** in systemd's `failed` state. A latched-failed
+unit is cleared with `systemctl reset-failed` and then given a plain `restart`,
+because `try-restart` against a latch is a successful no-op that starts nothing
+— a green reconcile over a dead service, which is how it was found. "Restart
+only if currently active; do nothing if not" below therefore now reads "do
+nothing if it is merely inactive"; a failed unit is a third case §5 did not
+distinguish. Everything else in §5 stands: the pass is still scoped to files
+golem wrote under unit directories, the restart is still a `Restart`-action WAL
+step outside the applied-set fold and outside rollback, and it is still
+idempotently re-driven on recovery.
+
 ## Context
 
 golemd's write path today (`apps/golemd/src/foreman.rs::reconcile`) is:
