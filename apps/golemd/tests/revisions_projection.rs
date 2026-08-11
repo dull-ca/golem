@@ -99,7 +99,7 @@ fn the_revision_projects_the_attempts_applied_ops() {
     let keys: Vec<String> = latest.outcomes.iter().map(|o| o.op.key()).collect();
     assert!(keys.contains(&"apt:nginx".to_string()));
     assert!(keys.contains(&"apt:pg".to_string()));
-    assert_eq!(latest.scroll_content_id.is_some(), true);
+    assert!(latest.scroll_content_id.is_some());
 }
 
 #[test]

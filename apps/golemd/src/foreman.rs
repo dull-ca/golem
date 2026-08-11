@@ -1323,7 +1323,7 @@ impl Foreman {
     /// registers its unit as applied — a service that failed to enact must still
     /// diff as an attempt next reconcile, never masked to `Noop` — and out of
     /// rollback ([`next_reversible`]); a crash mid-propagation re-runs the
-    /// idempotent try-restart ([`Foreman::redrive_intended`]) rather than
+    /// idempotent restart ([`Foreman::redrive_intended`]) rather than
     /// reversing it. Scoped to files golem itself wrote under unit directories, so
     /// it never restarts units for host-managed config golem did not touch. A
     /// changed file whose `Done` a later `Reversed` cancelled — a unit that applied
@@ -1332,8 +1332,8 @@ impl Foreman {
     /// so a rolled-back unit's service is never spuriously restarted (ADR 0029 §4).
     ///
     /// ADR 0036 adds a second, authored source over the same rows: the `notifies`
-    /// union at a step's `unit_path` ([`notified_units`]), enacted as
-    /// `try-reload-or-restart` rather than a restart. [`merge_reloads`] folds the
+    /// union at a step's `unit_path` ([`notified_units`]), enacted as a
+    /// reload-or-restart rather than a restart. [`merge_reloads`] folds the
     /// two into one coalesced set — restart wins where both name a unit — and both
     /// are journaled under [`RELOADS_SEGMENT`].
     ///
@@ -1657,7 +1657,7 @@ impl Foreman {
     /// terminal row — the steps golem crashed across, where the side effect may
     /// or may not have happened. Re-run each idempotently (`apply` re-`apply`s and
     /// re-captures the inverse; `reverse` re-reverses; a [`WalAction::Restart`]
-    /// re-runs the idempotent try-restart) and record the result as the step's
+    /// re-runs the idempotent restart) and record the result as the step's
     /// `Done`/`Failed`, so rollback afterward sees a consistent log. Safe because
     /// every reconciler observes host state first, so re-running converges whether
     /// or not the interrupted call took effect (ADR 0020 §3).

@@ -1124,9 +1124,9 @@ fn string_pad(mut args: Vec<Value>) -> Value {
     let left = half.ceil().max(0.0) as usize;
     let right = half.floor().max(0.0) as usize;
     let mut out = String::new();
-    out.extend(std::iter::repeat(pad).take(left));
+    out.extend(std::iter::repeat_n(pad, left));
     out.push_str(s);
-    out.extend(std::iter::repeat(pad).take(right));
+    out.extend(std::iter::repeat_n(pad, right));
     Value::Str(out)
 }
 
@@ -1136,7 +1136,7 @@ fn string_pad_left(mut args: Vec<Value>) -> Value {
     let n = as_int(&args.pop().unwrap());
     let s = as_string(&s);
     let deficit = (n - s.chars().count() as i64).max(0) as usize;
-    let mut out: String = std::iter::repeat(pad).take(deficit).collect();
+    let mut out: String = std::iter::repeat_n(pad, deficit).collect();
     out.push_str(s);
     Value::Str(out)
 }
@@ -1148,7 +1148,7 @@ fn string_pad_right(mut args: Vec<Value>) -> Value {
     let s = as_string(&s);
     let deficit = (n - s.chars().count() as i64).max(0) as usize;
     let mut out = s.to_string();
-    out.extend(std::iter::repeat(pad).take(deficit));
+    out.extend(std::iter::repeat_n(pad, deficit));
     Value::Str(out)
 }
 

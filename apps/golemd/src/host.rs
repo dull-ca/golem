@@ -145,8 +145,17 @@ fn join_lines(lines: &[String]) -> String {
 #[cfg(test)]
 pub mod fake {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Mutex;
+
+    /// Why a scripted `systemctl reset-failed` was refused. Both exit 1 and
+    /// differ only in whether the latch survives: `AccessDenied` leaves the unit
+    /// failed, so the start that follows is refused too; `UnitVanished` leaves it
+    /// unfailed, since an unloaded unit has no failed state to hold.
+    pub enum RefusedReset {
+        AccessDenied,
+        UnitVanished,
+    }
 
     #[derive(Default)]
     pub struct FakeHost {
@@ -154,6 +163,8 @@ pub mod fake {
         enabled: BTreeSet<String>,
         active: BTreeSet<String>,
         generated: BTreeSet<String>,
+        failed: BTreeSet<String>,
+        refused_resets: BTreeMap<String, RefusedReset>,
     }
 
     #[derive(Default)]
@@ -202,8 +213,37 @@ pub mod fake {
             runner
         }
 
+        /// Put `unit` in the failed state a real unit reaches by exhausting
+        /// `StartLimitBurst`. Chaining rather than a constructor so it composes
+        /// with both [`Self::with_service`] and [`Self::with_generated_service`] —
+        /// a latched quadlet is the production shape — instead of doubling the
+        /// constructor count.
+        pub fn latched_failed(self, unit: &str) -> Self {
+            {
+                let mut host = self.host.lock().unwrap();
+                host.failed.insert(unit.to_string());
+                host.active.remove(unit);
+            }
+            self
+        }
+
+        /// Make `reset-failed` on `unit` exit 1 for the given reason. Chains onto
+        /// [`Self::latched_failed`], since a refused reset is only observable on a
+        /// unit that had a latch to clear.
+        pub fn refusing_reset(self, unit: &str, refusal: RefusedReset) -> Self {
+            {
+                let mut host = self.host.lock().unwrap();
+                host.refused_resets.insert(unit.to_string(), refusal);
+            }
+            self
+        }
+
         pub fn is_installed(&self, package: &str) -> bool {
             self.host.lock().unwrap().installed.contains(package)
+        }
+
+        pub fn is_failed(&self, unit: &str) -> bool {
+            self.host.lock().unwrap().failed.contains(unit)
         }
 
         pub fn is_enabled(&self, unit: &str) -> bool {
@@ -259,6 +299,27 @@ pub mod fake {
                 }
             }
             self.inner.run(program, args)
+        }
+    }
+
+    /// The refusal real systemd returns for a unit latched in the failed state
+    /// after exhausting `StartLimitBurst`. Every command that queues a start job
+    /// — `enable`, `start`, `restart`, `reload-or-restart` — gets this until
+    /// `reset-failed` clears the latch, which is what made a green reconcile hide
+    /// three downed services (ADR 0057).
+    fn start_refused_by_rate_limit(unit: &str) -> CommandOutput {
+        CommandOutput {
+            status: 1,
+            stdout: String::new(),
+            stderr: format!("Job for {unit} failed because start request repeated too quickly."),
+        }
+    }
+
+    fn reset_refused(unit: &str, reason: &str) -> CommandOutput {
+        CommandOutput {
+            status: 1,
+            stdout: String::new(),
+            stderr: format!("Failed to reset failed state of unit {unit}: {reason}."),
         }
     }
 
@@ -352,6 +413,56 @@ pub mod fake {
                         })
                     }
                 }
+                // `is-failed` exits 0 for a latched unit and non-zero otherwise,
+                // the inverse convention of `is-enabled`/`is-active` reading as
+                // "yes" on 0. A unit is never both failed and active, so
+                // `latched_failed` drops it from `active` to keep the two answers
+                // consistent.
+                ("systemctl", _) if args.first() == Some(&"is-failed") => {
+                    let unit = args.last().copied().unwrap_or_default();
+                    if host.failed.contains(unit) {
+                        Ok(CommandOutput {
+                            status: 0,
+                            stdout: "failed\n".into(),
+                            stderr: String::new(),
+                        })
+                    } else {
+                        Ok(CommandOutput {
+                            status: 1,
+                            stdout: "inactive\n".into(),
+                            stderr: String::new(),
+                        })
+                    }
+                }
+                // No arm here starts, enables, or otherwise touches the unit — the
+                // unit stays inactive whatever the outcome, so a test that sees it
+                // active afterwards saw a real start.
+                //
+                // Whether the latch survives a refusal is the whole point of
+                // [`RefusedReset`]. `AccessDenied` leaves it: nothing happened, and
+                // the start that follows is refused too. `UnitVanished` drops it
+                // even though the command exited 1, because a unit systemd has
+                // unloaded has no failed state left to hold.
+                ("systemctl", _) if args.first() == Some(&"reset-failed") => {
+                    let unit = args.last().copied().unwrap_or_default();
+                    match host.refused_resets.get(unit) {
+                        Some(RefusedReset::AccessDenied) => {
+                            Ok(reset_refused(unit, "Access denied"))
+                        }
+                        Some(RefusedReset::UnitVanished) => {
+                            host.failed.remove(unit);
+                            Ok(reset_refused(unit, &format!("Unit {unit} not loaded")))
+                        }
+                        None => {
+                            host.failed.remove(unit);
+                            Ok(CommandOutput {
+                                status: 0,
+                                stdout: String::new(),
+                                stderr: String::new(),
+                            })
+                        }
+                    }
+                }
                 ("systemctl", _) if args.first() == Some(&"enable") => {
                     let unit = args.last().copied().unwrap_or_default();
                     // A generated unit (a Podman quadlet) is enabled by its
@@ -366,7 +477,21 @@ pub mod fake {
                             ),
                         });
                     }
+                    // `enable --now` is two steps, and a latched unit fails only
+                    // the second: the `[Install]` symlinks are written, then the
+                    // start job is refused. So the unit is inserted into `enabled`
+                    // before the refusal returns, leaving it enabled but inactive —
+                    // the state a real host is left in, and the state the apply's
+                    // recorded inverse has to be correct about.
+                    //
+                    // The latch is checked after the generated-unit refusal above
+                    // for the same fidelity: `enable` on a generated unit is
+                    // rejected before any symlink or start job, so the latch never
+                    // gets a say.
                     host.enabled.insert(unit.to_string());
+                    if host.failed.contains(unit) {
+                        return Ok(start_refused_by_rate_limit(unit));
+                    }
                     host.active.insert(unit.to_string());
                     Ok(CommandOutput {
                         status: 0,
@@ -395,6 +520,9 @@ pub mod fake {
                 }
                 ("systemctl", _) if args.first() == Some(&"start") => {
                     let unit = args.last().copied().unwrap_or_default();
+                    if host.failed.contains(unit) {
+                        return Ok(start_refused_by_rate_limit(unit));
+                    }
                     host.active.insert(unit.to_string());
                     Ok(CommandOutput {
                         status: 0,
@@ -402,11 +530,41 @@ pub mod fake {
                         stderr: String::new(),
                     })
                 }
-                ("systemctl", _) if args.first() == Some(&"try-restart") => Ok(CommandOutput {
-                    status: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                }),
+                // The forcing verbs queue a start job, so a latched unit refuses
+                // them exactly as it refuses `enable` and `start`. Clear the latch
+                // first and the unit comes back active — that transition is what
+                // the reset tests assert on.
+                ("systemctl", _)
+                    if args.first() == Some(&"restart")
+                        || args.first() == Some(&"reload-or-restart") =>
+                {
+                    let unit = args.last().copied().unwrap_or_default();
+                    if host.failed.contains(unit) {
+                        return Ok(start_refused_by_rate_limit(unit));
+                    }
+                    host.active.insert(unit.to_string());
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+                // The `try-` verbs act only on a *running* unit, and neither a
+                // failed nor a merely inactive unit is running — so they exit 0
+                // and change nothing at all, not even for a latched unit. That
+                // silent success is the production bug: a green reconcile over a
+                // service that never started. Modelled faithfully so a test that
+                // takes this arm can only pass by leaving the unit down.
+                ("systemctl", _)
+                    if args.first() == Some(&"try-restart")
+                        || args.first() == Some(&"try-reload-or-restart") =>
+                {
+                    Ok(CommandOutput {
+                        status: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
                 // Best-effort forensics probes: model a failed unit so the
                 // diagnose path has status and journal text to combine.
                 ("systemctl", _) if args.first() == Some(&"status") => {

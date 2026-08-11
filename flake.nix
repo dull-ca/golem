@@ -32,6 +32,12 @@
 
         craneLibStatic = crane.mkLib pkgsStatic;
 
+        # For the `clippy` and `fmt` gates only. A lint fires the same on any
+        # target, and `pkgsStatic.clippy` is far from free: it wants a
+        # static-musl LLVM 21 built from source (5 derivations, ~2.4 GiB of
+        # fetches), where `pkgs.clippy` is a ~6 MiB substituted fetch.
+        craneLibNative = crane.mkLib pkgs;
+
         # An allow-list rather than crane's `cleanCargoSource`, which strips the
         # `.emet` fixtures the emet suites read. Edits outside these roots leave
         # every rust build cached.
@@ -300,6 +306,36 @@
           echo "the site serves" > $out
         '';
 
+        # `commonArgs`, not `staticArgs`: a lint gate has no use for
+        # `+crt-static`, and its dependencies compile for the native target
+        # regardless, so it cannot share `cargoArtifacts` with the binaries.
+        cargoArtifactsNative = craneLibNative.buildDepsOnly (commonArgs // {
+          pname = "golem-workspace-native";
+        });
+
+        # The lint half of the gate.
+        clippy = craneLibNative.cargoClippy (commonArgs // {
+          pname = "golem-clippy";
+          cargoArtifacts = cargoArtifactsNative;
+          # NOTE: `cargoExtraArgs` is deliberately left unset here, unlike the
+          # binaries above, so that crane's own `--locked` survives.
+          cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
+          # Nothing downstream consumes this check's target dir, as below.
+          doInstallCargoArtifacts = false;
+        });
+
+        # `rustSource` suffices where `workspace-tests` needs `documentedSource`:
+        # rustfmt and clippy only parse and compile, and no crate here reaches a
+        # file through `include_str!`/`include!`. It is the emet doc-gate tests
+        # that read the prose trees, and they do it at run time.
+        fmt = craneLibNative.cargoFmt {
+          pname = "golem-fmt";
+          src = rustSource;
+          inherit (commonArgs) version;
+          cargoExtraArgs = "--all";
+          doInstallCargoArtifacts = false;
+        };
+
         # The test half of the gate, so the per-package builds above carry
         # `doCheck = false`. Covers the crates with no release binary (e.g.
         # scroll-format) and the cross-crate integration tests.
@@ -355,6 +391,8 @@
         # into the closure, leaving the image itself about a second of tar.
         checks = {
           inherit golemd golemctl emetc emet-lsp golem-tools;
+          # Assertions, not artifacts, so they are here and not in `packages`.
+          inherit clippy fmt;
           inherit workspace-tests fleet-tests;
           inherit websiteDist website-serves website-container;
           # The guards decide what may be published, so they are gated like

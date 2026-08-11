@@ -1,5 +1,22 @@
 { pkgs, ... }:
 
+let
+  # The rust toolchain comes from the flake's nixpkgs, read straight out of
+  # flake.lock, so `cargo clippy` in this shell and the `clippy` gate under
+  # `nix flake check` are the same binary and cannot disagree about which lints
+  # fire. devenv resolves its own nixpkgs and cannot see the flake's inputs, so
+  # the lock is the only place both sides share; `nix flake update` moves them
+  # together, and there is no second pin to keep in step.
+  #
+  # NOTE: `nodes.nixpkgs` is NOT this flake's — it is dull-nix's. The root's own
+  # input is `nodes.nixpkgs_2`, which is why the node is looked up by name
+  # through `nodes.root.inputs` rather than assumed.
+  flakeLock = builtins.fromJSON (builtins.readFile ./flake.lock);
+  flakeNixpkgsNode = flakeLock.nodes.root.inputs.nixpkgs;
+  flakeNixpkgs = import (builtins.fetchTree flakeLock.nodes.${flakeNixpkgsNode}.locked) {
+    inherit (pkgs.stdenv.hostPlatform) system;
+  };
+in
 {
   # Caches the devenv environment itself; golem build artifacts flow through
   # the flake's nixConfig and the `warm-cache` script instead.
@@ -9,8 +26,11 @@
 
   languages.rust = {
     enable = true;
-    channel = "stable";
+    channel = "nixpkgs";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" ];
+    toolchain = {
+      inherit (flakeNixpkgs) rustc cargo clippy rustfmt rust-analyzer;
+    };
   };
 
   # Docs site lives under sites/website — Astro + Starlight, runs on bun.

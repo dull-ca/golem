@@ -914,7 +914,7 @@ fn constraint_admits(c: Constraint, t: &Type) -> bool {
     if let Type::Tuple(elems) = t {
         return match c {
             Constraint::None => true,
-            Constraint::Comparable => elems.iter().all(|e| comparable_element(e)),
+            Constraint::Comparable => elems.iter().all(comparable_element),
             Constraint::Number | Constraint::Appendable => false,
         };
     }

@@ -1,3 +1,9 @@
+# NOTE: no `imports: [./devenv.nix]` here. devenv loads the root devenv.nix as
+# the entry module already, and naming it again evaluates it twice, so every
+# option it sets is defined twice over. That is invisible for a string or a
+# list, which merge when the definitions agree, but a `types.package` option
+# rejects a second definition even when it is identical -- which is what
+# `languages.rust.toolchain` is.
 inputs:
   fenix:
     url: github:nix-community/fenix
@@ -11,5 +17,3 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
-imports:
-- ./devenv.nix

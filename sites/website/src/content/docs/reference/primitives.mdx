@@ -81,6 +81,40 @@ to `systemctl start` and records that it only started the unit — reverse
 then *stops* it and never disables it. Any other `enable` failure fails the
 glyph.
 
+**A unit latched in the failed state is cleared first.** A unit that
+restarts more times than its `StartLimitBurst` allows stops in
+`Active: failed` and refuses every later start job — `enable --now`,
+`start`, `restart`, `reload-or-restart` — with "start request repeated too
+quickly", until someone runs `systemctl reset-failed`. Before enabling,
+`golemd` probes
+`systemctl is-failed` and, when the unit is latched, runs `reset-failed`
+so the start that follows can be accepted. A reset that fails is logged
+and the start is attempted anyway: the start's own error names the real
+symptom, and a reset can fail for reasons that would not have blocked it.
+
+Nothing is recorded to undo the reset. golem reverses state it changed,
+and the latch is systemd's own count of past failed starts, not
+configuration anyone authored — there is no `set-failed` to re-arm it
+with, and re-arming it on a unit reverse has just stopped would leave the
+host worse than golem found it.
+
+The same probe guards the pokes a changed file triggers. Ordinarily a
+config change earns `systemctl try-restart`, which restarts a running unit
+and leaves a stopped one stopped, because starting an inactive unit is
+this glyph's decision and not a config file's. A latched unit is the
+exception: `try-restart` on a unit that is not running exits 0 and does
+nothing at all, so golem clears the latch and issues the forcing `restart`
+instead. A `notifies` reload does the same one rung lighter,
+`try-reload-or-restart` becoming `reload-or-restart`. Without it, a
+reconcile whose only change was a drop-in file reported success over a
+service that never came back.
+
+What decides this is the unit's state on the host, not what the scroll
+declares. A poke carries a unit name and nothing else, so the forcing verb
+reaches any latched unit it names — including one no `systemdService`
+glyph declares, such as a scroll that writes only a drop-in, or a
+`notifies` naming a host-managed unit.
+
 ## `file`
 
 Ensure a file exists with fixed contents and mode.

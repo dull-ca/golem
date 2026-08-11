@@ -84,7 +84,10 @@ lib              Emet libraries that ship with the toolchain (Quadlet, Traefik, 
 The whole test-and-build gate is `nix flake check` (`flake.nix`). It builds all
 four binaries — `emetc`, `emet-lsp`, `golemd`, `golemctl`, each static-musl, so
 one file runs on a Debian guest and on NixOS — and runs the Cargo workspace
-tests, the `apps/fleet` harness tests, and the release-guard tests. The docs
+tests, the `apps/fleet` harness tests, and the release-guard tests. `clippy`
+(`--workspace --all-targets --all-features -- -D warnings`) and `rustfmt` are
+gated the same way, against the toolchain the dev shell hands you, so a lint
+cannot pass locally and fail here. The docs
 site is in the gate too: that it builds, that the real nginx and the shipped
 config actually serve the built pages, and that the published image assembles.
 Any machine with nix runs the entire gate with that one command.
