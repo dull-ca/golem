@@ -44,7 +44,7 @@ pub enum Ctx {
 /// Streaming layout processor. `next` pulls one laid-out token at a time,
 /// internally applying the close-on-`in` rule (see the module doc) as it
 /// goes — no caller feedback needed.
-pub struct Layout {
+struct Layout {
     /// input tokens (already lexed), reversed for cheap pop from the back
     input: Vec<Token>,
     pos: usize,
@@ -71,7 +71,7 @@ fn vtok(kind: Tok, model: &Token) -> Token {
 }
 
 impl Layout {
-    pub fn new(input: Vec<Token>) -> Self {
+    fn new(input: Vec<Token>) -> Self {
         Layout {
             input,
             pos: 0,
@@ -97,7 +97,7 @@ impl Layout {
 
     /// Produce the next laid-out token, driving the L algorithm. Returns Eof
     /// tokens forever once exhausted.
-    pub fn next(&mut self) -> Token {
+    fn next(&mut self) -> Token {
         if let Some(t) = self.queue.pop_front() {
             return t;
         }

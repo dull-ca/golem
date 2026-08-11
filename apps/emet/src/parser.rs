@@ -194,6 +194,7 @@ where
 // none of them can tell `A.B` from `A . B` on its own, which is why the
 // adjacency test lives here: every dot must touch the segment on each side, so a
 // name written across whitespace is not one name.
+#[allow(clippy::type_complexity)]
 fn dotted_upper_name<'src, I>(
 ) -> impl Parser<'src, I, String, extra::Err<Rich<'src, Tok, TokSpan>>> + Clone
 where
@@ -486,6 +487,7 @@ where
         // member `containerName` of module `Limesurvey.Database` (ADR 0049).
         // Every piece must touch its neighbours, which is what keeps this from
         // swallowing `Foo . bar` or a record access spelled across a space.
+        #[allow(clippy::type_complexity)]
         let qualified = select! { Tok::Upper(u) => u }
             .map_with(|u, e| (u, span_range(e.span())))
             .then(

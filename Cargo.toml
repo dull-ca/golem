@@ -6,7 +6,6 @@ members = ["apps/golemd", "apps/golemctl", "apps/emet", "apps/emet-lsp", "libs/s
 version     = "0.4.0"
 edition     = "2021"
 license     = "AGPL-3.0-only"
-rust-version = "1.75"
 
 [workspace.dependencies]
 # shared core
