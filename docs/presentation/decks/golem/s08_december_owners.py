@@ -30,7 +30,8 @@ ROWS = (
     ),
     (
         RhythmCard(
-            1.0, LabelledBox("Nobody", "health and reconciliation stayed manual", MANUAL)
+            1.0,
+            LabelledBox("Nobody", "nothing watched for drift or failure", MANUAL),
         ),
     ),
 )
@@ -38,11 +39,7 @@ ROWS = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "December: who owned what",
-        "Four tools sharing six layers, and one job nobody took.",
-    )
+    slide_header(scene, "December: who owned what")
     card_rhythm(
         scene,
         MARGIN,

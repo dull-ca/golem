@@ -40,7 +40,7 @@ GLYPH_CARDS: tuple[Sequence[TextLine], ...] = (
         literal("Glyph::Filesystem { path, entry: Entry }        key  file:<path>"),
         literal("Entry = File { contents, perms } | Directory { perms } | Symlink { target }"),
         literal("Perms { mode: u16, owner: Option<String>, group: Option<String> }"),
-        gloss("three surface spellings of one glyph — the count stays four"),
+        gloss("one glyph, three surface spellings"),
     ),
     (
         literal("lineInFile { path, line }"),
@@ -52,11 +52,7 @@ GLYPH_CARDS: tuple[Sequence[TextLine], ...] = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "The four glyphs",
-        "Each arm carries only its own fields, so illegal states cannot be written.",
-    )
+    slide_header(scene, "The four glyphs")
     cursor = CARDS_Y
     for lines in GLYPH_CARDS:
         drawn = text_card(scene, MARGIN, cursor, CONTENT_WIDTH, lines, GLYPH_TONE)

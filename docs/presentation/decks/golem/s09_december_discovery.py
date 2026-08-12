@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import IconCard, icon_card_row, slide_header, span_bar
-from excalidraw.palette import BLUE, INK_FAINT, PLATFORM, WHITE, WIRE, WORKLOAD, Tone
-from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
+from excalidraw.layout import IconCard, icon_card_row, slide_header
+from excalidraw.palette import BLUE, INK_FAINT, WHITE, WIRE, WORKLOAD, Tone
+from excalidraw.scene import MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
 
 SLUG = "december-discovery"
-TITLE = "December: service discovery"
+TITLE = "December: how a client found a service"
 
 CARDS_Y = 200.0
 CARD_HEIGHT = 380.0
 ICON_SIZE = 140.0
-CLOSING_Y = 700.0
-CLOSING_HEIGHT = 58.0
 
 CARD_TONE = Tone(BLUE, WHITE)
 EDGE_TONE = Tone(INK_FAINT, WHITE)
@@ -47,7 +45,7 @@ CARDS = (
         icons.container,
         icons.CONTAINER_ASPECT,
         "Clients",
-        "ask for the name, not the box",
+        "look up the name, connect to what it returns",
         EDGE_TONE,
         WORKLOAD,
     ),
@@ -56,11 +54,7 @@ CARDS = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "December: how a client found a service",
-        "A private network, and DNS that names services.",
-    )
+    slide_header(scene, TITLE)
     icon_card_row(
         scene,
         MARGIN,
@@ -70,14 +64,5 @@ def build() -> Scene:
         icon_size=ICON_SIZE,
         flow=True,
         detail_font_size=BODY_SIZE,
-    )
-    span_bar(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        CONTENT_WIDTH,
-        "A client resolves a service, never a machine.",
-        tone=PLATFORM,
-        height=CLOSING_HEIGHT,
     )
     return scene

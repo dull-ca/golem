@@ -6,8 +6,6 @@ from excalidraw.palette import BLUE, CONTROL, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
 
-from ..vocabulary import PLACEMENT, part
-
 SLUG = "placement-what-it-weighs"
 TITLE = "What the scheduler weighs"
 
@@ -37,7 +35,7 @@ def build() -> Scene:
     slide_header(
         scene,
         "What the scheduler weighs",
-        f"{part(PLACEMENT).title}, up close. Four inputs, one node.",
+        "A scheduler reads these four inputs and picks one node.",
     )
     icons.scheduler(scene, SCHEDULER_X, SCHEDULER_Y, SCHEDULER_SIZE)
     hub_and_satellites(
@@ -45,7 +43,7 @@ def build() -> Scene:
         MARGIN,
         SATELLITES_Y,
         CONTENT_WIDTH,
-        LabelledBox("Scheduler", "one decision", CONTROL),
+        LabelledBox("Scheduler", "one node per workload", CONTROL),
         INPUTS,
         satellite_height=SATELLITE_HEIGHT,
         hub_width=HUB_WIDTH,

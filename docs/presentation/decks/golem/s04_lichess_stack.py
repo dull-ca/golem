@@ -13,11 +13,7 @@ CLOSING_Y = lichess_stack.BOTTOM + 22
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "What lichess actually runs",
-        "Six layers. Five stack; the sixth is not a layer at all.",
-    )
+    slide_header(scene, "What lichess runs")
     lichess_stack.draw(
         scene,
         layer_tones=lichess_stack.DESCRIPTIVE_LAYER_TONES,
@@ -27,7 +23,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         CLOSING_Y,
-        "Layer 6 is a column, not a band: it acts across 2 to 5.",
+        "Layer 6 runs across layers 2 to 5, so it is drawn beside them.",
         width=CONTENT_WIDTH,
     )
     return scene

@@ -24,11 +24,7 @@ CLOSING_HEIGHT = 62.0
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Storage and secrets",
-        "Two things that have to follow the workload.",
-    )
+    slide_header(scene, "Storage and secrets")
     volumes, secrets = split_compare(
         scene,
         MARGIN,
@@ -75,7 +71,7 @@ def build() -> Scene:
         scene,
         secrets.body.x,
         FIRST_NOTE_Y,
-        "Delivered to the node that runs it.",
+        "Held by the platform, delivered at runtime.",
         width=secrets.body.width,
         font_size=BODY_SIZE,
         align="center",

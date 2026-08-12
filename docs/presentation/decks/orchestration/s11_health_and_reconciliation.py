@@ -1,15 +1,8 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import (
-    LabelledBox,
-    connector,
-    labelled_box,
-    note,
-    slide_header,
-    span_bar,
-)
-from excalidraw.palette import BLUE, GREEN, HEALTHY, INK_FAINT, RED, WHITE, Tone
+from excalidraw.layout import LabelledBox, connector, labelled_box, note, slide_header
+from excalidraw.palette import BLUE, GREEN, INK_FAINT, RED, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
 
@@ -42,8 +35,6 @@ DRIFT_X = 810.0
 ICON_Y = 405.0
 
 NOTE_Y = 740.0
-CLOSING_Y = 810.0
-CLOSING_HEIGHT = 62.0
 
 
 def build() -> Scene:
@@ -51,7 +42,8 @@ def build() -> Scene:
     slide_header(
         scene,
         TITLE,
-        "Desired against actual, forever.",
+        "Reconciliation compares the state you asked for against the state on the "
+        "host, and acts on the difference.",
     )
     for x, y, box in (
         (LEFT_X, TOP_Y, DESIRED),
@@ -102,14 +94,5 @@ def build() -> Scene:
         NOTE_Y,
         "A crash and a config change enter the same loop.",
         width=CONTENT_WIDTH,
-    )
-    span_bar(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        CONTENT_WIDTH,
-        'Nothing is ever "done" — the loop is the product.',
-        tone=HEALTHY,
-        height=CLOSING_HEIGHT,
     )
     return scene

@@ -44,7 +44,7 @@ def build() -> Scene:
     slide_header(
         scene,
         TITLE,
-        "One workload, several nodes that could take it, one binding.",
+        "A binding is the record that this workload runs on that node.",
     )
     icons.scheduler(scene, SCHEDULER_X, SCHEDULER_Y, SCHEDULER_SIZE)
     note(
@@ -73,7 +73,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CONTENT_WIDTH,
-        "Nothing else in the system answers which node.",
+        "Placement is the only part that chooses a node.",
         tone=CONTROL,
         height=CLOSING_HEIGHT,
     )

@@ -1,17 +1,9 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import (
-    IconCard,
-    badge,
-    icon_card_row,
-    note,
-    slide_header,
-    span_bar,
-)
+from excalidraw.layout import IconCard, badge, icon_card_row, note, slide_header
 from excalidraw.palette import (
     BESPOKE,
-    CONTAINER,
     NEUTRAL,
     NODE,
     ORANGE,
@@ -49,9 +41,6 @@ CARDS_Y = 430.0
 CARD_HEIGHT = 340.0
 ICON_SIZE = 150.0
 
-BAR_Y = 806.0
-BAR_HEIGHT = 64.0
-
 CARDS = (
     IconCard(
         icons.container_image,
@@ -84,8 +73,8 @@ def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(
         scene,
-        "What a container adds to that process",
-        "An isolation boundary, drawn around a process that never left.",
+        "What a container adds",
+        "A container is a process on the host, given three things it did not have.",
     )
     scene.rectangle(MARGIN, BAND_Y, CONTENT_WIDTH, BAND_HEIGHT, NEUTRAL)
     icons.host(scene, HOST_X, HOST_Y, HOST_SIZE, tone=NODE)
@@ -103,7 +92,7 @@ def build() -> Scene:
         scene,
         ASIDE_X,
         ASIDE_Y,
-        "Still processes on that host. Not virtual machines.",
+        "These share the host's kernel. A virtual machine does not.",
         width=ASIDE_WIDTH,
     )
     icon_card_row(
@@ -114,14 +103,5 @@ def build() -> Scene:
         card_height=CARD_HEIGHT,
         icon_size=ICON_SIZE,
         detail_font_size=BODY_SIZE,
-    )
-    span_bar(
-        scene,
-        MARGIN,
-        BAR_Y,
-        CONTENT_WIDTH,
-        "Same kernel. A different view.",
-        tone=CONTAINER,
-        height=BAR_HEIGHT,
     )
     return scene

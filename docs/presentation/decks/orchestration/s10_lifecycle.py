@@ -99,7 +99,6 @@ def build() -> Scene:
     slide_header(
         scene,
         f"The {TITLE.lower()} of one workload",
-        "Five states, and the moves between them.",
     )
     state_machine(scene, STATES, MOVES)
     icon_card_row(
@@ -117,7 +116,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         CLOSING_Y,
-        "A platform performs these moves. Otherwise a human does.",
+        "A platform performs these moves, or a person does.",
         width=CONTENT_WIDTH,
     )
     return scene

@@ -18,9 +18,7 @@ class OrchestrationPart(NamedTuple):
 
 
 ORCHESTRATION_PARTS: tuple[OrchestrationPart, ...] = (
-    OrchestrationPart(
-        1, "Placement", "the scheduler — the only part that answers which node"
-    ),
+    OrchestrationPart(1, "Placement", "choosing which node runs a workload"),
     OrchestrationPart(
         2, "Lifecycle", "start, stop, restart, drain, rolling update, rollback"
     ),

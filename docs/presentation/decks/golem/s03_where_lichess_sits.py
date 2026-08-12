@@ -23,7 +23,6 @@ TIMELINE_Y = 300.0
 MARKER_HEIGHT = 44.0
 COMPARISON_Y = 560.0
 COMPARISON_HEIGHT = 190.0
-CLOSING_Y = 782.0
 
 TICKS = (
     Tick("Bare metal + config mgmt", tone=YOURS),
@@ -40,11 +39,7 @@ PORTAINER_LAST = 4
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Where lichess sits on that ladder",
-        "The leftmost column — and everything after this is about that column.",
-    )
+    slide_header(scene, "Where lichess sits")
     step = CONTENT_WIDTH / len(TICKS)
     lichess_x = MARGIN + step / 2.0
     marker = badge(
@@ -64,7 +59,7 @@ def build() -> Scene:
         portainer_left,
         ANNOTATION_Y,
         portainer_right - portainer_left,
-        "Portainer — a configurator on top of these, not another layer",
+        "Portainer — a web UI that manages these platforms",
         tone=BESPOKE,
         height=ANNOTATION_HEIGHT,
     )
@@ -89,28 +84,21 @@ def build() -> Scene:
         COMPARISON_Y,
         CONTENT_WIDTH,
         COMPARISON_HEIGHT,
-        ("Left of the middle", YOURS),
-        ("Right of the middle", PLATFORM),
+        ("You name the machine", YOURS),
+        ("The platform picks the machine", PLATFORM),
     )
     note(
         scene,
         left.body.x,
         left.body.y,
-        "You name the machine.",
+        "Bare metal with configuration management, and Docker on one host.",
         width=left.body.width,
     )
     note(
         scene,
         right.body.x,
         right.body.y,
-        "You name the shape. The platform picks the machine.",
+        "Swarm, Nomad, Kubernetes, and managed Kubernetes.",
         width=right.body.width,
-    )
-    note(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        "lichess: configured, rented bare metal.",
-        width=CONTENT_WIDTH,
     )
     return scene

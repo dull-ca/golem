@@ -1,14 +1,7 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import (
-    LabelledBox,
-    badge,
-    box_row,
-    note,
-    slide_header,
-    span_bar,
-)
+from excalidraw.layout import LabelledBox, badge, box_row, slide_header, span_bar
 from excalidraw.palette import (
     CONTAINER,
     NEUTRAL,
@@ -46,7 +39,6 @@ JOB_GAP = 24.0
 
 BAR_Y = 720.0
 BAR_HEIGHT = 64.0
-CLOSING_Y = 816.0
 
 JOB_TONE = Tone(TEAL, WHITE)
 
@@ -64,7 +56,7 @@ def build() -> Scene:
     slide_header(
         scene,
         "One host, many containers",
-        "What a container runtime answers on a single machine.",
+        "A container runtime is the program that runs containers on one host.",
     )
     scene.rectangle(MARGIN, BAND_Y, CONTENT_WIDTH, BAND_HEIGHT, NEUTRAL)
     icons.host(scene, HOST_X, HOST_Y, HOST_SIZE, tone=NODE)
@@ -101,15 +93,8 @@ def build() -> Scene:
         MARGIN,
         BAR_Y,
         CONTENT_WIDTH,
-        "The runtime answers everything about this machine.",
+        "The runtime does all of this on one machine only.",
         tone=CONTAINER,
         height=BAR_HEIGHT,
-    )
-    note(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        "Nothing here decides which machine.",
-        width=CONTENT_WIDTH,
     )
     return scene

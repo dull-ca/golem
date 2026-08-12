@@ -43,11 +43,7 @@ CELL_TONES = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Who provides which piece",
-        "The same jobs, answered by four different platforms.",
-    )
+    slide_header(scene, "Who provides which piece")
     grid = matrix(
         scene,
         MARGIN,
@@ -64,8 +60,8 @@ def build() -> Scene:
         MARGIN,
         grid.bottom + 24,
         (
-            (PLATFORM, "the platform answers it"),
-            (YOURS, "you answer it"),
+            (PLATFORM, "provided by the platform"),
+            (YOURS, "you provide it"),
             (THEIRS, "no such thing here"),
         ),
     )

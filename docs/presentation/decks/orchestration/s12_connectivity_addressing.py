@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import note, slide_header, span_bar, split_compare
+from excalidraw.layout import note, slide_header, split_compare
 from excalidraw.palette import NODE, WIRE, WORKLOAD
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
@@ -27,17 +27,10 @@ OVERLAY_CONTAINER_GAP = 60.0
 
 PANEL_NOTE_Y = 650.0
 
-CLOSING_Y = 770.0
-CLOSING_HEIGHT = 62.0
-
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Connectivity: addressing",
-        "Two ways to wire it.",
-    )
+    slide_header(scene, "Connectivity: addressing")
     note(
         scene,
         MARGIN,
@@ -104,14 +97,5 @@ def build() -> Scene:
         width=overlay.body.width,
         font_size=BODY_SIZE,
         align="center",
-    )
-    span_bar(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        CONTENT_WIDTH,
-        "The address is not the name.",
-        tone=WIRE,
-        height=CLOSING_HEIGHT,
     )
     return scene
