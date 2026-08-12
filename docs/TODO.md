@@ -503,6 +503,24 @@ standalone project.
   land only once captured in full. A `reverse_streaming` seam mirroring
   `apply_streaming` is the natural follow-up.
 
+- **Batch the systemd probe with `systemctl show` — DEFERRED (ADR 0058).**
+  `Reconciler::observe` asks `systemctl is-enabled` then `is-active` per unit,
+  two subprocesses each, where `systemctl show
+  --property=UnitFileState,ActiveState,LoadState u1 u2 …` would answer a whole
+  scroll in one. It was deferred because the mapping is unverified, not because
+  2N spawns are wanted: `UnitFileState` is a value set (`enabled`,
+  `enabled-runtime`, `static`, `indirect`, `generated`, `linked`, `masked`,
+  `disabled`) where `is-enabled` is an exit code, several of those values exit
+  0, and whether a unit systemd does not know emits a block at all is
+  unconfirmed. An allowlist that is wrong there makes `golemctl plan
+  --against-host` call a dead service fine or a fine one divergent — the plan
+  lying about exactly what the column was added to check, which is worse than
+  the spawns. Gated on a test asserting the batch verdict equals the per-unit
+  verdict across the full state set: enabled / enabled-runtime / static /
+  indirect / generated / linked / masked / disabled × active / inactive /
+  failed, plus a unit that does not exist. Land that test first, then the
+  batch.
+
 - **Convergence test for racing real applies (ADR 0034).** ADR 0034's bounded
   parallel-unit execution is live-verified on a real host, but there is no
   automated test that races two real, concurrent applies against the same host
