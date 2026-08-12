@@ -2,9 +2,10 @@
 
 Two decks, generated as Excalidraw files by a small Python program.
 
-- **`golem`** — twenty-nine slides: what problem golem solves, how it works, how
-  to use it. Slides 14 to 19 are one sequence: twenty-four machines drawn once,
-  six times over, with a different set of layers configured on each frame.
+- **`golem`** — thirty-three slides: what problem golem solves, how it works, how
+  to use it. Slides 14 to 23 are one sequence over the thirty machines the lichess
+  Ansible inventory names, and what changes between frames is which units sit on
+  them and who keeps each one.
 - **`orchestration`** — seventeen slides: cloud orchestration from first
   principles, standing on its own but landing where golem lands.
 
@@ -28,7 +29,7 @@ that includes the files the `restore()` check reads, so run `build.py` first.
 
 ```
 dist/
-  golem/01-what-you-buy.excalidraw … 29-plan-against-host.excalidraw
+  golem/01-what-you-buy.excalidraw … 33-plan-against-host.excalidraw
   golem/golem-deck.excalidraw
   orchestration/01-a-process-on-a-host.excalidraw … 17-where-golem-sits.excalidraw
   orchestration/orchestration-deck.excalidraw
@@ -93,7 +94,7 @@ how a deck starts to read as one slide shown many times.
 | card rhythm | `card_rhythm` | groups of unequal weight, 3 then 2 then 1 |
 | timeline | `timeline` | a spectrum with named positions |
 | coverage bars | `coverage_bars` | how far something reached, row by row |
-| machine fleet | `decks/golem/fleet.draw` | what has been configured, machine by machine |
+| machine fleet | `decks/golem/fleet.draw` | which units sit on which machine, and who keeps each one |
 
 Two rations hold in the golem deck: **at most two matrix slides**, and **the
 six-layer lichess figure appears exactly twice** — slide 05 introduces it, slide
@@ -101,7 +102,7 @@ six-layer lichess figure appears exactly twice** — slide 05 introduces it, sli
 changes colour and nothing else.
 
 Three modules hold a figure that more than one slide draws: `lichess_stack.py`
-(slides 05 and 07), `lichess_ladder.py` (03 and 04) and `fleet.py` (14 to 19).
+(slides 05 and 07), `lichess_ladder.py` (03 and 04) and `fleet.py` (14 to 23).
 Each takes state and no geometry — the constants inside are the figure, and a
 slide that passed its own size would make the same figure jump between slides.
 
@@ -127,6 +128,10 @@ repeated inside a dashed enclosure, `binding` is `pending_workload` over three
 `host` marks, `replica_set` is `container` repeated. There is one `container`, so
 a container looks the same in both decks.
 
+Two marks the fleet sequence needs live in `decks/golem/fleet.py` rather than
+here: the machine box and the scroll. Both are specific to that sequence, and the
+catalogue is for what both decks share.
+
 `binding` is the one to understand. Assignment is an act, not a noun: an unplaced
 workload, the nodes that could have taken it, and the one arrow that settled it.
 The rejected candidates stay on the mark, faint and dashed.
@@ -138,7 +143,7 @@ No icon draws text, so none can breach the type floor at any scale.
 ## The one imported mark
 
 `assets/robot-golem.svg` — **by Lorc, from game-icons.net, under CC BY 3.0** —
-is golem's symbol, embedded as an Excalidraw image element on slide 18.
+is golem's symbol, embedded as an Excalidraw image element on slide 22.
 Attribution is required by the licence and is carried in `assets/README.md`,
 `SPEC.md`, here, and on the slide itself.
 
@@ -177,6 +182,11 @@ Colours come from `excalidraw.palette` by meaning (`YOURS`, `PLATFORM`, `GAP`,
 
 Strings both decks must agree on — the five names of the orchestration jobs —
 live in `decks/vocabulary.py`. Import them; never retype one.
+
+The fleet's hosts and unit counts live in `decks/golem/lichess_fleet.py`, derived
+from `lichess-sysadmin/ansible/inventory/hosts.yaml` and written out so a reviewer
+can check them against it. Host names and counts only — the inventory is full of
+addresses, MACs and key names, and none of that goes on a slide.
 
 Then rebuild and check.
 
@@ -257,9 +267,20 @@ against the real 5px.
 **A card and the icon on it must not share a fill.** Give an icon-bearing card a
 white fill and the icon the saturated tone, or the mark disappears into the card.
 
-**Scenes may share an id namespace; one canvas may not share an id.** The six
+**Scenes may share an id namespace; one canvas may not share an id.** The wide
 fleet frames pass `id_namespace=` so an unchanged element keeps its id across
 them, which is legal because they are separate documents. The combined deck merges
 them onto one canvas, where a duplicate id makes `restore()` reissue one at random
 and drop the bindings pointing at it — `framed_deck` renames collisions as it
 merges. SPEC.md, "Stable ids across a sequence", has the reasoning.
+
+**No frame may rely on a transition.** Excalidraw+'s Present mode is not known to
+interpolate anything, and the shared id namespace is not a mechanism to lean on —
+SPEC.md, "Excalidraw+ transitions are unverified". A build-up is spelled out as
+extra frames, each of which reads on its own.
+
+**Faint and dotted means *not yet*.** An unconfigured machine takes `INK_GHOST`
+with `strokeStyle: "dotted"` — lighter than anything else on the canvas, so the
+eye lands on what a tool has done. Use the same treatment for any not-yet state
+rather than inventing a per-slide one; a second idiom for the same meaning is how
+a viewer stops trusting either.
