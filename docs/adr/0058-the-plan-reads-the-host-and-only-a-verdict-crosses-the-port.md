@@ -29,7 +29,9 @@ bind and bearer token, and preserves
 apt glyph never participates in drift detection. Implementation lands on
 `lakin/plan-live-host-diff`: a new `apps/golemd/src/observe.rs`, the port method
 in `reconciler.rs`, the per-kind probes in `reconcilers.rs`, the wire fields in
-`plan_report.rs`, and the second block in `apps/golemctl/src/plan.rs`.
+`plan_report.rs`, the second block in `apps/golemctl/src/plan.rs`, and the
+probe's serialization against a live apply in `foreman.rs`
+(`write_activity_snapshot`, `try_write_guard`, `ForemanError::HostBusy`).
 
 ## Context
 
@@ -208,6 +210,71 @@ which is the ADR 0015 rule the journal rests on.
   glyph is `Realized`, every `Remove`'s resource is already gone, and
   **nothing** is `Unknown`. That last clause is the one a client would get
   wrong, and getting it wrong means calling a host safe golem could not check.
+- **A host probe is checked against golem's own write activity by snapshot
+  and recheck, never by holding a lock across it.** Only the `JournalAndHost`
+  arm is gated — `JournalOnly` reads the append-only, monotonic WAL and never
+  touches the write lock, so it keeps succeeding during an apply exactly as
+  it always has. `Foreman::observe_against_host` takes a
+  `write_activity_snapshot` before calling `Reconciler::observe`, calls
+  `observe` with **no lock held at all**, then takes a second snapshot after
+  and compares. `write_activity_snapshot` itself calls `try_write_guard`, a
+  non-blocking sibling of `write_guard`: `None` means an apply already holds
+  the lock, mid-reconcile, and answers `HostBusy` immediately. A free lock is
+  not by itself proof nothing is running — `ingest` opens an attempt and
+  marks it `Enacting` under one write-lock acquisition, releases the lock,
+  and `run_reconcile` re-acquires it separately — so between those two
+  acquisitions an attempt can be live while the lock sits free. The same
+  unsettled-attempt check `ingest`'s own gate makes closes that second
+  window — made while `write_activity_snapshot` still holds the guard,
+  which it then drops before `observe` runs. Two snapshots that agree —
+  same `(reconcile_id, phase)`, or both `None` — mean the probe ran clean;
+  a mismatch, or either snapshot alone answering `HostBusy`, returns
+  `ForemanError::HostBusy`, mapped to `409` and distinct from
+  `ReconcileInProgress` because that error's advice — poll the running
+  attempt instead of re-applying — answers a different question than the one
+  a plan asked. Comparing the two snapshots, rather than holding one lock
+  across the whole probe, is what catches an apply that both starts and
+  finishes entirely inside the probe's window: invisible to either snapshot
+  alone, visible the moment they are compared.
+- **That guarantee covers the probe alone, and the response's other fields
+  say less than "refused, not raced" would imply.** `plan_manifest_scoped`
+  reads `against_revision` and the WAL steps behind the journal column
+  before the host probe starts, unsynchronized with any concurrent write.
+  A reconcile that commits between that read and the snapshot-and-recheck
+  around `observe` produces a report whose journal column reflects the host
+  before the apply and whose host column reflects it after — two columns
+  from two different instants in one response. This is judged harmless
+  rather than closed: a stale `prior` can only over-produce ops (a glyph the
+  just-finished apply already wrote still looks pending on the journal
+  side), and an over-produced op's host verdict reads `Realized` regardless,
+  so the extra row corrects itself in the reader's eyes rather than
+  misleading them. But "refused, not raced or queued" describes the probe's
+  own guarantee against golem's writer, not the response as a whole.
+- **Refuse rather than block, on both a practical and a deeper argument.**
+  `run_reconcile` holds the write lock for an entire reconcile — apt installs
+  plus the whole retry budget, and `TUTORIAL-fleet.md` documents a cold
+  guest's first apply as "many minutes" — and `golemctl` builds its HTTP
+  client with no timeout configured, so a queued plan would not time out: it
+  would hang the operator's terminal for however long the apply ran, and
+  stall `fleet plan`'s concurrent fan-out on that one host while every other
+  host finished. But the stronger reason is not the missing client timeout:
+  an apply in flight means the host is being actively rewritten, so a reality
+  diff taken then is not a stale-but-valid snapshot, it is a reading of a
+  moving target. Refusing is more truthful than handing back an
+  authoritative-looking answer measured at an arbitrary instant mid-rewrite.
+  The cost is real and stated plainly: the operator has to retry, and on a
+  long apply may retry more than once — the price of not lying.
+- **Deadlock and starvation were checked, not assumed.** `observe` takes no
+  golemd-level lock at all — not `apt`, not `daemon_reload`, not
+  `line_locks` (`HostReconciler::observe`/`observe_op`/`observe_apt_batch`
+  call only `self.runner.run` and `self.keyring.open`) — so there is no
+  second lock for the write guard to order against, and deadlock is
+  structurally impossible. Starvation is now moot in both directions:
+  `try_lock` never queues, so a plan can never starve an apply waiting for
+  the lock, and since the guard is never held across `observe`, a plan
+  cannot delay a waiting apply either — the guard it does take is released
+  before `observe` runs, so there is no window in which a probe holds
+  anything an apply needs.
 
 ## Consequences
 
@@ -251,6 +318,60 @@ which is the ADR 0015 rule the journal rests on.
   costs one subprocess plus roughly two per unit, plus a few hundred syscalls; a
   worker pool buys nothing measurable and makes failure modes nondeterministic.
   A cache would make the plan lie about "right now", the one thing it sells.
+- **The probe now fails closed rather than races during an apply, and
+  retrying is the cost.** `--against-host` answers `409` (`host-busy`) when
+  a `write_activity_snapshot` taken before or after `observe` finds the
+  write lock held, finds it free but the latest attempt unsettled, or finds
+  the two snapshots disagree — the reconcile id or phase moved during the
+  probe itself (Decision, above); a journal-only `golemctl plan` is
+  unaffected and always succeeds, apply or no apply. The operator retries,
+  and on a long apply — apt installs plus the full retry budget can run
+  minutes — may have to retry more than once.
+- **Two concurrent `--against-host` plans no longer exclude each other.**
+  Neither ever holds the write lock across `observe`, so each only contends
+  with the other for the instant it takes to read the latest attempt, not
+  for the probe's whole duration. The discarded first mechanism — hold
+  `try_write_guard` across `observe` — made the second plan 409 with a
+  message asserting an apply was running, which was false: a read excluding
+  a read, not a read excluding a write. That is gone; a read no longer
+  excludes a read.
+- **The `HostBusy` message states only what golem knows, not that a specific
+  apply is running now.** golem knows it was writing to the host somewhere
+  inside the read window; it does not know whether that write is still in
+  flight, already finished, or an attempt wedged `Enacting` with no active
+  writer at all. `message()` claims exactly the first and none of the rest:
+  "golem was writing to this host during the read, so the read could not be
+  trusted as a snapshot." — silent on whether an apply is running *now*,
+  which the discarded mechanism's wording had implied and which is not
+  always true.
+- **A wedged probe now fails closed against its own request, not the
+  daemon.** `observe`'s subprocess runner carries no timeout, so a stalled
+  mount or a hung systemd can still hang the `--against-host` call that hit
+  it. What changed is the blast radius: since no lock is held across
+  `observe`, a wedged probe no longer wedges `write_guard` for every other
+  request — `POST /manifest` and every other plan keep working while it
+  hangs. A subprocess timeout on `observe` remains open future hardening,
+  not something this rework provides.
+- **`fleet plan --against-host` can now fail a fleet-wide command over an
+  ordinary rolling-apply state.** `run_plan`
+  (`apps/golemctl/src/fleet.rs`) maps any per-host error — `HostBusy`
+  included — to `HostPlan::Error` and exits `1` if any host lands there,
+  which sits against `plan`'s own documented "always exits 0": a `409`
+  while one host in a fleet is mid-apply is ordinary, not exceptional, yet
+  it now fails the whole `fleet plan --against-host` invocation. This is a
+  deliberate call — a refusal is not a diff, and folding it silently into an
+  unchanged exit code would hide that the reading could not be trusted — but
+  it is a real behavior change for anyone scripting `fleet apply` followed
+  by `fleet plan --against-host`.
+- **Serializing against golem's own writer is not a stable-snapshot
+  guarantee.** The snapshot-and-recheck closes exactly one window: golem
+  racing itself. It says nothing about the host changing out of band between
+  the second snapshot inside `observe_against_host` and the operator reading
+  the printed report — and out-of-band change is the entire reason
+  `--against-host` exists. A host plan that returns without a `409` is a
+  truthful reading taken at one instant, not a promise that the instant
+  still holds by the time it is read. A reader who takes a successful run as
+  "the plan I am looking at is still true" has misunderstood it.
 - **Two residual leaks, named rather than denied.** A `Divergent` on a
   secret-bearing file tells the caller one bit — the host's copy differs from
   the one they hold — and they already hold the desired plaintext and the power
@@ -327,3 +448,23 @@ which is the ADR 0015 rule the journal rests on.
 - **Exit nonzero when the host disagrees.** Rejected: `plan` exits 0 whether or
   not changes exist (ADR 0036), and a second column is no reason to change what
   the first one's exit code means.
+- **Block instead of returning 409.** Rejected: `run_reconcile` holds the
+  write lock for a whole reconcile, and `golemctl`'s HTTP client carries no
+  configured timeout, so a blocking wait would not time out — it would hang
+  the operator's terminal for however long the apply took, and stall `fleet
+  plan`'s concurrent fan-out on that one host while every other host
+  finished. The absence of a client timeout argues against blocking, not for
+  it.
+- **Hold `try_write_guard` across `observe`.** Built first, then discarded.
+  `observe` shells out roughly `1 + 2N` subprocesses — one `dpkg-query`,
+  then `systemctl is-enabled`/`is-active` per unit — through a runner with
+  no subprocess timeout, so holding golemd's one write lock across that call
+  means a wedged systemd, a stalled mount, or a D-state child stops hanging
+  one HTTP request and starts hanging the whole daemon: every later `POST
+  /manifest` blocks forever inside `write_guard`, `recover()` included, and
+  `golemctl` sets no client timeout to notice with. The bound this version
+  claimed — a waiting apply delayed by at most one probe — was not a bound
+  at all, since a wedged probe never finishes; a read must not be able to
+  block a write. Replaced by the snapshot-before, `observe`-unlocked,
+  snapshot-after, recheck mechanism in the Decision above, which never holds
+  the lock across `observe`.

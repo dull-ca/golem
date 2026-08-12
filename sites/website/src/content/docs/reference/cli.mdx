@@ -141,11 +141,20 @@ a secret sealed to a key this host lacks — reports `unknown`, and `unknown`
 never counts as a match. See [Applying changes](/getting-started/applying/)
 for the enrollment case this exists for.
 
-`--against-host` reads files directly, without the per-path lock an apply
-takes on the same file, so a plan racing a live apply can read a file
-mid-rewrite and report a spurious `≠ differs` on that one row. Nothing is
-written either way, so this is a snapshot inaccuracy, not a safety issue —
-it self-corrects on the next plan.
+A `--against-host` plan started while golemd is writing to that host — an
+apply mid-reconcile — is refused with a `409` conflict rather than answered:
+golemd checks its own write activity before and after reading the host, and
+a busy or moved read is reported rather than trusted. An ordinary `golemctl
+plan`, without the flag, is unaffected and still works during an apply. This
+does not make a successful `--against-host` plan a stable snapshot: the host
+can change out of band the moment the plan returns, and nothing here
+promises otherwise.
+
+`fleet plan --against-host` fans this check out per host, and a host that
+answers `409` fails that host's plan — which fails the whole `fleet plan`
+command (exit `1`), unlike an ordinary `fleet plan`'s "always exits 0". A
+`409` on one host of a fleet mid-rollout is expected, not a sign anything is
+wrong; retry once that host's apply has settled.
 
 ### `golemctl fleet <apply|plan|status>`
 
