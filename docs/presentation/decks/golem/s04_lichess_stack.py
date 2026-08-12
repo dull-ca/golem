@@ -8,6 +8,8 @@ from . import lichess_stack
 SLUG = "lichess-stack"
 TITLE = "What lichess runs"
 
+CLOSING_Y = lichess_stack.BOTTOM + 22
+
 
 def build() -> Scene:
     scene = Scene(SLUG)
@@ -16,7 +18,7 @@ def build() -> Scene:
         "What lichess actually runs",
         "Six layers. Five stack; the sixth is not a layer at all.",
     )
-    figure = lichess_stack.draw(
+    lichess_stack.draw(
         scene,
         layer_tones=lichess_stack.DESCRIPTIVE_LAYER_TONES,
         default_part_tone=lichess_stack.DESCRIPTIVE_PART_TONE,
@@ -24,9 +26,8 @@ def build() -> Scene:
     note(
         scene,
         MARGIN,
-        figure.bottom + 22,
-        "Layer 6 is drawn as a column, not a band, because orchestration acts across "
-        "layers 2 to 5 rather than sitting on top of them. Layer 1 is underneath all of it.",
+        CLOSING_Y,
+        "Layer 6 is a column, not a band: it acts across 2 to 5.",
         width=CONTENT_WIDTH,
     )
     return scene

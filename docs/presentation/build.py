@@ -1,4 +1,4 @@
-"""Generate the talk's diagrams: one .excalidraw per slide, plus the combined deck.
+"""Generate the talk diagrams: one .excalidraw per slide, per deck, plus the decks.
 
     python docs/presentation/build.py [--out DIR]
 
@@ -16,24 +16,35 @@ PRESENTATION_ROOT = Path(__file__).resolve().parent
 if str(PRESENTATION_ROOT) not in sys.path:
     sys.path.insert(0, str(PRESENTATION_ROOT))
 
+from decks import DECKS, Deck
 from excalidraw.scene import Scene, framed_deck, write_scene
-from slides import SLIDES
+from icon_sheet import ICON_SHEET_FILENAME, build_icon_sheet
 
 DEFAULT_OUTPUT = PRESENTATION_ROOT / "dist"
-DECK_FILENAME = "deck.excalidraw"
 DECK_COLUMNS = 3
 DECK_GAP = 160.0
 
 
-def build_all(output: Path) -> list[Path]:
+def build_deck(deck: Deck, output: Path) -> list[Path]:
     written: list[Path] = []
     named_scenes: list[tuple[str, Scene]] = []
-    for slide in SLIDES:
+    directory = output / deck.directory
+    for slide in deck.slides:
         scene = slide.build()
-        written.append(write_scene(output / slide.filename, scene))
+        written.append(write_scene(directory / slide.filename, scene))
         named_scenes.append((slide.frame_name, scene))
-    deck = framed_deck(named_scenes, columns=DECK_COLUMNS, gap=DECK_GAP)
-    written.append(write_scene(output / DECK_FILENAME, deck))
+    combined = framed_deck(
+        named_scenes, key=deck.scene_key, columns=DECK_COLUMNS, gap=DECK_GAP
+    )
+    written.append(write_scene(directory / deck.combined_filename, combined))
+    return written
+
+
+def build_all(output: Path) -> list[Path]:
+    written: list[Path] = []
+    for deck in DECKS:
+        written.extend(build_deck(deck, output))
+    written.append(write_scene(output / ICON_SHEET_FILENAME, build_icon_sheet()))
     return written
 
 

@@ -2,8 +2,10 @@
 
 The hex constants are the editor's default swatches, so a hand-edited shape picks
 up the same colour from the toolbar. Above them sit the `Tone`s the slides name —
-`YOURS`, `PLATFORM`, `ANSIBLE`, `GAP` — so a slide says who answers a layer and
-the colour follows. Recolouring the deck happens here, not in thirteen modules.
+`YOURS`, `PLATFORM`, `ANSIBLE`, `GAP`, and the icon meanings `NODE`, `WORKLOAD`,
+`IMAGE`, `CONTROL`, `STORE` — so a slide says who answers a layer, or what a mark
+stands for, and the colour follows. Recolouring either deck happens here, not in
+forty slide modules.
 """
 
 from __future__ import annotations
@@ -59,3 +61,12 @@ SYSTEMD = Tone(VIOLET, VIOLET_FILL)
 GOLEM = Tone(GREEN, GREEN_FILL)
 GAP = Tone(RED, RED_FILL)
 MANUAL = Tone(RED, WHITE, RED)
+
+NODE = Tone(SLATE, SLATE_FILL)
+WORKLOAD = Tone(TEAL, TEAL_FILL)
+IMAGE = Tone(VIOLET, VIOLET_FILL)
+CONTROL = Tone(BLUE, BLUE_FILL)
+WIRE = Tone(BLUE, BLUE_FILL)
+STORE = Tone(GRAPE, GRAPE_FILL)
+PENDING = Tone(ORANGE, WHITE, ORANGE)
+HEALTHY = Tone(GREEN, GREEN_FILL)

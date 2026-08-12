@@ -7,6 +7,11 @@ from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 SLUG = "what-you-buy"
 TITLE = "What you buy"
 
+GRID_Y = 190.0
+ROW_HEIGHT = 64.0
+HEADER_HEIGHT = 88.0
+ROW_LABEL_WIDTH = 340.0
+
 ROW_LABELS = (
     "Data",
     "Application",
@@ -49,36 +54,34 @@ def build() -> Scene:
     slide_header(
         scene,
         "The ladder of what you buy",
-        "One stack, eight layers. Every service model is a line drawn across it — the "
-        "line just moves.",
+        "Eight layers. Every service model is one line drawn across them.",
     )
     grid = matrix(
         scene,
         MARGIN,
-        168,
+        GRID_Y,
         column_labels=COLUMN_LABELS,
         row_labels=ROW_LABELS,
         tones=cell_tones(),
-        row_label_width=250,
-        header_height=64,
-        row_height=58,
+        row_label_width=ROW_LABEL_WIDTH,
+        header_height=HEADER_HEIGHT,
+        row_height=ROW_HEIGHT,
     )
     legend(
         scene,
         MARGIN,
-        grid.bottom + 30,
+        grid.bottom + 26,
         (
-            (YOURS, "yours — you own it and you operate it"),
-            (THEIRS, "theirs — you never touch it"),
-            (HOSTED, "hosted — yours, but on their terms"),
+            (YOURS, "yours"),
+            (THEIRS, "theirs"),
+            (HOSTED, "hosted — yours, on their terms"),
         ),
     )
     note(
         scene,
         MARGIN,
-        grid.bottom + 84,
-        "Left to right: the less you own, the less you control. Nothing here is free — "
-        "what you stop operating, you start depending on.",
+        grid.bottom + 78,
+        "What you stop operating, you start depending on.",
         width=CONTENT_WIDTH,
     )
     return scene
