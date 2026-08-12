@@ -16,6 +16,7 @@ pub mod foreman;
 pub mod host;
 pub mod http;
 pub mod journal;
+pub mod observe;
 pub mod plan_report;
 pub mod planroom;
 pub mod progress;
