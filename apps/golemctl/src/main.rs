@@ -40,6 +40,9 @@ enum Cmd {
         /// Expand every group to one glyph per line, with content ids.
         #[arg(long)]
         detail: bool,
+        /// Also diff against what is actually on the host, read live.
+        #[arg(long)]
+        against_host: bool,
     },
     /// Fan a verb out over every host in a TOML inventory, concurrently. One
     /// host's failure never stops the others. See [`golemctl::fleet`] for the
@@ -139,10 +142,11 @@ async fn main() -> Result<()> {
             addr,
             json,
             detail,
+            against_host,
         } => {
             let bytes = manifest_bytes(&source).await?;
             let conn = connect(&addr).await?;
-            golemctl::plan::run(bytes, &conn, json, detail).await
+            golemctl::plan::run(bytes, &conn, json, detail, against_host).await
         }
         Cmd::Fleet { cmd } => match cmd {
             FleetCmd::Apply {

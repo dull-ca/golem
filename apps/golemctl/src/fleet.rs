@@ -753,7 +753,7 @@ pub async fn gather_plans(
             target.clone(),
             Some(tokio::spawn(async move {
                 let conn = Conn::open(&target, &auth).await?;
-                conn.post_plan(bytes).await
+                conn.post_plan(bytes, false).await
             })),
         ));
     }

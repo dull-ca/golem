@@ -27,6 +27,8 @@ pub struct PlanResponse {
     #[serde(default)]
     pub reloads: Vec<PredictedReload>,
     pub summary: PlanSummary,
+    #[serde(default)]
+    pub reality: Option<Reality>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -39,6 +41,49 @@ pub struct PlannedOp {
     #[serde(default)]
     pub new_cid: Option<String>,
     pub describe: String,
+    #[serde(default)]
+    pub observed: Option<Observed>,
+    #[serde(default)]
+    pub unobservable: Option<Unobservable>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observed {
+    Realized,
+    Divergent,
+    Absent,
+    Unknown,
+    #[serde(other)]
+    Unrecognized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unobservable {
+    Sealed,
+    Unreadable,
+    NotModelled,
+    #[serde(other)]
+    Unrecognized,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Reality {
+    #[serde(default)]
+    pub realized: usize,
+    #[serde(default)]
+    pub divergent: usize,
+    #[serde(default)]
+    pub absent: usize,
+    #[serde(default)]
+    pub unknown: usize,
+    #[serde(default)]
+    pub already_gone: usize,
+    #[serde(default)]
+    pub still_present: usize,
+    #[serde(default)]
+    pub host_already_matches: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -194,8 +239,14 @@ struct Step {
     details: Vec<Vec<Element>>,
 }
 
-pub async fn run(bytes: Vec<u8>, conn: &Conn, json: bool, detail: bool) -> Result<()> {
-    let body = conn.post_plan(bytes).await?;
+pub async fn run(
+    bytes: Vec<u8>,
+    conn: &Conn,
+    json: bool,
+    detail: bool,
+    against_host: bool,
+) -> Result<()> {
+    let body = conn.post_plan(bytes, against_host).await?;
     let options = RenderOptions {
         detail,
         color: color_is_welcome(),
@@ -807,6 +858,8 @@ mod tests {
             old_cid: Some("aaaaaaaaaaaaaaaa".into()),
             new_cid: Some("bbbbbbbbbbbbbbbb".into()),
             describe: format!("describe {key}"),
+            observed: None,
+            unobservable: None,
         }
     }
 
@@ -845,6 +898,7 @@ mod tests {
                 remove: 1,
                 noop: 42,
             },
+            reality: None,
         }
     }
 
@@ -947,6 +1001,7 @@ mod tests {
                 remove: 0,
                 noop: 1,
             },
+            reality: None,
         };
         let rendered = render(
             &plan,
@@ -1005,6 +1060,7 @@ mod tests {
                 remove: 0,
                 noop: 0,
             },
+            reality: None,
         };
         let rendered = render(
             &plan,
@@ -1065,6 +1121,7 @@ mod tests {
                 remove: 0,
                 noop: 1,
             },
+            reality: None,
         };
         let rendered = render(&plan, &RenderOptions::default());
         assert_eq!(
@@ -1091,6 +1148,7 @@ mod tests {
                 remove: 0,
                 noop: 0,
             },
+            reality: None,
         }
     }
 
@@ -1356,5 +1414,123 @@ mod tests {
         .to_string();
         let rendered = present(&body, false, &RenderOptions::default()).unwrap();
         assert!(rendered.contains("+ install 1 apt package  nginx (web)"));
+    }
+
+    #[test]
+    fn a_response_without_reality_fields_still_parses() {
+        let body = r#"{"host":"web-01","scroll_content_id":"3f9c1a",
+                       "against_revision":12,"ops":[],"reloads":[],
+                       "summary":{"install":0,"replace":0,"remove":0,"noop":0}}"#;
+        let parsed: PlanResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.reality.is_none());
+    }
+
+    #[test]
+    fn an_op_carrying_an_observation_parses_it() {
+        let body = serde_json::json!({
+            "host": "web-01",
+            "scroll_content_id": "3f9c1a",
+            "against_revision": 12,
+            "ops": [{
+                "unit_path": ["web"],
+                "glyph_key": "apt:nginx",
+                "action": "install",
+                "new_cid": "bbbbbbbbbbbb",
+                "describe": "ensure apt package `nginx` installed",
+                "observed": "realized"
+            }],
+            "reloads": [],
+            "summary": { "install": 1, "replace": 0, "remove": 0, "noop": 0 }
+        })
+        .to_string();
+        let parsed: PlanResponse = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.ops[0].observed, Some(Observed::Realized));
+        assert_eq!(parsed.ops[0].unobservable, None);
+    }
+
+    #[test]
+    fn an_unrecognized_observation_degrades_to_unrecognized_not_an_error() {
+        let body = serde_json::json!({
+            "host": "web-01",
+            "scroll_content_id": "3f9c1a",
+            "against_revision": 12,
+            "ops": [{
+                "unit_path": ["web"],
+                "glyph_key": "apt:nginx",
+                "action": "install",
+                "new_cid": "bbbbbbbbbbbb",
+                "describe": "ensure apt package `nginx` installed",
+                "observed": "quantum-superposed",
+                "unobservable": "not-yet-invented"
+            }],
+            "reloads": [],
+            "summary": { "install": 1, "replace": 0, "remove": 0, "noop": 0 }
+        })
+        .to_string();
+        let parsed: PlanResponse = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.ops[0].observed, Some(Observed::Unrecognized));
+        assert_eq!(parsed.ops[0].unobservable, Some(Unobservable::Unrecognized));
+    }
+
+    #[test]
+    fn a_reality_block_parses_all_seven_counters() {
+        let body = serde_json::json!({
+            "host": "web-01",
+            "scroll_content_id": "3f9c1a",
+            "against_revision": 12,
+            "ops": [],
+            "reloads": [],
+            "summary": { "install": 0, "replace": 0, "remove": 0, "noop": 0 },
+            "reality": {
+                "realized": 1,
+                "divergent": 2,
+                "absent": 3,
+                "unknown": 4,
+                "already_gone": 5,
+                "still_present": 6,
+                "host_already_matches": false
+            }
+        })
+        .to_string();
+        let parsed: PlanResponse = serde_json::from_str(&body).unwrap();
+        let reality = parsed.reality.unwrap();
+        assert_eq!(reality.realized, 1);
+        assert_eq!(reality.divergent, 2);
+        assert_eq!(reality.absent, 3);
+        assert_eq!(reality.unknown, 4);
+        assert_eq!(reality.already_gone, 5);
+        assert_eq!(reality.still_present, 6);
+        assert!(!reality.host_already_matches);
+    }
+
+    #[test]
+    fn json_mode_passes_the_reality_fields_through_verbatim() {
+        let body = serde_json::json!({
+            "host": "web-01",
+            "scroll_content_id": "3f9c1a",
+            "against_revision": 12,
+            "ops": [{
+                "unit_path": ["web"],
+                "glyph_key": "apt:nginx",
+                "action": "install",
+                "new_cid": "bbbbbbbbbbbb",
+                "describe": "ensure apt package `nginx` installed",
+                "observed": "divergent"
+            }],
+            "reloads": [],
+            "summary": { "install": 1, "replace": 0, "remove": 0, "noop": 0 },
+            "reality": {
+                "realized": 0,
+                "divergent": 1,
+                "absent": 0,
+                "unknown": 0,
+                "already_gone": 0,
+                "still_present": 0,
+                "host_already_matches": false
+            }
+        })
+        .to_string();
+        let passed = present(&body, true, &RenderOptions::default()).unwrap();
+        assert_eq!(passed, body);
     }
 }
