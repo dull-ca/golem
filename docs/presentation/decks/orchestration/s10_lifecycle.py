@@ -22,8 +22,10 @@ from excalidraw.palette import (
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
 
+from ..vocabulary import LIFECYCLE, part
+
 SLUG = "lifecycle"
-TITLE = "Lifecycle"
+TITLE = part(LIFECYCLE).title
 
 STATE_WIDTH = 250.0
 STATE_HEIGHT = 90.0
@@ -34,43 +36,43 @@ DRAINING_TONE = Tone(YELLOW, WHITE, YELLOW)
 
 STATES = (
     StateNode(
-        "pending", "Pending", 150.0, 400.0, PENDING, STATE_WIDTH, STATE_HEIGHT,
+        "pending", "Pending", 100.0, 430.0, PENDING, STATE_WIDTH, STATE_HEIGHT,
         "not started yet",
     ),
     StateNode(
-        "running", "Running", 620.0, 400.0, RUNNING_TONE, STATE_WIDTH, STATE_HEIGHT,
+        "running", "Running", 620.0, 430.0, RUNNING_TONE, STATE_WIDTH, STATE_HEIGHT,
         "on a node",
     ),
     StateNode(
-        "stopped", "Stopped", 1150.0, 400.0, STOPPED_TONE, STATE_WIDTH, STATE_HEIGHT,
+        "stopped", "Stopped", 1180.0, 430.0, STOPPED_TONE, STATE_WIDTH, STATE_HEIGHT,
         "asked to stop",
     ),
     StateNode(
-        "draining", "Draining", 620.0, 220.0, DRAINING_TONE, STATE_WIDTH, STATE_HEIGHT,
+        "draining", "Draining", 620.0, 210.0, DRAINING_TONE, STATE_WIDTH, STATE_HEIGHT,
         "leaving this node",
     ),
     StateNode(
-        "failed", "Failed", 620.0, 640.0, MANUAL, STATE_WIDTH, STATE_HEIGHT,
+        "failed", "Failed", 620.0, 650.0, MANUAL, STATE_WIDTH, STATE_HEIGHT,
         "exited badly",
     ),
 )
 
 MOVES = (
     Transition("pending", "running", "start"),
-    Transition("running", "stopped", "stop", bow=-60.0),
-    Transition("stopped", "running", "restart", bow=-60.0),
-    Transition("running", "failed", "crash", bow=-70.0),
-    Transition("failed", "pending", "rollback", bow=80.0),
-    Transition("running", "draining", "drain", bow=70.0),
+    Transition("running", "stopped", "stop", bow=-55.0),
+    Transition("stopped", "running", "restart", bow=-55.0),
+    Transition("running", "draining", "drain", bow=-55.0),
+    Transition("running", "failed", "crash", bow=-55.0),
     Transition("draining", "pending", "rolling update", bow=60.0),
+    Transition("failed", "pending", "rollback", bow=-60.0),
 )
 
-MOVE_CARDS_X = MARGIN
-MOVE_CARDS_Y = 620.0
+MOVE_CARDS_X = 1000.0
+MOVE_CARDS_Y = 640.0
 MOVE_CARD_WIDTH = 236.0
-MOVE_CARD_HEIGHT = 230.0
+MOVE_CARD_HEIGHT = 240.0
 MOVE_ICON_SIZE = 78.0
-MOVE_CARD_GAP = 24.0
+MOVE_CARD_GAP = 28.0
 
 MOVE_CARDS = (
     IconCard(
@@ -96,7 +98,7 @@ def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(
         scene,
-        "The lifecycle of one workload",
+        f"The {TITLE.lower()} of one workload",
         "Five states, and the moves between them.",
     )
     state_machine(scene, STATES, MOVES)

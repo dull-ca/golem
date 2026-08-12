@@ -40,6 +40,8 @@ from excalidraw.scene import (
     TEXT_KEYS,
     Scene,
 )
+from excalidraw.layout import StateNode, Transition, state_machine
+from excalidraw.palette import NEUTRAL
 from excalidraw.text import MONO, measured_height, measured_width
 from excalidraw.type_scale import MINIMUM_SIZE, TITLE_SIZE, WORDS_PER_SLIDE
 from icon_sheet import ICON_SHEET_FILENAME
@@ -420,6 +422,108 @@ class GeneratedScenes(unittest.TestCase):
                     )
 
 
+def segment_meets_box(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    box: tuple[float, float, float, float],
+) -> bool:
+    left, top, right, bottom = box
+    steps = 200
+    for step in range(steps + 1):
+        along = step / steps
+        point_x = start[0] + (end[0] - start[0]) * along
+        point_y = start[1] + (end[1] - start[1]) * along
+        if left <= point_x <= right and top <= point_y <= bottom:
+            return True
+    return False
+
+
+# A transition label sat a fixed distance straight above the bow vertex. Both arrow
+# segments radiate from that vertex, so the offset only cleared them while the arrow
+# was locally horizontal — on a vertical transition the arrow was drawn through the
+# glyphs. These two cases are the ones that failed.
+class StateMachineLabels(unittest.TestCase):
+    NODE_WIDTH = 240.0
+    NODE_HEIGHT = 90.0
+
+    def label_and_arrow(
+        self, target_x: float, target_y: float, bow: float
+    ) -> tuple[dict, dict]:
+        scene = Scene(f"transition-probe-{target_x}-{target_y}-{bow}")
+        state_machine(
+            scene,
+            (
+                StateNode(
+                    "from", "From", 400.0, 400.0, NEUTRAL, self.NODE_WIDTH, self.NODE_HEIGHT
+                ),
+                StateNode(
+                    "to", "To", target_x, target_y, NEUTRAL, self.NODE_WIDTH, self.NODE_HEIGHT
+                ),
+            ),
+            (Transition("from", "to", "a labelled move", bow=bow),),
+        )
+        arrow = next(
+            element for element in scene.elements if element["type"] == "arrow"
+        )
+        label = next(
+            element
+            for element in scene.elements
+            if element["type"] == "text" and element["text"] == "a labelled move"
+        )
+        return arrow, label
+
+    def assert_arrow_clears_label(self, arrow: dict, label: dict) -> None:
+        box = (
+            label["x"],
+            label["y"],
+            label["x"] + label["width"],
+            label["y"] + label["height"],
+        )
+        absolute = [
+            (arrow["x"] + point[0], arrow["y"] + point[1]) for point in arrow["points"]
+        ]
+        for start, end in zip(absolute, absolute[1:]):
+            self.assertFalse(segment_meets_box(start, end, box))
+
+    def test_a_vertical_transition_does_not_strike_through_its_label(self) -> None:
+        for bow in (-70.0, 70.0):
+            with self.subTest(bow=bow):
+                arrow, label = self.label_and_arrow(400.0, 700.0, bow)
+                self.assert_arrow_clears_label(arrow, label)
+
+    def test_a_horizontal_transition_does_not_strike_through_its_label(self) -> None:
+        for bow in (-60.0, 60.0):
+            with self.subTest(bow=bow):
+                arrow, label = self.label_and_arrow(900.0, 400.0, bow)
+                self.assert_arrow_clears_label(arrow, label)
+
+    def test_opposing_transitions_put_their_labels_on_opposite_sides(self) -> None:
+        forward, forward_label = self.label_and_arrow(900.0, 400.0, 60.0)
+        scene = Scene("transition-probe-reverse")
+        state_machine(
+            scene,
+            (
+                StateNode(
+                    "from", "From", 900.0, 400.0, NEUTRAL, self.NODE_WIDTH, self.NODE_HEIGHT
+                ),
+                StateNode(
+                    "to", "To", 400.0, 400.0, NEUTRAL, self.NODE_WIDTH, self.NODE_HEIGHT
+                ),
+            ),
+            (Transition("from", "to", "a labelled move", bow=60.0),),
+        )
+        reverse = next(
+            element for element in scene.elements if element["type"] == "arrow"
+        )
+        reverse_label = next(
+            element
+            for element in scene.elements
+            if element["type"] == "text" and element["text"] == "a labelled move"
+        )
+        self.assert_arrow_clears_label(forward, forward_label)
+        self.assert_arrow_clears_label(reverse, reverse_label)
+
+
 class Icons(unittest.TestCase):
     def test_every_icon_draws_inside_its_declared_bounding_box(self) -> None:
         origin_x, origin_y = ICON_PROBE_ORIGIN
@@ -449,6 +553,28 @@ class Icons(unittest.TestCase):
                     [element for element in mark.elements if element["type"] == "text"],
                     [],
                 )
+
+    def test_replica_set_never_overlaps_itself_at_any_count(self) -> None:
+        for replicas in (1, 2, 3, 4, 6, 8):
+            with self.subTest(replicas=replicas):
+                scene = Scene(f"replica-probe-{replicas}")
+                mark = icons.replica_set(
+                    scene, 0.0, 0.0, ICON_PROBE_SIZE, replicas=replicas
+                )
+                bodies = [
+                    element
+                    for element in mark.elements
+                    if element["type"] == "rectangle"
+                ]
+                self.assertEqual(len(bodies), replicas)
+                for left, right in zip(bodies, bodies[1:]):
+                    self.assertLessEqual(
+                        left["x"] + left["width"], right["x"] + GEOMETRY_TOLERANCE
+                    )
+                for element in mark.elements:
+                    edges = extent(element)
+                    self.assertGreaterEqual(edges[0], mark.x - GEOMETRY_TOLERANCE)
+                    self.assertLessEqual(edges[2], mark.right + GEOMETRY_TOLERANCE)
 
     def test_the_catalogue_names_are_unique(self) -> None:
         names = [spec.name for spec in icons.CATALOGUE]

@@ -55,6 +55,7 @@ BOX_DETAIL_FONT_SIZE = CAPTION_SIZE
 TAG_FONT_SIZE = CAPTION_SIZE
 TEXT_CARD_PADDING = 18.0
 TEXT_CARD_SPACING = 8.0
+TRANSITION_LABEL_CLEARANCE = 14.0
 
 TextLine = tuple[str, float, int]
 
@@ -915,8 +916,10 @@ def state_machine(
         span_x = target_centre[0] - source_centre[0]
         span_y = target_centre[1] - source_centre[1]
         length = math.hypot(span_x, span_y) or 1.0
-        bow_x = mid_x - span_y / length * transition.bow
-        bow_y = mid_y + span_x / length * transition.bow
+        perpendicular_x = -span_y / length
+        perpendicular_y = span_x / length
+        bow_x = mid_x + perpendicular_x * transition.bow
+        bow_y = mid_y + perpendicular_y * transition.bow
         start = _edge_point(source, (bow_x, bow_y))
         end = _edge_point(target, (bow_x, bow_y))
         points = (
@@ -928,11 +931,32 @@ def state_machine(
             stroke_style="dashed" if transition.dashed else "solid",
         )
         if transition.label:
+            # NOTE: the label clears the arrow along the same perpendicular the bow
+            # was measured on, never along -y. Both segments radiate from the bow
+            # vertex, so a purely vertical offset only clears them while the arrow is
+            # locally horizontal: on a vertical transition the arrow was drawn
+            # straight through the glyphs. And the sign of `bow` alone does not say
+            # which side is outside the arc, because the perpendicular flips with the
+            # transition's direction — two arrows between the same pair of boxes, one
+            # each way, with the same bow, landed on opposite sides.
+            #
+            # `reach` is the label box's own extent in the perpendicular direction —
+            # its half-width when the transition is vertical, its half-height when
+            # horizontal. Offsetting the label's centre by the clearance alone left
+            # a vertical transition's arrow crossing the far end of the caption.
             caption_width = measured_width(transition.label, label_font_size)
+            caption_height = label_font_size * LINE_HEIGHT
+            outward = 1.0 if transition.bow >= 0 else -1.0
+            reach = (
+                abs(perpendicular_x) * caption_width / 2.0
+                + abs(perpendicular_y) * caption_height / 2.0
+            )
+            clearance = TRANSITION_LABEL_CLEARANCE + reach
+            label_x = bow_x + perpendicular_x * outward * clearance
+            label_y = bow_y + perpendicular_y * outward * clearance
             scene.text(
-                bow_x - caption_width / 2.0,
-                bow_y - label_font_size * LINE_HEIGHT / 2.0
-                - (14 if transition.bow >= 0 else -14),
+                label_x - caption_width / 2.0,
+                label_y - caption_height / 2.0,
                 transition.label,
                 font_size=label_font_size,
                 colour=transition.stroke,
