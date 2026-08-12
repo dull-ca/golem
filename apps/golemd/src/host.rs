@@ -164,6 +164,7 @@ pub mod fake {
         active: BTreeSet<String>,
         generated: BTreeSet<String>,
         failed: BTreeSet<String>,
+        known: BTreeSet<String>,
         refused_resets: BTreeMap<String, RefusedReset>,
     }
 
@@ -193,6 +194,7 @@ pub mod fake {
             let runner = Self::new();
             {
                 let mut host = runner.host.lock().unwrap();
+                host.known.insert(unit.to_string());
                 if enabled {
                     host.enabled.insert(unit.to_string());
                 }
@@ -331,6 +333,30 @@ pub mod fake {
                 .push(format!("{program} {}", args.join(" ")));
             let mut host = self.host.lock().unwrap();
             match (program, args) {
+                // Models the real dpkg-query batch trap this fake exists to
+                // catch: exits 1 the instant any requested name is unknown,
+                // while still printing a line for every name it does know.
+                ("dpkg-query", _) if args.get(1).is_some_and(|f| f.contains("${Package}")) => {
+                    let names = &args[2..];
+                    let mut stdout = String::new();
+                    let mut all_found = true;
+                    for name in names {
+                        if host.installed.contains(*name) {
+                            stdout.push_str(&format!("{name} install ok installed\n"));
+                        } else {
+                            all_found = false;
+                        }
+                    }
+                    Ok(CommandOutput {
+                        status: if all_found { 0 } else { 1 },
+                        stdout,
+                        stderr: if all_found {
+                            String::new()
+                        } else {
+                            "dpkg-query: no packages found matching one or more names".into()
+                        },
+                    })
+                }
                 ("dpkg-query", _) => {
                     let name = args.last().copied().unwrap_or_default();
                     if host.installed.contains(name) {
@@ -383,17 +409,34 @@ pub mod fake {
                 }),
                 ("systemctl", _) if args.first() == Some(&"is-enabled") => {
                     let unit = args.last().copied().unwrap_or_default();
+                    // `known` stands in for "systemd recognizes this unit at
+                    // all": real `is-enabled` on a genuinely unknown unit
+                    // prints nothing to stdout (the error goes to stderr),
+                    // which is the signal `observe_systemd_verdict` keys on
+                    // to report `Absent`. A known-but-disabled unit gets the
+                    // ordinary "disabled\n" a real host would print.
+                    let known = host.known.contains(unit)
+                        || host.enabled.contains(unit)
+                        || host.active.contains(unit)
+                        || host.generated.contains(unit)
+                        || host.failed.contains(unit);
                     if host.enabled.contains(unit) {
                         Ok(CommandOutput {
                             status: 0,
                             stdout: "enabled\n".into(),
                             stderr: String::new(),
                         })
-                    } else {
+                    } else if known {
                         Ok(CommandOutput {
                             status: 1,
                             stdout: "disabled\n".into(),
                             stderr: String::new(),
+                        })
+                    } else {
+                        Ok(CommandOutput {
+                            status: 1,
+                            stdout: String::new(),
+                            stderr: format!("Unit {unit} could not be found.\n"),
                         })
                     }
                 }

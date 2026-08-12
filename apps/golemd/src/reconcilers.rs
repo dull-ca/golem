@@ -33,6 +33,12 @@
 //! A latched unit also takes the forcing verb, because `try-restart` against one
 //! exits 0 having started nothing — which reported three downed sites as green.
 //! Found in production; ADR 0057.
+//!
+//! `observe` (ADR 0058) is the read-only sibling of `apply`: same host, same
+//! keyring, same "does the host already realize this glyph" question every
+//! `apply_*` above already asks itself, phrased for a caller that only wants
+//! the answer. It never writes, and the four-valued [`Observation`] it
+//! returns is the only thing that ever crosses back out.
 
 use std::fs;
 use std::io::Write;
@@ -45,6 +51,7 @@ use tracing::warn;
 
 use crate::host::{CommandRunner, CommandSink, SystemCommandRunner};
 use crate::journal::{GlyphOp, Inverse, Outcome};
+use crate::observe::{Observation, Observations, Unknowable};
 use crate::reconciler::{EnactError, EnactResult, PrepareOutcome, Reconciler};
 use crate::secrets::Keyring;
 
@@ -296,11 +303,16 @@ impl<R: CommandRunner> HostReconciler<R> {
         ))
     }
 
+    /// The raw `is-enabled` output, factored out so [`Self::systemd_enabled`]
+    /// (apply's yes/no question) and [`Self::observe_systemd_verdict`]
+    /// (observe's finer one, which also reads the stdout body) run the exact
+    /// same command rather than two copies of it.
+    fn systemd_enabled_output(&self, unit: &str) -> EnactResult<crate::host::CommandOutput> {
+        self.runner.run("systemctl", &["is-enabled", unit])
+    }
+
     fn systemd_enabled(&self, unit: &str) -> EnactResult<bool> {
-        Ok(self
-            .runner
-            .run("systemctl", &["is-enabled", unit])?
-            .succeeded())
+        Ok(self.systemd_enabled_output(unit)?.succeeded())
     }
 
     fn systemd_active(&self, unit: &str) -> EnactResult<bool> {
@@ -484,6 +496,114 @@ impl<R: CommandRunner> HostReconciler<R> {
         }
         Some(format!("=== {label} ===\n{}", body.trim_end()))
     }
+
+    /// One op's verdict, dispatched by glyph kind. `Remove` asks the weaker
+    /// question — is the resource still there, not does it match — for every
+    /// path-keyed kind, which is why removes need no key at all
+    /// ([`observe_presence`]). `lineInFile` is the one exception: a line's
+    /// identity *is* its content, so presence-of-the-path is not
+    /// presence-of-the-line, and a `Remove` of one still unseals through the
+    /// keyring below and can honestly report `Unknown(Sealed)` on a keyless
+    /// host (ADR 0058).
+    fn observe_op(
+        &self,
+        op: &GlyphOp,
+        line_cache: &mut std::collections::BTreeMap<String, Result<Option<String>, ()>>,
+        apt_probe: &Result<std::collections::BTreeSet<String>, ()>,
+    ) -> Observation {
+        match op.glyph() {
+            Glyph::AptPackage { name } => match apt_probe {
+                // Presence only, never `Divergent`: apt has no notion of
+                // "installed but wrong" yet, and a `Latest` glyph must never
+                // touch the apt index to find out (ADR 0030).
+                Ok(installed) if installed.contains(name) => Observation::Realized,
+                Ok(_) => Observation::Absent,
+                Err(()) => Observation::Unknown(Unknowable::Unreadable),
+            },
+            Glyph::SystemdService { unit } => {
+                self.observe_systemd(unit, matches!(op, GlyphOp::Remove { .. }))
+            }
+            Glyph::Filesystem { path, .. } if matches!(op, GlyphOp::Remove { .. }) => {
+                observe_presence(path)
+            }
+            Glyph::Filesystem { path, entry } => match entry {
+                Entry::File { contents, perms } => match self.keyring.open(contents, &op.key()) {
+                    Ok(opened) => observe_file(path, &opened, perms),
+                    Err(_) => Observation::Unknown(Unknowable::Sealed),
+                },
+                Entry::Directory { perms } => observe_directory(path, perms),
+                Entry::Symlink { target } => observe_symlink(path, target),
+            },
+            Glyph::LineInFile { path, line } => match self.keyring.open(line, &op.key()) {
+                Ok(opened) => observe_line(path, &opened, line_cache),
+                Err(_) => Observation::Unknown(Unknowable::Sealed),
+            },
+        }
+    }
+
+    /// One `dpkg-query` for every apt glyph the ops declare, deduped. The
+    /// format is `${Package}`, never `${binary:Package}`: the latter tags
+    /// every `Multi-Arch: same` package with an architecture qualifier —
+    /// `libc6:amd64` and several hundred more on a stock trixie box — so an
+    /// `aptPackage { name = "libc6" }` glyph would never match the line the
+    /// query actually printed. Reads `output.stdout` unconditionally: real
+    /// `dpkg-query` exits 1 the moment any requested name is unknown to dpkg
+    /// while still printing every name it does know, with the complaint on
+    /// stderr — [`Self::apt_installed`]'s `succeeded()` gate is right for one
+    /// name and wrong for a batch. Verified against a real Debian trixie
+    /// host, not reasoned about (ADR 0058).
+    fn observe_apt_batch(&self, ops: &[GlyphOp]) -> Result<std::collections::BTreeSet<String>, ()> {
+        let names = apt_glyph_names(ops);
+        if names.is_empty() {
+            return Ok(std::collections::BTreeSet::new());
+        }
+        let mut args: Vec<&str> = vec!["-W", "-f=${Package} ${Status}\n"];
+        for name in &names {
+            args.push(name.as_str());
+        }
+        match self.runner.run("dpkg-query", &args) {
+            Ok(output) => Ok(dpkg_installed_names(&output.stdout)),
+            Err(_) => Err(()),
+        }
+    }
+
+    fn observe_systemd(&self, unit: &str, presence_only: bool) -> Observation {
+        match self.observe_systemd_verdict(unit, presence_only) {
+            Ok(observation) => observation,
+            Err(_) => Observation::Unknown(Unknowable::Unreadable),
+        }
+    }
+
+    /// systemd's own probes, unbatched on purpose: `~2N` cheap spawns buy
+    /// exact agreement with [`Self::apply_systemd`]'s `is-enabled`/`is-active`
+    /// pair, which `systemctl show --property=UnitFileState` cannot promise
+    /// — its value set (`static`/`indirect`/`generated`/`linked`, all exit 0)
+    /// is not exit-code-identical to `is-enabled`'s, and a wrong allowlist
+    /// there would make the plan lie about a running service. Deferred, not
+    /// dismissed: see `docs/TODO.md` (ADR 0058).
+    ///
+    /// Empty `is-enabled` stdout is the "unit unknown to systemd" signal for
+    /// both a desired `Install`/`Noop` and a `Remove`; `presence_only` only
+    /// changes what a *known* unit reports — `Realized` outright for a
+    /// `Remove` (the question is whether it is still there, not whether it
+    /// matches), `Divergent` for anything else unless it is both enabled and
+    /// active.
+    fn observe_systemd_verdict(&self, unit: &str, presence_only: bool) -> EnactResult<Observation> {
+        let enabled_output = self.systemd_enabled_output(unit)?;
+        if enabled_output.stdout.trim().is_empty() {
+            return Ok(Observation::Absent);
+        }
+        if presence_only {
+            return Ok(Observation::Realized);
+        }
+        let enabled = enabled_output.succeeded();
+        let active = self.systemd_active(unit)?;
+        Ok(if enabled && active {
+            Observation::Realized
+        } else {
+            Observation::Divergent
+        })
+    }
 }
 
 impl<R: CommandRunner> Reconciler for HostReconciler<R> {
@@ -561,6 +681,32 @@ impl<R: CommandRunner> Reconciler for HostReconciler<R> {
             }
         }
         Ok(PrepareOutcome { batch_installed })
+    }
+
+    /// One pass over `ops`: the apt batch runs once up front
+    /// ([`Self::observe_apt_batch`]), then every other kind is probed
+    /// per-op through [`Self::observe_op`]. `seen` dedupes by key so a
+    /// package or file two units both declare is probed once, not once per
+    /// declaring unit — [`Observations`] would collapse the duplicate keys
+    /// on write either way, but the host command or file read behind each
+    /// probe is not free. Serial and uncached beyond that: a worker pool buys
+    /// nothing measurable at this rate, and a cache would make the plan lie
+    /// about "right now" — the one thing `--against-host` sells (ADR 0058).
+    fn observe(&self, ops: &[GlyphOp]) -> Observations {
+        let mut observations = Observations::default();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut line_cache: std::collections::BTreeMap<String, Result<Option<String>, ()>> =
+            std::collections::BTreeMap::new();
+        let apt_probe = self.observe_apt_batch(ops);
+        for op in ops {
+            let key = op.key();
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let observation = self.observe_op(op, &mut line_cache, &apt_probe);
+            observations.record(key, observation);
+        }
+        observations
     }
 
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
@@ -680,6 +826,35 @@ fn apt_install_names(ops: &[GlyphOp]) -> Vec<String> {
         }
     }
     names
+}
+
+fn apt_glyph_names(ops: &[GlyphOp]) -> Vec<String> {
+    let mut names = Vec::new();
+    for op in ops {
+        if let Glyph::AptPackage { name } = op.glyph() {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
+}
+
+/// Parse a `${Package} ${Status}\n`-formatted `dpkg-query` batch: one line
+/// per name dpkg knows about, present or not, and no line at all for a name
+/// it has never heard of. Exact match on `install ok installed` — a
+/// removed-but-configured package reads `deinstall ok config-files`, which
+/// this excludes on purpose. Pure, and never looks at an exit status: the
+/// batch's exit-code trap is [`HostReconciler::observe_apt_batch`]'s to
+/// avoid, not this parser's.
+fn dpkg_installed_names(stdout: &str) -> std::collections::BTreeSet<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, status) = line.split_once(' ')?;
+            (status == "install ok installed").then(|| name.to_string())
+        })
+        .collect()
 }
 
 fn outcome(glyph: &Glyph, cid: ContentId, inverse: Inverse, changed: bool) -> Outcome {
@@ -865,7 +1040,10 @@ fn observe_perms(path: &str) -> EnactResult<Perms> {
 /// Whether the host's current `prior` perms already realize the `desired` ones:
 /// same mode, and for each of owner/group the desired name (when set) resolves
 /// to the same id the prior name resolves to. An unset desired owner/group is
-/// "leave as-is", so it always matches.
+/// "leave as-is", so it always matches. Feeds both `apply`'s no-op check and
+/// every `observe_*` verdict above, so a glyph naming no owner also
+/// *observes* as matching whatever owner the host happens to have — correct,
+/// consistent with apply, and the fact most likely to be filed as a bug.
 fn perms_match(prior: &Perms, desired: &Perms) -> EnactResult<bool> {
     if prior.mode != desired.mode {
         return Ok(false);
@@ -895,6 +1073,110 @@ fn perms_match(prior: &Perms, desired: &Perms) -> EnactResult<bool> {
         }
     }
     Ok(true)
+}
+
+fn observe_presence(path: &str) -> Observation {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Observation::Realized,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Observation::Absent,
+        Err(_) => Observation::Unknown(Unknowable::Unreadable),
+    }
+}
+
+fn observe_file(path: &str, contents: &str, perms: &Perms) -> Observation {
+    match observe_file_verdict(path, contents, perms) {
+        Ok(observation) => observation,
+        Err(_) => Observation::Unknown(Unknowable::Unreadable),
+    }
+}
+
+fn observe_file_verdict(path: &str, contents: &str, perms: &Perms) -> EnactResult<Observation> {
+    if let Ok(meta) = fs::metadata(path) {
+        // A length mismatch alone settles `Divergent` without reading the
+        // file — the cheap case; same-length bodies fall through and get
+        // compared below.
+        if meta.len() != contents.len() as u64 {
+            return Ok(Observation::Divergent);
+        }
+    }
+    match read_file(path)? {
+        None => Ok(Observation::Absent),
+        Some((prior_contents, prior_perms)) => {
+            if prior_contents == contents && perms_match(&prior_perms, perms)? {
+                Ok(Observation::Realized)
+            } else {
+                Ok(Observation::Divergent)
+            }
+        }
+    }
+}
+
+fn observe_directory(path: &str, perms: &Perms) -> Observation {
+    match observe_directory_verdict(path, perms) {
+        Ok(observation) => observation,
+        Err(_) => Observation::Unknown(Unknowable::Unreadable),
+    }
+}
+
+fn observe_directory_verdict(path: &str, perms: &Perms) -> EnactResult<Observation> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => {
+            if perms_match(&observe_perms(path)?, perms)? {
+                Ok(Observation::Realized)
+            } else {
+                Ok(Observation::Divergent)
+            }
+        }
+        Ok(_) => Ok(Observation::Divergent),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Observation::Absent),
+        Err(e) => Err(EnactError::Retryable(format!("stat {path}: {e}"))),
+    }
+}
+
+fn observe_symlink(path: &str, target: &str) -> Observation {
+    match observe_symlink_verdict(path, target) {
+        Ok(observation) => observation,
+        Err(_) => Observation::Unknown(Unknowable::Unreadable),
+    }
+}
+
+fn observe_symlink_verdict(path: &str, target: &str) -> EnactResult<Observation> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let current = fs::read_link(path)
+                .map_err(|e| EnactError::Retryable(format!("readlink {path}: {e}")))?;
+            if current == Path::new(target) {
+                Ok(Observation::Realized)
+            } else {
+                Ok(Observation::Divergent)
+            }
+        }
+        Ok(_) => Ok(Observation::Divergent),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Observation::Absent),
+        Err(e) => Err(EnactError::Retryable(format!("stat {path}: {e}"))),
+    }
+}
+
+fn observe_line(
+    path: &str,
+    line: &str,
+    cache: &mut std::collections::BTreeMap<String, Result<Option<String>, ()>>,
+) -> Observation {
+    // `Ok(None)` (file never written) and `Err(())` (unreadable, e.g.
+    // non-UTF-8) must stay distinguishable through the cache — collapsing
+    // them would report an unreadable file as `Absent`.
+    let source = cache
+        .entry(path.to_string())
+        .or_insert_with(|| match fs::read_to_string(path) {
+            Ok(contents) => Ok(Some(contents)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        });
+    match source {
+        Ok(Some(contents)) if contains_line(contents, line) => Observation::Realized,
+        Ok(_) => Observation::Absent,
+        Err(()) => Observation::Unknown(Unknowable::Unreadable),
+    }
 }
 
 /// Bring `path`'s ownership and mode to `perms`: resolve each set owner/group
@@ -1056,10 +1338,17 @@ fn apply_line_in_file(
 
 fn file_has_line(path: &str, line: &str) -> EnactResult<bool> {
     match fs::read_to_string(path) {
-        Ok(contents) => Ok(contents.lines().any(|l| l == line)),
+        Ok(contents) => Ok(contains_line(&contents, line)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(EnactError::Retryable(format!("read {path}: {e}"))),
     }
+}
+
+/// The one predicate for "is `line` among `contents`'s lines", shared by
+/// [`file_has_line`] (apply) and [`observe_line`] (observe) so the two paths
+/// cannot independently drift on what "contains" means.
+fn contains_line(contents: &str, line: &str) -> bool {
+    contents.lines().any(|l| l == line)
 }
 
 fn append_line(path: &str, line: &str) -> EnactResult<()> {
@@ -2211,5 +2500,499 @@ mod tests {
             other => panic!("expected a Fatal refusal, got {other:?}"),
         }
         assert!(target.is_file());
+    }
+
+    fn remove_op(glyph: &Glyph) -> GlyphOp {
+        GlyphOp::Remove {
+            cid: glyph_content_id(glyph),
+            glyph: glyph.clone(),
+        }
+    }
+
+    fn sealed_file_glyph(path: &str, mode: u16) -> Glyph {
+        Glyph::Filesystem {
+            path: path.into(),
+            entry: Entry::File {
+                contents: Text::composed(vec![scroll_format::Chunk::Hole(
+                    scroll_format::Secret::Sealed {
+                        key_id: "deadbeefdeadbeef".into(),
+                        ciphertext: vec![0; 16],
+                    },
+                )]),
+                perms: perms(mode),
+            },
+        }
+    }
+
+    fn sealed_line_glyph(path: &str) -> Glyph {
+        Glyph::LineInFile {
+            path: path.into(),
+            line: Text::composed(vec![scroll_format::Chunk::Hole(
+                scroll_format::Secret::Sealed {
+                    key_id: "deadbeefdeadbeef".into(),
+                    ciphertext: vec![0; 16],
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn a_file_the_host_already_holds_byte_for_byte_observes_as_realized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        fs::write(&path, "ansible wrote this\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "ansible wrote this\n", 0o644);
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_file_with_different_contents_observes_as_divergent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        fs::write(&path, "totally different!!\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "ansible wrote this\n", 0o644);
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_file_of_a_different_length_observes_as_divergent_without_reading_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        fs::write(&path, "short\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "a much longer desired body\n", 0o644);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_file_with_matching_contents_and_a_different_mode_observes_as_divergent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        fs::write(&path, "ansible wrote this\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "ansible wrote this\n", 0o644);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_observes_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "ansible wrote this\n", 0o644);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn a_directory_that_exists_with_the_asked_mode_observes_as_realized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("etc/app");
+        fs::create_dir_all(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = directory_glyph(path, 0o750);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_directory_path_holding_a_plain_file_observes_as_divergent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app");
+        fs::write(&path, "not a directory").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = directory_glyph(path, 0o750);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_symlink_pointing_where_asked_observes_as_realized() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("site");
+        std::os::unix::fs::symlink("/etc/available/site", &link).unwrap();
+        let path = link.to_str().unwrap();
+        let glyph = symlink_glyph(path, "/etc/available/site");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_symlink_pointing_elsewhere_observes_as_divergent() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("site");
+        std::os::unix::fs::symlink("/etc/other/site", &link).unwrap();
+        let path = link.to_str().unwrap();
+        let glyph = symlink_glyph(path, "/etc/available/site");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_line_already_in_the_file_observes_as_realized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "127.0.0.1 localhost\n10.0.0.1 app\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_line_missing_from_the_file_observes_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "127.0.0.1 localhost\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn many_line_glyphs_on_one_path_read_that_path_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "127.0.0.1 localhost\n10.0.0.1 app\n").unwrap();
+        let path = path.to_str().unwrap();
+        let present = line_glyph(path, "10.0.0.1 app");
+        let also_present = line_glyph(path, "127.0.0.1 localhost");
+        let missing = line_glyph(path, "10.0.0.2 other");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![
+            install_op(&present),
+            install_op(&also_present),
+            install_op(&missing),
+        ];
+
+        let observed = rec.observe(&ops);
+        assert_eq!(observed.get(&present.key()), Observation::Realized);
+        assert_eq!(observed.get(&also_present.key()), Observation::Realized);
+        assert_eq!(observed.get(&missing.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn observe_line_never_matches_a_line_that_merely_contains_the_target_as_a_substring() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "10.0.0.1 app extra\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn observe_line_matches_regardless_of_the_files_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "10.0.0.1 app").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_line_in_a_file_with_non_utf8_bytes_observes_as_unknown_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(
+            rec.observe(&ops).get(&glyph.key()),
+            Observation::Unknown(Unknowable::Unreadable)
+        );
+    }
+
+    #[test]
+    fn a_remove_of_a_line_still_in_the_file_observes_as_realized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "127.0.0.1 localhost\n10.0.0.1 app\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_remove_of_a_line_already_deleted_from_an_existing_file_observes_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        fs::write(&path, "127.0.0.1 localhost\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn a_remove_of_a_line_whose_file_is_gone_observes_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        let path = path.to_str().unwrap();
+        let glyph = line_glyph(path, "10.0.0.1 app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn a_remove_of_a_sealed_line_this_host_cannot_open_observes_as_unknown_sealed() {
+        let glyph = sealed_line_glyph("/etc/hosts");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(
+            rec.observe(&ops).get(&glyph.key()),
+            Observation::Unknown(Unknowable::Sealed)
+        );
+    }
+
+    #[test]
+    fn a_remove_of_a_file_still_on_disk_observes_as_realized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        fs::write(&path, "leftover\n").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "leftover\n", 0o644);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_remove_of_a_file_already_deleted_observes_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("motd");
+        let path = path.to_str().unwrap();
+        let glyph = file_glyph(path, "leftover\n", 0o644);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn a_sealed_file_this_host_cannot_open_observes_as_unknown_sealed() {
+        let glyph = sealed_file_glyph("/etc/app/creds.conf", 0o600);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(
+            rec.observe(&ops).get(&glyph.key()),
+            Observation::Unknown(Unknowable::Sealed)
+        );
+    }
+
+    #[test]
+    fn a_remove_of_a_sealed_file_still_observes_by_presence_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("creds.conf");
+        fs::write(&path, "still here").unwrap();
+        let path = path.to_str().unwrap();
+        let glyph = sealed_file_glyph(path, 0o600);
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn dpkg_batch_output_yields_only_the_fully_installed_names() {
+        let names = dpkg_installed_names("nginx install ok installed\ncurl install ok installed\n");
+        assert!(names.contains("nginx"));
+        assert!(names.contains("curl"));
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn a_removed_but_configured_package_is_not_counted_as_installed() {
+        let names = dpkg_installed_names("jq deinstall ok config-files\n");
+        assert!(!names.contains("jq"));
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn a_half_configured_package_is_not_counted_as_installed() {
+        let names = dpkg_installed_names("jq install ok half-configured\n");
+        assert!(!names.contains("jq"));
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn a_nonzero_dpkg_exit_still_yields_the_names_that_were_found() {
+        let names = dpkg_installed_names("nginx install ok installed\ncurl install ok installed\n");
+        assert!(names.contains("nginx"));
+        assert!(names.contains("curl"));
+        assert!(!names.contains("jq"));
+    }
+
+    #[test]
+    fn every_apt_glyph_in_a_scroll_is_probed_in_one_dpkg_query() {
+        let runner = FakeCommandRunner::with_installed(&["nginx", "curl"]);
+        let rec = HostReconciler::with_runner(runner);
+        let ops = vec![
+            install_op(&apt("nginx")),
+            install_op(&apt("curl")),
+            install_op(&apt("jq")),
+        ];
+
+        let observed = rec.observe(&ops);
+
+        assert_eq!(observed.get(&apt("nginx").key()), Observation::Realized);
+        assert_eq!(observed.get(&apt("curl").key()), Observation::Realized);
+        assert_eq!(observed.get(&apt("jq").key()), Observation::Absent);
+        let log = runner_of(&rec).log();
+        assert_eq!(
+            log.iter().filter(|l| l.contains("dpkg-query")).count(),
+            1,
+            "expected exactly one dpkg-query invocation, log was {log:?}"
+        );
+    }
+
+    #[test]
+    fn an_installed_package_observes_as_realized() {
+        let glyph = apt("nginx");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_installed(&["nginx"]));
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_missing_package_observes_as_absent() {
+        let glyph = apt("jq");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn an_apt_glyph_never_observes_as_divergent() {
+        let installed = apt("nginx");
+        let absent = apt("jq");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_installed(&["nginx"]));
+        let ops = vec![install_op(&installed), install_op(&absent)];
+
+        let observed = rec.observe(&ops);
+
+        assert_ne!(observed.get(&installed.key()), Observation::Divergent);
+        assert_ne!(observed.get(&absent.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_unit_that_is_enabled_and_active_observes_as_realized() {
+        let glyph = systemd("app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", true, true));
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_unit_that_is_enabled_but_inactive_observes_as_divergent() {
+        let glyph = systemd("app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", true, false));
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Divergent);
+    }
+
+    #[test]
+    fn a_unit_systemd_does_not_know_observes_as_absent() {
+        let glyph = systemd("app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![install_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    #[test]
+    fn a_remove_of_a_unit_still_installed_observes_as_realized() {
+        let glyph = systemd("app");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_service("app", false, false));
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn observe_never_writes_anything_to_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let present = dir.path().join("present");
+        fs::write(&present, "old\n").unwrap();
+        let absent = dir.path().join("absent");
+
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![
+            install_op(&file_glyph(present.to_str().unwrap(), "new\n", 0o644)),
+            install_op(&file_glyph(absent.to_str().unwrap(), "new\n", 0o644)),
+            install_op(&directory_glyph(
+                dir.path().join("nested").to_str().unwrap(),
+                0o755,
+            )),
+            install_op(&symlink_glyph(
+                dir.path().join("link").to_str().unwrap(),
+                "/tmp",
+            )),
+            install_op(&line_glyph(absent.to_str().unwrap(), "a line")),
+        ];
+
+        rec.observe(&ops);
+
+        assert_eq!(fs::read_to_string(&present).unwrap(), "old\n");
+        assert!(!absent.exists());
+        assert!(!dir.path().join("nested").exists());
+        assert!(!dir.path().join("link").exists());
     }
 }
