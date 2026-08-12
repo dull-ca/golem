@@ -486,8 +486,13 @@ def secret(scene: Scene, x: float, y: float, size: float, *, tone: Tone = STORE)
 
 
 REPLICA_SET_ASPECT = 2.40
+REPLICA_GAP_FRACTION = 0.18
 
 
+# NOTE: the declared box is a fixed 2.4 x size whatever the count, so the replicas
+# scale to fit it rather than the box growing. An earlier version held the replica
+# size fixed and divided the leftover into gaps, which went negative at four and
+# drew them overlapping.
 def replica_set(
     scene: Scene,
     x: float,
@@ -499,14 +504,15 @@ def replica_set(
 ) -> Mark:
     first = len(scene.elements)
     width = REPLICA_SET_ASPECT * size
-    replica_size = 0.55 * size
-    replica_width = CONTAINER_ASPECT * replica_size
-    gap = (width - replicas * replica_width) / max(replicas - 1, 1)
-    for index in range(replicas):
+    count = max(replicas, 1)
+    replica_width = width / (count + REPLICA_GAP_FRACTION * (count - 1))
+    gap = REPLICA_GAP_FRACTION * replica_width
+    replica_size = replica_width / CONTAINER_ASPECT
+    for index in range(count):
         container(
             scene,
             x + index * (replica_width + gap),
-            y + 0.45 * size,
+            y + size - replica_size,
             replica_size,
             tone=tone,
         )

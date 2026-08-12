@@ -10,10 +10,10 @@ SLUG = "connectivity-the-service"
 TITLE = "Connectivity: the service"
 
 CARDS_Y = 240.0
-CARD_HEIGHT = 420.0
-ICON_SIZE = 170.0
+CARD_HEIGHT = 390.0
+ICON_SIZE = 190.0
 
-CLOSING_Y = 720.0
+CLOSING_Y = 700.0
 CLOSING_HEIGHT = 62.0
 
 CARD_TONE = Tone(BLUE, WHITE)

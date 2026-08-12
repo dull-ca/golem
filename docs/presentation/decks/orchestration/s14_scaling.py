@@ -13,8 +13,10 @@ from excalidraw.palette import BLUE, INK_SOFT, WHITE, WORKLOAD, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE, HEADING_SIZE
 
+from ..vocabulary import PLACEMENT, SCALING, part
+
 SLUG = "scaling"
-TITLE = "Scaling"
+TITLE = part(SCALING).title
 
 SET_SIZE = 150.0
 SET_WIDTH = icons.REPLICA_SET_ASPECT * SET_SIZE
@@ -49,8 +51,8 @@ def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(
         scene,
-        "Scaling",
-        "Replica counts moved by policy or by load.",
+        TITLE,
+        f"{part(SCALING).detail.capitalize()}.",
     )
     icons.replica_set(scene, BEFORE_X, BEFORE_Y, SET_SIZE, tone=WORKLOAD)
     for top in (AFTER_TOP_Y, AFTER_BOTTOM_Y):
@@ -80,7 +82,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CONTENT_WIDTH,
-        "Scaling adds replicas. Placement still has to find each one a node.",
+        f"Scaling adds replicas. {part(PLACEMENT).title} still has to find each one a node.",
         tone=WORKLOAD,
         height=CLOSING_HEIGHT,
     )

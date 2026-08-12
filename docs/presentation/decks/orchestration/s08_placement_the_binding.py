@@ -6,25 +6,27 @@ from excalidraw.palette import CONTROL, GREEN, PENDING, SLATE, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE, HEADING_SIZE
 
+from ..vocabulary import PLACEMENT, part
+
 SLUG = "placement-the-binding"
-TITLE = "Placement: the binding"
+TITLE = f"{part(PLACEMENT).title}: the binding"
 
 BINDING_X = 640.0
-BINDING_Y = 200.0
+BINDING_Y = 210.0
 BINDING_SIZE = 300.0
 
 SCHEDULER_X = 170.0
-SCHEDULER_Y = 270.0
+SCHEDULER_Y = 280.0
 SCHEDULER_SIZE = 160.0
-SCHEDULER_CAPTION_Y = 448.0
+SCHEDULER_CAPTION_Y = 458.0
 SCHEDULER_CAPTION_BLEED = 40.0
 
-MOMENTS_Y = 550.0
+MOMENTS_Y = 570.0
 MOMENT_HEIGHT = 180.0
 MOMENT_GAP = 36.0
 MOMENT_WIDTH = (CONTENT_WIDTH - 2 * MOMENT_GAP) / 3.0
 
-CLOSING_Y = 790.0
+CLOSING_Y = 820.0
 CLOSING_HEIGHT = 62.0
 
 CANDIDATE_TONE = Tone(SLATE, WHITE, SLATE)
@@ -33,7 +35,7 @@ BOUND_TONE = Tone(GREEN, WHITE, GREEN)
 MOMENTS = (
     LabelledBox("Pending", "nothing is running yet", PENDING),
     LabelledBox("Candidates", "every node that could take it", CANDIDATE_TONE),
-    LabelledBox("Bound", "one node, now the runtime's problem", BOUND_TONE),
+    LabelledBox("Bound", "one node, the runtime's job now", BOUND_TONE),
 )
 
 
@@ -41,7 +43,7 @@ def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(
         scene,
-        "Placement: the binding",
+        TITLE,
         "One workload, several nodes that could take it, one binding.",
     )
     icons.scheduler(scene, SCHEDULER_X, SCHEDULER_Y, SCHEDULER_SIZE)
