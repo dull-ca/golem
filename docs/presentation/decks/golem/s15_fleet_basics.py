@@ -9,15 +9,15 @@ from . import fleet
 SLUG = "fleet-basics"
 TITLE = "The fleet: Ansible does the basics"
 
-SUBTITLE = "Security, the private network and the core OS — the same layer 1 everywhere."
+SUBTITLE = "Core OS, network and security on all thirty. Nothing runs on them yet."
 
-TOOLS = (fleet.Tool("Ansible", "layer 1, on every machine", ANSIBLE),)
+TOOLS = (fleet.Tool("Ansible", "the core OS, network and security", ANSIBLE, work=(1,)),)
 
 
 def build() -> Scene:
     scene = Scene(SLUG, id_namespace=fleet.ID_NAMESPACE)
     slide_header(scene, TITLE, SUBTITLE)
-    fleet.draw(scene, fleet.every_machine(frozenset({1})))
+    fleet.draw(scene, fleet.baseline_machines(ANSIBLE))
     middle = fleet.tool_column(scene, TOOLS)
     fleet.reaches_the_fleet(scene, middle, ANSIBLE.stroke)
     return scene
