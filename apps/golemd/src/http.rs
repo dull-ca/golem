@@ -166,13 +166,25 @@ async fn apply_manifest(
     Ok((StatusCode::ACCEPTED, Json(Accepted { reconcile_id })))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct PlanQuery {
+    #[serde(default)]
+    against_host: bool,
+}
+
 async fn plan_manifest(
     AxState(s): AxState<AppState>,
+    Query(q): Query<PlanQuery>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let bytes = body.to_vec();
+    let scope = if q.against_host {
+        crate::foreman::PlanScope::JournalAndHost
+    } else {
+        crate::foreman::PlanScope::JournalOnly
+    };
     let foreman = s.foreman.clone();
-    let report = tokio::task::spawn_blocking(move || foreman.plan_manifest(&bytes))
+    let report = tokio::task::spawn_blocking(move || foreman.plan_manifest_scoped(&bytes, scope))
         .await
         .map_err(|e| ApiError::internal(anyhow::anyhow!("task join: {e}")))?
         .map_err(ApiError::from_foreman)?;
