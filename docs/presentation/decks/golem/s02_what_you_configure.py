@@ -50,11 +50,7 @@ CELL_TONES = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "The ladder of what you configure",
-        "Same shape, different question: what you still have to answer.",
-    )
+    slide_header(scene, "What you configure")
     grid = matrix(
         scene,
         MARGIN,
@@ -71,9 +67,9 @@ def build() -> Scene:
         MARGIN,
         grid.bottom + 24,
         (
-            (YOURS, "yours"),
-            (PLATFORM, "the platform answers it"),
-            (THEIRS, "not your problem"),
+            (YOURS, "you configure it"),
+            (PLATFORM, "the platform provides it"),
+            (THEIRS, "not yours to configure"),
         ),
     )
     return scene

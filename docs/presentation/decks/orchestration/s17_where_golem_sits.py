@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from excalidraw.layout import note, slide_header, span_bar, split_compare
+from excalidraw.layout import note, slide_header, split_compare
 from excalidraw.palette import GAP, GOLEM
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
@@ -10,9 +10,7 @@ TITLE = "Where golem sits"
 
 PANELS_Y = 200.0
 PANELS_HEIGHT = 420.0
-BAR_Y = 660.0
-BAR_HEIGHT = 64.0
-CLOSING_Y = 762.0
+CLOSING_Y = 680.0
 
 IS_BODY = (
     "declarative desired state, and reversible enactment: every edit records its "
@@ -20,7 +18,7 @@ IS_BODY = (
 )
 
 IS_NOT_BODY = (
-    "a scheduler. Nothing in golem answers which node. The program names the host, "
+    "a scheduler. Nothing in golem chooses a node. The program names the host, "
     "the same way a person would"
 )
 
@@ -56,15 +54,6 @@ def build() -> Scene:
         IS_NOT_BODY,
         width=is_not_panel.body.width,
         font_size=BODY_SIZE,
-    )
-    span_bar(
-        scene,
-        MARGIN,
-        BAR_Y,
-        CONTENT_WIDTH,
-        "That boundary is the point, not an omission.",
-        tone=GOLEM,
-        height=BAR_HEIGHT,
     )
     note(
         scene,

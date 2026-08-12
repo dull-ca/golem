@@ -26,7 +26,7 @@ IS_BODY = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(scene, "What golem is, and is not", "Two claims, drawn apart.")
+    slide_header(scene, "What golem is, and is not")
     not_panel, is_panel = split_compare(
         scene,
         MARGIN,
@@ -55,7 +55,7 @@ def build() -> Scene:
         MARGIN,
         BAR_Y,
         CONTENT_WIDTH,
-        "Layer 1 stays exactly where it is.",
+        "Layer 1 stays where it is.",
         tone=GOLEM,
         height=BAR_HEIGHT,
     )
@@ -63,7 +63,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         CLOSING_Y,
-        "The same work, written down as state instead of as steps.",
+        "You write the state a host should be in. golemd works out the steps.",
         width=CONTENT_WIDTH,
     )
     return scene

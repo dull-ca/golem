@@ -31,7 +31,7 @@ CARDS = (
         icons.service,
         icons.SERVICE_ASPECT,
         "The service",
-        "one stable name, a moving set of instances",
+        "the name outlives any one instance",
         CARD_TONE,
         WIRE,
     ),
@@ -51,7 +51,7 @@ def build() -> Scene:
     slide_header(
         scene,
         "Connectivity: the service",
-        "A stable name in front of a moving set of instances.",
+        "A service is one stable name for a changing set of instances.",
     )
     icon_card_row(
         scene,
@@ -69,7 +69,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CONTENT_WIDTH,
-        "Clients resolve a service, never a machine.",
+        "Clients look up the name and reach a running instance.",
         tone=WIRE,
         height=CLOSING_HEIGHT,
     )

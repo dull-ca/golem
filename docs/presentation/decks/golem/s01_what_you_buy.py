@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from excalidraw.layout import legend, matrix, note, slide_header
+from excalidraw.layout import legend, matrix, slide_header
 from excalidraw.palette import HOSTED, THEIRS, YOURS
-from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
+from excalidraw.scene import MARGIN, Scene
 
 SLUG = "what-you-buy"
 TITLE = "What you buy"
@@ -51,11 +51,7 @@ def cell_tones():
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "The ladder of what you buy",
-        "Eight layers. Every service model is one line drawn across them.",
-    )
+    slide_header(scene, "What you buy")
     grid = matrix(
         scene,
         MARGIN,
@@ -72,16 +68,9 @@ def build() -> Scene:
         MARGIN,
         grid.bottom + 26,
         (
-            (YOURS, "yours"),
-            (THEIRS, "theirs"),
-            (HOSTED, "hosted — yours, on their terms"),
+            (YOURS, "you operate it"),
+            (THEIRS, "the provider operates it"),
+            (HOSTED, "yours, stored by the provider"),
         ),
-    )
-    note(
-        scene,
-        MARGIN,
-        grid.bottom + 78,
-        "What you stop operating, you start depending on.",
-        width=CONTENT_WIDTH,
     )
     return scene

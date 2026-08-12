@@ -17,7 +17,7 @@ from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import BODY_SIZE
 
 SLUG = "december-placement"
-TITLE = "December: placement and lifecycle"
+TITLE = "December: how a service reached a host"
 
 CARDS_Y = 200.0
 CARD_HEIGHT = 380.0
@@ -34,7 +34,7 @@ CARDS = (
         icons.binding,
         icons.BINDING_ASPECT,
         "hosts.py",
-        "a hand-maintained placement table",
+        "which service runs on which host, written down",
         BESPOKE_CARD,
     ),
     IconCard(
@@ -57,7 +57,7 @@ CARDS = (
         icons.host,
         icons.HOST_ASPECT,
         "Lifecycle",
-        "start, stop, restart — what systemd gives you",
+        "start, stop and restart, from systemd",
         SYSTEMD_CARD,
         NODE,
     ),
@@ -66,11 +66,7 @@ CARDS = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "December: how a service reached a host",
-        "A table in Python, expanded onto the machine.",
-    )
+    slide_header(scene, TITLE)
     icon_card_row(
         scene,
         MARGIN,
@@ -86,7 +82,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CONTENT_WIDTH,
-        "A human chose the host. Every time.",
+        "A person chose which host ran each service.",
         tone=BESPOKE,
         height=CLOSING_HEIGHT,
     )

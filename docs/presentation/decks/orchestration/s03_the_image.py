@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import LabelledBox, badge, box_stack, slide_header, span_bar
+from excalidraw.layout import LabelledBox, badge, box_stack, slide_header
 from excalidraw.palette import IMAGE, VIOLET, WHITE, Tone
-from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
+from excalidraw.scene import Scene
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE, HEADING_SIZE
 
 SLUG = "the-image"
@@ -21,9 +21,6 @@ STACK_WIDTH = 886.0
 BOX_HEIGHT = 150.0
 BOX_GAP = 26.0
 
-BAR_Y = 790.0
-BAR_HEIGHT = 64.0
-
 POINT_TONE = Tone(VIOLET, WHITE)
 
 POINTS = (
@@ -38,7 +35,8 @@ def build() -> Scene:
     slide_header(
         scene,
         "The image a container runs from",
-        "Layered, content-addressed, and never edited in place.",
+        "An image is read-only filesystem layers plus a config, named by the digest "
+        "of its contents.",
     )
     icons.container_image(scene, MARK_X, MARK_Y, MARK_SIZE, tone=IMAGE)
     badge(
@@ -60,14 +58,5 @@ def build() -> Scene:
         gap=BOX_GAP,
         title_font_size=HEADING_SIZE,
         detail_font_size=BODY_SIZE,
-    )
-    span_bar(
-        scene,
-        MARGIN,
-        BAR_Y,
-        CONTENT_WIDTH,
-        "Ask for a digest, get the same bytes.",
-        tone=IMAGE,
-        height=BAR_HEIGHT,
     )
     return scene

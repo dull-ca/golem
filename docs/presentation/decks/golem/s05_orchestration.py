@@ -21,17 +21,13 @@ CLOSING_Y = 872.0
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        'What "orchestration" actually means',
-        "Layer 6, expanded. One word that is really five separate jobs.",
-    )
+    slide_header(scene, "What orchestration means")
     hub_and_satellites(
         scene,
         MARGIN,
         SATELLITES_Y,
         CONTENT_WIDTH,
-        LabelledBox("Layer 6", "one word", HUB_TONE),
+        LabelledBox("Orchestration", "layer 6 of the stack", HUB_TONE),
         [
             LabelledBox(part.title, part.detail, PART_TONE, index_label=str(part.number))
             for part in ORCHESTRATION_PARTS
@@ -44,7 +40,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         CLOSING_Y,
-        "None is optional — a platform, a script, or a human answers each.",
+        "Each of these is done by a platform, a script, or a person.",
         width=CONTENT_WIDTH,
     )
     return scene

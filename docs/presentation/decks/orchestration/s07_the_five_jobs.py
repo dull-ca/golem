@@ -20,11 +20,7 @@ CLOSING_Y = 866.0
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "The five jobs a cluster has to answer",
-        "Orchestration is one word for five separate jobs.",
-    )
+    slide_header(scene, "The five jobs a cluster has to do")
     box_stack(
         scene,
         MARGIN,
@@ -43,7 +39,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         CLOSING_Y,
-        "Every fleet answers all five — by a platform, a script, or a human.",
+        "Every fleet does all five, by a platform, by a script, or by a person.",
         width=CONTENT_WIDTH,
     )
     return scene

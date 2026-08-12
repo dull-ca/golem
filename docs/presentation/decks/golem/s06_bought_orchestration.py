@@ -23,7 +23,7 @@ LAYER_TONES = {
 }
 
 LAYER_TAGS = {
-    1: "still ours",
+    1: "ours",
     2: PLATFORM_TAG,
     3: PLATFORM_TAG,
     4: IMAGE_TAG,
@@ -41,7 +41,7 @@ def build() -> Scene:
     slide_header(
         scene,
         "If we bought orchestration",
-        "The same six layers. All five parts of layer 6 arrive together.",
+        "A platform provides all five parts of layer 6 together.",
     )
     lichess_stack.draw(
         scene,
@@ -63,9 +63,9 @@ def build() -> Scene:
         MARGIN,
         bottom_edge(banner) + 18,
         (
-            (PLATFORM, "the platform answers it"),
-            (CONTAINER, "the image carries it"),
-            (YOURS, "still ours"),
+            (PLATFORM, "provided by the platform"),
+            (CONTAINER, "provided by the image"),
+            (YOURS, "ours to operate"),
         ),
     )
     return scene

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import NamedTuple, Sequence
 
-from excalidraw.layout import note, slide_header
+from excalidraw.layout import slide_header
 from excalidraw.palette import INK_SOFT, MANUAL, WHITE, Tone
 from excalidraw.scene import (
     CONTENT_WIDTH,
@@ -20,7 +20,6 @@ TITLE = "Where it broke"
 ROW_TOP = 196.0
 ROW_HEIGHT = 118.0
 ROW_GAP = 14.0
-CLOSING_Y = 862.0
 
 
 class Problem(NamedTuple):
@@ -34,24 +33,24 @@ PROBLEMS: tuple[Problem, ...] = (
     Problem(
         "1",
         "Ansible is imperative mutation",
-        "idempotent by convention, not by construction",
+        "each task has to be written to be idempotent; nothing checks that it is",
     ),
     Problem("2", "No undo", "every rollback written by hand, as another play"),
     Problem(
         "3",
-        "No real static analysis",
-        "the dry run collapses, so runtime errors surface on a live host",
+        "No static analysis",
+        "the dry run cannot evaluate every task, so errors appear on a live host",
         "--check",
     ),
     Problem(
         "4",
         "No way to test against a known-good host",
-        "nothing could answer what this change would do",
+        "no way to see what a change would do before running it",
     ),
     Problem(
         "5",
         "Tied to the newest podman and Debian trixie",
-        "the plumbing assumed the newest thing everywhere",
+        "every host had to be on the newest release",
     ),
 )
 
@@ -130,17 +129,6 @@ def problem_stack(
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Where it broke",
-        "Five problems, none of them a bug you could go and fix.",
-    )
+    slide_header(scene, "Where it broke")
     problem_stack(scene, MARGIN, ROW_TOP, CONTENT_WIDTH, PROBLEMS)
-    note(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        "The cost of writing changes as steps.",
-        width=CONTENT_WIDTH,
-    )
     return scene

@@ -56,8 +56,8 @@ def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(
         scene,
-        "Where everything starts: a process on a host",
-        "Two programs, one machine, one of everything else.",
+        "A process on a host",
+        "A running program, sharing one machine with every other program.",
     )
     scene.rectangle(MARGIN, BAND_Y, CONTENT_WIDTH, BAND_HEIGHT, NEUTRAL)
     icons.host(scene, HOST_X, HOST_Y, HOST_SIZE, tone=NODE)
@@ -112,7 +112,7 @@ def build() -> Scene:
         MARGIN,
         BAR_Y,
         CONTENT_WIDTH,
-        "Both cannot be right on one filesystem.",
+        "One filesystem holds one libssl version.",
         tone=GAP,
         height=BAR_HEIGHT,
     )

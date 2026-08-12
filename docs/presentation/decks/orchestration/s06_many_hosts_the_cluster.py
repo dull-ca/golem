@@ -50,7 +50,6 @@ NODE_HEIGHT = 190.0
 
 BAR_Y = 760.0
 BAR_HEIGHT = 64.0
-CLOSING_Y = 860.0
 
 NODE_TONE = Tone(SLATE, WHITE)
 
@@ -86,7 +85,7 @@ def build() -> Scene:
     slide_header(
         scene,
         "Many hosts: the cluster",
-        "A store of what you asked for, and something that places it.",
+        "A cluster is many hosts, a store of the state you want, and a control plane.",
     )
     icon_card_row(
         scene,
@@ -121,15 +120,8 @@ def build() -> Scene:
         MARGIN,
         BAR_Y,
         CONTENT_WIDTH,
-        "From here on, you stop naming machines.",
+        "You name what should run. The control plane chooses where.",
         tone=CONTROL,
         height=BAR_HEIGHT,
-    )
-    note(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        "You name what should run, not where.",
-        width=CONTENT_WIDTH,
     )
     return scene

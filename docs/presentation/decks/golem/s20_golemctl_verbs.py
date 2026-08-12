@@ -18,7 +18,7 @@ from excalidraw.text import HAND, MONO
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
 SLUG = "golemctl-verbs"
-TITLE = "golemctl — the verbs"
+TITLE = "golemctl — on your machine"
 
 CLIENT_TONE = Tone(BLUE, BLUE_FILL)
 FLEET_TONE = Tone(VIOLET, VIOLET_FILL)
@@ -68,11 +68,7 @@ HANDSHAKE: tuple[str, ...] = (
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "golemctl — on your machine",
-        "Five host verbs, three fleet verbs, and one handshake.",
-    )
+    slide_header(scene, TITLE)
     for position, lines in enumerate(VERBS):
         column = position % 2
         row = position // 2
@@ -127,7 +123,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         HANDSHAKE_NOTE_Y,
-        "Post the manifest, take the id, follow the stream.",
+        "The apply handshake.",
         width=CONTENT_WIDTH,
     )
     return scene

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from excalidraw.layout import TextLine, slide_header, span_bar, text_card
+from excalidraw.layout import TextLine, slide_header, text_card
 from excalidraw.palette import (
     BLUE,
     BLUE_FILL,
-    GOLEM,
     GREEN,
     GREEN_FILL,
     INK_SOFT,
@@ -37,8 +36,6 @@ STAGE_GAP = 40.0
 STAGE_WIDTH = (CONTENT_WIDTH - 4 * STAGE_GAP) / 5.0
 
 FACTS_Y = 470.0
-CLOSING_Y = 700.0
-CLOSING_HEIGHT = 58.0
 
 
 def literal(body: str, size: float = BODY_SIZE) -> TextLine:
@@ -58,7 +55,7 @@ STAGES: tuple[tuple[Sequence[TextLine], Tone], ...] = (
 )
 
 MANIFEST_FACTS: tuple[TextLine, ...] = (
-    gloss("The manifest, exactly:", BODY_SIZE),
+    gloss("The manifest:", BODY_SIZE),
     literal("Manifest { format_version, emet_version, scrolls: Vec<AddressedScroll> }"),
     literal("AddressedScroll { content_id, scroll }        FORMAT_VERSION = 5"),
     literal("ContentId = 32-byte BLAKE3 over postcard bytes, per scroll and per glyph"),
@@ -97,17 +94,8 @@ def build() -> Scene:
     slide_header(
         scene,
         "The pipeline",
-        "One program, compiled once, diffed per host by content id.",
+        "Each host diffs its own scroll from one manifest.",
     )
     draw_stages(scene)
     text_card(scene, MARGIN, FACTS_Y, CONTENT_WIDTH, MANIFEST_FACTS, MANIFEST_TONE)
-    span_bar(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        CONTENT_WIDTH,
-        "Same content id, no work.",
-        tone=GOLEM,
-        height=CLOSING_HEIGHT,
-    )
     return scene

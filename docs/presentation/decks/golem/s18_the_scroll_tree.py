@@ -26,7 +26,7 @@ from excalidraw.text import HAND, MONO
 from excalidraw.type_scale import BODY_SIZE, HEADING_SIZE
 
 SLUG = "the-scroll-tree"
-TITLE = "The scroll tree"
+TITLE = "One program, one scroll per host"
 
 SCROLL_TONE = Tone(SLATE, SLATE_FILL)
 BRANCH_TONE = Tone(BLUE, BLUE_FILL)
@@ -65,8 +65,8 @@ def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(
         scene,
-        "One program, one scroll per host",
-        "A typed, functional program evaluates to a list of scrolls.",
+        TITLE,
+        "An Emet program is typed and functional, and evaluates to a list of scrolls.",
     )
     text_card(
         scene,

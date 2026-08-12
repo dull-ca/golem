@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from excalidraw import icons
-from excalidraw.layout import IconCard, icon_card_row, note, slide_header, span_bar
+from excalidraw.layout import IconCard, icon_card_row, slide_header, span_bar
 from excalidraw.palette import (
     GRAPE,
     IMAGE,
@@ -27,7 +27,6 @@ ICON_SIZE = 200.0
 
 BAR_Y = 670.0
 BAR_HEIGHT = 64.0
-CLOSING_Y = 770.0
 
 CARDS = (
     IconCard(
@@ -70,7 +69,7 @@ def build() -> Scene:
     slide_header(
         scene,
         "How an image reaches a machine",
-        "Four steps, and only one address to know.",
+        "A registry is a server that stores images and serves them by digest.",
     )
     icon_card_row(
         scene,
@@ -90,12 +89,5 @@ def build() -> Scene:
         "The registry is the only thing the host must reach.",
         tone=PLATFORM,
         height=BAR_HEIGHT,
-    )
-    note(
-        scene,
-        MARGIN,
-        CLOSING_Y,
-        "The same digest, on every host that pulls it.",
-        width=CONTENT_WIDTH,
     )
     return scene
