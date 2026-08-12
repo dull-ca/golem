@@ -43,8 +43,14 @@ CLOSING_Y = 740.0
 CLOSING_HEIGHT = 58.0
 NOTE_Y = 826.0
 
-SCROLL_LINE = "AddressedScroll { content_id, scroll }"
 OPS = ("Install", "Remove", "Replace", "Noop")
+
+# `plan` does not take two scrolls. `prior` is the outcome list golemd journalled
+# for the last revision; only `desired` is a scroll — apps/golemd/src/reconcile.rs.
+PANELS: tuple[tuple[str, str], ...] = (
+    ("&[Outcome]", "what golemd last applied, from the journal"),
+    ("&Scroll", "this host's scroll, selected by name from the manifest"),
+)
 
 
 def literal(body: str, size: float = BODY_SIZE) -> TextLine:
@@ -57,11 +63,7 @@ def gloss(body: str, size: float = CAPTION_SIZE) -> TextLine:
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Inside golemd: the diff",
-        "Two scrolls in, a list of glyph operations out.",
-    )
+    slide_header(scene, "Inside golemd: the diff")
     prior, desired = split_compare(
         scene,
         MARGIN,
@@ -71,13 +73,16 @@ def build() -> Scene:
         ("prior", PRIOR_TONE),
         ("desired", DESIRED_TONE),
     )
-    for area, tone in ((prior.body, PRIOR_TONE), (desired.body, DESIRED_TONE)):
+    for area, tone, (line, caption) in (
+        (prior.body, PRIOR_TONE, PANELS[0]),
+        (desired.body, DESIRED_TONE, PANELS[1]),
+    ):
         text_card(
             scene,
             area.x,
             area.y,
             area.width,
-            (literal(SCROLL_LINE), gloss("golemd selects this host's scroll by name")),
+            (literal(line), gloss(caption)),
             tone,
         )
     scene.arrow(
@@ -93,7 +98,7 @@ def build() -> Scene:
         PLAN_CARD_Y,
         CONTENT_WIDTH,
         (
-            literal("reconcile::plan(prior, desired) -> Vec<GlyphOp>"),
+            literal("reconcile::plan(prior: &[Outcome], desired: &Scroll) -> Vec<GlyphOp>"),
             gloss("keyed by Glyph::key()"),
         ),
         NEUTRAL,
@@ -116,7 +121,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CONTENT_WIDTH,
-        "Four operations. There is no fifth.",
+        "Every difference becomes one of these four operations.",
         tone=GOLEM,
         height=CLOSING_HEIGHT,
     )
@@ -124,7 +129,7 @@ def build() -> Scene:
         scene,
         MARGIN,
         NOTE_Y,
-        "The diff is by content id: the same id means no work.",
+        "A glyph whose content id has not changed becomes Noop.",
         width=CONTENT_WIDTH,
     )
     return scene

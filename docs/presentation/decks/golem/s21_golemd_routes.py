@@ -7,7 +7,7 @@ from excalidraw.text import HAND, MONO
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
 SLUG = "golemd-routes"
-TITLE = "golemd — the routes"
+TITLE = "golemd — on the host"
 
 ROUTES_Y = 200.0
 ROUTE_PITCH = 62.0
@@ -21,11 +21,13 @@ CONFLICT_GAP = 28.0
 CONFLICT_HEIGHT = 62.0
 CONFLICT_CAPTION_Y = 856.0
 
+# Registered paths, not invocations: `against_host` and `after` are optional query
+# parameters on bare `/plan` and `/reconciles/…` — apps/golemd/src/http.rs.
 ROUTES: tuple[tuple[str, str], ...] = (
     ("POST /manifest", "apply a manifest; 202 with a reconcile id"),
-    ("POST /plan?against_host=true", "plan only; the host read is opt-in"),
+    ("POST /plan", "plan only; ?against_host=true also reads the host"),
     ("GET /reconciles/latest", "follow the newest apply"),
-    ("GET /reconciles/:id?after=<seq>", "poll one apply, resume from a sequence"),
+    ("GET /reconciles/:id", "poll one apply; ?after=<seq> resumes from a sequence"),
     ("GET /state", "what golemd has applied"),
     ("GET /revisions", "the journal"),
     ("GET /revisions/:id", "one revision"),
@@ -33,19 +35,15 @@ ROUTES: tuple[tuple[str, str], ...] = (
 )
 
 CONFLICTS: tuple[tuple[str, str, float], ...] = (
-    ("409 HostBusy", "a host-reading plan hit a live apply", 420.0),
-    ("409 ReconcileInProgress", "an apply hit an apply", 560.0),
-    ("plan still works", "a plain plan never blocks", 400.0),
+    ("409 HostBusy", "a host-reading plan met an apply in flight", 420.0),
+    ("409 ReconcileInProgress", "an apply met an apply", 560.0),
+    ("no conflict", "a plan that does not read the host never blocks", 400.0),
 )
 
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "golemd — on the host",
-        "Eight routes, and two ways to be told to wait.",
-    )
+    slide_header(scene, TITLE)
     for position, (route, caption) in enumerate(ROUTES):
         row_y = ROUTES_Y + position * ROUTE_PITCH
         scene.text(

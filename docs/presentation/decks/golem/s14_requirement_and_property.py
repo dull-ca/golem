@@ -15,7 +15,7 @@ from excalidraw.text import LINE_HEIGHT, MONO, measured_height, wrapped
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
 SLUG = "requirement-and-property"
-TITLE = "What you need, and what answers it"
+TITLE = "What you need, and what meets it"
 
 CAPTION_Y = 176.0
 ROW_TOP = 212.0
@@ -34,19 +34,19 @@ class Pairing(NamedTuple):
 
 
 PAIRINGS: tuple[Pairing, ...] = (
-    Pairing("describe the state you want", "a declarative program, not a script"),
-    Pairing("proper undo", "every edit records its inverse"),
+    Pairing("describe the state you want", "a typed program that names that state"),
+    Pairing("take a change back", "every edit records its inverse"),
     Pairing("drop it on any machine", "a small statically linked binary", "golemd"),
-    Pairing("assume nothing on the host", "no interpreter, no runtime, no agent"),
     Pairing(
-        "catch mistakes before the host", "a statically typed compiler", "emetc"
+        "assume nothing on the host", "no interpreter and no runtime to install first"
     ),
+    Pairing("catch mistakes before the host", "a statically typed compiler", "emetc"),
     Pairing(
-        "see the change before it happens",
+        "see a change before it lands",
         "plan against the live host",
         "golemctl plan --against-host",
     ),
-    Pairing("move services safely", "reversible revisions, so drain is real"),
+    Pairing("one description for the fleet", "one manifest, one scroll per host"),
 )
 
 
@@ -124,11 +124,7 @@ def pairing_rows(scene: Scene, y: float, pairings: Sequence[Pairing]) -> list[di
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "What you need, and what answers it",
-        "Every row is a debt from the last three slides being paid.",
-    )
+    slide_header(scene, TITLE)
     note(
         scene,
         MARGIN,
@@ -142,7 +138,7 @@ def build() -> Scene:
         scene,
         ANSWER_X,
         CAPTION_Y,
-        "the property that answers it",
+        "the property that meets it",
         width=ANSWER_WIDTH,
         font_size=CAPTION_SIZE,
         colour=INK_FAINT,
