@@ -721,6 +721,7 @@ pub async fn run_plan(
             color: plan::color_is_welcome(),
             width: plan::DEFAULT_WIDTH,
             nested: true,
+            against_host: false,
         };
         for line in plan_lines(&results, &options) {
             println!("{line}");

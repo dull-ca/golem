@@ -116,6 +116,7 @@ pub struct RenderOptions {
     pub color: bool,
     pub width: usize,
     pub nested: bool,
+    pub against_host: bool,
 }
 
 impl Default for RenderOptions {
@@ -125,6 +126,7 @@ impl Default for RenderOptions {
             color: false,
             width: DEFAULT_WIDTH,
             nested: false,
+            against_host: false,
         }
     }
 }
@@ -252,6 +254,7 @@ pub async fn run(
         color: color_is_welcome(),
         width: DEFAULT_WIDTH,
         nested: false,
+        against_host,
     };
     println!("{}", present(&body, json, &options)?);
     Ok(())
@@ -275,13 +278,42 @@ pub fn present(body: &str, json: bool, options: &RenderOptions) -> Result<String
 }
 
 pub fn render(plan: &PlanResponse, options: &RenderOptions) -> String {
-    let steps = steps_of(plan);
+    let journal_steps = steps_of(plan);
+    let show_host = options.against_host && plan.reality.is_some();
+    let host_steps = if show_host {
+        host_steps_of(plan, options)
+    } else {
+        Vec::new()
+    };
+    let widths = if show_host {
+        column_widths(journal_steps.iter().chain(host_steps.iter()))
+    } else {
+        column_widths(journal_steps.iter())
+    };
+
     let mut blocks = vec![vec![headline(plan, options)]];
-    if !steps.is_empty() {
-        blocks.push(step_lines(&steps, options));
+    if show_host {
+        if !journal_steps.is_empty() {
+            let mut block = vec![labelled_block_header("journal", options)];
+            block.extend(step_lines(&journal_steps, options, &widths));
+            blocks.push(block);
+        }
+        let mut block = vec![labelled_block_header("host", options)];
+        block.extend(step_lines(&host_steps, options, &widths));
+        blocks.push(block);
+    } else if !journal_steps.is_empty() {
+        blocks.push(step_lines(&journal_steps, options, &widths));
     }
-    blocks.push(vec![footer(&distinct_summary(&plan.ops), options)]);
+    blocks.push(footer_block(plan, options));
     stacked(blocks, options)
+}
+
+fn labelled_block_header(label: &str, options: &RenderOptions) -> String {
+    paint(
+        &format!("{}{label}", " ".repeat(MARGIN)),
+        DIM,
+        options.color,
+    )
 }
 
 fn stacked(blocks: Vec<Vec<String>>, options: &RenderOptions) -> String {
@@ -300,6 +332,11 @@ fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
     };
     let separator = paint("·", DIM, options.color);
     let manifest = short_cid(&plan.scroll_content_id);
+    let against = if options.against_host {
+        format!("{against} {separator} against the host")
+    } else {
+        against
+    };
     if options.nested {
         return format!(
             "{}{against} {separator} manifest {manifest}",
@@ -312,6 +349,32 @@ fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ColumnWidths {
+    count_width: usize,
+    kind_width: usize,
+    verb_width: usize,
+    member_column: usize,
+}
+
+fn column_widths<'a>(steps: impl Iterator<Item = &'a Step>) -> ColumnWidths {
+    let mut count_width = 1;
+    let mut kind_width = 0;
+    let mut verb_width = VERB_WIDTH;
+    for step in steps {
+        count_width = count_width.max(step.count.to_string().chars().count());
+        kind_width = kind_width.max(step.kind.chars().count());
+        verb_width = verb_width.max(step.verb.chars().count());
+    }
+    let member_column = MARGIN + 2 + verb_width + 1 + count_width + 1 + kind_width + KIND_GAP;
+    ColumnWidths {
+        count_width,
+        kind_width,
+        verb_width,
+        member_column,
+    }
+}
+
 /// Lay the steps out into aligned columns. Every width is measured on the
 /// *unstyled* text of an element's spans and the accents painted afterwards,
 /// because `{:<width}` over an ANSI-wrapped string counts the escape bytes and
@@ -320,24 +383,11 @@ fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
 /// The verb column is computed rather than fixed, floored at [`VERB_WIDTH`], so
 /// `reload-or-restart` widens it without disturbing the member column — and a
 /// plan carrying no such step still renders exactly as it did before.
-fn step_lines(steps: &[Step], options: &RenderOptions) -> Vec<String> {
-    let count_width = steps
-        .iter()
-        .map(|s| s.count.to_string().chars().count())
-        .max()
-        .unwrap_or(1);
-    let kind_width = steps
-        .iter()
-        .map(|s| s.kind.chars().count())
-        .max()
-        .unwrap_or(0);
-    let verb_width = steps
-        .iter()
-        .map(|s| s.verb.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(VERB_WIDTH);
-    let member_column = MARGIN + 2 + verb_width + 1 + count_width + 1 + kind_width + KIND_GAP;
+fn step_lines(steps: &[Step], options: &RenderOptions, widths: &ColumnWidths) -> Vec<String> {
+    let count_width = widths.count_width;
+    let kind_width = widths.kind_width;
+    let verb_width = widths.verb_width;
+    let member_column = widths.member_column;
     let mut lines = Vec::new();
     for step in steps {
         let head = format!(
@@ -367,6 +417,10 @@ fn step_lines(steps: &[Step], options: &RenderOptions) -> Vec<String> {
             step.one_member_per_line,
             options.color,
         );
+        if wrapped.is_empty() {
+            lines.push(head.trim_end().to_string());
+            continue;
+        }
         for (n, line) in wrapped.into_iter().enumerate() {
             if n == 0 {
                 lines.push(format!("{head}{line}"));
@@ -401,7 +455,7 @@ fn distinct_summary(ops: &[PlannedOp]) -> PlanSummary {
     summary
 }
 
-fn footer(summary: &PlanSummary, options: &RenderOptions) -> String {
+fn changes_text(summary: &PlanSummary) -> String {
     let changes = summary.install + summary.replace + summary.remove;
     let mut segments = Vec::new();
     segments.push(match changes {
@@ -425,8 +479,94 @@ fn footer(summary: &PlanSummary, options: &RenderOptions) -> String {
     if summary.noop > 0 {
         segments.push(format!("{} unchanged", summary.noop));
     }
-    let text = format!("{}{}", " ".repeat(MARGIN), segments.join(" · "));
-    paint(&text, DIM, options.color)
+    segments.join(" · ")
+}
+
+fn footer_line(text: &str, options: &RenderOptions) -> String {
+    paint(&format!("{}{text}", " ".repeat(MARGIN)), DIM, options.color)
+}
+
+fn footer_block(plan: &PlanResponse, options: &RenderOptions) -> Vec<String> {
+    let mut lines = vec![footer_line(
+        &changes_text(&distinct_summary(&plan.ops)),
+        options,
+    )];
+    if options.against_host {
+        if let Some(reality) = &plan.reality {
+            if reality.host_already_matches {
+                lines.push(footer_line(
+                    "host · every declared glyph already matches — applying this manifest changes nothing",
+                    options,
+                ));
+            } else if let Some(summary) = host_summary_text(reality) {
+                lines.push(footer_line(&summary, options));
+                for op in unknown_ops(plan) {
+                    lines.push(footer_line(&unobservable_reason(op), options));
+                }
+            }
+        }
+    } else if !options.nested && enrollment_worth_hinting(plan.against_revision) {
+        lines.push(footer_line(
+            "no prior revision here · --against-host checks what this host already has",
+            options,
+        ));
+    }
+    lines
+}
+
+fn enrollment_worth_hinting(against_revision: Option<u64>) -> bool {
+    against_revision.is_none() || against_revision == Some(1)
+}
+
+fn host_summary_text(reality: &Reality) -> Option<String> {
+    let disagree = reality.divergent + reality.absent + reality.still_present;
+    let matched = reality.realized + reality.already_gone;
+    let mut segments = Vec::new();
+    if disagree > 0 {
+        segments.push(format!("{disagree} disagree"));
+    }
+    if reality.unknown > 0 {
+        segments.push(format!("{} unreadable", reality.unknown));
+    }
+    if matched > 0 {
+        segments.push(format!("{matched} match"));
+    }
+    if segments.is_empty() {
+        return None;
+    }
+    Some(format!("host · {}", segments.join(", ")))
+}
+
+fn unknown_ops(plan: &PlanResponse) -> Vec<&PlannedOp> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for op in &plan.ops {
+        if !matches!(
+            op.observed,
+            Some(Observed::Unknown) | Some(Observed::Unrecognized)
+        ) {
+            continue;
+        }
+        if seen.insert(op.glyph_key.as_str()) {
+            result.push(op);
+        }
+    }
+    result
+}
+
+fn unobservable_reason(op: &PlannedOp) -> String {
+    let member = member_of(&op.glyph_key);
+    match op.unobservable {
+        Some(Unobservable::Sealed) => format!("{member} is sealed and this host has no fleet key"),
+        Some(Unobservable::Unreadable) => format!("{member} could not be read on this host"),
+        Some(Unobservable::NotModelled) => {
+            format!("{member} is not observed by this host's reconciler")
+        }
+        Some(Unobservable::Unrecognized) => {
+            format!("{member}: this host gave a reason golemctl does not recognize")
+        }
+        None => format!("{member}: this host did not say why"),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -506,6 +646,36 @@ impl StepDraft {
             details,
         }
     }
+
+    fn into_host_step(self) -> Step {
+        let details = self
+            .glyphs
+            .iter()
+            .map(|glyph| vec![glyph.element.clone()])
+            .collect();
+        let count = self.glyphs.len();
+        let mut distinct: Vec<Member> = self
+            .glyphs
+            .into_iter()
+            .map(|glyph| Member {
+                element: glyph.element,
+                occurrences: glyph.occurrences,
+            })
+            .collect();
+        collapse_numeric_siblings(&mut distinct);
+        let mut members: Vec<Element> = distinct.into_iter().map(Member::marked).collect();
+        cap_members(&mut members);
+        Step {
+            mark: self.mark,
+            verb: self.verb,
+            accent: self.accent,
+            count,
+            kind: pluralize(self.stem, count),
+            members,
+            one_member_per_line: false,
+            details,
+        }
+    }
 }
 
 fn steps_of(plan: &PlanResponse) -> Vec<Step> {
@@ -537,6 +707,81 @@ fn steps_of(plan: &PlanResponse) -> Vec<Step> {
     let mut steps: Vec<Step> = drafts.into_iter().map(StepDraft::into_step).collect();
     steps.extend(reload_steps(&plan.reloads));
     steps
+}
+
+fn reality_verdict(
+    action: Action,
+    observed: Observed,
+) -> (&'static str, &'static str, &'static str) {
+    match (action == Action::Remove, observed) {
+        (_, Observed::Unknown) | (_, Observed::Unrecognized) => ("?", "unknown", YELLOW),
+        (true, Observed::Absent) => ("=", "gone", GREEN),
+        (true, Observed::Realized) | (true, Observed::Divergent) => ("≠", "present", RED),
+        (false, Observed::Realized) => ("=", "match", GREEN),
+        (false, Observed::Absent) => ("≠", "missing", RED),
+        (false, Observed::Divergent) => ("≠", "differs", RED),
+    }
+}
+
+fn host_step_drafts(plan: &PlanResponse) -> Vec<StepDraft> {
+    let mut drafts: Vec<StepDraft> = Vec::new();
+    for op in &plan.ops {
+        let Some(observed) = op.observed else {
+            continue;
+        };
+        let (mark, verb, accent) = reality_verdict(op.action, observed);
+        let stem = kind_stem(kind_of(&op.glyph_key));
+        let unit = op.unit_path.join("/");
+        let position = drafts.iter().position(|d| d.verb == verb && d.stem == stem);
+        let index = match position {
+            Some(index) => index,
+            None => {
+                drafts.push(StepDraft {
+                    mark,
+                    verb,
+                    accent,
+                    stem,
+                    glyphs: Vec::new(),
+                    units: Vec::new(),
+                });
+                drafts.len() - 1
+            }
+        };
+        drafts[index].absorb(op, unit);
+    }
+    drafts
+}
+
+fn host_steps_of(plan: &PlanResponse, options: &RenderOptions) -> Vec<Step> {
+    let steps: Vec<Step> = host_step_drafts(plan)
+        .into_iter()
+        .map(StepDraft::into_host_step)
+        .collect();
+    if options.detail {
+        return steps;
+    }
+    let mut visible = Vec::new();
+    let mut matched = 0;
+    for step in steps {
+        if step.mark == "=" {
+            matched += step.count;
+        } else {
+            visible.push(step);
+        }
+    }
+    if matched > 0 {
+        visible.push(Step {
+            mark: "=",
+            verb: "match",
+            accent: GREEN,
+            count: matched,
+            kind: pluralize("glyph", matched),
+            members: Vec::new(),
+            one_member_per_line: false,
+            details: Vec::new(),
+        });
+    }
+    visible
 }
 
 fn provenance_element(units: &[String]) -> Element {
@@ -863,6 +1108,40 @@ mod tests {
         }
     }
 
+    fn observed_op(
+        unit: &[&str],
+        key: &str,
+        action: Action,
+        observed: Observed,
+        unobservable: Option<Unobservable>,
+    ) -> PlannedOp {
+        PlannedOp {
+            observed: Some(observed),
+            unobservable,
+            ..op(unit, key, action)
+        }
+    }
+
+    fn reality(
+        realized: usize,
+        divergent: usize,
+        absent: usize,
+        unknown: usize,
+        already_gone: usize,
+        still_present: usize,
+        host_already_matches: bool,
+    ) -> Reality {
+        Reality {
+            realized,
+            divergent,
+            absent,
+            unknown,
+            already_gone,
+            still_present,
+            host_already_matches,
+        }
+    }
+
     fn mixed_plan() -> PlanResponse {
         let mut ops = vec![
             op(&["web", "base"], "apt:nginx", Action::Install),
@@ -1130,6 +1409,7 @@ mod tests {
                 "Plan for web-01 · against no prior revision · manifest 3f9c1a…",
                 "",
                 "  no changes · 1 unchanged",
+                "  no prior revision here · --against-host checks what this host already has",
             ]
             .join("\n")
         );
@@ -1386,6 +1666,7 @@ mod tests {
                 "                             fishnet-canary.service ← /etc/containers/systemd/fishnet-canary.container",
                 "",
                 "  15 changes · 15 install",
+                "  no prior revision here · --against-host checks what this host already has",
             ]
             .join("\n")
         );
@@ -1532,5 +1813,558 @@ mod tests {
         .to_string();
         let passed = present(&body, true, &RenderOptions::default()).unwrap();
         assert_eq!(passed, body);
+    }
+
+    #[test]
+    fn without_the_flag_the_render_is_unchanged() {
+        let mut plan = mixed_plan();
+        plan.reality = Some(reality(3, 1, 1, 1, 0, 1, false));
+        plan.ops[0].observed = Some(Observed::Realized);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert_eq!(rendered, render(&mixed_plan(), &RenderOptions::default()));
+    }
+
+    #[test]
+    fn the_enrollment_case_shows_every_glyph_already_matching() {
+        let apt_names = [
+            "nginx", "curl", "jq", "git", "vim", "htop", "tmux", "rsync", "wget", "unzip", "sudo",
+            "tree",
+        ];
+        let mut ops: Vec<PlannedOp> = apt_names
+            .iter()
+            .enumerate()
+            .map(|(n, name)| {
+                let unit: &[&str] = if n < 8 {
+                    &["web", "base"]
+                } else {
+                    &["web", "extra"]
+                };
+                observed_op(
+                    unit,
+                    &format!("apt:{name}"),
+                    Action::Install,
+                    Observed::Realized,
+                    None,
+                )
+            })
+            .collect();
+        ops.push(observed_op(
+            &["web", "nginx"],
+            "file:/etc/nginx/nginx.conf",
+            Action::Install,
+            Observed::Realized,
+            None,
+        ));
+        ops.push(observed_op(
+            &["web", "nginx"],
+            "file:/etc/ssh/sshd_config",
+            Action::Install,
+            Observed::Realized,
+            None,
+        ));
+        ops.push(observed_op(
+            &["web", "base"],
+            "file:/etc/motd",
+            Action::Install,
+            Observed::Realized,
+            None,
+        ));
+        ops.push(observed_op(
+            &["web", "base"],
+            "file:/etc/hosts.allow",
+            Action::Install,
+            Observed::Realized,
+            None,
+        ));
+        ops.push(observed_op(
+            &["web", "nginx"],
+            "systemd:nginx.service",
+            Action::Install,
+            Observed::Realized,
+            None,
+        ));
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: None,
+            ops,
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 17,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+            reality: Some(reality(17, 0, 0, 0, 0, 0, true)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(
+            rendered,
+            [
+                "Plan for web-01 · against no prior revision · against the host · manifest 3f9c1a…",
+                "",
+                "  journal",
+                "  + install 12 apt packages  nginx curl jq git vim htop tmux rsync … and 4 more",
+                "                             (web/base, web/extra)",
+                "  + install  4 files         /etc/nginx/nginx.conf /etc/ssh/sshd_config /etc/motd /etc/hosts.allow",
+                "                             (web/nginx, web/base)",
+                "  + install  1 systemd unit  nginx.service (web/nginx)",
+                "",
+                "  host",
+                "  = match   17 glyphs",
+                "",
+                "  17 changes · 17 install",
+                "  host · every declared glyph already matches — applying this manifest changes nothing",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn the_drift_case_shows_the_two_columns_disagreeing() {
+        let ops = vec![
+            observed_op(
+                &["web", "base"],
+                "apt:nginx",
+                Action::Install,
+                Observed::Absent,
+                None,
+            ),
+            observed_op(
+                &["web", "base"],
+                "apt:curl",
+                Action::Install,
+                Observed::Realized,
+                None,
+            ),
+            observed_op(
+                &["web", "extra"],
+                "apt:jq",
+                Action::Install,
+                Observed::Realized,
+                None,
+            ),
+            observed_op(
+                &["web", "nginx"],
+                "file:/etc/systemd/system/nginx.service",
+                Action::Replace,
+                Observed::Realized,
+                None,
+            ),
+            observed_op(
+                &["web", "base"],
+                "file:/etc/motd",
+                Action::Replace,
+                Observed::Divergent,
+                None,
+            ),
+            observed_op(
+                &["web", "<removes>"],
+                "fileline:/etc/hosts:10.0.0.3 oldhost",
+                Action::Remove,
+                Observed::Realized,
+                None,
+            ),
+            observed_op(
+                &["web", "nginx"],
+                "file:/etc/app/creds.conf",
+                Action::Noop,
+                Observed::Unknown,
+                Some(Unobservable::Sealed),
+            ),
+        ];
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(12),
+            ops,
+            reloads: vec![PredictedReload {
+                unit: "nginx.service".into(),
+                kind: "restart".into(),
+                triggered_by: vec!["file:/etc/systemd/system/nginx.service".into()],
+            }],
+            summary: PlanSummary {
+                install: 3,
+                replace: 2,
+                remove: 1,
+                noop: 1,
+            },
+            reality: Some(reality(3, 1, 1, 1, 0, 1, false)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(
+            rendered,
+            [
+                "Plan for web-01 · against revision 12 · against the host · manifest 3f9c1a…",
+                "",
+                "  journal",
+                "  + install 3 apt packages  nginx curl jq (web/base, web/extra)",
+                "  ~ replace 2 files         /etc/systemd/system/nginx.service /etc/motd (web/nginx, web/base)",
+                "  - remove  1 line-in-file  /etc/hosts: \"10.0.0.3 oldhost\" (web/<removes>)",
+                "  ↻ restart 1 unit          nginx.service ← /etc/systemd/system/nginx.service",
+                "",
+                "  host",
+                "  ≠ missing 1 apt package   nginx",
+                "  ≠ differs 1 file          /etc/motd",
+                "  ≠ present 1 line-in-file  /etc/hosts: \"10.0.0.3 oldhost\"",
+                "  ? unknown 1 file          /etc/app/creds.conf",
+                "  = match   3 glyphs",
+                "",
+                "  6 changes · 3 install, 2 replace, 1 remove · 1 unchanged",
+                "  host · 3 disagree, 1 unreadable, 3 match",
+                "  /etc/app/creds.conf is sealed and this host has no fleet key",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn a_journal_noop_that_the_host_contradicts_appears_in_the_host_block() {
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![
+                observed_op(
+                    &["web", "base"],
+                    "apt:nginx",
+                    Action::Install,
+                    Observed::Realized,
+                    None,
+                ),
+                observed_op(
+                    &["web", "base"],
+                    "systemd:nginx.service",
+                    Action::Noop,
+                    Observed::Divergent,
+                    None,
+                ),
+            ],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 1,
+                replace: 0,
+                remove: 0,
+                noop: 1,
+            },
+            reality: Some(reality(1, 1, 0, 0, 0, 0, false)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        let journal_section = rendered.split("  host\n").next().unwrap();
+        assert!(
+            !journal_section.contains("nginx.service"),
+            "a noop never appears in the journal block: {rendered}"
+        );
+        assert!(
+            rendered.contains("≠ differs 1 systemd unit  nginx.service"),
+            "the host block still surfaces the noop the host disagrees with: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_remove_whose_resource_is_gone_renders_as_gone_not_missing() {
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![
+                observed_op(
+                    &["web", "<removes>"],
+                    "fileline:/etc/hosts:10.0.0.3 oldhost",
+                    Action::Remove,
+                    Observed::Absent,
+                    None,
+                ),
+                observed_op(
+                    &["web", "base"],
+                    "apt:nginx",
+                    Action::Install,
+                    Observed::Realized,
+                    None,
+                ),
+            ],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 1,
+                replace: 0,
+                remove: 1,
+                noop: 0,
+            },
+            reality: Some(reality(1, 0, 0, 0, 1, 0, true)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                detail: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(rendered.contains("= gone"), "{rendered}");
+        assert!(
+            !rendered.contains("missing"),
+            "a gone remove is agreement, never `missing`: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_remove_whose_resource_remains_renders_as_present() {
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![observed_op(
+                &["web", "<removes>"],
+                "fileline:/etc/hosts:10.0.0.3 oldhost",
+                Action::Remove,
+                Observed::Realized,
+                None,
+            )],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 0,
+                replace: 0,
+                remove: 1,
+                noop: 0,
+            },
+            reality: Some(reality(0, 0, 0, 0, 0, 1, false)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(rendered.contains("≠ present"), "{rendered}");
+        assert!(!rendered.contains("missing"), "{rendered}");
+    }
+
+    #[test]
+    fn an_unknown_row_names_the_glyph_and_the_reason() {
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![observed_op(
+                &["web", "nginx"],
+                "file:/etc/app/creds.conf",
+                Action::Install,
+                Observed::Unknown,
+                Some(Unobservable::Sealed),
+            )],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 1,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+            reality: Some(reality(0, 0, 0, 1, 0, 0, false)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(rendered.contains("? unknown"), "{rendered}");
+        assert!(
+            rendered.contains("/etc/app/creds.conf is sealed and this host has no fleet key"),
+            "a `?` row always names the glyph and the cause: {rendered}"
+        );
+    }
+
+    fn tri_kind_matched_plan() -> PlanResponse {
+        PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![
+                observed_op(
+                    &["web"],
+                    "apt:nginx",
+                    Action::Install,
+                    Observed::Realized,
+                    None,
+                ),
+                observed_op(
+                    &["web"],
+                    "file:/etc/motd",
+                    Action::Install,
+                    Observed::Realized,
+                    None,
+                ),
+                observed_op(
+                    &["web"],
+                    "systemd:nginx.service",
+                    Action::Install,
+                    Observed::Realized,
+                    None,
+                ),
+            ],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 3,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+            reality: Some(reality(3, 0, 0, 0, 0, 0, true)),
+        }
+    }
+
+    #[test]
+    fn every_matching_glyph_collapses_to_one_row() {
+        let rendered = render(
+            &tri_kind_matched_plan(),
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(rendered.matches("= match").count(), 1, "{rendered}");
+        assert!(rendered.contains("= match   3 glyphs"), "{rendered}");
+        let host_section = rendered.split("  host\n").nth(1).unwrap();
+        assert!(
+            !host_section.contains("apt package") && !host_section.contains("systemd unit"),
+            "collapsed matches never break out by kind: {rendered}"
+        );
+    }
+
+    #[test]
+    fn detail_expands_the_matching_glyphs_per_kind() {
+        let rendered = render(
+            &tri_kind_matched_plan(),
+            &RenderOptions {
+                against_host: true,
+                detail: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(
+            !rendered.contains("3 glyphs"),
+            "detail un-collapses the merged row: {rendered}"
+        );
+        assert!(rendered.contains("= match   1 apt package"), "{rendered}");
+        assert!(rendered.contains("= match   1 file"), "{rendered}");
+        assert!(rendered.contains("= match   1 systemd unit"), "{rendered}");
+        assert!(rendered.contains("nginx"), "{rendered}");
+        assert!(rendered.contains("/etc/motd"), "{rendered}");
+        assert!(rendered.contains("nginx.service"), "{rendered}");
+    }
+
+    #[test]
+    fn a_plan_with_no_prior_revision_and_no_flag_hints_at_against_host() {
+        let mut plan = install_only(vec![op(&["web"], "apt:nginx", Action::Install)]);
+        plan.against_revision = None;
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(rendered
+            .contains("no prior revision here · --against-host checks what this host already has"));
+
+        plan.against_revision = Some(1);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(
+            rendered.contains(
+                "no prior revision here · --against-host checks what this host already has"
+            ),
+            "revision 1 is the Init revision: golem has committed nothing here either: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_plan_against_a_revision_does_not_hint() {
+        let mut plan = install_only(vec![op(&["web"], "apt:nginx", Action::Install)]);
+        plan.against_revision = Some(2);
+        let rendered = render(&plan, &RenderOptions::default());
+        assert!(!rendered.contains("--against-host"), "{rendered}");
+    }
+
+    #[test]
+    fn the_nested_fleet_form_indents_both_blocks() {
+        let rendered = render(
+            &tri_kind_matched_plan(),
+            &RenderOptions {
+                against_host: true,
+                nested: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(
+            rendered,
+            [
+                "  against revision 5 · against the host · manifest 3f9c1a…",
+                "  journal",
+                "  + install 1 apt package   nginx (web)",
+                "  + install 1 file          /etc/motd (web)",
+                "  + install 1 systemd unit  nginx.service (web)",
+                "  host",
+                "  = match   3 glyphs",
+                "  3 changes · 3 install",
+                "  host · every declared glyph already matches — applying this manifest changes nothing",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn no_color_mode_emits_no_sgr_codes_in_the_host_block() {
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![observed_op(
+                &["web"],
+                "apt:nginx",
+                Action::Install,
+                Observed::Divergent,
+                None,
+            )],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 1,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+            reality: Some(reality(0, 1, 0, 0, 0, 0, false)),
+        };
+        let plain = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                color: false,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(!plain.contains('\u{1b}'), "{plain}");
+        let colored = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                color: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(colored.contains('\u{1b}'), "{colored}");
     }
 }
