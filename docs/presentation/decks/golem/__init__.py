@@ -14,7 +14,7 @@ SLIDE_MODULE_NAMES: tuple[str, ...] = (
     "s08_december_owners",
     "s09_december_discovery",
     "s10_december_placement",
-    "s11_december_gaps",
+    "s11_december_moving_a_service",
     "s12_where_it_broke",
     "s13_what_golem_is",
     "s14_requirement_and_property",

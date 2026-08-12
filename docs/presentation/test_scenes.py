@@ -83,7 +83,7 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/december-owners": (50, "five owner cards, each a name and what it owned"),
     "golem/december-discovery": (55, "four stage cards, each a name and one gloss"),
     "golem/december-placement": (50, "four stage cards, each a name and one gloss"),
-    "golem/december-gaps": (55, "three gap cards, each a name and one gloss"),
+    "golem/december-moving-a-service": (70, "four hand-ordered steps, each with a gloss"),
     "golem/where-it-broke": (95, "five numbered problems, each a heading and one line"),
     "golem/what-golem-is": (60, "two claims stated as sentences, on purpose"),
     "golem/requirement-and-property": (95, "seven requirement and property pairs"),
