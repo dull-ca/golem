@@ -27,9 +27,65 @@ carries the shared bearer token from `GOLEM_AUTH_TOKEN` or
 golemctl plan web.emet http://127.0.0.1:7474
 ```
 
-It answers with one collapsed line per action and a change count; `--detail`
-expands every group to one glyph per line with content ids. A plan is safe to
-run while an apply is in flight.
+It answers with one collapsed line per action and a change count, diffed
+against golem's own journal — golem's record of what it has already applied.
+`--detail` expands every group to one glyph per line with content ids. A plan
+is safe to run while an apply is in flight.
+
+## Plan against the host, not just the journal
+
+The journal is silent about anything golem did not do itself. Point golem at
+a host another tool already configured — Ansible, a hand-run script, a human
+with a shell — and the journal is empty, so every glyph in the manifest reads
+as an install, even one the host already has byte for byte. `--against-host`
+answers the question the journal can't: not what golem's records say, but
+what is actually on the box right now, read live from its filesystem,
+systemd, and dpkg.
+
+```bash
+golemctl plan web.emet http://127.0.0.1:7474 --against-host
+```
+
+The report grows a second block beneath the journal one, the same glyphs
+checked against reality:
+
+```
+Plan for web-01 · against no prior revision · against the host · manifest 3f9c1a…
+
+  journal
+  + install 12 apt packages  nginx curl jq git vim htop tmux rsync … and 4 more
+                             (web/base, web/extra)
+  + install  4 files         /etc/nginx/nginx.conf /etc/ssh/sshd_config /etc/motd /etc/hosts.allow
+                             (web/nginx, web/base)
+  + install  1 systemd unit  nginx.service (web/nginx)
+
+  host
+  = match   17 glyphs
+
+  17 changes · 17 install
+  host · every declared glyph already matches — applying this manifest changes nothing
+```
+
+That is the case `--against-host` exists for: proving, before the first
+apply of a fleet's life, that a host already matches the manifest and
+applying it changes nothing — a statement no amount of reading the journal
+could produce, because the journal has nothing in it yet.
+
+`--against-host` is opt-in because it costs more, not because it needs more
+authority. It runs the same per-glyph checks `apply` already runs before
+touching anything, against the same files, units, and packages the manifest
+already names — a change in how much work `plan` does, not in what it is
+allowed to touch. It also surfaces drift the journal-only plan is blind to: a
+glyph whose content id hasn't moved is a silent `Noop` against the journal
+even if someone hand-edited the file since, or a unit was stopped by hand —
+the host block reports that row as disagreeing while the journal still says
+there is nothing to do. Anything golem can't read on the host — a file it
+lacks permission for, a secret it has no key for — reports `unknown` rather
+than a guess, and an `unknown` never counts toward "already matches."
+
+See [CLI reference](/reference/cli/) for the flag on `fleet plan` and the
+`/plan` endpoint, and [Trust model](/explanation/trust/) for what a
+secret-bearing file's row can and can't reveal.
 
 ## What `golemctl apply` does
 

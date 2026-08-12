@@ -121,9 +121,25 @@ TTY takes the plain path even without `--json`.
 
 The same compile, and no POST. `golemd` diffs the manifest against what it
 has applied and answers with what an apply would do; nothing is written, so
-a plan is safe to run while an apply is in flight. `--detail` expands every
-group to one glyph per line with content ids; `--json` emits golemd's
-response verbatim.
+a plan is safe to run while an apply is in flight.
+
+| Flag | Effect |
+| --- | --- |
+| `--detail` | expand every group to one glyph per line with content ids |
+| `--against-host` | add a second block: the same glyphs checked against the live host — its filesystem, systemd, and dpkg, read right now — beside the journal-only diff |
+| `--json` | emit golemd's response verbatim |
+
+`--against-host` costs more than the journal-only plan — it runs the same
+per-glyph checks `apply` already runs before touching anything — which is
+why it is opt-in; it needs no authority `golemd` doesn't already hold, and
+reads only files, units, and packages the manifest itself names. A `Remove`
+is asked the weaker question a host can actually answer — is the resource
+still there? — never whether golem once owned it, so the host block confirms
+or contradicts a removal the journal already proposed but never originates
+one of its own. A glyph golem can't read on this host — an unreadable file,
+a secret sealed to a key this host lacks — reports `unknown`, and `unknown`
+never counts as a match. See [Applying changes](/getting-started/applying/)
+for the enrollment case this exists for.
 
 ### `golemctl fleet <apply|plan|status>`
 
@@ -132,6 +148,9 @@ concurrently. One host's failure never stops the others, and a host the
 manifest names no scroll for is **skipped untouched** — never POSTed to and
 not counted against the exit code. `fleet apply` exits 0 only if every host
 settled or was skipped.
+
+`fleet plan` takes `--against-host` the same way `plan` does, checked
+independently against each host's own live state.
 
 ```bash
 golemctl fleet status
@@ -296,7 +315,7 @@ by name, every glyph that carries one. See
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/manifest` | Accept a binary manifest; select this host's scroll and start a reconcile. Answers `202 { reconcile_id }` — the reconcile runs detached. |
-| `POST` | `/plan` | Accept a binary manifest; answer what an apply would do. Writes nothing. |
+| `POST` | `/plan` | Accept a binary manifest; answer what an apply would do. `?against_host=true` adds a second block checked against the live host. Writes nothing. |
 | `GET` | `/reconciles/latest?after=<seq>` | Progress for the newest attempt: its phase, and every event after `after`. |
 | `GET` | `/reconciles/:id?after=<seq>` | The same projection for one attempt by id. |
 | `GET` | `/state` | The current applied scroll and its content id. |

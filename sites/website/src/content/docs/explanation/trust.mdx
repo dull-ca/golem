@@ -77,6 +77,13 @@ becomes literal chunks with sealed holes, so a config file with one password
 in it stays reviewable in the manifest and in `golemctl plan` while only the
 password is opaque.
 
+`golemctl plan --against-host` extends the same promise to the live host.
+Checking a secret-bearing file against reality still needs the plaintext —
+`golemd` opens it with the fleet key, inside the agent, the same as at enact
+— but only a verdict crosses the wire: `match`, `differs`, `missing`, or
+`unknown`. The plaintext of what is currently on the host never reaches
+`golemctl`, on a secret-bearing file exactly as on any other.
+
 Encryption is deterministic, which is what keeps content addressing meaning
 what it says: the same secret always produces the same bytes, so an unchanged
 password is a `Noop` rather than a rebuild-triggered churn, and a rotated one
