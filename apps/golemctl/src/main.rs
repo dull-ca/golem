@@ -97,6 +97,8 @@ enum FleetCmd {
         /// Expand every group to one glyph per line, with content ids
         #[arg(long)]
         detail: bool,
+        #[arg(long)]
+        against_host: bool,
     },
     /// One marked line per inventory host: latest revision, applied content id.
     Status {
@@ -163,10 +165,11 @@ async fn main() -> Result<()> {
                 selection,
                 json,
                 detail,
+                against_host,
             } => {
                 let targets = selection.targets()?;
                 let bytes = manifest_bytes(&source).await?;
-                golemctl::fleet::run_plan(bytes, targets, json, detail).await
+                golemctl::fleet::run_plan(bytes, targets, json, detail, against_host).await
             }
             FleetCmd::Status { selection, json } => {
                 let targets = selection.targets()?;
