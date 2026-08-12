@@ -76,8 +76,8 @@ GEOMETRY_TOLERANCE = 0.5
 # default. Every key must name a real slide — test_word_budget_ceilings_name_a_real
 # _slide keeps this table from outliving the slides it excuses.
 WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
-    "golem/what-you-buy": (38, "eight row labels and six column headers name a matrix"),
-    "golem/what-you-configure": (47, "eight row labels and six column headers name a matrix"),
+    "golem/what-you-buy": (60, "a matrix of fourteen labels, plus what the OS row means"),
+    "golem/what-you-configure": (50, "eight row labels, six column headers and a marker"),
     "golem/where-lichess-sits": (50, "six rungs of a ladder, and two annotations on it"),
     "golem/lichess-stack": (73, "the figure enumerates six layers and five parts"),
     "golem/orchestration": (67, "five named jobs, each with its own one-line gloss"),

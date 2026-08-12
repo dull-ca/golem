@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from excalidraw.layout import legend, matrix, slide_header
+from excalidraw.layout import badge, legend, matrix, slide_header
 from excalidraw.palette import PLATFORM, THEIRS, YOURS
 from excalidraw.scene import MARGIN, Scene
+from excalidraw.type_scale import BODY_SIZE
 
 SLUG = "what-you-configure"
 TITLE = "What you configure"
 
+MARKER_Y = 132.0
+MARKER_HEIGHT = 46.0
 GRID_Y = 190.0
 ROW_HEIGHT = 72.0
 HEADER_HEIGHT = 88.0
 ROW_LABEL_WIDTH = 380.0
+LICHESS_COLUMN = 0
 
 ROW_LABELS = (
     "App config & secrets",
@@ -61,6 +65,17 @@ def build() -> Scene:
         row_label_width=ROW_LABEL_WIDTH,
         header_height=HEADER_HEIGHT,
         row_height=ROW_HEIGHT,
+    )
+    marker_x = grid.column_x(LICHESS_COLUMN) + grid.column_width / 2.0
+    badge(
+        scene,
+        marker_x,
+        MARKER_Y,
+        "lichess is here",
+        tone=YOURS,
+        font_size=BODY_SIZE,
+        anchor="center",
+        height=MARKER_HEIGHT,
     )
     legend(
         scene,
