@@ -2,13 +2,16 @@
 
     python docs/presentation/test_scenes.py
 
-Runs the real `build_all` into a temporary directory and asserts the file-format
-invariants that are cheap to get wrong — required keys, ids that resolve both
-ways, arrows anchored at their origin, labels that fit, and a rebuild that is
-byte-identical. Several of these pin bugs that were live once; the comments below
-say which. What this cannot check is whether Excalidraw agrees, because the schema
-here is a restatement of the format rather than the format itself — `tools/` loads
-the output through the real `restore()` for that, at the cost of a network install.
+Runs the real `build_all` into a temporary directory twice and asserts what is
+cheap to get wrong — required keys, ids that resolve both ways, arrows anchored
+at their origin, labels that fit, no text under the type floor, a word budget
+per slide, icons that stay inside the box they declare, and two independent
+builds that come out byte for byte identical. Several of these pin bugs that
+were live once; the comments below say which.
+
+What this cannot check is whether Excalidraw agrees, because the schema here is
+a restatement of the format rather than the format itself — `tools/` loads the
+output through the real `restore()` for that, at the cost of a network install.
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ if str(PRESENTATION_ROOT) not in sys.path:
     sys.path.insert(0, str(PRESENTATION_ROOT))
 
 from build import build_all
+from decks import DECKS
+from excalidraw import icons
 from excalidraw.scene import (
     BASE_KEYS,
     CANVAS_HEIGHT,
@@ -33,13 +38,13 @@ from excalidraw.scene import (
     LINEAR_KEYS,
     MARGIN,
     TEXT_KEYS,
-    coordinate,
+    Scene,
 )
 from excalidraw.text import MONO, measured_height, measured_width
-from slides import SLIDES
+from excalidraw.type_scale import MINIMUM_SIZE, TITLE_SIZE, WORDS_PER_SLIDE
+from icon_sheet import ICON_SHEET_FILENAME
 
 LINEAR_TYPES = frozenset({"arrow", "line"})
-DECK_FILENAME = "deck.excalidraw"
 
 MARGIN_LEFT = MARGIN
 MARGIN_TOP = MARGIN
@@ -55,6 +60,57 @@ MARGIN_BOTTOM = CANVAS_HEIGHT - MARGIN
 TRUE_MONOSPACE_ADVANCE = 0.62
 BOUND_TEXT_PADDING = 5
 MINIMUM_LABEL_SLACK = 8
+
+ICON_PROBE_ORIGIN = (400.0, 300.0)
+ICON_PROBE_SIZE = 96.0
+GEOMETRY_TOLERANCE = 0.5
+
+# A ceiling here is an exemption from WORDS_PER_SLIDE, and a ratchet: the slide is
+# already over the default budget for the stated reason, and cannot get wordier
+# without someone raising the number on purpose. Slides not listed hold the
+# default. Every key must name a real slide — test_word_budget_ceilings_name_a_real
+# _slide keeps this table from outliving the slides it excuses.
+WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
+    "golem/what-you-buy": (55, "eight row labels and six column headers name a matrix"),
+    "golem/what-you-configure": (55, "eight row labels and six column headers name a matrix"),
+    "golem/where-lichess-sits": (70, "six rungs of a ladder, and two annotations on it"),
+    "golem/lichess-stack": (90, "the figure enumerates six layers and five parts"),
+    "golem/orchestration": (85, "five named jobs, each with its own one-line gloss"),
+    "golem/bought-orchestration": (85, "the same figure, plus one owner tag per layer"),
+    "golem/ansible": (75, "six layer names and a reach tag on every bar"),
+    "golem/december-owners": (50, "five owner cards, each a name and what it owned"),
+    "golem/december-discovery": (55, "four stage cards, each a name and one gloss"),
+    "golem/december-placement": (50, "four stage cards, each a name and one gloss"),
+    "golem/december-gaps": (55, "three gap cards, each a name and one gloss"),
+    "golem/where-it-broke": (95, "five numbered problems, each a heading and one line"),
+    "golem/what-golem-is": (60, "two claims stated as sentences, on purpose"),
+    "golem/requirement-and-property": (95, "seven requirement and property pairs"),
+    "golem/the-pipeline": (70, "five stage names, plus the manifest quoted exactly"),
+    "golem/the-diff": (70, "quoted Rust signatures and the four operation names"),
+    "golem/apply-and-undo": (70, "quoted Rust signatures, one gloss each"),
+    "golem/the-scroll-tree": (75, "the tree labels, plus two callouts"),
+    "golem/the-four-glyphs": (120, "the whole glyph contract, quoted verbatim"),
+    "golem/golemctl-verbs": (80, "quoted command lines, flags and a handshake"),
+    "golem/golemd-routes": (95, "eight routes, each with a one-line gloss"),
+    "golem/plan-against-host": (80, "quoted routes, types and Observation variants"),
+    "orchestration/a-process-on-a-host": (50, "two lists of what a process gets and shares"),
+    "orchestration/what-a-container-adds": (50, "three additions, each a name and one gloss"),
+    "orchestration/the-image": (45, "three properties of an image, one line each"),
+    "orchestration/registry-pull-run": (55, "four stage cards, each a name and one gloss"),
+    "orchestration/one-host-many-containers": (50, "the runtime's jobs, one line each"),
+    "orchestration/many-hosts-the-cluster": (50, "three cluster parts and the nodes they name"),
+    "orchestration/the-five-jobs": (80, "five named jobs, each with its own one-line gloss"),
+    "orchestration/placement-the-binding": (45, "three moments of the binding, named"),
+    "orchestration/placement-what-it-weighs": (55, "four scheduler inputs, one line each"),
+    "orchestration/lifecycle": (60, "five states, their transitions, and two named moves"),
+    "orchestration/health-and-reconciliation": (50, "four stages of a loop, one line each"),
+    "orchestration/connectivity-addressing": (45, "two networking modes held side by side"),
+    "orchestration/connectivity-the-service": (50, "three stage cards, each a name and one gloss"),
+    "orchestration/scaling": (40, "two triggers and the limit on both"),
+    "orchestration/storage-and-secrets": (50, "two halves, each a name and one gloss"),
+    "orchestration/who-provides-which-piece": (55, "eight row labels and four column headers"),
+    "orchestration/where-golem-sits": (75, "two claims stated as sentences, on purpose"),
+}
 
 
 def numbers_in(value) -> list[float]:
@@ -94,6 +150,28 @@ def monospace_line_advance(line: str, font_size: float) -> float:
     return len(line) * TRUE_MONOSPACE_ADVANCE * font_size
 
 
+def body_word_count(elements: list[dict]) -> int:
+    total = 0
+    title_skipped = False
+    for element in elements:
+        if element["type"] != "text":
+            continue
+        if not title_skipped and element["fontSize"] >= TITLE_SIZE:
+            title_skipped = True
+            continue
+        total += len(element["text"].split())
+    return total
+
+
+def slide_documents(documents: dict[str, dict]) -> dict[str, dict]:
+    combined = {
+        f"{deck.directory}/{deck.combined_filename}" for deck in DECKS
+    }
+    return {
+        name: payload for name, payload in documents.items() if name not in combined
+    }
+
+
 class GeneratedScenes(unittest.TestCase):
     output: Path
     documents: dict[str, dict]
@@ -104,16 +182,22 @@ class GeneratedScenes(unittest.TestCase):
         cls.output = Path(cls._workspace.name) / "first"
         build_all(cls.output)
         cls.documents = {
-            path.name: json.loads(path.read_text(encoding="utf-8"))
-            for path in sorted(cls.output.glob("*.excalidraw"))
+            str(path.relative_to(cls.output)).replace("\\", "/"): json.loads(
+                path.read_text(encoding="utf-8")
+            )
+            for path in sorted(cls.output.rglob("*.excalidraw"))
         }
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls._workspace.cleanup()
 
-    def test_every_slide_and_the_deck_are_written(self) -> None:
-        expected = {slide.filename for slide in SLIDES} | {"deck.excalidraw"}
+    def test_every_slide_and_every_deck_is_written(self) -> None:
+        expected = {ICON_SHEET_FILENAME}
+        for deck in DECKS:
+            expected.add(f"{deck.directory}/{deck.combined_filename}")
+            for slide in deck.slides:
+                expected.add(f"{deck.directory}/{slide.filename}")
         self.assertEqual(set(self.documents), expected)
 
     def test_documents_have_the_excalidraw_envelope(self) -> None:
@@ -191,12 +275,8 @@ class GeneratedScenes(unittest.TestCase):
                     self.assertEqual(points[0], [0, 0])
                     xs = [point[0] for point in points]
                     ys = [point[1] for point in points]
-                    self.assertEqual(
-                        element["width"], coordinate(max(xs) - min(xs))
-                    )
-                    self.assertEqual(
-                        element["height"], coordinate(max(ys) - min(ys))
-                    )
+                    self.assertEqual(element["width"], max(xs) - min(xs))
+                    self.assertEqual(element["height"], max(ys) - min(ys))
 
     def test_no_non_finite_numbers(self) -> None:
         for name, payload in self.documents.items():
@@ -219,24 +299,51 @@ class GeneratedScenes(unittest.TestCase):
                 with self.subTest(name=name, element=element["id"]):
                     self.assertIn(element["fontFamily"], (1, 3))
 
-    def test_deck_holds_one_frame_per_slide(self) -> None:
-        deck = self.documents["deck.excalidraw"]
-        frames = [
-            element for element in deck["elements"] if element["type"] == "frame"
-        ]
-        self.assertEqual(len(frames), len(SLIDES))
-        self.assertEqual(
-            [frame["name"] for frame in frames],
-            [slide.frame_name for slide in SLIDES],
-        )
-        for element in deck["elements"]:
-            if element["type"] != "frame":
-                self.assertIsNotNone(element["frameId"])
+    def test_no_text_falls_below_the_type_floor(self) -> None:
+        for name, payload in self.documents.items():
+            for element in payload["elements"]:
+                if element["type"] != "text":
+                    continue
+                with self.subTest(name=name, text=element["text"][:40]):
+                    self.assertGreaterEqual(element["fontSize"], MINIMUM_SIZE)
+
+    def test_every_slide_stays_within_its_word_budget(self) -> None:
+        for deck in DECKS:
+            for slide in deck.slides:
+                key = f"{deck.name}/{slide.slug}"
+                payload = self.documents[f"{deck.directory}/{slide.filename}"]
+                budget, reason = WORD_BUDGET_CEILINGS.get(
+                    key, (WORDS_PER_SLIDE, "no exemption")
+                )
+                with self.subTest(slide=key, reason=reason):
+                    self.assertLessEqual(body_word_count(payload["elements"]), budget)
+
+    def test_word_budget_ceilings_name_a_real_slide(self) -> None:
+        known = {
+            f"{deck.name}/{slide.slug}" for deck in DECKS for slide in deck.slides
+        }
+        self.assertEqual(set(WORD_BUDGET_CEILINGS) - known, set())
+
+    def test_each_deck_holds_one_frame_per_slide(self) -> None:
+        for deck in DECKS:
+            payload = self.documents[f"{deck.directory}/{deck.combined_filename}"]
+            frames = [
+                element
+                for element in payload["elements"]
+                if element["type"] == "frame"
+            ]
+            with self.subTest(deck.name):
+                self.assertEqual(len(frames), len(deck.slides))
+                self.assertEqual(
+                    [frame["name"] for frame in frames],
+                    [slide.frame_name for slide in deck.slides],
+                )
+                for element in payload["elements"]:
+                    if element["type"] != "frame":
+                        self.assertIsNotNone(element["frameId"])
 
     def test_slide_elements_stay_inside_the_canvas_margin(self) -> None:
-        for name, payload in self.documents.items():
-            if name == DECK_FILENAME:
-                continue
+        for name, payload in slide_documents(self.documents).items():
             for element in payload["elements"]:
                 left, top, right, bottom = extent(element)
                 with self.subTest(name=name, element=element["id"]):
@@ -287,27 +394,65 @@ class GeneratedScenes(unittest.TestCase):
                 if container_id is None:
                     continue
                 container = elements[container_id]
-                room = (
-                    container["width"] - 2 * BOUND_TEXT_PADDING - MINIMUM_LABEL_SLACK
-                )
+                room = container["width"] - 2 * BOUND_TEXT_PADDING - MINIMUM_LABEL_SLACK
                 for line in element["text"].split("\n"):
                     with self.subTest(name=name, element=element["id"], line=line):
                         self.assertLessEqual(
                             monospace_line_advance(line, element["fontSize"]), room
                         )
 
-    def test_the_build_is_byte_identical_when_repeated(self) -> None:
+    def test_two_independent_builds_are_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:
             repeat = Path(workspace) / "second"
             build_all(repeat)
-            first = sorted(self.output.glob("*.excalidraw"))
-            second = sorted(repeat.glob("*.excalidraw"))
-            self.assertEqual(
-                [path.name for path in first], [path.name for path in second]
+            first = sorted(
+                path.relative_to(self.output) for path in self.output.rglob("*.excalidraw")
             )
-            for original, rebuilt in zip(first, second):
-                with self.subTest(original.name):
-                    self.assertEqual(original.read_bytes(), rebuilt.read_bytes())
+            second = sorted(
+                path.relative_to(repeat) for path in repeat.rglob("*.excalidraw")
+            )
+            self.assertEqual(first, second)
+            for relative in first:
+                with self.subTest(str(relative)):
+                    self.assertEqual(
+                        (self.output / relative).read_bytes(),
+                        (repeat / relative).read_bytes(),
+                    )
+
+
+class Icons(unittest.TestCase):
+    def test_every_icon_draws_inside_its_declared_bounding_box(self) -> None:
+        origin_x, origin_y = ICON_PROBE_ORIGIN
+        for spec in icons.CATALOGUE:
+            with self.subTest(spec.name):
+                scene = Scene(f"icon-probe-{spec.name}")
+                mark = spec.draw(scene, origin_x, origin_y, ICON_PROBE_SIZE)
+                self.assertTrue(mark.elements)
+                self.assertEqual(len(mark.elements), len(scene.elements))
+                self.assertAlmostEqual(
+                    mark.width, spec.aspect * ICON_PROBE_SIZE, places=6
+                )
+                self.assertAlmostEqual(mark.height, ICON_PROBE_SIZE, places=6)
+                for element in mark.elements:
+                    left, top, right, bottom = extent(element)
+                    self.assertGreaterEqual(left, mark.x - GEOMETRY_TOLERANCE)
+                    self.assertGreaterEqual(top, mark.y - GEOMETRY_TOLERANCE)
+                    self.assertLessEqual(right, mark.right + GEOMETRY_TOLERANCE)
+                    self.assertLessEqual(bottom, mark.bottom + GEOMETRY_TOLERANCE)
+
+    def test_no_icon_draws_text(self) -> None:
+        for spec in icons.CATALOGUE:
+            with self.subTest(spec.name):
+                scene = Scene(f"icon-text-probe-{spec.name}")
+                mark = spec.draw(scene, 0.0, 0.0, ICON_PROBE_SIZE)
+                self.assertEqual(
+                    [element for element in mark.elements if element["type"] == "text"],
+                    [],
+                )
+
+    def test_the_catalogue_names_are_unique(self) -> None:
+        names = [spec.name for spec in icons.CATALOGUE]
+        self.assertEqual(len(names), len(set(names)))
 
 
 if __name__ == "__main__":

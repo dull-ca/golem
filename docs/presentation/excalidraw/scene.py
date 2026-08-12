@@ -537,12 +537,14 @@ class Scene:
         ]
         xs = [point[0] for point in relative]
         ys = [point[1] for point in relative]
+        span_x = max(xs) - min(xs)
+        span_y = max(ys) - min(ys)
         element = self._base(
             kind,
             anchor_x,
             anchor_y,
-            max(xs) - min(xs),
-            max(ys) - min(ys),
+            span_x,
+            span_y,
             stroke=stroke,
             background=TRANSPARENT,
             fill_style="solid",
@@ -552,6 +554,13 @@ class Scene:
             opacity=opacity,
             roundness=CURVED,
         )
+        # NOTE: the span goes in unrounded, overwriting what _base rounded to 2dp.
+        # Excalidraw recomputes a linear element's box from the stored points and
+        # keeps the full float, so a rounded span disagrees with it: an arrow whose
+        # points spanned 57.72 to -14.04 was written as 71.76 and restored as
+        # 71.75999999999999, which the restore() oracle reads as a rewritten element.
+        element["width"] = span_x
+        element["height"] = span_y
         element.update(
             {
                 "points": relative,

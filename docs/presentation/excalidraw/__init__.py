@@ -1,7 +1,20 @@
 from __future__ import annotations
 
-from . import layout, palette, text
-from .layout import Area, Grid, LabelledBox, PanelArea
+from . import icons, layout, palette, text, type_scale
+from .icons import Mark
+from .layout import (
+    Area,
+    ClusterNode,
+    CoverageRow,
+    Grid,
+    LabelledBox,
+    Lane,
+    PanelArea,
+    RhythmCard,
+    StateNode,
+    Tick,
+    Transition,
+)
 from .scene import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
@@ -20,29 +33,45 @@ from .scene import (
     serialised,
     write_scene,
 )
+from .type_scale import BODY_SIZE, CAPTION_SIZE, HEADING_SIZE, MINIMUM_SIZE, TITLE_SIZE
 
 __all__ = [
     "Area",
+    "BODY_SIZE",
     "CANVAS_HEIGHT",
     "CANVAS_WIDTH",
+    "CAPTION_SIZE",
     "CONTENT_HEIGHT",
     "CONTENT_LEFT",
     "CONTENT_RIGHT",
     "CONTENT_WIDTH",
+    "ClusterNode",
+    "CoverageRow",
     "Grid",
+    "HEADING_SIZE",
     "LabelledBox",
+    "Lane",
     "MARGIN",
+    "MINIMUM_SIZE",
+    "Mark",
     "PanelArea",
+    "RhythmCard",
     "Scene",
+    "StateNode",
+    "TITLE_SIZE",
+    "Tick",
+    "Transition",
     "bottom_edge",
     "bounds",
     "centre",
     "document",
     "framed_deck",
+    "icons",
     "layout",
     "palette",
     "right_edge",
     "serialised",
     "text",
+    "type_scale",
     "write_scene",
 ]
