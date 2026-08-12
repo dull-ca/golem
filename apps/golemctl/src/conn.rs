@@ -261,8 +261,16 @@ impl Conn {
         Ok(serde_json::from_str(&text)?)
     }
 
-    pub async fn post_plan(&self, bytes: Vec<u8>) -> Result<String> {
-        let resp = self.post_bytes("plan", bytes).await?;
+    /// `against_host` selects golemd's host-probing scope (ADR 0058) via
+    /// `?against_host=true`; omitting the parameter reproduces the prior
+    /// request byte for byte, matching the response it's asking for.
+    pub async fn post_plan(&self, bytes: Vec<u8>, against_host: bool) -> Result<String> {
+        let path = if against_host {
+            "plan?against_host=true"
+        } else {
+            "plan"
+        };
+        let resp = self.post_bytes(path, bytes).await?;
         expect_success(resp).await
     }
 
@@ -519,6 +527,58 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         format!("http://{addr}")
+    }
+
+    async fn serve_ungated(name: &str) -> String {
+        let foreman = golemd::foreman::Foreman::new(
+            name.to_string(),
+            Box::new(golemd::planroom::MemoryPlanRoom::new()),
+            Box::new(golemd::fake_reconciler::FakeReconciler::new()),
+        );
+        let app = golemd::http::router(golemd::http::AppState {
+            foreman: Arc::new(foreman),
+            required_token: None,
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    fn plan_manifest_bytes() -> Vec<u8> {
+        let host = scroll_format::Scroll {
+            name: "h1".into(),
+            policy: None,
+            notifies: vec![],
+            contents: scroll_format::Contents::Glyphs(vec![scroll_format::Glyph::AptPackage {
+                name: "ok".into(),
+            }]),
+        };
+        scroll_format::to_bytes(&scroll_format::Manifest::from_scrolls(vec![host], "test"))
+    }
+
+    #[tokio::test]
+    async fn post_plan_without_against_host_sends_no_query_string() {
+        let base = serve_ungated("h1").await;
+        let target = http_target("h1", base);
+        let conn = Conn::open(&target, &AuthSource::None).await.unwrap();
+        let body = conn.post_plan(plan_manifest_bytes(), false).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(value.get("reality").is_none());
+        assert!(value["ops"][0].get("observed").is_none());
+    }
+
+    #[tokio::test]
+    async fn post_plan_with_against_host_sends_the_query_parameter() {
+        let base = serve_ungated("h1").await;
+        let target = http_target("h1", base);
+        let conn = Conn::open(&target, &AuthSource::None).await.unwrap();
+        let body = conn.post_plan(plan_manifest_bytes(), true).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(value.get("reality").is_some());
+        assert!(value["ops"][0].get("observed").is_some());
     }
 
     #[tokio::test]

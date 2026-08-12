@@ -109,6 +109,15 @@ reconciler** — zero host I/O. The real host effects live in adapters. See
 [Reversible reconcile](/explanation/reversible-reconcile/) for the reconciler
 contract and the four concrete reconcilers.
 
+`golemctl plan --against-host` adds a second source beside the diff, not
+inside it. golemd probes the live host for every glyph the diff already
+named — reusing the same read-only check `apply` runs before touching
+anything — and the report renders the two side by side: what the journal
+says, and what the host says. The diff in step 3 stays exactly the pure fold
+it already was, unmodified and un-consulted by the probe; nothing the probe
+observes reaches `apply`, changes an op, or is journaled. It is read,
+rendered, and otherwise inert.
+
 ## Why split it this way
 
 | Concern | Lives in | Changes | Failure mode |

@@ -57,6 +57,9 @@ the roadmap is a design or a deliberate deferral with no code behind it.
   pipe, and `--reattach` resumes an attempt whose connection dropped.
 - **`golemctl plan`.** The same compile, no POST: what an apply would do,
   plus the systemd reloads it would trigger, changing nothing.
+  `--against-host` adds a second, opt-in block checked against the live
+  host — its filesystem, systemd, and dpkg, read right now — beside the
+  journal-only diff.
 - **`notifies` reloads.** A scroll declares units to reload once anything in
   or under it lands changed; a branch's list unions down over every
   descendant leaf.

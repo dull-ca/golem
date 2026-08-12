@@ -503,6 +503,48 @@ standalone project.
   land only once captured in full. A `reverse_streaming` seam mirroring
   `apply_streaming` is the natural follow-up.
 
+- **Batch the systemd probe with `systemctl show` — DEFERRED (ADR 0058).**
+  `Reconciler::observe` asks `systemctl is-enabled` then `is-active` per unit,
+  two subprocesses each, where `systemctl show
+  --property=UnitFileState,ActiveState,LoadState u1 u2 …` would answer a whole
+  scroll in one. It was deferred because the mapping is unverified, not because
+  2N spawns are wanted: `UnitFileState` is a value set (`enabled`,
+  `enabled-runtime`, `static`, `indirect`, `generated`, `linked`, `masked`,
+  `disabled`) where `is-enabled` is an exit code, several of those values exit
+  0, and whether a unit systemd does not know emits a block at all is
+  unconfirmed. An allowlist that is wrong there makes `golemctl plan
+  --against-host` call a dead service fine or a fine one divergent — the plan
+  lying about exactly what the column was added to check, which is worse than
+  the spawns. Gated on a test asserting the batch verdict equals the per-unit
+  verdict across the full state set: enabled / enabled-runtime / static /
+  indirect / generated / linked / masked / disabled × active / inactive /
+  failed, plus a unit that does not exist. Land that test first, then the
+  batch.
+
+- **`apps/fleet/smoke.emet` is self-conflicting — KNOWN GAP, pre-existing.**
+  It declares a `file` glyph writing `"ok\n"` and a `lineInFile` glyph
+  appending `"managed"` to the same path, so after a settled apply the disk
+  holds `"ok\nmanaged\n"` and the `file` glyph is permanently divergent from
+  what it declares. `analyze`'s per-leaf glyph-key conflict check does not
+  catch it because the two glyphs key differently (`file:…` vs
+  `fileline:…`). Pre-existing, not caused by ADR 0058 — but worth recording
+  that `--against-host`'s reality column found it on its first run against a
+  real guest, unprompted, which is a fair endorsement of the feature. The
+  follow-up is either fixing the fixture or documenting the interaction.
+
+- **The `lineInFile` read-once cache is asserted only by verdict, not by
+  read count — KNOWN GAP (ADR 0058).** Nothing in the codebase counts reads,
+  so the cache's effect can only be checked indirectly, through the verdict
+  it produces, rather than by asserting the file was read once. Reported by
+  the implementer rather than papered over with a test that only pretends to
+  check it.
+
+- **Test-isolation wart in `apps/golemctl/tests/fleet_fanout.rs` — KNOWN
+  GAP.** The per-apply log path is `$TMPDIR/golemctl/apply-<host>-<id>`, so
+  test functions sharing a host name race on it under cargo's parallel test
+  threads. Worked around by giving each test function a distinct host name;
+  the shared-path root cause is unaddressed.
+
 - **Convergence test for racing real applies (ADR 0034).** ADR 0034's bounded
   parallel-unit execution is live-verified on a real host, but there is no
   automated test that races two real, concurrent applies against the same host

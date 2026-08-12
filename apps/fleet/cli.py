@@ -276,12 +276,15 @@ def plan(
     hosts: Optional[str] = typer.Option(None, "--hosts", help="Comma-separated VM names."),
     raw: bool = typer.Option(False, "--json", help="Print golemctl's {\"hosts\": {…}} aggregate instead of the collapsed view."),
     detail: bool = typer.Option(False, "--detail", help="One glyph per line with content ids."),
+    against_host: bool = typer.Option(False, "--against-host", help="Also diff against what is actually on the host, read live."),
 ) -> None:
     """Compile a scroll and hand every target to one `golemctl fleet plan` — the
     dry-run diff, nothing applied (ADR 0036). Same split as `apply`: fleet picks
     the hosts and renders the ssh inventory, golemctl opens the forwards, POSTs,
     and renders each host's diff under its own heading. A plan is not a failure,
-    so golemctl exits nonzero only when a host errored."""
+    so golemctl exits nonzero only when a host errored. `--against-host` is a
+    bare argv passthrough (ADR 0058) — fleet parses none of the plan JSON, so
+    it has nothing of its own to add for the host column."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)
@@ -307,6 +310,8 @@ def plan(
         argv.append("--json")
     if detail:
         argv.append("--detail")
+    if against_host:
+        argv.append("--against-host")
     result = subprocess.run(argv, cwd=str(p.root))
     if result.returncode != 0:
         console.print(f"  [red]golemctl fleet plan exited {result.returncode}[/red]")

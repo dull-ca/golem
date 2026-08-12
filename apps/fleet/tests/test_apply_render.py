@@ -197,6 +197,32 @@ class PlanExecTests(unittest.TestCase):
 
         self.assertIn("--detail", [str(a) for a in calls[0]])
 
+    def test_plan_forwards_against_host_to_golemctl(self):
+        records = self._records()
+        manifest_path = self._manifest_path()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        self._invoke(manifest_path, records, fake_run, args=["--against-host"])
+
+        self.assertIn("--against-host", [str(a) for a in calls[0]])
+
+    def test_plan_without_against_host_does_not_pass_the_flag(self):
+        records = self._records()
+        manifest_path = self._manifest_path()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        self._invoke(manifest_path, records, fake_run)
+
+        self.assertNotIn("--against-host", [str(a) for a in calls[0]])
+
     def test_plan_exits_with_golemctls_own_exit_code(self):
         records = self._records()
         manifest_path = self._manifest_path()

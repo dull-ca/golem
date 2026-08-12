@@ -709,10 +709,11 @@ pub async fn run_plan(
     targets: Vec<Target>,
     json: bool,
     detail: bool,
+    against_host: bool,
 ) -> Result<()> {
     let fanout = Fanout::read(&bytes, targets)?;
     let auth = crate::conn::resolve_auth(None)?;
-    let results = gather_plans(bytes, &fanout, &auth).await;
+    let results = gather_plans(bytes, &fanout, &auth, against_host).await;
     if json {
         println!("{}", serde_json::to_string_pretty(&plan_json(&results))?);
     } else {
@@ -721,6 +722,7 @@ pub async fn run_plan(
             color: plan::color_is_welcome(),
             width: plan::DEFAULT_WIDTH,
             nested: true,
+            against_host,
         };
         for line in plan_lines(&results, &options) {
             println!("{line}");
@@ -739,6 +741,7 @@ pub async fn gather_plans(
     bytes: Vec<u8>,
     fanout: &Fanout,
     auth: &AuthSource,
+    against_host: bool,
 ) -> Vec<(Target, HostPlan)> {
     let mut tasks = Vec::with_capacity(fanout.targets().len());
     for target in fanout.targets() {
@@ -753,7 +756,7 @@ pub async fn gather_plans(
             target.clone(),
             Some(tokio::spawn(async move {
                 let conn = Conn::open(&target, &auth).await?;
-                conn.post_plan(bytes).await
+                conn.post_plan(bytes, against_host).await
             })),
         ));
     }

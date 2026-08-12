@@ -16,6 +16,16 @@ state rather than the scroll's declaration, so it reaches units no
 the same rule; both carry a pointer back. Implemented in
 `apps/golemd/src/reconcilers.rs`.
 
+Answered in part by
+[ADR 0058](0058-the-plan-reads-the-host-and-only-a-verdict-crosses-the-port.md)
+(2026-08-11): the open question in the Consequences below — whether golem should
+look for latched units outside a diff-driven op — is settled in the affirmative
+**for reporting only**. `golemctl plan --against-host` observes every desired
+glyph, `Noop`s included, so a unit that is inactive or latched failed is
+reported `Divergent` even where the diff has nothing to enact. Nothing there
+enacts anything, and the verbs, paths, and blast radius this ADR governs are
+unchanged.
+
 ## Context
 
 Three sites went down and stayed down while golem reported the reconcile green.

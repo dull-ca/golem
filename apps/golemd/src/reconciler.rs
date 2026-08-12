@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::host::CommandSink;
 use crate::journal::{GlyphOp, Inverse, Outcome};
+use crate::observe::Observations;
 
 /// Why an enact step failed, and whether retrying could help: `Retryable` is
 /// retried by the foreman's attempt spine, `Fatal` aborts the reconcile at once.
@@ -74,6 +75,23 @@ pub trait Reconciler: Send + Sync {
     fn prepare(&self, _ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         Ok(PrepareOutcome::default())
     }
+    /// Ask whether the host already realizes each op in `ops` — a verdict per
+    /// glyph, never host state (ADR 0058). This answers the same "does the
+    /// host already match" question every `apply_*` asks itself before
+    /// touching anything; a richer answer would need a pure core comparing
+    /// raw state, which cannot happen here — `perms_match` resolves an owner
+    /// name against the host's own passwd database, and a secret-bearing
+    /// glyph's plaintext must never leave this port at all.
+    ///
+    /// Infallible by contract, like [`Reconciler::diagnose`] and unlike
+    /// `apply`: a plan that fails outright over one unreadable file is worse
+    /// than one row reading `Unknown`. The default here answers an empty map,
+    /// so a reconciler that never overrides it reports every key
+    /// `Unknown(NotModelled)` through [`Observations::get`]'s total lookup,
+    /// rather than panicking or silently omitting the row.
+    fn observe(&self, _ops: &[GlyphOp]) -> Observations {
+        Observations::default()
+    }
     /// Poke a unit whose *unit file* golem just changed — a true restart, since
     /// systemd cannot reload a changed definition into a running service (ADR
     /// 0020 §5). What the structural config-file heuristic enacts. A unit that is
@@ -134,6 +152,9 @@ impl<R: Reconciler + ?Sized> Reconciler for Arc<R> {
     fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         (**self).prepare(ops)
     }
+    fn observe(&self, ops: &[GlyphOp]) -> Observations {
+        (**self).observe(ops)
+    }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
     }
@@ -162,6 +183,14 @@ impl<R: Reconciler + ?Sized> Reconciler for Box<R> {
     }
     fn prepare(&self, ops: &[GlyphOp]) -> EnactResult<PrepareOutcome> {
         (**self).prepare(ops)
+    }
+    // `Foreman.reconciler` is a `Box<dyn Reconciler>`, so this forward is the
+    // one that actually matters in production: drop it and `observe` falls
+    // through to the trait's empty-map default on every real host, silently
+    // — every existing test still passes, since they exercise
+    // `HostReconciler` and `FakeReconciler` directly, never through this box.
+    fn observe(&self, ops: &[GlyphOp]) -> Observations {
+        (**self).observe(ops)
     }
     fn restart_unit(&self, unit: &str) -> EnactResult<()> {
         (**self).restart_unit(unit)
@@ -226,6 +255,14 @@ impl<R: Reconciler> Reconciler for PanicCatching<R> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.prepare(ops)))
             .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
     }
+    // Degrades to an empty map on panic rather than `Fatal`, unlike every
+    // sibling method here: `observe` has no error channel to catch into by
+    // contract, so "the probe blew up" and "the probe never ran" report the
+    // same way — every key reads `Unknown(NotModelled)`.
+    fn observe(&self, ops: &[GlyphOp]) -> Observations {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.observe(ops)))
+            .unwrap_or_default()
+    }
     fn reverse(&self, outcome: &Outcome) -> EnactResult<()> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.reverse(outcome)))
             .unwrap_or_else(|payload| Err(EnactError::Fatal(panic_message(payload))))
@@ -273,5 +310,121 @@ pub fn inverse_of(glyph: &Glyph) -> Inverse {
             path: path.clone(),
             line: line.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::observe::{Observation, Unknowable};
+    use scroll_format::{ContentId, Glyph};
+
+    struct Silent;
+    impl Reconciler for Silent {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: Inverse::Nothing,
+                changed: false,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    struct Speaking;
+    impl Reconciler for Speaking {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: Inverse::Nothing,
+                changed: false,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+        fn observe(&self, ops: &[GlyphOp]) -> Observations {
+            ops.iter()
+                .map(|op| (op.key(), Observation::Realized))
+                .collect()
+        }
+    }
+
+    struct Panicking;
+    impl Reconciler for Panicking {
+        fn apply(&self, _glyph: &Glyph, _cid: ContentId) -> EnactResult<Outcome> {
+            unreachable!()
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+        fn observe(&self, _ops: &[GlyphOp]) -> Observations {
+            panic!("the probe blew up")
+        }
+    }
+
+    fn apt_op(name: &str) -> GlyphOp {
+        let glyph = Glyph::AptPackage {
+            name: name.to_string(),
+        };
+        GlyphOp::Install {
+            cid: crate::reconcile::glyph_content_id(&glyph),
+            glyph,
+        }
+    }
+
+    #[test]
+    fn a_reconciler_that_does_not_model_the_host_reports_not_modelled() {
+        let ops = vec![apt_op("nginx")];
+        assert_eq!(
+            Silent.observe(&ops).get("apt:nginx"),
+            Observation::Unknown(Unknowable::NotModelled)
+        );
+    }
+
+    #[test]
+    fn a_boxed_reconciler_forwards_observe_to_the_inner_one() {
+        let boxed: Box<dyn Reconciler> = Box::new(Speaking);
+        let ops = vec![apt_op("nginx")];
+        assert_eq!(boxed.observe(&ops).get("apt:nginx"), Observation::Realized);
+    }
+
+    #[test]
+    fn an_arced_reconciler_forwards_observe_to_the_inner_one() {
+        let shared: std::sync::Arc<dyn Reconciler> = std::sync::Arc::new(Speaking);
+        let ops = vec![apt_op("nginx")];
+        assert_eq!(shared.observe(&ops).get("apt:nginx"), Observation::Realized);
+    }
+
+    #[test]
+    fn panic_catching_forwards_observe_when_the_probe_behaves() {
+        let guarded = PanicCatching::new(Speaking);
+        let ops = vec![apt_op("nginx")];
+        assert_eq!(
+            guarded.observe(&ops).get("apt:nginx"),
+            Observation::Realized
+        );
+    }
+
+    #[test]
+    fn a_panicking_probe_degrades_to_no_observations() {
+        let guarded = PanicCatching::new(Panicking);
+        let ops = vec![apt_op("nginx")];
+        let observed = guarded.observe(&ops);
+        assert!(observed.is_empty());
+        assert_eq!(
+            observed.get("apt:nginx"),
+            Observation::Unknown(Unknowable::NotModelled)
+        );
     }
 }

@@ -4,11 +4,19 @@
 //! [`GlyphAction`] so the apply and the plan name the same four verbs with one
 //! definition. As in `report.rs` the `serde` tags are load-bearing: `golemctl
 //! plan` parses these exact strings.
+//!
+//! `--against-host` (ADR 0058) adds a second, optional layer over the same
+//! ops: each [`PlannedOp`] may carry an `observed` verdict, and the report as a
+//! whole an aggregate [`Reality`]. Both are omitted, not merely `null`, when
+//! the host was not asked, so a journal-only response stays byte-identical to
+//! what it was before this layer existed.
 
 use scroll_format::ContentId;
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 use crate::journal::GlyphOp;
+use crate::observe::{Observation, Unknowable};
 use crate::report::GlyphAction;
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +27,34 @@ pub struct PlanReport {
     pub ops: Vec<PlannedOp>,
     pub reloads: Vec<PredictedReload>,
     pub summary: PlanSummary,
+    /// Present only when `--against-host` asked for the host column. The
+    /// absence — not a `null` — is what lets a client tell "not asked" from
+    /// "asked, and it matched" (ADR 0058).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reality: Option<Reality>,
+}
+
+/// The wire spelling of [`Observation`](crate::observe::Observation): the same
+/// four-valued verdict, minus `Unknowable`'s payload, which rides beside it in
+/// [`PlannedOp::unobservable`] instead of being nested inside this tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observed {
+    Realized,
+    Divergent,
+    Absent,
+    Unknown,
+}
+
+/// Why an op's [`Observed::Unknown`] couldn't be settled further. Present only
+/// alongside `observed: unknown` — never on any other verdict (see
+/// [`PlannedOp::observed_as`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unobservable {
+    Sealed,
+    Unreadable,
+    NotModelled,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +67,13 @@ pub struct PlannedOp {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_cid: Option<String>,
     pub describe: String,
+    /// Omitted entirely on a journal-only plan (`PlannedOp::of` leaves it
+    /// `None` and nothing calls `observed_as`), which is also what keeps that
+    /// response byte-identical to before `--against-host` existed (ADR 0058).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed: Option<Observed>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unobservable: Option<Unobservable>,
 }
 
 /// Which way a predicted unit gets poked, mirroring the two derivations that
@@ -60,6 +103,27 @@ pub struct PlanSummary {
     pub noop: usize,
 }
 
+/// The host block's counts, over **distinct glyph keys**, not ops — a key
+/// three units declare is counted once ([`Reality::over`]'s dedup). A
+/// `Remove`'s resource never lands in `realized`/`divergent`/`absent`: those
+/// three answer "does the host already have what's declared", which a remove
+/// doesn't declare anything to have. It answers the weaker question instead —
+/// is the resource gone yet — into `already_gone`/`still_present` (ADR 0058).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Reality {
+    pub realized: usize,
+    pub divergent: usize,
+    pub absent: usize,
+    pub unknown: usize,
+    pub already_gone: usize,
+    pub still_present: usize,
+    /// Server-side judgement, not something a client should reconstruct by
+    /// summing the fields above: an `unknown` must never count as agreement,
+    /// and that is the rule such a computation would be likeliest to get
+    /// wrong (ADR 0058).
+    pub host_already_matches: bool,
+}
+
 impl PlannedOp {
     /// Which content ids an op carries falls out of the diff itself: an
     /// `Install` has no prior, a `Remove` no successor, a `Noop`'s two are equal
@@ -81,7 +145,27 @@ impl PlannedOp {
             old_cid,
             new_cid,
             describe: op.glyph().describe(),
+            observed: None,
+            unobservable: None,
         }
+    }
+
+    pub fn observed_as(mut self, observation: Observation) -> Self {
+        self.unobservable = match observation {
+            Observation::Unknown(reason) => Some(match reason {
+                Unknowable::Sealed => Unobservable::Sealed,
+                Unknowable::Unreadable => Unobservable::Unreadable,
+                Unknowable::NotModelled => Unobservable::NotModelled,
+            }),
+            _ => None,
+        };
+        self.observed = Some(match observation {
+            Observation::Realized => Observed::Realized,
+            Observation::Divergent => Observed::Divergent,
+            Observation::Absent => Observed::Absent,
+            Observation::Unknown(_) => Observed::Unknown,
+        });
+        self
     }
 }
 
@@ -98,6 +182,44 @@ impl PlanSummary {
             }
         }
         summary
+    }
+}
+
+impl Reality {
+    pub fn over(ops: &[PlannedOp]) -> Self {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut reality = Reality {
+            realized: 0,
+            divergent: 0,
+            absent: 0,
+            unknown: 0,
+            already_gone: 0,
+            still_present: 0,
+            host_already_matches: false,
+        };
+        for op in ops {
+            // NOTE: dedup by glyph key, not by op — a glyph declared by three
+            // units still counts once (ADR 0058).
+            if !seen.insert(op.glyph_key.as_str()) {
+                continue;
+            }
+            let is_remove = op.action == GlyphAction::Remove;
+            match (is_remove, op.observed) {
+                (_, Some(Observed::Unknown)) => reality.unknown += 1,
+                (true, Some(Observed::Absent)) => reality.already_gone += 1,
+                (true, Some(_)) => reality.still_present += 1,
+                (false, Some(Observed::Realized)) => reality.realized += 1,
+                (false, Some(Observed::Divergent)) => reality.divergent += 1,
+                (false, Some(Observed::Absent)) => reality.absent += 1,
+                (_, None) => {}
+            }
+        }
+        reality.host_already_matches = reality.divergent == 0
+            && reality.absent == 0
+            && reality.unknown == 0
+            && reality.still_present == 0
+            && (reality.realized + reality.already_gone) > 0;
+        reality
     }
 }
 
@@ -225,5 +347,87 @@ mod tests {
             serde_json::to_value(&reload).unwrap()["kind"],
             "reload-or-restart"
         );
+    }
+
+    #[test]
+    fn a_journal_only_plan_serializes_without_any_reality_fields() {
+        let cid = content_id_of_glyph(&apt("x"));
+        let op = PlannedOp::of(
+            &unit_path(),
+            &GlyphOp::Install {
+                cid,
+                glyph: apt("x"),
+            },
+        );
+        let report = PlanReport {
+            host: "host".to_string(),
+            scroll_content_id: cid.to_string(),
+            against_revision: Some(1),
+            summary: PlanSummary::over(std::slice::from_ref(&op)),
+            ops: vec![op],
+            reloads: vec![],
+            reality: None,
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("observed"));
+        assert!(!json.contains("unobservable"));
+        assert!(!json.contains("reality"));
+    }
+
+    #[test]
+    fn an_observed_op_carries_its_verdict_and_no_reason() {
+        let cid = content_id_of_glyph(&apt("x"));
+        let op = PlannedOp::of(
+            &unit_path(),
+            &GlyphOp::Install {
+                cid,
+                glyph: apt("x"),
+            },
+        )
+        .observed_as(Observation::Realized);
+
+        let json = serde_json::to_value(&op).unwrap();
+        assert_eq!(json["observed"], "realized");
+        assert!(json.get("unobservable").is_none());
+    }
+
+    #[test]
+    fn an_unknown_op_carries_both_the_verdict_and_the_reason() {
+        let cid = content_id_of_glyph(&apt("x"));
+        let op = PlannedOp::of(
+            &unit_path(),
+            &GlyphOp::Install {
+                cid,
+                glyph: apt("x"),
+            },
+        )
+        .observed_as(Observation::Unknown(Unknowable::Sealed));
+
+        let json = serde_json::to_value(&op).unwrap();
+        assert_eq!(json["observed"], "unknown");
+        assert_eq!(json["unobservable"], "sealed");
+    }
+
+    #[test]
+    fn reality_serializes_snake_case_counts() {
+        let reality = Reality {
+            realized: 1,
+            divergent: 2,
+            absent: 3,
+            unknown: 4,
+            already_gone: 5,
+            still_present: 6,
+            host_already_matches: false,
+        };
+
+        let json = serde_json::to_value(reality).unwrap();
+        assert_eq!(json["realized"], 1);
+        assert_eq!(json["divergent"], 2);
+        assert_eq!(json["absent"], 3);
+        assert_eq!(json["unknown"], 4);
+        assert_eq!(json["already_gone"], 5);
+        assert_eq!(json["still_present"], 6);
+        assert_eq!(json["host_already_matches"], false);
     }
 }

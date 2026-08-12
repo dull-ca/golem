@@ -40,6 +40,9 @@ enum Cmd {
         /// Expand every group to one glyph per line, with content ids.
         #[arg(long)]
         detail: bool,
+        /// Also diff against what is actually on the host, read live.
+        #[arg(long)]
+        against_host: bool,
     },
     /// Fan a verb out over every host in a TOML inventory, concurrently. One
     /// host's failure never stops the others. See [`golemctl::fleet`] for the
@@ -94,6 +97,9 @@ enum FleetCmd {
         /// Expand every group to one glyph per line, with content ids
         #[arg(long)]
         detail: bool,
+        /// Also diff against what is actually on each host, read live.
+        #[arg(long)]
+        against_host: bool,
     },
     /// One marked line per inventory host: latest revision, applied content id.
     Status {
@@ -139,10 +145,11 @@ async fn main() -> Result<()> {
             addr,
             json,
             detail,
+            against_host,
         } => {
             let bytes = manifest_bytes(&source).await?;
             let conn = connect(&addr).await?;
-            golemctl::plan::run(bytes, &conn, json, detail).await
+            golemctl::plan::run(bytes, &conn, json, detail, against_host).await
         }
         Cmd::Fleet { cmd } => match cmd {
             FleetCmd::Apply {
@@ -159,10 +166,11 @@ async fn main() -> Result<()> {
                 selection,
                 json,
                 detail,
+                against_host,
             } => {
                 let targets = selection.targets()?;
                 let bytes = manifest_bytes(&source).await?;
-                golemctl::fleet::run_plan(bytes, targets, json, detail).await
+                golemctl::fleet::run_plan(bytes, targets, json, detail, against_host).await
             }
             FleetCmd::Status { selection, json } => {
                 let targets = selection.targets()?;

@@ -1,0 +1,12 @@
+{
+  "name": "golem-presentation-restore-check",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun run restore_check.mjs ../dist/*.excalidraw"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "jsdom": "30.0.1"
+  }
+}

@@ -5,12 +5,14 @@ use std::sync::Arc;
 use golemctl::conn::AuthSource;
 use golemctl::fleet::{self, Fanout, HostOutcome, HostPlan};
 use golemctl::inventory::{self, Target};
+use golemctl::plan::RenderOptions;
 use golemd::config::RetryConfig;
 use golemd::fake_reconciler::FakeReconciler;
 use golemd::foreman::Foreman;
 use golemd::http;
 use golemd::planroom::SqlitePlanRoom;
-use scroll_format::{Contents, Glyph, Manifest, Scroll};
+use golemd::secrets::Keyring;
+use scroll_format::{Chunk, Contents, Entry, Glyph, Manifest, Perms, Scroll, Secret, Text};
 
 const FLEET: [&str; 3] = ["h1", "h2", "h3"];
 
@@ -35,7 +37,11 @@ fn manifest_naming(hosts: &[&str]) -> Vec<u8> {
 }
 
 fn content_ids() -> BTreeMap<String, String> {
-    FLEET
+    content_ids_for(&FLEET)
+}
+
+fn content_ids_for(hosts: &[&str]) -> BTreeMap<String, String> {
+    hosts
         .iter()
         .map(|host| {
             (
@@ -98,6 +104,52 @@ async fn serve_gated(host: &str, state_dir: &Path, token: &str) -> String {
     format!("http://{addr}")
 }
 
+async fn serve_keyless(host: &str, state_dir: &Path) -> String {
+    let room = SqlitePlanRoom::open(&state_dir.join(format!("{host}-keyless.db"))).unwrap();
+    let foreman = Foreman::new(
+        host.to_string(),
+        Box::new(room),
+        Box::new(FakeReconciler::new().with_keyring(Keyring::without_key())),
+    )
+    .with_retry_config(RetryConfig {
+        max_attempts: 1,
+        base_delay_ms: 0,
+        ..Default::default()
+    });
+    let app = http::router(http::AppState {
+        foreman: Arc::new(foreman),
+        required_token: None,
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+fn sealed_scroll(host: &str) -> Scroll {
+    Scroll {
+        name: host.to_string(),
+        policy: None,
+        notifies: vec![],
+        contents: Contents::Glyphs(vec![Glyph::Filesystem {
+            path: "/etc/app/creds.conf".into(),
+            entry: Entry::File {
+                contents: Text::composed(vec![Chunk::Hole(Secret::Sealed {
+                    key_id: "6fb6c6005355abf3".to_string(),
+                    ciphertext: vec![0; 32],
+                })]),
+                perms: Perms {
+                    mode: 0o600,
+                    owner: None,
+                    group: None,
+                },
+            },
+        }]),
+    }
+}
+
 // An address nothing listens on — bind, learn the port, drop the listener. A
 // daemon that is down, refusing immediately rather than making the test wait
 // out a timeout.
@@ -133,16 +185,18 @@ async fn get_json(addr: &str, path: &str) -> serde_json::Value {
 /// daemon's (ADR 0038).
 #[tokio::test]
 async fn a_fleet_apply_settles_every_host_and_each_daemon_records_its_own_content_id() {
+    let hosts = ["settles-h1", "settles-h2", "settles-h3"];
     let dir = tempfile::tempdir().unwrap();
     let mut addrs = Vec::new();
-    for host in FLEET {
+    for host in hosts {
         addrs.push((host, serve(host, dir.path()).await));
     }
     let targets = write_inventory(dir.path(), &addrs);
     assert_eq!(targets.len(), 3);
 
-    let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
-    let results = fleet::apply_plain(manifest_bytes(), &fanout, &AuthSource::None, false).await;
+    let bytes = manifest_naming(&hosts);
+    let fanout = Fanout::read(&bytes, targets).unwrap();
+    let results = fleet::apply_plain(bytes, &fanout, &AuthSource::None, false).await;
 
     assert_eq!(results.len(), 3);
     for (target, outcome) in &results {
@@ -154,7 +208,7 @@ async fn a_fleet_apply_settles_every_host_and_each_daemon_records_its_own_conten
     }
     assert_eq!(fleet::fleet_exit_code(&results), 0);
 
-    let expected = content_ids();
+    let expected = content_ids_for(&hosts);
     for (host, addr) in &addrs {
         let state = get_json(addr, "state").await;
         assert_eq!(
@@ -174,36 +228,49 @@ async fn a_fleet_apply_settles_every_host_and_each_daemon_records_its_own_conten
 async fn a_downed_daemon_errors_alone_while_its_peers_settle_and_the_fleet_fails() {
     let dir = tempfile::tempdir().unwrap();
     let addrs = vec![
-        ("h1", serve("h1", dir.path()).await),
-        ("h2", closed_port().await),
-        ("h3", serve("h3", dir.path()).await),
+        ("downed-h1", serve("downed-h1", dir.path()).await),
+        ("downed-h2", closed_port().await),
+        ("downed-h3", serve("downed-h3", dir.path()).await),
     ];
     let targets = write_inventory(dir.path(), &addrs);
 
-    let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
-    let results = fleet::apply_plain(manifest_bytes(), &fanout, &AuthSource::None, false).await;
+    let bytes = manifest_naming(&["downed-h1", "downed-h2", "downed-h3"]);
+    let fanout = Fanout::read(&bytes, targets).unwrap();
+    let results = fleet::apply_plain(bytes, &fanout, &AuthSource::None, false).await;
 
     let by_name: BTreeMap<&str, &HostOutcome> = results
         .iter()
         .map(|(target, outcome)| (target.name.as_str(), outcome))
         .collect();
-    assert!(by_name["h1"].is_settled(), "{:?}", by_name["h1"]);
-    assert!(by_name["h3"].is_settled(), "{:?}", by_name["h3"]);
     assert!(
-        matches!(by_name["h2"], HostOutcome::Error { .. }),
+        by_name["downed-h1"].is_settled(),
         "{:?}",
-        by_name["h2"]
+        by_name["downed-h1"]
+    );
+    assert!(
+        by_name["downed-h3"].is_settled(),
+        "{:?}",
+        by_name["downed-h3"]
+    );
+    assert!(
+        matches!(by_name["downed-h2"], HostOutcome::Error { .. }),
+        "{:?}",
+        by_name["downed-h2"]
     );
     assert_eq!(fleet::fleet_exit_code(&results), 1);
 
     let aggregate = fleet::apply_json(&results);
-    assert_eq!(aggregate["hosts"]["h1"]["outcome"], "settled");
-    assert_eq!(aggregate["hosts"]["h3"]["outcome"], "settled");
-    assert!(aggregate["hosts"]["h2"]["error"].is_string());
+    assert_eq!(aggregate["hosts"]["downed-h1"]["outcome"], "settled");
+    assert_eq!(aggregate["hosts"]["downed-h3"]["outcome"], "settled");
+    assert!(aggregate["hosts"]["downed-h2"]["error"].is_string());
 
     let summary = fleet::summary_lines(&results, false);
-    let h1 = summary.iter().position(|line| line.starts_with("h1  http"));
-    let h2 = summary.iter().position(|line| line.starts_with("h2  http"));
+    let h1 = summary
+        .iter()
+        .position(|line| line.starts_with("downed-h1  http"));
+    let h2 = summary
+        .iter()
+        .position(|line| line.starts_with("downed-h2  http"));
     assert!(summary[h1.expect("h1 has a heading") + 1].starts_with("  apply settled"));
     assert_eq!(
         summary[h2.expect("h2 has a heading") + 1]
@@ -226,7 +293,7 @@ async fn a_fleet_plan_reports_every_host_and_journals_nothing() {
     let targets = write_inventory(dir.path(), &addrs);
 
     let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
-    let results = fleet::gather_plans(manifest_bytes(), &fanout, &AuthSource::None).await;
+    let results = fleet::gather_plans(manifest_bytes(), &fanout, &AuthSource::None, false).await;
 
     assert_eq!(results.len(), 3);
     let aggregate = fleet::plan_json(&results);
@@ -268,6 +335,144 @@ async fn a_fleet_plan_reports_every_host_and_journals_nothing() {
     }
 }
 
+/// The single-host `--against-host` behaviour (task 7b), fanned out: every
+/// endpoint in the inventory gets the same query parameter, and every host's
+/// response carries the `reality` block that flag alone unlocks.
+#[tokio::test]
+async fn a_fleet_host_plan_reports_every_host_and_journals_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut addrs = Vec::new();
+    for host in FLEET {
+        addrs.push((host, serve(host, dir.path()).await));
+    }
+    let targets = write_inventory(dir.path(), &addrs);
+
+    let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
+    let results = fleet::gather_plans(manifest_bytes(), &fanout, &AuthSource::None, true).await;
+
+    assert_eq!(results.len(), 3);
+    let aggregate = fleet::plan_json(&results);
+    let expected = content_ids();
+    for host in FLEET {
+        assert_eq!(aggregate["hosts"][host]["host"], host);
+        assert_eq!(
+            aggregate["hosts"][host]["scroll_content_id"],
+            expected[host]
+        );
+        assert!(
+            aggregate["hosts"][host]["reality"].is_object(),
+            "{host} carries no reality block: {aggregate}"
+        );
+    }
+
+    let lines = fleet::plan_lines(
+        &results,
+        &RenderOptions {
+            against_host: true,
+            ..Default::default()
+        },
+    );
+    for host in FLEET {
+        let heading = lines
+            .iter()
+            .position(|line| line.starts_with(&format!("{host}  http://")))
+            .unwrap_or_else(|| panic!("{host} has a heading: {lines:?}"));
+        assert_eq!(
+            lines[heading + 1],
+            "  against revision 1 · against the host · manifest ".to_string()
+                + &expected[host].chars().take(6).collect::<String>()
+                + "…",
+            "{lines:?}"
+        );
+        let section_end = lines[heading + 1..]
+            .iter()
+            .position(|line| line.is_empty())
+            .map(|offset| heading + 1 + offset)
+            .unwrap_or(lines.len());
+        assert!(
+            lines[heading..section_end]
+                .iter()
+                .any(|line| line == "  host"),
+            "{host}'s section carries no host block: {lines:?}"
+        );
+    }
+
+    for (host, addr) in &addrs {
+        let revisions = get_json(addr, "revisions").await;
+        let journalled = revisions.as_array().unwrap();
+        assert_eq!(
+            journalled.len(),
+            1,
+            "{host} journalled a revision for a plan"
+        );
+        assert_eq!(journalled[0]["kind"], "init");
+        assert!(get_json(addr, "state").await["content_id"].is_null());
+    }
+}
+
+/// Without the flag, a fleet plan is byte-identical to today: no `reality`
+/// block reaches golemd's response, and no host section mentions the host at
+/// all.
+#[tokio::test]
+async fn fleet_plan_without_the_flag_is_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut addrs = Vec::new();
+    for host in FLEET {
+        addrs.push((host, serve(host, dir.path()).await));
+    }
+    let targets = write_inventory(dir.path(), &addrs);
+
+    let fanout = Fanout::read(&manifest_bytes(), targets).unwrap();
+    let results = fleet::gather_plans(manifest_bytes(), &fanout, &AuthSource::None, false).await;
+
+    let aggregate = fleet::plan_json(&results);
+    for host in FLEET {
+        assert!(
+            aggregate["hosts"][host]["reality"].is_null(),
+            "{host} carries a reality block without --against-host: {aggregate}"
+        );
+    }
+
+    let lines = fleet::plan_lines(&results, &RenderOptions::default());
+    assert!(
+        !lines.iter().any(|line| line.contains("against the host")),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|line| line == "  host"), "{lines:?}");
+}
+
+/// A host whose probe comes back full of unknowns (a sealed glyph its keyring
+/// cannot open) is not an error: it still reports, and it never costs the
+/// fleet its exit code.
+#[tokio::test]
+async fn one_host_full_of_unknowns_does_not_fail_the_fleet_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let addr = serve_keyless("sealed-h1", dir.path()).await;
+    let bytes = scroll_format::to_bytes(&Manifest::from_scrolls(
+        vec![sealed_scroll("sealed-h1")],
+        "sealed-test",
+    ));
+    let targets = write_inventory(dir.path(), &[("sealed-h1", addr)]);
+    let fanout = Fanout::read(&bytes, targets).unwrap();
+
+    let results = fleet::gather_plans(bytes, &fanout, &AuthSource::None, true).await;
+
+    assert!(
+        matches!(results[0].1, HostPlan::Report(_)),
+        "{:?}",
+        results[0].1
+    );
+    assert!(
+        !results
+            .iter()
+            .any(|(_, plan)| matches!(plan, HostPlan::Error(_))),
+        "{results:?}"
+    );
+
+    let aggregate = fleet::plan_json(&results);
+    assert_eq!(aggregate["hosts"]["sealed-h1"]["reality"]["unknown"], 1);
+}
+
 /// Absence is silence (ADR 0038): a manifest naming only two of the three
 /// inventory hosts must leave the third's state and journal exactly as they
 /// were. Were it POSTed to, golemd would resolve its absent scroll to the
@@ -275,13 +480,14 @@ async fn a_fleet_plan_reports_every_host_and_journals_nothing() {
 /// summary, the aggregate, and the plan — and the fleet still exits 0.
 #[tokio::test]
 async fn a_host_the_manifest_names_no_scroll_for_is_left_untouched() {
+    let hosts = ["absent-h1", "absent-h2", "absent-h3"];
     let dir = tempfile::tempdir().unwrap();
     let mut addrs = Vec::new();
-    for host in FLEET {
+    for host in hosts {
         addrs.push((host, serve(host, dir.path()).await));
     }
     let targets = write_inventory(dir.path(), &addrs);
-    let bytes = manifest_naming(&["h1", "h2"]);
+    let bytes = manifest_naming(&["absent-h1", "absent-h2"]);
 
     let fanout = Fanout::read(&bytes, targets).unwrap();
     let results = fleet::apply_plain(bytes.clone(), &fanout, &AuthSource::None, false).await;
@@ -291,24 +497,32 @@ async fn a_host_the_manifest_names_no_scroll_for_is_left_untouched() {
         .iter()
         .map(|(target, outcome)| (target.name.as_str(), outcome))
         .collect();
-    assert!(by_name["h1"].is_settled(), "{:?}", by_name["h1"]);
-    assert!(by_name["h2"].is_settled(), "{:?}", by_name["h2"]);
-    assert_eq!(by_name["h3"], &HostOutcome::Skipped);
+    assert!(
+        by_name["absent-h1"].is_settled(),
+        "{:?}",
+        by_name["absent-h1"]
+    );
+    assert!(
+        by_name["absent-h2"].is_settled(),
+        "{:?}",
+        by_name["absent-h2"]
+    );
+    assert_eq!(by_name["absent-h3"], &HostOutcome::Skipped);
     assert_eq!(fleet::fleet_exit_code(&results), 0);
 
     let aggregate = fleet::apply_json(&results);
-    assert_eq!(aggregate["hosts"]["h3"]["skipped"], true);
+    assert_eq!(aggregate["hosts"]["absent-h3"]["skipped"], true);
     let summary = fleet::summary_lines(&results, false);
     let h3 = summary
         .iter()
-        .position(|line| line.starts_with("h3  http://"))
+        .position(|line| line.starts_with("absent-h3  http://"))
         .expect("h3 has a heading");
     assert_eq!(summary[h3 + 1], "  skipped — no scroll in manifest");
 
-    let expected = content_ids();
+    let expected = content_ids_for(&hosts);
     for (host, addr) in &addrs {
         let state = get_json(addr, "state").await;
-        if *host == "h3" {
+        if *host == "absent-h3" {
             assert!(
                 state["content_id"].is_null(),
                 "h3 was applied to despite carrying no scroll: {state}"
@@ -320,16 +534,16 @@ async fn a_host_the_manifest_names_no_scroll_for_is_left_untouched() {
         }
     }
 
-    let plans = fleet::gather_plans(bytes, &fanout, &AuthSource::None).await;
+    let plans = fleet::gather_plans(bytes, &fanout, &AuthSource::None, false).await;
     let skipped = plans
         .iter()
-        .find(|(target, _)| target.name == "h3")
+        .find(|(target, _)| target.name == "absent-h3")
         .expect("h3 is still reported");
     assert_eq!(skipped.1, HostPlan::Skipped);
     let plan_lines = fleet::plan_lines(&plans, &Default::default());
     let h3 = plan_lines
         .iter()
-        .position(|line| line.starts_with("h3  http://"))
+        .position(|line| line.starts_with("absent-h3  http://"))
         .expect("h3 is still reported");
     assert_eq!(plan_lines[h3 + 1], "  skipped — no scroll in manifest");
     assert!(!plan_lines.iter().any(|line| line.contains("Plan for")));
@@ -366,9 +580,9 @@ async fn a_fleet_status_reads_every_host_reachable_or_not() {
 #[tokio::test]
 async fn a_gated_fleet_apply_authenticates_with_the_right_token_and_names_env_vars_without_one() {
     let dir = tempfile::tempdir().unwrap();
-    let addr = serve_gated("h1", dir.path(), "secret").await;
-    let bytes = manifest_naming(&["h1"]);
-    let targets = write_inventory(dir.path(), &[("h1", addr)]);
+    let addr = serve_gated("gated-h1", dir.path(), "secret").await;
+    let bytes = manifest_naming(&["gated-h1"]);
+    let targets = write_inventory(dir.path(), &[("gated-h1", addr)]);
     let fanout = Fanout::read(&bytes, targets).unwrap();
 
     let authed = AuthSource::Token("secret".to_string());
