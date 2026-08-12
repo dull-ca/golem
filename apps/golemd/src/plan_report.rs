@@ -4,6 +4,12 @@
 //! [`GlyphAction`] so the apply and the plan name the same four verbs with one
 //! definition. As in `report.rs` the `serde` tags are load-bearing: `golemctl
 //! plan` parses these exact strings.
+//!
+//! `--against-host` (ADR 0058) adds a second, optional layer over the same
+//! ops: each [`PlannedOp`] may carry an `observed` verdict, and the report as a
+//! whole an aggregate [`Reality`]. Both are omitted, not merely `null`, when
+//! the host was not asked, so a journal-only response stays byte-identical to
+//! what it was before this layer existed.
 
 use scroll_format::ContentId;
 use serde::Serialize;
@@ -21,10 +27,16 @@ pub struct PlanReport {
     pub ops: Vec<PlannedOp>,
     pub reloads: Vec<PredictedReload>,
     pub summary: PlanSummary,
+    /// Present only when `--against-host` asked for the host column. The
+    /// absence — not a `null` — is what lets a client tell "not asked" from
+    /// "asked, and it matched" (ADR 0058).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reality: Option<Reality>,
 }
 
+/// The wire spelling of [`Observation`](crate::observe::Observation): the same
+/// four-valued verdict, minus `Unknowable`'s payload, which rides beside it in
+/// [`PlannedOp::unobservable`] instead of being nested inside this tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Observed {
@@ -34,6 +46,9 @@ pub enum Observed {
     Unknown,
 }
 
+/// Why an op's [`Observed::Unknown`] couldn't be settled further. Present only
+/// alongside `observed: unknown` — never on any other verdict (see
+/// [`PlannedOp::observed_as`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Unobservable {
@@ -52,6 +67,9 @@ pub struct PlannedOp {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_cid: Option<String>,
     pub describe: String,
+    /// Omitted entirely on a journal-only plan (`PlannedOp::of` leaves it
+    /// `None` and nothing calls `observed_as`), which is also what keeps that
+    /// response byte-identical to before `--against-host` existed (ADR 0058).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed: Option<Observed>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +103,12 @@ pub struct PlanSummary {
     pub noop: usize,
 }
 
+/// The host block's counts, over **distinct glyph keys**, not ops — a key
+/// three units declare is counted once ([`Reality::over`]'s dedup). A
+/// `Remove`'s resource never lands in `realized`/`divergent`/`absent`: those
+/// three answer "does the host already have what's declared", which a remove
+/// doesn't declare anything to have. It answers the weaker question instead —
+/// is the resource gone yet — into `already_gone`/`still_present` (ADR 0058).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Reality {
     pub realized: usize,
@@ -93,6 +117,10 @@ pub struct Reality {
     pub unknown: usize,
     pub already_gone: usize,
     pub still_present: usize,
+    /// Server-side judgement, not something a client should reconstruct by
+    /// summing the fields above: an `unknown` must never count as agreement,
+    /// and that is the rule such a computation would be likeliest to get
+    /// wrong (ADR 0058).
     pub host_already_matches: bool,
 }
 
@@ -170,6 +198,8 @@ impl Reality {
             host_already_matches: false,
         };
         for op in ops {
+            // NOTE: dedup by glyph key, not by op — a glyph declared by three
+            // units still counts once (ADR 0058).
             if !seen.insert(op.glyph_key.as_str()) {
                 continue;
             }

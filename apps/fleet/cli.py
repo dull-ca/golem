@@ -282,7 +282,9 @@ def plan(
     dry-run diff, nothing applied (ADR 0036). Same split as `apply`: fleet picks
     the hosts and renders the ssh inventory, golemctl opens the forwards, POSTs,
     and renders each host's diff under its own heading. A plan is not a failure,
-    so golemctl exits nonzero only when a host errored."""
+    so golemctl exits nonzero only when a host errored. `--against-host` is a
+    bare argv passthrough (ADR 0058) — fleet parses none of the plan JSON, so
+    it has nothing of its own to add for the host column."""
     p = paths()
     state = _state()
     records = _target_records(state, hosts)

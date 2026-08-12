@@ -261,6 +261,9 @@ impl Conn {
         Ok(serde_json::from_str(&text)?)
     }
 
+    /// `against_host` selects golemd's host-probing scope (ADR 0058) via
+    /// `?against_host=true`; omitting the parameter reproduces the prior
+    /// request byte for byte, matching the response it's asking for.
     pub async fn post_plan(&self, bytes: Vec<u8>, against_host: bool) -> Result<String> {
         let path = if against_host {
             "plan?against_host=true"

@@ -97,6 +97,7 @@ enum FleetCmd {
         /// Expand every group to one glyph per line, with content ids
         #[arg(long)]
         detail: bool,
+        /// Also diff against what is actually on each host, read live.
         #[arg(long)]
         against_host: bool,
     },

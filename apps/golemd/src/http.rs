@@ -166,6 +166,11 @@ async fn apply_manifest(
     Ok((StatusCode::ACCEPTED, Json(Accepted { reconcile_id })))
 }
 
+/// `?against_host=true` opts a `POST /plan` into the host-probing scope
+/// (ADR 0058). Absent or `false` reproduces the pre-existing journal-only
+/// response byte for byte — `--against-host` is opt-in for cost (a scroll's
+/// worth of subprocess calls) and surprise, not a privilege boundary: a caller
+/// who can plan can already apply, which reads strictly more of the host.
 #[derive(Debug, Default, Deserialize)]
 struct PlanQuery {
     #[serde(default)]

@@ -163,6 +163,11 @@ pub struct SelectedScroll {
     pub scroll: Scroll,
 }
 
+/// Whether [`Foreman::plan_manifest_scoped`] also probes the host or answers
+/// from the journal alone (ADR 0058). An enum rather than a bool:
+/// `plan_manifest_scoped(bytes, true)` is unreadable at the call site. Purely
+/// golemd-internal — it never crosses the wire, unlike the `?against_host`
+/// query parameter that selects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanScope {
     JournalOnly,
@@ -338,6 +343,12 @@ impl Foreman {
         self.plan_manifest_scoped(bytes, PlanScope::JournalOnly)
     }
 
+    /// [`plan_manifest`](Foreman::plan_manifest)'s general form (ADR 0058).
+    /// `JournalOnly` reproduces that method exactly, `observe` uncalled. With
+    /// `JournalAndHost`, every op this plan names is probed once — one
+    /// `Reconciler::observe` call over the whole placed set, not per-op — and
+    /// each [`PlannedOp`] is stamped with its verdict before [`Reality`] folds
+    /// the aggregate over the stamped set.
     pub fn plan_manifest_scoped(
         &self,
         bytes: &[u8],
@@ -378,6 +389,9 @@ impl Foreman {
                 placed.push((group.unit_path.clone(), op));
             }
         }
+        // NOTE: `JournalOnly` never calls `observe` — no host read, no key
+        // built — so this scope's response is exactly what golemd returned
+        // before `--against-host` existed (ADR 0058).
         let observations = match scope {
             PlanScope::JournalOnly => None,
             PlanScope::JournalAndHost => {

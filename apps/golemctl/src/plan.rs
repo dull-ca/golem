@@ -47,6 +47,11 @@ pub struct PlannedOp {
     pub unobservable: Option<Unobservable>,
 }
 
+// NOTE: unlike `Action` below, both mirrors here carry `#[serde(other)]
+// Unrecognized` — a future golemd adding a fifth verdict degrades this one
+// row to "unrecognized" instead of failing the whole plan's decode. `Action`
+// lacks the same guard; that is a known gap in the existing type, not a
+// pattern to follow deliberately elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Observed {
@@ -68,6 +73,8 @@ pub enum Unobservable {
     Unrecognized,
 }
 
+/// Mirrors `golemd`'s `Reality` (`plan_report.rs`): counts over distinct
+/// glyph keys, present only when `--against-host` was asked.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Reality {
     #[serde(default)]
@@ -116,6 +123,10 @@ pub struct RenderOptions {
     pub color: bool,
     pub width: usize,
     pub nested: bool,
+    /// Whether to render the second, host-reality block. Gated separately
+    /// from `plan.reality.is_some()` in [`render`] so a `--json` caller who
+    /// asked for `--against-host` but talks to an old golemd (no `reality`
+    /// field at all) still gets the journal block rather than an error.
     pub against_host: bool,
 }
 
@@ -506,6 +517,8 @@ fn footer_block(plan: &PlanResponse, options: &RenderOptions) -> Vec<String> {
             }
         }
     } else if !options.nested && enrollment_worth_hinting(plan.against_revision) {
+        // `nested` is a fleet render, one block per host — without this guard
+        // the hint would repeat once per enrolling host instead of once.
         lines.push(footer_line(
             "no prior revision here · --against-host checks what this host already has",
             options,
@@ -514,6 +527,11 @@ fn footer_block(plan: &PlanResponse, options: &RenderOptions) -> Vec<String> {
     lines
 }
 
+/// `Some(1)` matters as much as `None` here: `wal::latest_revision_id` returns
+/// `Some(1 + committed_count)` and never `None` once a revision exists, so on
+/// every real host `None` alone would be dead code. Revision 1 is the `Init`
+/// row — golem has committed nothing to this host yet — which is exactly the
+/// enrollment moment the hint exists for.
 fn enrollment_worth_hinting(against_revision: Option<u64>) -> bool {
     against_revision.is_none() || against_revision == Some(1)
 }
@@ -709,6 +727,13 @@ fn steps_of(plan: &PlanResponse) -> Vec<Step> {
     steps
 }
 
+/// `Observed` stays glyph-relative on the wire, so a `Remove`'s "the resource
+/// is gone" and an `Install`'s "the resource is gone" arrive as the same
+/// `Absent` value; the renderer is what knows the action and inverts one of
+/// them (ADR 0058). Keeping the inversion here rather than in golemd leaves
+/// the wire honest — a JSON consumer is free to read `Absent` as agreement or
+/// disagreement on its own terms instead of inheriting this rendering's
+/// choice.
 fn reality_verdict(
     action: Action,
     observed: Observed,
@@ -723,6 +748,12 @@ fn reality_verdict(
     }
 }
 
+/// Unlike [`steps_of`], this does not skip `Noop`s — deliberately (ADR 0058).
+/// A `systemdService` whose content id hasn't moved enters no reconciler and
+/// the journal block never mentions it, but the host may have drifted under
+/// it anyway; that row, where golem believes a glyph settled and the host
+/// disagrees, is the most valuable line `--against-host` prints. The two
+/// blocks are asymmetric on purpose, not an oversight to reconcile.
 fn host_step_drafts(plan: &PlanResponse) -> Vec<StepDraft> {
     let mut drafts: Vec<StepDraft> = Vec::new();
     for op in &plan.ops {
@@ -760,6 +791,12 @@ fn host_steps_of(plan: &PlanResponse, options: &RenderOptions) -> Vec<Step> {
     if options.detail {
         return steps;
     }
+    // Collapse every `= match`/`= gone` row into one footer-style count, same
+    // spirit as the journal block's `Noop` footer (`changes_text`) — for the
+    // enrollment and drift cases the interesting rows are the disagreements,
+    // and a scroll where everything matches would otherwise print one line
+    // per glyph for no reason (ADR 0058, render-only, may need revisiting for
+    // very large scrolls).
     let mut visible = Vec::new();
     let mut matched = 0;
     for step in steps {
