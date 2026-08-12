@@ -35,9 +35,12 @@ from excalidraw.scene import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     CONTAINER_PADDING,
+    FILE_KEYS,
+    IMAGE_KEYS,
     LINEAR_KEYS,
     MARGIN,
     TEXT_KEYS,
+    UPDATED,
     Scene,
 )
 from excalidraw.layout import StateNode, Transition, state_machine
@@ -206,8 +209,45 @@ class GeneratedScenes(unittest.TestCase):
                 self.assertEqual(payload["version"], 2)
                 self.assertIsInstance(payload["elements"], list)
                 self.assertTrue(payload["elements"])
-                self.assertEqual(payload["files"], {})
+                self.assertIsInstance(payload["files"], dict)
                 self.assertIn("viewBackgroundColor", payload["appState"])
+
+    def test_every_embedded_file_is_referenced_and_complete(self) -> None:
+        for name, payload in self.documents.items():
+            referenced = {
+                element["fileId"]
+                for element in payload["elements"]
+                if element["type"] == "image"
+            }
+            with self.subTest(name):
+                self.assertEqual(set(payload["files"]), referenced)
+            for file_id, entry in payload["files"].items():
+                with self.subTest(name=name, file=file_id):
+                    for key in FILE_KEYS:
+                        self.assertIn(key, entry)
+                    self.assertEqual(entry["id"], file_id)
+                    self.assertTrue(
+                        entry["dataURL"].startswith(f"data:{entry['mimeType']};base64,")
+                    )
+
+    # An image element carrying a wall-clock timestamp would break the byte-identical
+    # rebuild that everything else here is written to protect.
+    def test_embedded_files_carry_the_generator_timestamp(self) -> None:
+        for name, payload in self.documents.items():
+            for file_id, entry in payload["files"].items():
+                with self.subTest(name=name, file=file_id):
+                    self.assertEqual(entry["created"], UPDATED)
+                    self.assertEqual(entry["lastRetrieved"], UPDATED)
+
+    def test_image_elements_carry_every_required_key(self) -> None:
+        for name, payload in self.documents.items():
+            for element in payload["elements"]:
+                if element["type"] != "image":
+                    continue
+                with self.subTest(name=name, element=element["id"]):
+                    for key in IMAGE_KEYS:
+                        self.assertIn(key, element)
+                    self.assertIn(element["fileId"], payload["files"])
 
     def test_elements_carry_every_required_key(self) -> None:
         for name, payload in self.documents.items():
