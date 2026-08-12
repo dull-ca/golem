@@ -6,8 +6,11 @@ those in and append to `Scene.elements`, which is also the z-order: Excalidraw
 rebuilds stacking from array order, so append back-to-front. `framed_deck` copies
 finished scenes into one canvas, each inside an Excalidraw frame.
 
-Ids, seeds and nonces derive from `blake2s(scene key + counter)` and `updated` is
-a constant, so a rebuild of the same scene is byte-identical to the last one.
+Ids, seeds and nonces derive from `blake2s(id namespace + counter)` and `updated`
+is a constant, so a rebuild of the same scene is byte-identical to the last one.
+The namespace defaults to the scene key; a run of frames over one base figure
+shares it on purpose, so an element drawn at the same point in every frame keeps
+one id — see SPEC.md, "Stable ids across a sequence".
 """
 
 from __future__ import annotations
@@ -16,8 +19,9 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
+from .assets import EmbeddedImage
 from .palette import INK, TRANSPARENT, Tone
 from .text import HAND, LINE_HEIGHT, measured_height, measured_width, wrapped
 
@@ -96,6 +100,21 @@ LINEAR_KEYS = (
     "elbowed",
 )
 
+IMAGE_KEYS = (
+    "fileId",
+    "status",
+    "scale",
+    "crop",
+)
+
+FILE_KEYS = (
+    "id",
+    "mimeType",
+    "dataURL",
+    "created",
+    "lastRetrieved",
+)
+
 
 def coordinate(value: float) -> float:
     return round(float(value), 2)
@@ -142,20 +161,23 @@ class Scene:
         self,
         key: str,
         *,
+        id_namespace: str | None = None,
         width: int = CANVAS_WIDTH,
         height: int = CANVAS_HEIGHT,
         background: str = "#ffffff",
     ) -> None:
         self.key = key
+        self.id_namespace = id_namespace if id_namespace is not None else key
         self.width = width
         self.height = height
         self.background = background
         self.elements: list[dict] = []
+        self.files: dict[str, dict] = {}
         self._counter = 0
 
     def _identity(self) -> tuple[str, int, int]:
         self._counter += 1
-        stem = f"{self.key}#{self._counter}".encode("utf-8")
+        stem = f"{self.id_namespace}#{self._counter}".encode("utf-8")
         identifier = hashlib.blake2s(stem, digest_size=12).hexdigest()
         seed = int.from_bytes(hashlib.blake2s(stem + b"/seed", digest_size=4).digest(), "big")
         nonce = int.from_bytes(hashlib.blake2s(stem + b"/nonce", digest_size=4).digest(), "big")
@@ -383,6 +405,52 @@ class Scene:
             label_align=label_align,
             label_wrap=label_wrap,
         )
+
+    # NOTE: `created` and `lastRetrieved` are the generator's fixed UPDATED, not a
+    # clock read. Excalidraw itself stamps these with Date.now(); doing the same here
+    # would make every build differ from the last, which test_scenes.py fails on.
+    # Width comes from the file's own aspect so the artwork is never distorted.
+    def image(
+        self,
+        x: float,
+        y: float,
+        height: float,
+        embedded: EmbeddedImage,
+        *,
+        opacity: int = 100,
+    ) -> dict:
+        self.files[embedded.file_id] = {
+            "id": embedded.file_id,
+            "mimeType": embedded.mime_type,
+            "dataURL": embedded.data_url,
+            "created": UPDATED,
+            "lastRetrieved": UPDATED,
+        }
+        element = self._base(
+            "image",
+            x,
+            y,
+            embedded.aspect * height,
+            height,
+            stroke=TRANSPARENT,
+            background=TRANSPARENT,
+            fill_style="solid",
+            stroke_width=2,
+            stroke_style="solid",
+            roughness=1,
+            opacity=opacity,
+            roundness=SHARP,
+        )
+        element.update(
+            {
+                "fileId": embedded.file_id,
+                "status": "saved",
+                "scale": [1, 1],
+                "crop": None,
+            }
+        )
+        self.elements.append(element)
+        return element
 
     def frame(self, x: float, y: float, width: float, height: float, name: str) -> dict:
         element = self._base(
@@ -623,16 +691,53 @@ class Scene:
 
 
 def reframed(
-    elements: Iterable[dict], offset_x: float, offset_y: float, frame_id: str
+    elements: Iterable[dict],
+    offset_x: float,
+    offset_y: float,
+    frame_id: str,
+    renamed: Mapping[str, str] | None = None,
 ) -> list[dict]:
+    renamed = renamed or {}
     moved: list[dict] = []
     for element in elements:
         clone = copy.deepcopy(element)
         clone["x"] = coordinate(clone["x"] + offset_x)
         clone["y"] = coordinate(clone["y"] + offset_y)
         clone["frameId"] = frame_id
+        clone["id"] = renamed.get(clone["id"], clone["id"])
+        if clone.get("containerId") is not None:
+            clone["containerId"] = renamed.get(
+                clone["containerId"], clone["containerId"]
+            )
+        clone["boundElements"] = [
+            {**bound, "id": renamed.get(bound["id"], bound["id"])}
+            for bound in clone["boundElements"] or ()
+        ]
         moved.append(clone)
     return moved
+
+
+# NOTE: scenes that share an id namespace produce the same ids on purpose, and that
+# is legal only while they are separate documents. The combined deck puts every
+# frame on one canvas, where two elements holding one id makes restore() reissue one
+# of them at random and lose whichever bindings pointed at it. First frame in keeps
+# the id; later collisions are renamed here, along with every reference to them.
+def _reissued_identifier(deck_key: str, position: int, identifier: str) -> str:
+    stem = f"{deck_key}#{position}#{identifier}".encode("utf-8")
+    return hashlib.blake2s(stem, digest_size=12).hexdigest()
+
+
+def _renaming_for(
+    scene: Scene, deck_key: str, position: int, claimed: set[str]
+) -> dict[str, str]:
+    renamed: dict[str, str] = {}
+    for element in scene.elements:
+        identifier = element["id"]
+        if identifier in claimed:
+            identifier = _reissued_identifier(deck_key, position, identifier)
+            renamed[element["id"]] = identifier
+        claimed.add(identifier)
+    return renamed
 
 
 def framed_deck(
@@ -643,11 +748,17 @@ def framed_deck(
     gap: float = 160.0,
 ) -> Scene:
     deck = Scene(key)
+    claimed: set[str] = set()
     for position, (name, scene) in enumerate(named_scenes):
         offset_x = (position % columns) * (scene.width + gap)
         offset_y = (position // columns) * (scene.height + gap)
         frame = deck.frame(offset_x, offset_y, scene.width, scene.height, name)
-        deck.elements.extend(reframed(scene.elements, offset_x, offset_y, frame["id"]))
+        claimed.add(frame["id"])
+        renamed = _renaming_for(scene, key, position, claimed)
+        deck.elements.extend(
+            reframed(scene.elements, offset_x, offset_y, frame["id"], renamed)
+        )
+        deck.files.update(scene.files)
     if named_scenes:
         deck.width = min(columns, len(named_scenes)) * (CANVAS_WIDTH + gap)
         deck.height = ((len(named_scenes) - 1) // columns + 1) * (CANVAS_HEIGHT + gap)
@@ -666,7 +777,7 @@ def document(scene: Scene) -> dict:
             "gridModeEnabled": False,
             "viewBackgroundColor": scene.background,
         },
-        "files": {},
+        "files": scene.files,
     }
 
 
