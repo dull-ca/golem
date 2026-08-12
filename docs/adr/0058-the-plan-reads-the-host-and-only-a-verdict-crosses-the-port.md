@@ -194,10 +194,16 @@ which is the ADR 0015 rule the journal rests on.
 - **With the flag off, the output is byte-identical to today.** No block labels,
   no host rows, and `observed` omitted from the JSON entirely, so a client can
   distinguish "not asked" from "asked, and it matched" and the plan goldens are
-  untouched. The one exception is a footer line shown only when there is no
-  prior revision *and* the flag was not passed — `no prior revision here ·
-  --against-host checks what this host already has` — because enrollment is
-  where the flag is worth knowing about and the only place a hint costs nothing.
+  untouched. The one exception is a footer line shown only when the host has
+  committed nothing yet *and* the flag was not passed — `no prior revision
+  here · --against-host checks what this host already has` — because
+  enrollment is where the flag is worth knowing about and the only place a
+  hint costs nothing. "Committed nothing yet" is `against_revision.is_none()
+  || against_revision == Some(1)`, not `is_none()` alone:
+  `wal::latest_revision_id` returns `Some(1 + committed_count)` and never
+  `None` once a host has a WAL, so a bare `is_none()` check would be dead code
+  on every real host. Revision 1 is the `Init` row itself — golem has enacted
+  nothing — which is exactly the enrollment moment the hint exists for.
 - **`host_already_matches` is computed server-side:** true when every desired
   glyph is `Realized`, every `Remove`'s resource is already gone, and
   **nothing** is `Unknown`. That last clause is the one a client would get
@@ -216,10 +222,31 @@ which is the ADR 0015 rule the journal rests on.
   real apt `Divergent`, and a `Latest` glyph must stay presence-only so the
   probe never touches the apt index. `systemdService` is `Realized` only when
   enabled and active, `Absent` when `is-enabled` reports the unit unknown, and
-  `Divergent` otherwise. Under `--reconciler fake` every row is `? unknown`.
+  `Divergent` otherwise. Under `--reconciler fake`, `observe` reports the same
+  `Realized`/`Absent`/`Divergent` verdicts as the real reconciler, read off its
+  own `present` map, and `Unknown(Sealed)` only when the keyring cannot open
+  the glyph — never as a default. A fake that agreed with itself on every row
+  by default would hide the join/summary/render risk this feature actually
+  carries, which is why it gained `preexisting`/`vanished` (Decision, above):
+  the only way to make the two columns disagree under the fake.
 - **A glyph naming no `owner` reports `Realized` whatever the owner is.**
   `perms_match` reads `owner: None` as "leave as-is", so the column agrees with
   what an apply would do and disagrees with what a reader may expect it to mean.
+- **A `dpkg-query` failure takes out every apt glyph in the scroll at once,
+  not one.** `observe_apt_batch` (`reconcilers.rs`) is one call for the whole
+  scroll, which is what makes the probe cheap enough to run before every
+  plan; the accepted cost is that a spawn failure, or a dpkg exit status of 2
+  or more (dpkg's own signal for a locked or corrupt database), degrades
+  every apt glyph together to `Unknown(Unreadable)`, while exit 1 — some
+  requested name unknown to dpkg, every known name still printed — stays
+  parseable per package. `Unknown` rather than a confident `Absent` is the
+  point of the trade: a fatal exit parsed as "these packages are not
+  installed" would have reported every apt glyph `≠ missing` with full
+  confidence, which is the exact direction this ADR exists to keep out of
+  the reality column, and the direction the exit-2 case had wrong before it
+  was caught. A test pins the spawn-failure half of the blast radius
+  (`a_dpkg_query_spawn_failure_takes_out_every_apt_glyph_but_leaves_the_rest_of_the_scroll_alone`,
+  `reconcilers.rs`).
 - **The probe is serial and uncached, by choice.** After the apt batch a scroll
   costs one subprocess plus roughly two per unit, plus a few hundred syscalls; a
   worker pool buys nothing measurable and makes failure modes nondeterministic.
@@ -232,7 +259,17 @@ which is the ADR 0015 rule the journal rests on.
 - **What a `Divergent` differs *in* is deferred, not undecided.** A closed facet
   enum (`Contents | Mode | Owner | Group | Target`) is safe, useful for triage,
   and the obvious second version; anything resembling a value or a diff is a
-  leak. Named here so it is not reinvented as a free-text field.
+  leak. Named here so it is not reinvented as a free-text field. The
+  motivation reaches further than triage: `observe` already reports
+  `Divergent` in two cases where `apply` would hard-fail instead — a
+  `directory` glyph finding a pre-existing regular file at its path
+  (`apply_directory`'s "refuse to replace pre-existing non-directory … with a
+  directory") and a `symlink` glyph finding a pre-existing symlink pointing
+  elsewhere (`apply_symlink`'s "refuse to repoint pre-existing symlink … ").
+  `Divergent` is not wrong there, but the probe already knows the apply will
+  hard-fail, and a `Divergent(WrongKind)` facet would let the plan say so
+  before anything runs — this feature's own thesis, that the host's answer
+  beats silence, applied one level deeper.
 - **Two questions are left to measurement rather than argument.** Whether
   reading whole files to compare them is affordable depends on real scroll file
   sizes, which nobody has measured; the `metadata.len()` early-out catches the

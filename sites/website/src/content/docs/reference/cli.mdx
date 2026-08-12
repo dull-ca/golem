@@ -141,6 +141,12 @@ a secret sealed to a key this host lacks — reports `unknown`, and `unknown`
 never counts as a match. See [Applying changes](/getting-started/applying/)
 for the enrollment case this exists for.
 
+`--against-host` reads files directly, without the per-path lock an apply
+takes on the same file, so a plan racing a live apply can read a file
+mid-rewrite and report a spurious `≠ differs` on that one row. Nothing is
+written either way, so this is a snapshot inaccuracy, not a safety issue —
+it self-corrects on the next plan.
+
 ### `golemctl fleet <apply|plan|status>`
 
 The same three readings, fanned out over every host in a TOML inventory,
