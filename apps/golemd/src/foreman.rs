@@ -41,7 +41,9 @@ use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
     WalStep, WalStepState,
 };
-use crate::plan_report::{PlanReport, PlanSummary, PlannedOp, PredictedReload, ReloadKind};
+use crate::plan_report::{
+    PlanReport, PlanSummary, PlannedOp, PredictedReload, Reality, ReloadKind,
+};
 use crate::planroom::PlanRoom;
 use crate::progress::{EventKind, EventLevel, ProgressRegistry};
 use crate::reconcile::plan;
@@ -159,6 +161,12 @@ pub struct Foreman {
 pub struct SelectedScroll {
     pub content_id: ContentId,
     pub scroll: Scroll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanScope {
+    JournalOnly,
+    JournalAndHost,
 }
 
 const UNIT_DIRECTORIES: &[&str] = &["/etc/systemd/system", "/etc/containers/systemd"];
@@ -327,6 +335,14 @@ impl Foreman {
     /// [`ingest`]: Foreman::ingest
     /// [`run_reconcile`]: Foreman::run_reconcile
     pub fn plan_manifest(&self, bytes: &[u8]) -> Result<PlanReport, ForemanError> {
+        self.plan_manifest_scoped(bytes, PlanScope::JournalOnly)
+    }
+
+    pub fn plan_manifest_scoped(
+        &self,
+        bytes: &[u8],
+        scope: PlanScope,
+    ) -> Result<PlanReport, ForemanError> {
         let manifest = from_bytes(bytes).map_err(|e| ForemanError::ManifestUndecodable {
             detail: e.to_string(),
         })?;
@@ -362,10 +378,24 @@ impl Foreman {
                 placed.push((group.unit_path.clone(), op));
             }
         }
+        let observations = match scope {
+            PlanScope::JournalOnly => None,
+            PlanScope::JournalAndHost => {
+                let all_ops: Vec<GlyphOp> = placed.iter().map(|(_, op)| op.clone()).collect();
+                Some(self.reconciler.observe(&all_ops))
+            }
+        };
         let planned: Vec<PlannedOp> = placed
             .iter()
-            .map(|(unit_path, op)| PlannedOp::of(unit_path, op))
+            .map(|(unit_path, op)| {
+                let planned_op = PlannedOp::of(unit_path, op);
+                match &observations {
+                    Some(observations) => planned_op.observed_as(observations.get(&op.key())),
+                    None => planned_op,
+                }
+            })
             .collect();
+        let reality = observations.as_ref().map(|_| Reality::over(&planned));
         Ok(PlanReport {
             host: self.host.clone(),
             scroll_content_id: desired.content_id.to_string(),
@@ -373,6 +403,7 @@ impl Foreman {
             summary: PlanSummary::over(&planned),
             ops: planned,
             reloads: predicted_reloads(&desired.scroll, &placed),
+            reality,
         })
     }
 
@@ -2578,12 +2609,17 @@ fn predicted_reloads(desired: &Scroll, placed: &[(Vec<String>, GlyphOp)]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake_reconciler::FakeReconciler;
     use crate::journal::{Inverse, RevisionKind};
+    use crate::observe::Observations;
+    use crate::plan_report::Observed;
     use crate::planroom::MemoryPlanRoom;
     use crate::reconciler::EnactResult;
     use crate::report::{FailClassReport, TopOutcome, UnitOutcome};
+    use crate::secrets::Keyring;
     use scroll_format::{Glyph, Manifest, OnExhaust, Policy};
     use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -5968,6 +6004,357 @@ mod tests {
             foreman.rec.events().len(),
             events_before,
             "planning touches no reconciler"
+        );
+    }
+
+    #[derive(Default)]
+    struct ObserveCounter {
+        calls: AtomicUsize,
+    }
+    impl Reconciler for ObserveCounter {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: Inverse::Nothing,
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+        fn observe(&self, _ops: &[GlyphOp]) -> Observations {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Observations::default()
+        }
+    }
+
+    fn foreman_sharing(room: Arc<MemoryPlanRoom>, reconciler: Box<dyn Reconciler>) -> Foreman {
+        Foreman::new("host".into(), Box::new(room), reconciler).with_retry_config(retry_config(3))
+    }
+
+    #[test]
+    fn a_journal_only_plan_never_calls_observe() {
+        let counter = Arc::new(ObserveCounter::default());
+        let foreman = foreman("host", Box::new(counter.clone()));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+
+        foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalOnly)
+            .unwrap();
+
+        assert_eq!(counter.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_host_plan_stamps_every_op_with_its_observation() {
+        let nginx = apt("nginx");
+        let curl = apt("curl");
+        let nginx_cid = crate::reconcile::glyph_content_id(&nginx);
+        let fake = FakeReconciler::new().preexisting(&nginx.key(), nginx_cid);
+        let foreman = foreman("host", Box::new(fake));
+        let bytes = manifest(vec![scroll("host", vec![nginx, curl])]);
+
+        let report = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        let nginx_op = report
+            .ops
+            .iter()
+            .find(|op| op.glyph_key == "apt:nginx")
+            .unwrap();
+        assert_eq!(nginx_op.observed, Some(Observed::Realized));
+        assert_eq!(nginx_op.unobservable, None);
+
+        let curl_op = report
+            .ops
+            .iter()
+            .find(|op| op.glyph_key == "apt:curl")
+            .unwrap();
+        assert_eq!(curl_op.observed, Some(Observed::Absent));
+    }
+
+    #[test]
+    fn a_host_plan_calls_observe_exactly_once_for_the_whole_scroll() {
+        let counter = Arc::new(ObserveCounter::default());
+        let foreman = foreman("host", Box::new(counter.clone()));
+        foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("legacy")])]))
+            .unwrap();
+
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![leaf_scroll("web", vec![apt("nginx"), apt("curl")])],
+        )]);
+
+        foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_glyph_declared_in_three_units_counts_once_in_the_reality_summary() {
+        let shared = apt("nginx");
+        let cid = crate::reconcile::glyph_content_id(&shared);
+        let fake = FakeReconciler::new().preexisting(&shared.key(), cid);
+        let foreman = foreman("host", Box::new(fake));
+        let bytes = manifest(vec![branch_scroll(
+            "host",
+            vec![
+                leaf_scroll("a", vec![shared.clone()]),
+                leaf_scroll("b", vec![shared.clone()]),
+                leaf_scroll("c", vec![shared.clone()]),
+            ],
+        )]);
+
+        let report = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        assert_eq!(
+            report.ops.len(),
+            3,
+            "the plan still lists the op once per declaring unit"
+        );
+        let reality = report.reality.unwrap();
+        assert_eq!(reality.realized, 1);
+    }
+
+    #[test]
+    fn a_remove_whose_resource_is_gone_counts_as_already_gone() {
+        let telnetd = apt("telnetd");
+        let room = Arc::new(MemoryPlanRoom::new());
+        foreman_sharing(room.clone(), Box::new(FakeReconciler::new()))
+            .apply_manifest(&manifest(vec![scroll("host", vec![telnetd.clone()])]))
+            .unwrap();
+        let foreman = foreman_sharing(room, Box::new(FakeReconciler::new()));
+
+        let report = foreman
+            .plan_manifest_scoped(
+                &manifest(vec![scroll("host", vec![])]),
+                PlanScope::JournalAndHost,
+            )
+            .unwrap();
+
+        let reality = report.reality.unwrap();
+        assert_eq!(reality.already_gone, 1);
+        assert_eq!(reality.still_present, 0);
+    }
+
+    #[test]
+    fn a_remove_whose_resource_remains_counts_as_still_present() {
+        let telnetd = apt("telnetd");
+        let cid = crate::reconcile::glyph_content_id(&telnetd);
+        let room = Arc::new(MemoryPlanRoom::new());
+        foreman_sharing(room.clone(), Box::new(FakeReconciler::new()))
+            .apply_manifest(&manifest(vec![scroll("host", vec![telnetd.clone()])]))
+            .unwrap();
+        let foreman = foreman_sharing(
+            room,
+            Box::new(FakeReconciler::new().preexisting(&telnetd.key(), cid)),
+        );
+
+        let report = foreman
+            .plan_manifest_scoped(
+                &manifest(vec![scroll("host", vec![])]),
+                PlanScope::JournalAndHost,
+            )
+            .unwrap();
+
+        let reality = report.reality.unwrap();
+        assert_eq!(reality.still_present, 1);
+        assert_eq!(reality.already_gone, 0);
+    }
+
+    #[test]
+    fn a_host_that_already_holds_every_glyph_reports_host_already_matches() {
+        let glyphs = vec![apt("nginx"), apt("curl"), unit_file("/etc/motd", "hello")];
+        let fake = glyphs.iter().fold(FakeReconciler::new(), |f, g| {
+            f.preexisting(&g.key(), crate::reconcile::glyph_content_id(g))
+        });
+        let foreman = foreman("host", Box::new(fake));
+        let bytes = manifest(vec![scroll("host", glyphs)]);
+
+        let report = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        assert_eq!(
+            report.against_revision,
+            Some(1),
+            "a host that has never applied anything still sits on the projected Init revision"
+        );
+        assert_eq!(report.summary.install, 3);
+        let reality = report.reality.unwrap();
+        assert_eq!(reality.realized, 3);
+        assert_eq!(reality.divergent, 0);
+        assert!(reality.host_already_matches);
+    }
+
+    #[test]
+    fn one_unknown_glyph_denies_host_already_matches() {
+        let nginx = apt("nginx");
+        let curl = apt("curl");
+        let nginx_cid = crate::reconcile::glyph_content_id(&nginx);
+        let curl_cid = crate::reconcile::glyph_content_id(&curl);
+        let sealed = Glyph::Filesystem {
+            path: "/etc/app/creds.conf".into(),
+            entry: Entry::File {
+                contents: scroll_format::Text::composed(vec![scroll_format::Chunk::Hole(
+                    scroll_format::Secret::Sealed {
+                        key_id: "6fb6c6005355abf3".to_string(),
+                        ciphertext: vec![0; 32],
+                    },
+                )]),
+                perms: scroll_format::Perms {
+                    mode: 0o600,
+                    owner: None,
+                    group: None,
+                },
+            },
+        };
+
+        let fake = FakeReconciler::new()
+            .with_keyring(Keyring::without_key())
+            .preexisting(&nginx.key(), nginx_cid)
+            .preexisting(&curl.key(), curl_cid);
+        let foreman = foreman("host", Box::new(fake));
+        let bytes = manifest(vec![scroll("host", vec![nginx, curl, sealed])]);
+
+        let report = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        let reality = report.reality.unwrap();
+        assert_eq!(reality.realized, 2);
+        assert_eq!(reality.unknown, 1);
+        assert!(!reality.host_already_matches);
+    }
+
+    #[test]
+    fn one_still_present_remove_denies_host_already_matches() {
+        let nginx = apt("nginx");
+        let telnetd = apt("telnetd");
+        let nginx_cid = crate::reconcile::glyph_content_id(&nginx);
+        let telnetd_cid = crate::reconcile::glyph_content_id(&telnetd);
+        let room = Arc::new(MemoryPlanRoom::new());
+        foreman_sharing(room.clone(), Box::new(FakeReconciler::new()))
+            .apply_manifest(&manifest(vec![scroll(
+                "host",
+                vec![nginx.clone(), telnetd.clone()],
+            )]))
+            .unwrap();
+        let fake = FakeReconciler::new()
+            .preexisting(&nginx.key(), nginx_cid)
+            .preexisting(&telnetd.key(), telnetd_cid);
+        let foreman = foreman_sharing(room, Box::new(fake));
+
+        let report = foreman
+            .plan_manifest_scoped(
+                &manifest(vec![scroll("host", vec![nginx])]),
+                PlanScope::JournalAndHost,
+            )
+            .unwrap();
+
+        let reality = report.reality.unwrap();
+        assert_eq!(reality.realized, 1);
+        assert_eq!(reality.still_present, 1);
+        assert!(!reality.host_already_matches);
+    }
+
+    #[test]
+    fn an_empty_scroll_does_not_report_host_already_matches() {
+        let foreman = foreman("host", Box::new(FakeReconciler::new()));
+        let bytes = manifest(vec![scroll("host", vec![])]);
+
+        let report = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        assert!(report.ops.is_empty());
+        let reality = report.reality.unwrap();
+        assert!(!reality.host_already_matches);
+    }
+
+    #[test]
+    fn a_host_plan_writes_nothing_to_the_journal() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll("host", vec![apt("nginx")])]))
+            .unwrap();
+        let steps_before = foreman.foreman.planroom.wal_steps().unwrap().len();
+        let attempts_before = foreman.foreman.planroom.attempts().unwrap().len();
+        let revisions_before = foreman.foreman.revisions().unwrap().len();
+        let events_before = foreman.rec.events().len();
+
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx"), apt("curl")])]);
+        foreman
+            .foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+        foreman
+            .foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        assert_eq!(
+            foreman.foreman.planroom.wal_steps().unwrap().len(),
+            steps_before
+        );
+        assert_eq!(
+            foreman.foreman.planroom.attempts().unwrap().len(),
+            attempts_before
+        );
+        assert_eq!(foreman.foreman.revisions().unwrap().len(), revisions_before);
+        assert_eq!(
+            foreman.rec.events().len(),
+            events_before,
+            "host planning touches no reconciler apply/reverse"
+        );
+    }
+
+    #[test]
+    fn a_host_plan_predicts_the_same_reloads_as_a_journal_only_plan() {
+        let foreman = foreman_with(ScriptedReconciler::new().ok_default());
+        foreman
+            .foreman
+            .apply_manifest(&manifest(vec![scroll(
+                "host",
+                vec![unit_file("/etc/systemd/system/loud.service", "old")],
+            )]))
+            .unwrap();
+
+        let bytes = manifest(vec![scroll(
+            "host",
+            vec![unit_file("/etc/systemd/system/loud.service", "new")],
+        )]);
+
+        let journal_only = foreman.foreman.plan_manifest(&bytes).unwrap();
+        let host = foreman
+            .foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .unwrap();
+
+        let reload_shape = |reloads: &[PredictedReload]| -> Vec<(String, ReloadKind, Vec<String>)> {
+            reloads
+                .iter()
+                .map(|r| (r.unit.clone(), r.kind, r.triggered_by.clone()))
+                .collect()
+        };
+        assert_eq!(
+            reload_shape(&host.reloads),
+            reload_shape(&journal_only.reloads)
+        );
+        assert!(
+            !host.reloads.is_empty(),
+            "the scenario actually predicts a reload"
         );
     }
 
