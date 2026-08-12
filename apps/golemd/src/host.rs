@@ -411,10 +411,11 @@ pub mod fake {
                     let unit = args.last().copied().unwrap_or_default();
                     // `known` stands in for "systemd recognizes this unit at
                     // all": real `is-enabled` on a genuinely unknown unit
-                    // prints nothing to stdout (the error goes to stderr),
-                    // which is the signal `observe_systemd_verdict` keys on
-                    // to report `Absent`. A known-but-disabled unit gets the
-                    // ordinary "disabled\n" a real host would print.
+                    // prints "not-found" to stdout and exits 4 (measured on a
+                    // Debian trixie guest), which is the signal
+                    // `observe_systemd_verdict` keys on to report `Absent`. A
+                    // known-but-disabled unit gets the ordinary "disabled\n" a
+                    // real host would print.
                     let known = host.known.contains(unit)
                         || host.enabled.contains(unit)
                         || host.active.contains(unit)
@@ -434,9 +435,9 @@ pub mod fake {
                         })
                     } else {
                         Ok(CommandOutput {
-                            status: 1,
-                            stdout: String::new(),
-                            stderr: format!("Unit {unit} could not be found.\n"),
+                            status: 4,
+                            stdout: "not-found\n".into(),
+                            stderr: String::new(),
                         })
                     }
                 }

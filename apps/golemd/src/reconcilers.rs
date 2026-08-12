@@ -582,15 +582,15 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// there would make the plan lie about a running service. Deferred, not
     /// dismissed: see `docs/TODO.md` (ADR 0058).
     ///
-    /// Empty `is-enabled` stdout is the "unit unknown to systemd" signal for
-    /// both a desired `Install`/`Noop` and a `Remove`; `presence_only` only
-    /// changes what a *known* unit reports — `Realized` outright for a
-    /// `Remove` (the question is whether it is still there, not whether it
-    /// matches), `Divergent` for anything else unless it is both enabled and
-    /// active.
+    /// `is-enabled` stdout `not-found` (exit 4, measured on a Debian trixie
+    /// guest) is the "unit unknown to systemd" signal for both a desired
+    /// `Install`/`Noop` and a `Remove`; `presence_only` only changes what a
+    /// *known* unit reports — `Realized` outright for a `Remove` (the
+    /// question is whether it is still there, not whether it matches),
+    /// `Divergent` for anything else unless it is both enabled and active.
     fn observe_systemd_verdict(&self, unit: &str, presence_only: bool) -> EnactResult<Observation> {
         let enabled_output = self.systemd_enabled_output(unit)?;
-        if enabled_output.stdout.trim().is_empty() {
+        if enabled_output.stdout.trim() == "not-found" {
             return Ok(Observation::Absent);
         }
         if presence_only {
@@ -2954,7 +2954,9 @@ mod tests {
         let rec = HostReconciler::with_runner(FakeCommandRunner::new());
         let ops = vec![install_op(&glyph)];
 
-        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+        let observed = rec.observe(&ops).get(&glyph.key());
+        assert_eq!(observed, Observation::Absent);
+        assert_ne!(observed, Observation::Divergent);
     }
 
     #[test]
@@ -2964,6 +2966,63 @@ mod tests {
         let ops = vec![remove_op(&glyph)];
 
         assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Realized);
+    }
+
+    #[test]
+    fn a_remove_of_a_unit_systemd_does_not_know_observes_as_absent() {
+        let glyph = systemd("ghost");
+        let rec = HostReconciler::with_runner(FakeCommandRunner::new());
+        let ops = vec![remove_op(&glyph)];
+
+        assert_eq!(rec.observe(&ops).get(&glyph.key()), Observation::Absent);
+    }
+
+    struct SpawnFailingDpkgQuery {
+        inner: FakeCommandRunner,
+    }
+
+    impl CommandRunner for SpawnFailingDpkgQuery {
+        fn run(&self, program: &str, args: &[&str]) -> EnactResult<crate::host::CommandOutput> {
+            if program == "dpkg-query" {
+                return Err(EnactError::Retryable("dpkg-query: spawn failed".into()));
+            }
+            self.inner.run(program, args)
+        }
+    }
+
+    #[test]
+    fn a_dpkg_query_spawn_failure_takes_out_every_apt_glyph_but_leaves_the_rest_of_the_scroll_alone(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("present");
+        fs::write(&path, "old\n").unwrap();
+        let path = path.to_str().unwrap();
+        let file = file_glyph(path, "old\n", 0o644);
+        let unit = systemd("app");
+
+        let runner = SpawnFailingDpkgQuery {
+            inner: FakeCommandRunner::with_service("app", true, true),
+        };
+        let rec = HostReconciler::with_runner(runner);
+        let ops = vec![
+            install_op(&apt("nginx")),
+            install_op(&apt("curl")),
+            install_op(&file),
+            install_op(&unit),
+        ];
+
+        let observed = rec.observe(&ops);
+
+        assert_eq!(
+            observed.get(&apt("nginx").key()),
+            Observation::Unknown(Unknowable::Unreadable)
+        );
+        assert_eq!(
+            observed.get(&apt("curl").key()),
+            Observation::Unknown(Unknowable::Unreadable)
+        );
+        assert_eq!(observed.get(&file.key()), Observation::Realized);
+        assert_eq!(observed.get(&unit.key()), Observation::Realized);
     }
 
     #[test]
