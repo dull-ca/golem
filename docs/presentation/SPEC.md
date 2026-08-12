@@ -33,7 +33,7 @@ gone.
 
 **A short label is read cold, alone, out of order.** It has to be a noun phrase
 that names what the box is, never a clause that leans on a sentence elsewhere on
-the canvas. The hub of slide 05 once read `Layer 6 / one word` — a fragment
+the canvas. The hub of slide 06 once read `Layer 6 / one word` — a fragment
 snapped off that slide's own subtitle — where it had to read **Orchestration**.
 
 The first time a term appears it gets one flat sentence saying what it is: an
@@ -49,50 +49,86 @@ host and acts on the difference. Not an evocation of it.
 
 **One stack, and every hosting choice is a line drawn across it.** 01 and 02 set
 that frame twice — first by what you *buy*, then by what you *configure* — so the
-audience already has a shape in their head before any lichess detail arrives. 03
-plants the flag: on a ladder from machines to resources, lichess is on the
-leftmost rung, and everything after this is about that rung. 03 also parks
-Portainer where it belongs — a web UI over the middle four, sitting on top of the
-ladder rather than forming a rung of it.
+audience already has a shape in their head before any lichess detail arrives.
+Both carry the **lichess is here** marker over their own column, and 03 plants it
+a third time: on a ladder from machines to resources, lichess is on the leftmost
+rung, and everything after this is about that rung.
 
-**Then the stack gets specific.** 04 is the six-layer lichess figure. Layer 6 is
+**04 is the same ladder with Portainer added, and nothing else changed.**
+Portainer used to share 03, which overstated it: it is a web UI on one machine out
+of roughly two dozen, not a rung and not a layer. Splitting it lets 03 make the
+claim about lichess cleanly, and lets 04 state Portainer's scale — one box, drawn
+as one mark in a row of twenty-four.
+
+**Then the stack gets specific.** 05 is the six-layer lichess figure. Layer 6 is
 drawn as a column beside bands 2–5 rather than a band on top, because
 orchestration acts *across* those layers. That drawing decision is itself an
-argument, and 05 collects on it: layer 6 expanded is five separate jobs, each one
+argument, and 06 collects on it: layer 6 expanded is five separate jobs, each one
 done by a platform, by a script, or by a person.
 
-**The figure is shown twice, not four times.** 06 recolours it to show what
+**The figure is shown twice, not four times.** 07 recolours it to show what
 buying orchestration would cover — the yardstick. That is the only recolour, and
-it is drawn at geometry identical to 04, so flipping between the two changes
+it is drawn at geometry identical to 05, so flipping between the two changes
 colour and nothing else. Where we were is then shown by *different* forms,
-because four recolourings of one figure read as one slide shown four times: 07
-measures Ansible's coverage as bars, layer by layer, and 08 names the four tools
+because four recolourings of one figure read as one slide shown four times: 08
+measures Ansible's coverage as bars, layer by layer, and 09 names the four tools
 that shared December's layers and the one job nobody took.
 
-**09, 10 and 11 are December in detail.** They exist so that "where it broke" is
-about structure rather than about a stack nobody has seen. 09 is service
-discovery, 10 is placement and lifecycle, 11 is the move that took four
+**10, 11 and 12 are December in detail.** They exist so that "where it broke" is
+about structure rather than about a stack nobody has seen. 10 is service
+discovery, 11 is placement and lifecycle, 12 is the move that took four
 hand-ordered steps.
 
-**A person choosing the host was never the defect.** golem keeps that choice — 13
-and 14 here, and 17 of the orchestration deck, all say so — so no slide may frame
+**14 to 19 are the fleet, and they are what the talk is for.** Everything before
+them is one machine's worth of stack. The sequence is twenty-four machines drawn
+once, six times over, and what changes between frames is which layers have been
+configured and by what. It runs after 13 rather than before, so the audience meets
+it having already been told what broke, and it ends by handing over to golem: the
+last two frames are the pivot 20 then defines.
+
+**A person choosing the host was never the defect.** golem keeps that choice — 20
+and 21 here, and 17 of the orchestration deck, all say so — so no slide may frame
 manual placement as a deficiency golem outgrew. What December lacked was
 mechanism: no drain, no rollback, no preview, and no way to say *this service now
-runs on host B* as one change. 11 names that last one and only that one.
+runs on host B* as one change. 19 names that last one and only that one.
 
-**12 must come before 14.** 12 is five problems in how changes were written and
-applied; 14 then pairs each requirement with the property that meets it. Read
-after 12, every row on 14 is one of those problems being answered. Read before 12,
+**13 must come before 21.** 13 is five problems in how changes were written and
+applied; 21 then pairs each requirement with the property that meets it. Read
+after 13, every row on 21 is one of those problems being answered. Read before 13,
 the same rows are a feature list, and the talk turns into a pitch. The order is
 the argument, and it is carried by the sequence rather than by a strapline saying
-so — 14's subtitle used to announce it, which is the speaker's job.
+so — 21's subtitle used to announce it, which is the speaker's job.
 
-**15 to 22 are the "how it works" third.** 15 is the pipeline end to end, 16 the
-diff, 17 apply and undo. 18 and 19 are the authoring contract — a typed
-functional program, and exactly four glyph kinds. 20, 21 and 22 are the
+**22 to 29 are the "how it works" third.** 22 is the pipeline end to end, 23 the
+diff, 24 apply and undo. 25 and 26 are the authoring contract — a typed
+functional program, and exactly four glyph kinds. 27, 28 and 29 are the
 operator's view: two binaries, one wire, and plan-before-apply.
 
-## The twenty-two slides
+## The six-layer palette is the deck's vocabulary
+
+The tones on 05 are named once, in `DESCRIPTIVE_LAYER_TONES` in
+`decks/golem/lichess_stack.py`, and every slide that speaks about layers imports
+them rather than matching by eye:
+
+| | layer | tone |
+|---|---|---|
+| 1 | Core OS, network, security | `SLATE` / `SLATE_FILL` |
+| 2 | Application hosting | `TEAL` / `TEAL_FILL` |
+| 3 | Connective infrastructure | `BLUE` / `BLUE_FILL` |
+| 4 | Tools, dependencies, runtimes | `VIOLET` / `VIOLET_FILL` |
+| 5 | The applications | `GREEN` / `GREEN_FILL` |
+| 6 | Lifecycle / schedule / scaling | `ORANGE` / `ORANGE_FILL` |
+
+The fleet sequence spends this directly: a machine is not "configured" or not, it
+is configured up to some layer, and the colour spreading across twenty-four boxes
+is the explanation. 04's Portainer bar takes the layer-6 tone from the same table
+for the same reason — Portainer's job is layer-6 work, on one machine.
+
+A near-miss would break this, so no slide picks a hex or a `Tone` of its own for
+a layer. The ladder rungs on 03 and 04 keep `YOURS` and `PLATFORM`, because that
+axis is who picks the machine, not which layer is meant.
+
+## The twenty-nine slides
 
 Frame names in `dist/golem/golem-deck.excalidraw` are `NN · Title`; filenames are
 `NN-slug.excalidraw`. Both derive from position in `SLIDE_MODULE_NAMES` in
@@ -101,20 +137,41 @@ Frame names in `dist/golem/golem-deck.excalidraw` are `NN · Title`; filenames a
 ### 01 · What you buy — `s01_what_you_buy.py` — *matrix* — **reference**
 
 A service-model responsibility matrix, deliberately vendor-neutral — no AWS, GCP
-or Azure. Rows top to bottom: Data, Application, Runtime & middleware, Operating
-system, Virtualisation, Network & storage, Hardware, Facility & power. Columns:
+or Azure. Rows top to bottom: Data, Application, Runtime & middleware,
+Virtualisation, Operating system, Network & storage, Hardware, Facility & power.
+Columns:
 Own hardware, Colocation, Rented bare metal, IaaS (cloud VMs), PaaS, SaaS.
 
-Cells staircase down the columns — own hardware is all eight yours, colocation
-seven, rented bare metal the top five, IaaS the top four, PaaS the top two, SaaS
-none. The exception is SaaS Data, which is hosted.
+**Virtualisation sits above Operating system, not below it.** There is a system
+on the metal first and a hypervisor on top of it; anything inside that hypervisor
+is a guest, and the guest is the less interesting of the two for this talk. The
+order also puts 01 in step with 02, where "Container runtime" already sits above
+"Host OS & kernel".
 
-Cells carry colour and no text. An earlier draft wrote `YOURS` / `THEIRS` into
-all forty-eight of them; at the type floor that is forty-eight words of visual
-noise saying what three legend swatches say once. The legend is the whole of the
-prose: *you operate it* / *the provider operates it* / *yours, stored by the
-provider*. No subtitle, no closing line — the column headers name the service
-models and the rows name the stack, so a strapline would only restate them.
+Cells staircase down the columns, and each depth is derived from what the model
+sells rather than from the column beside it: own hardware all eight, colocation
+seven, rented bare metal the top five — the provider hands over a machine and you
+install the system and any virtualisation on it — IaaS the top three, because the
+provider runs the machine's system *and* the hypervisor and what you get is a
+guest, PaaS the top two, SaaS none. The exception is SaaS Data, which is hosted.
+
+IaaS is the only depth the row swap moved, 4 to 3, and it is the one that can be
+misread. The note under the legend is what stops it: the row is the system on the
+metal, and the guest inside the provider's virtualisation is yours. Without that
+line the slide appears to claim the provider patches your VM. Do not drop it and
+leave the depth at 3, and do not raise the depth to 4 — that would put a yours
+cell under a theirs cell and break the staircase the legend explains.
+
+Otherwise cells carry colour and no text. An earlier draft wrote `YOURS` /
+`THEIRS` into all forty-eight of them; at the type floor that is forty-eight words
+of visual noise saying what three legend swatches say once. The legend is the rest
+of the prose: *you operate it* / *the provider operates it* / *yours, stored by
+the provider*.
+
+A **lichess is here** badge sits over the *Rented bare metal* column. It has no
+connector down to the header, unlike 03's: the matrix header wraps to two and
+three lines, and a dashed line long enough to be legible ended inside the words.
+The badge is centred on the column, which is enough.
 
 ### 02 · What you configure — `s02_what_you_configure.py` — *matrix* — **reference**
 
@@ -124,13 +181,13 @@ Kubernetes, Managed Kubernetes. Rows: App config & secrets, Scaling policy,
 Service discovery & load balancing, Scheduling & placement, Cluster membership,
 Container runtime, Host OS & kernel, Hardware. Three tones, and again the only
 prose on the slide: *you configure it* / *the platform provides it* / *not yours
-to configure*.
+to configure*. A **lichess is here** badge sits over *Bare metal + config mgmt*,
+the same treatment as 01 and, for the same reason, drawn without a connector.
 
 ### 03 · Where lichess sits — `s03_where_lichess_sits.py` — *timeline* — **explanation**
 
-The six columns of 02 as rungs on an axis. A badge over the first rung: **lichess
-is here**. A bar spanning Docker through Kubernetes: **Portainer — a web UI that
-manages these platforms**.
+The six columns of 02 as rungs on an axis, from `decks/golem/lichess_ladder.py`,
+with a badge over the first rung: **lichess is here**.
 
 Below the axis, a split whose two headings are the claim and whose bodies are the
 columns each covers: **You name the machine** — bare metal with configuration
@@ -139,7 +196,19 @@ Nomad, Kubernetes, managed Kubernetes. The headings used to read "Left of the
 middle" and "Right of the middle", which named a position on the canvas rather
 than a thing, and left the two bodies to carry the actual point.
 
-### 04 · What lichess runs — `s04_lichess_stack.py` — *layered stack* — **reference**
+### 04 · Where lichess sits, with Portainer — `s04_where_lichess_sits_with_portainer.py` — *timeline* — **explanation**
+
+The same ladder at identical geometry, plus a bar spanning Docker through
+Kubernetes: **Portainer — a web UI that manages these platforms**, in the layer-6
+tone because that is the work it does. Below it, twenty-four machine marks with
+one filled, and the fact stated flat: roughly 20 to 30 machines, under Ansible,
+hand configuration and custom Python, and exactly one of them runs Portainer.
+
+The two slides were one, which put Portainer at the scale of a rung. It is a web
+UI on one box. Drawing the count is what corrects it, and it is also the first
+sight of the fleet that 14 to 19 work over.
+
+### 05 · What lichess runs — `s05_lichess_stack.py` — *layered stack* — **reference**
 
 The shared figure, from `decks/golem/lichess_stack.py`. Five bands drawn top to
 bottom as 5, 4, 3, 2, 1, plus layer 6 as a tall column to the right spanning
@@ -152,7 +221,7 @@ too.
 4. **Tools, dependencies, runtimes** — JVM, node, native libs, base images
 5. **The applications** — lila, lila-ws, lila-search, mongodb, redis
 6. **Lifecycle / schedule / scaling** — the right-hand column, subdivided into
-   the five parts of slide 05
+   the five parts of slide 06
 
 Those band details are trimmed to one line at 24pt. The fuller enumerations they
 came from are: layer 1 also users and the private network; layer 2 also volumes;
@@ -161,16 +230,17 @@ layer 4 also client libraries; layer 5 also "the rest". They are the speaker's
 sentences now, not the slide's.
 
 `lichess_stack.draw()` takes per-layer and per-part `Tone`s and tags but **no
-geometry**. Slide 06 recolours this figure rather than redrawing it.
+geometry**. Slide 07 recolours this figure rather than redrawing it, and
+`decks/golem/fleet.py` reuses its `DESCRIPTIVE_LAYER_TONES` for every machine.
 
 The only prose is one line under the figure, explaining the shape a reader is
 looking at: layer 6 runs across layers 2 to 5, so it is drawn beside them.
 
-### 05 · What orchestration means — `s05_orchestration.py` — *radial hub* — **reference**
+### 06 · What orchestration means — `s06_orchestration.py` — *radial hub* — **reference**
 
 A hub labelled **Orchestration** — *layer 6 of the stack* — with five satellites,
 the five parts named once in `decks/vocabulary.py` and reused verbatim here, in
-the column on 04 and 06, and throughout the orchestration deck:
+the column on 05 and 07, and throughout the orchestration deck:
 
 - **Placement** — choosing which node runs a workload
 - **Lifecycle** — start, stop, restart, drain, rolling update, rollback
@@ -190,16 +260,16 @@ orchestration deck, where it belongs.
 Closing line: each of these is done by a platform, a script, or a person. A person
 doing one is an answer, not a failure.
 
-### 06 · If we bought orchestration — `s06_bought_orchestration.py` — *layered stack* — **explanation**
+### 07 · If we bought orchestration — `s07_bought_orchestration.py` — *layered stack* — **explanation**
 
-The slide-04 figure recoloured, at identical geometry. Nomad or Kubernetes covers
+The slide-05 figure recoloured, at identical geometry. Nomad or Kubernetes covers
 layers 2, 3 and 6 and every orchestration part inside 6; the OCI image supplies 4
 and 5; layer 1 is ours. A dashed callout: renting managed Kubernetes covers layer
 1 too — and costs more. Subtitle: a platform provides all five parts of layer 6
 together. The legend reads *provided by the platform* / *provided by the image* /
 *ours to operate* — an image does not "carry" anything.
 
-### 07 · What Ansible managed — `s07_ansible.py` — *coverage bars* — **reference**
+### 08 · What Ansible managed — `s08_ansible.py` — *coverage bars* — **reference**
 
 Six tracks, one per layer. Ansible managed 1, 2 and 4 outright; layer 3 was mostly
 by hand; layers 5 and 6 were by hand, and layer 6's track is tagged *by hand — all
@@ -212,24 +282,24 @@ slide; there is no closing line.
 
 Drawn as bars rather than as a third recolouring of the stack. The absence is the
 point of the slide, and an empty track shows it more directly than a different
-fill on the same rectangle — and it stops slides 04 through 08 reading as one
+fill on the same rectangle — and it stops slides 05 through 09 reading as one
 figure four times.
 
-### 08 · December: who owned what — `s08_december_owners.py` — *card rhythm* — **reference**
+### 09 · December: who owned what — `s09_december_owners.py` — *card rhythm* — **reference**
 
 Five cards in a 3 / 2 / 1 rhythm: Ansible → layers 1 and 2; custom Python → layer
 3; quadlets → layers 4 and 5; custom Python + Ansible → placement, plumbing and
 scaling; systemd → lifecycle. Then, full width and red: **Nobody** → nothing
 watched for drift or failure. Closing line: layer 6 had no single owner.
 
-### 09 · December: how a client found a service — `s09_december_discovery.py` — *icon cards* — **explanation**
+### 10 · December: how a client found a service — `s10_december_discovery.py` — *icon cards* — **explanation**
 
 Four icon-led cards with flow arrows: **OVH vrack** (network link) → **dnsmasq**
 (DNS lookup) → **SRV records** (service) → **Clients** (container). The cards make
 the point end to end, so the closing bar is gone; the same claim, phrased flatly,
 is the closing line of slide 13 of the orchestration deck.
 
-### 10 · December: how a service reached a host — `s10_december_placement.py` — *icon cards* — **explanation**
+### 11 · December: how a service reached a host — `s11_december_placement.py` — *icon cards* — **explanation**
 
 Four more: **`hosts.py`** (binding — which service runs on which host, written
 down) → **generated config** (registry) → **systemd quadlets** (container) →
@@ -237,34 +307,27 @@ down) → **generated config** (registry) → **systemd quadlets** (container) �
 
 That line used to read "A human chose the host. Every time." — the same fact
 delivered as an indictment, and it contradicted slide 17 of the orchestration
-deck. The fact stays; the verdict goes. Slide 11 names the defect that was real.
+deck. The fact stays; the verdict goes. Slide 12 names the defect that was real.
 
-### 11 · December: moving a service — `s11_december_moving_a_service.py` — *numbered steps* — **explanation**
+### 12 · December: moving a service — `s12_december_moving_a_service.py` — *numbered steps* — **explanation**
 
 The four hand-ordered steps a move took: **1** edit the definition, marking the
 service disabled → **2** apply to host A, where it stops and uninstalls → **3**
 edit again, removing it from A and adding it to B → **4** apply, and it installs
 on B. Note: out of order, it runs on both hosts or on neither.
 
-Then what golem changes, and what it does not: **in golem this is one edit and one
-apply** — change which host the service belongs to, and B installs it while A
-removes it, both falling out of the same manifest diffed per host. Below that, in
-the gap tone: **nothing orders the two, so both or neither may be running
-briefly.**
-
-That second line is load-bearing and must not be dropped. golem ships no
-cross-host ordering: `golemctl fleet` spawns one task per target with no barrier
-between them (`apps/golemctl/src/fleet.rs`), and no ADR or TODO proposes
-otherwise. The improvement this slide draws is expressibility — three
-hand-sequenced edits collapsing to one — and never an orchestrated cutover.
+**The golem half of this slide is now slide 19**, where the move is drawn on the
+fleet. It used to sit here as a green bar and a limitation note, which made this
+slide promise something two frames later would show; the promise and the drawing
+are now in one place. The limitation travelled with it and is still load-bearing.
 
 This slide replaced *December: what it could not do*, which listed Drain, Move a
 service and Roll back as three missing operations. Two of those survive elsewhere
-— "No undo" is problem 2 on slide 12 — and the third was the interesting one, but
+— "No undo" is problem 2 on slide 13 — and the third was the interesting one, but
 its old gloss ("placement changed only by editing the table") named a person's
 decision as the fault instead of naming the missing mechanism.
 
-### 12 · Where it broke — `s12_where_it_broke.py` — **explanation**
+### 13 · Where it broke — `s13_where_it_broke.py` — **explanation**
 
 Five numbered problems, each a heading and one line:
 
@@ -283,7 +346,99 @@ No subtitle and no closing line: five numbered rows announce that they are five
 problems, and "the cost of writing changes as steps" was a fragment standing in
 for the argument the speaker makes out loud.
 
-### 13 · What golem is, and is not — `s13_what_golem_is.py` — *before / after split* — **explanation**
+## 14 to 19 · The fleet — `decks/golem/fleet.py`
+
+Six frames over one figure. Twenty-four machines, six across and four down, each
+drawn as a miniature of slide 05: layer 1 full width along the bottom, layers 2 to
+5 stacked above it, layer 6 as a column beside them, in that slide's own tones. A
+key down the left carries the numbers 1 to 6 against their swatches, so a box can
+be read back to slide 05 without being told. A configured layer is filled; an
+unconfigured one is dashed and empty. Layer 1's slate fill is pale, and a solid
+outline alone did not separate "Ansible has been here" from "nothing has" — which
+is the entire delta of frame 15.
+
+Below the key, up to three tool chips name what is acting and which layers it
+holds. Frames 15 to 17 run a connector from the chips into the fleet. **18 does
+not, on purpose** — see its entry.
+
+The geometry is fixed and is not a parameter, for the same reason the six-layer
+figure's is: the six read as one figure changing, and a box that moved between
+them would read as a different fleet. `draw()` emits the key, the machines and the
+Portainer badge in a fixed order, so those 190 elements hold their ids across all
+six frames under the shared namespace — see *Stable ids across a sequence*.
+
+One machine carries an orange outline and a **Portainer** badge in every frame,
+because it is one box out of twenty-four and that is the honest picture. Which one
+is a property of the fleet, so it outranks whatever outline a frame asked for.
+
+**What the sequence did to slides 09 to 12.** It absorbed none of them. Each
+carries something twenty-four boxes cannot: 09 attributes layers to five named
+tools and names the job nobody took; 10 and 11 are mechanism — dnsmasq, SRV
+records, `hosts.py`, quadlets — which the wide shot never shows; 12 is the four
+hand-ordered steps, which is a procedure rather than a state. They stay as the
+close-ups, and the sequence runs after them as the wide shot that ties them
+together. 08's coverage bars stay for the same reason: they measure one tool
+against six layers, where a fleet frame measures spread across machines.
+
+Only slide 12 was trimmed, and only of its golem half, which is now frame 19.
+
+### 14 · The fleet: twenty-four machines — `s14_fleet_machines.py` — *machine fleet* — **reference**
+
+Rented bare metal, nothing configured, one machine marked as the Portainer box.
+
+### 15 · The fleet: Ansible does the basics — `s15_fleet_basics.py` — *machine fleet* — **explanation**
+
+Layer 1 fills across the whole fleet: security, the private network and the core
+OS, the same everywhere. One chip, **Ansible**.
+
+### 16 · The fleet: the rest by hand — `s16_fleet_by_hand.py` — *machine fleet* — **explanation**
+
+Layers 2 to 6 fill, unevenly. The ragged coverage is the content of the frame, not
+decoration: hand configuration is per machine, so no two machines end up with the
+same set. The subsets are written out in the module rather than derived, so what
+is claimed is visible. Chips: **Ansible** on layer 1, **By hand** on 2 to 6.
+
+### 17 · The fleet: where lichess is now — `s17_fleet_generated_config.py` — *machine fleet* — **explanation**
+
+The same layers, evened out. Custom Python generates the config Ansible runs, and
+Ansible installs the services. Coverage does not grow between 16 and 17 —
+*uniformity* is what generated config bought, and the ragged edge closing is the
+delta. This is the frame that answers where lichess is today.
+
+### 18 · The fleet: golem on every machine — `s18_fleet_golem.py` — *machine fleet* — **explanation**
+
+Ansible keeps layer 1 and installs golemd; emetc compiles the program, golemctl
+submits the manifest, and every machine carries its own mark and configures
+itself.
+
+**This frame draws no arrow from the tool column into the fleet, and that absence
+is the argument.** 15 to 17 do, because a playbook and a generator act on the
+fleet from outside it. Restoring one here would draw a central controller pushing,
+which golem is not. Do not add it back.
+
+The golem symbol appears here, once, at full size, with its credit line. The
+per-machine agents stay drawn marks — a filled 512-unit silhouette repeated at
+18px is a blob, and it would fight the layer colours beside it. See *The imported
+mark*.
+
+### 19 · The fleet: moving a service — `s19_fleet_moving_a_service.py` — *machine fleet* — **explanation**
+
+One machine badged **removes it**, another **installs it**, an arrow between them,
+and the claim: in golem this is one edit and one apply, and the manifest names the
+machine. Below it, in the gap tone: **nothing orders the two, so both or neither
+may be running briefly.**
+
+That second line is load-bearing and must not be dropped. golem ships no
+cross-host ordering: `golemctl fleet` spawns one task per target with no barrier
+between them (`apps/golemctl/src/fleet.rs`), and no ADR or TODO proposes
+otherwise. What this frame claims over slide 12 is expressibility — three
+hand-sequenced edits collapsing to one — and never an orchestrated cutover.
+
+**The layer stripes do not change between 18 and 19.** A service is one unit
+inside layer 5, not a layer; emptying the losing machine's layer-5 stripe would
+claim it stopped running everything it runs.
+
+### 20 · What golem is, and is not — `s20_what_golem_is.py` — *before / after split* — **explanation**
 
 **Not:** a replacement for bare-metal provisioning, OS installation, or the
 basics of networking and security. **Is:** a replacement for the custom Python
@@ -292,7 +447,7 @@ layer 1 stays where it is. Closing line, and the definition of *declarative* the
 deck has been circling: you write the state a host should be in, and golemd works
 out the steps.
 
-### 14 · What you need, and what meets it — `s14_requirement_and_property.py` — **explanation**
+### 21 · What you need, and what meets it — `s21_requirement_and_property.py` — **explanation**
 
 Seven requirement → property rows, captioned "what you need" and "the property
 that meets it":
@@ -313,7 +468,7 @@ golem puts no agent on the host, and golemd is exactly that. "Move services safe
 there is no drain operation anywhere in `apps/` or `libs/`, and none is proposed
 in any ADR or TODO. Do not reinstate either without the code to back it.
 
-### 15 · The pipeline — `s15_the_pipeline.py` — *swimlane pipeline* — **explanation**
+### 22 · The pipeline — `s22_the_pipeline.py` — *swimlane pipeline* — **explanation**
 
 Five stages: `fleet.emet` → `emetc build` → **manifest** → `golemctl apply` →
 **golemd** on the host. Subtitle: each host diffs its own scroll from one
@@ -323,10 +478,10 @@ emet_version, scrolls: Vec<AddressedScroll> }` with `FORMAT_VERSION = 5`,
 digest over postcard bytes, one per scroll and one per glyph. All verified against
 `libs/scroll-format/src/manifest.rs` and `content_id.rs`.
 
-The closing bar ("Same content id, no work.") moved to slide 16, where the ops it
+The closing bar ("Same content id, no work.") moved to slide 23, where the ops it
 refers to are actually drawn.
 
-### 16 · Inside golemd: the diff — `s16_the_diff.py` — *before / after split* — **explanation**
+### 23 · Inside golemd: the diff — `s23_the_diff.py` — *before / after split* — **explanation**
 
 Two panels. **prior** holds `&[Outcome]` — what golemd last applied, from the
 journal. **desired** holds `&Scroll` — this host's scroll, selected by name from
@@ -341,7 +496,7 @@ wrong.** `plan` does not take two scrolls — `prior` is the journalled outcome 
 (`apps/golemd/src/reconcile.rs:23`). The panel headings match the parameter names
 on purpose; keep them in step with the signature.
 
-### 17 · Inside golemd: apply and undo — `s17_apply_and_undo.py` — *loop* — **explanation**
+### 24 · Inside golemd: apply and undo — `s24_apply_and_undo.py` — *loop* — **explanation**
 
 Three cards and a return arrow that closes the loop.
 `Reconciler::apply(&Glyph, ContentId) -> EnactResult<Outcome>` with `Outcome { op,
@@ -356,7 +511,7 @@ Both signatures are fallible and were drawn as though they were not
 (`apps/golemd/src/reconciler.rs:46-47`). `scroll_content_id` is an
 `Option<ContentId>`, `None` on an `Init` revision.
 
-### 18 · One program, one scroll per host — `s18_the_scroll_tree.py` — *tree* — **explanation**
+### 25 · One program, one scroll per host — `s25_the_scroll_tree.py` — *tree* — **explanation**
 
 `main : List Scroll`, then a Scroll forking into a **branch** (named sub-scrolls)
 or a **leaf unit** (glyphs, and an optional policy). Line under it: either glyphs
@@ -365,7 +520,7 @@ failure-isolation boundary, one unit's failure never rolls back a sibling; and
 workloads, quadlets and ingress are Emet libraries that compile down to the four
 glyphs.
 
-### 19 · The four glyphs — `s19_the_four_glyphs.py` — **reference**
+### 26 · The four glyphs — `s26_the_four_glyphs.py` — **reference**
 
 Four cards, each with its Emet spelling, its Rust constructor and its
 `Glyph::key()` prefix.
@@ -385,7 +540,7 @@ cannot be written" is the argument for the design, and this slide is the contrac
 not the case for it — the speaker makes that point out loud. The gloss on the
 filesystem card is now the flat "one glyph, three surface spellings".
 
-### 20 · golemctl — on your machine — `s20_golemctl_verbs.py` — **reference**
+### 27 · golemctl — on your machine — `s27_golemctl_verbs.py` — **reference**
 
 Five verbs that address one host — `apply` (`--json`, `--reattach`), `plan`
 (`--json`, `--detail`, `--against-host`), `state`, `history`, `show` — then
@@ -399,7 +554,7 @@ There is no `golemctl host` subcommand: the five are top-level on `Cmd`
 instruction — "Post the manifest, take the id, follow the stream" — which is
 how-to phrasing on a reference slide; it now names the row instead.
 
-### 21 · golemd — on the host — `s21_golemd_routes.py` — **reference**
+### 28 · golemd — on the host — `s28_golemd_routes.py` — **reference**
 
 The eight registered routes, each glossed: `POST /manifest`, `POST /plan`,
 `GET /reconciles/latest`, `GET /reconciles/:id`, `GET /state`, `GET /revisions`,
@@ -412,7 +567,7 @@ an apply in flight), `409 ReconcileInProgress` (an apply met an apply), and
 **no conflict** (a plan that does not read the host never blocks). The third badge
 used to read "plan still works", a clause where the other two were outcomes.
 
-### 22 · Plan before apply — `s22_plan_against_host.py` — **explanation**
+### 29 · Plan before apply — `s29_plan_against_host.py` — **explanation**
 
 Across the top, ADR 0058's claim stated plainly: **golemd reads the host and
 returns a verdict per glyph.** Below it the plan loop in four steps: `golemctl
@@ -432,7 +587,7 @@ contents-stay-on-the-host claim holds: `Observation` and `Unknowable` are not
 `Serialize` at all, and `PlannedOp` carries only the four-valued tag
 (`apps/golemd/src/plan_report.rs:61-76`).
 
-The routes, verbs and flags on 20, 21 and 22 are quoted from shipped code and go
+The routes, verbs and flags on 27, 28 and 29 are quoted from shipped code and go
 stale when it moves. Check them against
 `sites/website/src/content/docs/reference/cli.mdx` and
 `docs/adr/0058-the-plan-reads-the-host-and-only-a-verdict-crosses-the-port.md`.
@@ -459,7 +614,7 @@ machine and none of it across machines.
 desired-state store — you name what should run, and the control plane chooses
 where.
 
-**07 names the five jobs**, using the same five names as slide 05 of the golem
+**07 names the five jobs**, using the same five names as slide 06 of the golem
 deck, because they are the same five jobs. 08 through 15 then take four of them
 one at a time: placement (08, 09), lifecycle (10), health and reconciliation
 (11), and supporting plumbing spread across connectivity (12, 13), scaling (14)
@@ -518,7 +673,7 @@ state and reversible enactment — every edit records its inverse, so a change c
 be taken back exactly. golem is not a scheduler: nothing in it chooses a node, and
 the program names the host the way a person would. Its closing line — placement
 stays a decision a person makes, written down and versioned — is the deck's
-position on manual placement, and slides 10 and 11 of the golem deck are written
+position on manual placement, and slides 11 and 12 of the golem deck are written
 to agree with it. If the two ever disagree again, this is the one that is right.
 
 **"Answers" is not a verb for a tool.** A platform provides, a person decides, a
@@ -536,24 +691,24 @@ paraphrasing the previous slide — which is how several of them survived as lon
 they did.
 
 **`reconcile::plan` does not take two scrolls.** `plan(prior: &[Outcome], desired:
-&Scroll) -> Vec<GlyphOp>` (`apps/golemd/src/reconcile.rs:23`). Slide 16 drew both
+&Scroll) -> Vec<GlyphOp>` (`apps/golemd/src/reconcile.rs:23`). Slide 23 drew both
 panels as `AddressedScroll { content_id, scroll }`; `prior` is the journalled
 outcome list.
 
 **`apply` and `reverse` are fallible.** `apply(&Glyph, ContentId) ->
 EnactResult<Outcome>` and `reverse(&Outcome) -> EnactResult<()>`
-(`apps/golemd/src/reconciler.rs:46-47`). Slide 17 drew both as infallible.
+(`apps/golemd/src/reconciler.rs:46-47`). Slide 24 drew both as infallible.
 
 **There is no drain, and no cross-host ordering.** No drain operation exists in
 `apps/` or `libs/`. `golemctl fleet` spawns one task per target and joins them
 afterwards, with no barrier, dependency edge or concurrency limit
 (`apps/golemctl/src/fleet.rs`); a failure on one host neither stops nor rolls back
 another. Within one host, `plan` orders installs and replaces first and removes
-last (`reconcile.rs:20-22`). Slide 14 claimed "so drain is real"; slide 11 must
+last (`reconcile.rs:20-22`). Slide 21 claimed "so drain is real"; slide 19 must
 keep saying that nothing orders host A before host B.
 
 **golemd puts no agent-free binary on the host — golemd *is* the agent.** Slide
-14's "no interpreter, no runtime, no agent" was self-contradicting.
+21's "no interpreter, no runtime, no agent" was self-contradicting.
 
 **`observe` is a trait method**, `Reconciler::observe(&[GlyphOp]) ->
 Observations` (`apps/golemd/src/reconciler.rs:92`), and the probes are apt via
@@ -584,18 +739,20 @@ underneath, which is defensible in isolation and wrong in sequence: the figure
 jumped every time the speaker flipped, and "the same figure four times" was a
 claim about structure rather than about pixels.
 
-Two things changed. The figure now appears on **two** slides, not four — 04
-introduces it, 06 recolours it — and `lichess_stack.draw()` takes tones and tags
+Two things changed. The figure now appears on **two** slides, not four — 05
+introduces it, 07 recolours it — and `lichess_stack.draw()` takes tones and tags
 but no width, height or origin. The constants in `decks/golem/lichess_stack.py`
-are the geometry. Slides 07 and 08, which used to be the third and fourth
-recolourings, carry the same argument in forms of their own.
+are the geometry. Slides 08 and 09, which used to be the third and fourth
+recolourings, carry the same argument in forms of their own. `fleet.py` holds its
+own constants for the same reason: six frames over one fleet, and a box that moved
+between them would read as a different fleet.
 
 ## Open question
 
 **What language family Emet actually resembles.** The original spec described
 Emet as "inspired by (nearly identical to) emet", which defines the language in
 terms of itself and cannot be what was meant. A later draft rendered it as
-"ML-family", which is plausible but unverified. Slide 18 makes no claim at all —
+"ML-family", which is plausible but unverified. Slide 25 makes no claim at all —
 its subtitle is only "An Emet program is typed and functional, and evaluates to a
 list of scrolls" — so nothing false is drawn. The question is still open, and
 needs an answer
@@ -614,6 +771,23 @@ Each of these cost time to discover once. `test_scenes.py` pins most of them.
              "viewBackgroundColor":"#ffffff"},
  "files":{}}
 ```
+
+**`files` is empty on every document but the two that carry the golem symbol.**
+An embedded image is two halves: a `files` entry `{id, mimeType, dataURL,
+created, lastRetrieved}` and an element with `type: "image"` plus `fileId`,
+`status`, `scale` and `crop`. Excalidraw accepts an `image/svg+xml` data URL, and
+an SVG data URL carries no intrinsic size, so the element's width comes from the
+file's own `viewBox` ratio.
+
+`created` and `lastRetrieved` are the generator's fixed `UPDATED`, never a clock —
+Excalidraw itself writes `Date.now()` there, which would make every build differ
+from the last. `test_scenes.py` asserts the constant, which is where that check
+belongs: `restore()` hands `files` straight back, so asking the oracle whether the
+map came back unchanged would only prove the object was passed through.
+
+What the oracle can prove is reachability, and does: every image element's
+`fileId` still resolves to an entry holding a data URL. An element whose file went
+missing loads as a blank rectangle, and `fileId` round-trips either way.
 
 **Every element carries the whole key set**: `id, type, x, y, width, height,
 angle, strokeColor, backgroundColor, fillStyle, strokeWidth, strokeStyle,
@@ -658,6 +832,46 @@ is emitted before its children.
 
 **`fontFamily` is 1 for the hand-drawn font and 3 for code.** Nothing else is
 used.
+
+## Stable ids across a sequence
+
+Element ids come from `blake2s(id namespace + counter)`. The namespace defaults to
+the scene key, so every slide used to get its own — meaning the same machine box
+in frames 15 and 16 held different ids.
+
+The six fleet frames share `fleet.ID_NAMESPACE`, and `draw()` emits its 190 base
+elements in a fixed order, so an element that has not changed keeps one id right
+through the sequence. Excalidraw+'s Present mode interpolates elements that
+persist between frames, which is exactly what a run over one base figure wants.
+
+**Nothing depends on this.** That the matching key is the element id is
+unverified — only that Present mode interpolates at all. Every frame is built to
+read as a static slide on its own, and if the interpolation matches on something
+else, nothing is lost. Treat it as an untested upside, not a mechanism.
+
+The cost is one invariant elsewhere. Two elements sharing an id is legal only
+while they are separate documents; the combined deck puts every frame on one
+canvas, where a duplicate makes `restore()` reissue one at random and drop
+whatever bindings pointed at it. `framed_deck` therefore claims ids as it merges:
+the first frame in keeps its own, and a later collision is renamed along with
+every `containerId` and `boundElements[].id` that referred to it.
+
+## The imported mark
+
+`assets/robot-golem.svg` is golem's symbol: **by Lorc, from game-icons.net, under
+CC BY 3.0**. Attribution is required, so it is credited in `assets/README.md`,
+here, in `README.md`, and on the slide that draws it — the wording lives in
+`decks/golem/golem_symbol.py` so there is one string to keep true.
+
+The file is committed and read from disk. The build never fetches, and a mark that
+arrived over the network at build time would make the output depend on a server.
+
+It is used once, large. Against nineteen open line-drawn marks a dense filled
+silhouette reads as a different medium, which is fine for an identity mark and
+wrong for a vocabulary item. Everywhere a mark has to be small or repeated — the
+per-machine agents on frames 18 and 19 — the drawn vocabulary wins, because the
+imported one turns to a blob under about 40px and competes with the layer colours
+around it.
 
 ## Measuring text without a font
 

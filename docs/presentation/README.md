@@ -2,8 +2,9 @@
 
 Two decks, generated as Excalidraw files by a small Python program.
 
-- **`golem`** — twenty-two slides: what problem golem solves, how it works, how to
-  use it.
+- **`golem`** — twenty-nine slides: what problem golem solves, how it works, how
+  to use it. Slides 14 to 19 are one sequence: twenty-four machines drawn once,
+  six times over, with a different set of layers configured on each frame.
 - **`orchestration`** — seventeen slides: cloud orchestration from first
   principles, standing on its own but landing where golem lands.
 
@@ -27,7 +28,7 @@ that includes the files the `restore()` check reads, so run `build.py` first.
 
 ```
 dist/
-  golem/01-what-you-buy.excalidraw … 22-plan-against-host.excalidraw
+  golem/01-what-you-buy.excalidraw … 29-plan-against-host.excalidraw
   golem/golem-deck.excalidraw
   orchestration/01-a-process-on-a-host.excalidraw … 17-where-golem-sits.excalidraw
   orchestration/orchestration-deck.excalidraw
@@ -92,16 +93,22 @@ how a deck starts to read as one slide shown many times.
 | card rhythm | `card_rhythm` | groups of unequal weight, 3 then 2 then 1 |
 | timeline | `timeline` | a spectrum with named positions |
 | coverage bars | `coverage_bars` | how far something reached, row by row |
+| machine fleet | `decks/golem/fleet.draw` | what has been configured, machine by machine |
 
 Two rations hold in the golem deck: **at most two matrix slides**, and **the
-six-layer lichess figure appears exactly twice** — slide 04 introduces it, slide
-06 recolours it. Both draw it at identical geometry, so flipping between them
+six-layer lichess figure appears exactly twice** — slide 05 introduces it, slide
+07 recolours it. Both draw it at identical geometry, so flipping between them
 changes colour and nothing else.
+
+Three modules hold a figure that more than one slide draws: `lichess_stack.py`
+(slides 05 and 07), `lichess_ladder.py` (03 and 04) and `fleet.py` (14 to 19).
+Each takes state and no geometry — the constants inside are the figure, and a
+slide that passed its own size would make the same figure jump between slides.
 
 ## The icon vocabulary
 
 Nineteen marks in `excalidraw/icons.py`, drawn from rectangles, ellipses and
-lines. No image files, no emoji, no external assets.
+lines. No emoji, and one image file: golem's own symbol, in `assets/`.
 
 ```
 container   container image   registry   host   cluster
@@ -127,6 +134,23 @@ The rejected candidates stay on the mark, faint and dashed.
 No icon draws text, so none can breach the type floor at any scale.
 `build.py` writes them all to `dist/icons.excalidraw` — which is also how the
 `restore()` oracle covers marks that no slide happens to use.
+
+## The one imported mark
+
+`assets/robot-golem.svg` — **by Lorc, from game-icons.net, under CC BY 3.0** —
+is golem's symbol, embedded as an Excalidraw image element on slide 18.
+Attribution is required by the licence and is carried in `assets/README.md`,
+`SPEC.md`, here, and on the slide itself.
+
+Committed, never fetched: `build.py` reads it from disk and base64-encodes it into
+the document's `files` map, with `created` and `lastRetrieved` set to the
+generator's fixed constant rather than a clock, so the build stays offline and
+byte-identical.
+
+Reach for it for golem's identity, not as a nineteenth icon. A dense filled
+silhouette beside open line drawings reads as a different medium, and it turns to
+a blob under about 40px — everywhere a mark has to be small or repeated, draw
+one.
 
 ## Add a slide
 
@@ -170,7 +194,9 @@ resolving both ways, every `frameId` resolving to a frame emitted before its
 children, arrows anchored at `[0,0]` with matching `width`/`height`, no non-finite
 numbers, labels that fit their containers, everything inside the canvas margin, no
 text under the type floor, every slide inside its word budget, every icon inside
-the box it declares, and two independent builds that are byte-identical. Offline,
+the box it declares, every embedded file referenced by an image element and
+stamped with the fixed timestamp, and two independent builds that are
+byte-identical. Offline,
 stdlib `unittest`, no arguments.
 
 ```
@@ -190,7 +216,8 @@ outside the build.
 ## Determinism
 
 No wall clock, no RNG. Element `id`, `seed` and `versionNonce` come from
-`blake2s(scene key + counter)`; `updated` is a fixed constant. Two builds of the
+`blake2s(id namespace + counter)`; `updated`, and an embedded file's `created` and
+`lastRetrieved`, are a fixed constant. Two builds of the
 same source produce byte-identical files, which is why the generated files are not
 tracked: anyone can reproduce them exactly, so the repository does not carry them.
 
@@ -229,3 +256,10 @@ against the real 5px.
 
 **A card and the icon on it must not share a fill.** Give an icon-bearing card a
 white fill and the icon the saturated tone, or the mark disappears into the card.
+
+**Scenes may share an id namespace; one canvas may not share an id.** The six
+fleet frames pass `id_namespace=` so an unchanged element keeps its id across
+them, which is legal because they are separate documents. The combined deck merges
+them onto one canvas, where a duplicate id makes `restore()` reissue one at random
+and drop the bindings pointing at it — `framed_deck` renames collisions as it
+merges. SPEC.md, "Stable ids across a sequence", has the reasoning.
