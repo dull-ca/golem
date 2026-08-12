@@ -53,22 +53,22 @@ FLOW_STEPS: tuple[tuple[Sequence[TextLine], Tone], ...] = (
     (
         (
             literal("golemctl plan --against-host"),
-            gloss("ask the host before you touch it"),
+            gloss("the host read is opt-in, from the command line"),
         ),
         CLIENT_TONE,
     ),
     (
         (
             literal("POST /plan?against_host=true"),
-            literal("PlanScope = JournalAndHost", CAPTION_SIZE),
-            gloss("the host read is opt-in", CAPTION_SIZE),
+            literal("PlanScope = JournalOnly | JournalAndHost", CAPTION_SIZE),
+            gloss("without the flag, golemd reads only its journal", CAPTION_SIZE),
         ),
         WIRE_TONE,
     ),
     (
         (
-            literal("observe(&[GlyphOp]) -> Observations"),
-            gloss("golemd probes dpkg, /etc and systemd"),
+            literal("Reconciler::observe(&[GlyphOp]) -> Observations"),
+            gloss("golemd runs dpkg-query and systemctl, and reads the declared paths"),
         ),
         DAEMON_TONE,
     ),
@@ -76,7 +76,10 @@ FLOW_STEPS: tuple[tuple[Sequence[TextLine], Tone], ...] = (
         (
             literal("Observation = Realized | Divergent | Absent | Unknown(Unknowable)"),
             literal("Unknowable = Sealed | Unreadable | NotModelled", CAPTION_SIZE),
-            gloss("never contents, mode, owner or dpkg status", CAPTION_SIZE),
+            gloss(
+                "the verdict crosses the port; the contents stay on the host",
+                CAPTION_SIZE,
+            ),
         ),
         GOLEM,
     ),
@@ -89,17 +92,13 @@ def step_y(position: int) -> float:
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Plan before apply",
-        "Ask the host what an apply would do, before you let it happen.",
-    )
+    slide_header(scene, "Plan before apply")
     span_bar(
         scene,
         MARGIN,
         BAR_Y,
         CONTENT_WIDTH,
-        "The plan reads the host — and only a verdict crosses the port.",
+        "golemd reads the host and returns a verdict per glyph.",
         tone=GOLEM,
         height=BAR_HEIGHT,
     )

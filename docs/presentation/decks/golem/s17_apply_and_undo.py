@@ -47,7 +47,7 @@ def gloss(body: str, size: float = CAPTION_SIZE) -> TextLine:
 CARDS: tuple[tuple[Sequence[TextLine], Tone], ...] = (
     (
         (
-            literal("Reconciler::apply(&Glyph, ContentId) -> Outcome"),
+            literal("Reconciler::apply(&Glyph, ContentId) -> EnactResult<Outcome>"),
             literal("Outcome { op, cid, inverse, changed }"),
             gloss("apply captures the prior state as an Inverse"),
         ),
@@ -57,13 +57,13 @@ CARDS: tuple[tuple[Sequence[TextLine], Tone], ...] = (
         (
             literal("Revision { id, created_at, kind, scroll_content_id, outcomes }"),
             literal("kind: RevisionKind = Init | Reconcile"),
-            gloss("the append-only journal of what golem actually did"),
+            gloss("the append-only journal of what golem applied"),
         ),
         JOURNAL_TONE,
     ),
     (
         (
-            literal("Reconciler::reverse(&Outcome)"),
+            literal("Reconciler::reverse(&Outcome) -> EnactResult<()>"),
             gloss("replays that Outcome to restore the prior state exactly"),
         ),
         REVERSE_TONE,
@@ -77,11 +77,7 @@ def card_y(position: int) -> float:
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
-        scene,
-        "Inside golemd: apply and undo",
-        "Every edit writes down how to take itself back.",
-    )
+    slide_header(scene, "Inside golemd: apply and undo")
     for position, (lines, tone) in enumerate(CARDS):
         text_card(
             scene,
@@ -116,7 +112,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CARD_WIDTH,
-        "golem only ever reverses edits it recorded.",
+        "golem reverses only the edits it recorded.",
         tone=GOLEM,
         height=CLOSING_HEIGHT,
     )
