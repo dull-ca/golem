@@ -19,6 +19,7 @@ PAPER = "#f8f9fa"
 INK = "#1e1e1e"
 INK_SOFT = "#495057"
 INK_FAINT = "#868e96"
+INK_GHOST = "#ced4da"
 
 RED = "#e03131"
 RED_FILL = "#ffc9c9"

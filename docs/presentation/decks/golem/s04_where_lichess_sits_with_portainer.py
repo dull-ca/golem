@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 from excalidraw.layout import badge, note, slide_header, span_bar
+from excalidraw.palette import INK_SOFT, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import CAPTION_SIZE
 
 from . import lichess_ladder
-from .fleet import MACHINE_OUTLINE
+from .lichess_fleet import HOST_COUNT
 from .lichess_stack import DESCRIPTIVE_LAYER_TONES
 
 SLUG = "where-lichess-sits-with-portainer"
 TITLE = "Where lichess sits, with Portainer"
 
 PORTAINER_TONE = DESCRIPTIVE_LAYER_TONES[6]
+MACHINE_OUTLINE = Tone(INK_SOFT, WHITE)
 
-MACHINE_MARK = 44.0
-MACHINE_MARK_GAP = 16.0
-MACHINE_MARK_COUNT = 24
-PORTAINER_MACHINE = 11
+MACHINE_MARK = 36.0
+MACHINE_MARK_GAP = 13.0
+MACHINE_MARK_COUNT = HOST_COUNT
+PORTAINER_MACHINE = 14
 
 SCALE_GAP = 110.0
 BADGE_GAP = 12.0
@@ -70,8 +72,8 @@ def build() -> Scene:
         scene,
         MARGIN,
         scale_y + MACHINE_MARK + BADGE_GAP + CAPTION_SIZE * 1.25 + 16 + NOTE_GAP,
-        "Roughly 20 to 30 machines, under Ansible, hand configuration and custom "
-        "Python. Exactly one of them runs Portainer.",
+        "Thirty machines, under Ansible, hand configuration and custom Python. "
+        "Exactly one of them runs Portainer.",
         width=CONTENT_WIDTH,
     )
     return scene
