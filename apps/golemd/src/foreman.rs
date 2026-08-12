@@ -32,7 +32,7 @@ use scroll_format::{
     from_bytes, AddressedScroll, ContentId, Contents, Entry, Glyph, LeafUnit, Policy, Scroll,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
@@ -41,6 +41,7 @@ use crate::journal::{
     AppliedState, AttemptPhase, GlyphOp, Inverse, Outcome, ReconcileAttempt, Revision, WalAction,
     WalStep, WalStepState,
 };
+use crate::observe::Observations;
 use crate::plan_report::{
     PlanReport, PlanSummary, PlannedOp, PredictedReload, Reality, ReloadKind,
 };
@@ -152,7 +153,7 @@ pub struct Foreman {
     /// pool `run_reconcile` drains the unit queue with. `workers = 1` reproduces
     /// fully-serial enact (ADR 0034 §3).
     enact: EnactConfig,
-    write: Mutex<()>,
+    write: RwLock<()>,
     progress: ProgressRegistry,
     reports: Mutex<std::collections::BTreeMap<u64, ReconcileReport>>,
 }
@@ -215,7 +216,7 @@ impl Foreman {
             reconciler,
             retry: RetryConfig::default(),
             enact: EnactConfig::default(),
-            write: Mutex::new(()),
+            write: RwLock::new(()),
             progress: ProgressRegistry::new(),
             reports: Mutex::new(std::collections::BTreeMap::new()),
         };
@@ -243,16 +244,38 @@ impl Foreman {
         &self.progress
     }
 
-    /// Acquire the single write lock, recovering the guard if a prior holder
-    /// panicked and poisoned it. This is sound because the lock guards no
+    /// Acquire the single write lock exclusively, recovering the guard if a
+    /// prior holder panicked and poisoned it. `write` is an `RwLock` rather
+    /// than a plain `Mutex` so that [`try_activity_read_guard`](Self::try_activity_read_guard)'s
+    /// readers never exclude one another — only a genuine writer, taken here,
+    /// ever does. Holding a *write* guard is sound because the lock guards no
     /// in-memory invariant — every durable fact lives in the WAL, bracketed
     /// `Intended`→terminal (ADR 0020 §2). A panic mid-reconcile can only leave an
     /// unsettled attempt in the log, which the next `recover` re-drives and rolls
     /// back; there is no torn in-process structure a poisoned guard could expose.
     /// So poison must not wedge the daemon: the next apply takes the guard, runs
     /// its own recover-then-gate, and proceeds (ADR 0033, panic-guard).
-    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.write.lock().unwrap_or_else(|p| p.into_inner())
+    fn write_guard(&self) -> std::sync::RwLockWriteGuard<'_, ()> {
+        self.write.write().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// `write_guard`'s non-blocking, read-only sibling: take a shared read
+    /// guard on the write lock only if no writer holds it right now, for
+    /// callers that must never queue behind a live apply (the host-probing
+    /// half of `plan_manifest_scoped`, ADR 0058 refined further) — and, just
+    /// as importantly, must never exclude *another* such reader either
+    /// (finding 3 of the 2026-08-11 snapshot-recheck review). `try_read`
+    /// distinguishes `WouldBlock` — a writer holds it right now — from
+    /// `Poisoned` — the prior holder panicked. Poison is tolerated exactly as
+    /// `write_guard` tolerates it, for the same reason: the lock guards no
+    /// in-memory invariant, every durable fact lives in the WAL. Only genuine
+    /// writer contention, `WouldBlock`, answers `None`.
+    fn try_activity_read_guard(&self) -> Option<std::sync::RwLockReadGuard<'_, ()>> {
+        match self.write.try_read() {
+            Ok(guard) => Some(guard),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 
     /// Ingest and reconcile in one synchronous call — the in-process path for
@@ -358,6 +381,19 @@ impl Foreman {
             detail: e.to_string(),
         })?;
         let desired = self.select(&manifest.scrolls);
+        // `JournalAndHost` snapshots write activity *before* reading the
+        // journal at all, not merely before `observe` — a write that settles
+        // entirely between an unguarded journal read and the first snapshot
+        // would leave the planned-op column reflecting the pre-write journal
+        // and the observed column reflecting the post-write host, and two
+        // snapshots taken only afterward, both already past that write,
+        // would never notice (finding 4 of the 2026-08-11 snapshot-recheck
+        // review). `JournalOnly` takes no snapshot and no lock at all,
+        // exactly as before.
+        let host_snapshot = match scope {
+            PlanScope::JournalOnly => None,
+            PlanScope::JournalAndHost => Some(self.write_activity_snapshot()?),
+        };
         let against_revision =
             self.planroom
                 .latest_revision_id()
@@ -390,13 +426,14 @@ impl Foreman {
             }
         }
         // NOTE: `JournalOnly` never calls `observe` — no host read, no key
-        // built — so this scope's response is exactly what golemd returned
-        // before `--against-host` existed (ADR 0058).
-        let observations = match scope {
-            PlanScope::JournalOnly => None,
-            PlanScope::JournalAndHost => {
+        // built, no write lock touched — so this scope's response is exactly
+        // what golemd returned before `--against-host` existed (ADR 0058),
+        // and it never gates on a live apply either.
+        let observations = match host_snapshot {
+            None => None,
+            Some(before) => {
                 let all_ops: Vec<GlyphOp> = placed.iter().map(|(_, op)| op.clone()).collect();
-                Some(self.reconciler.observe(&all_ops))
+                Some(self.observe_against_host(before, &all_ops)?)
             }
         };
         let planned: Vec<PlannedOp> = placed
@@ -419,6 +456,89 @@ impl Foreman {
             reloads: predicted_reloads(&desired.scroll, &placed),
             reality,
         })
+    }
+
+    /// A point-in-time read of whatever a host probe needs to know about
+    /// concurrent writes, without ever waiting for one. `try_activity_read_guard`
+    /// never blocks, so this call never does either: no guard at all means a
+    /// writer holds the lock right now, a live reconcile in progress, and
+    /// answers `HostBusy(LockHeld)` directly. A free lock is not by itself
+    /// proof nothing is running — `ingest` opens and marks an attempt
+    /// `Enacting` under one write-lock acquisition, then releases it, and
+    /// `run_reconcile` re-acquires the lock separately (the NOTE above
+    /// `ingest`'s gate explains why) — so an unsettled latest attempt also
+    /// answers `HostBusy`, as `AttemptUnsettled`, lock or no lock. Otherwise
+    /// the guard is dropped immediately and the settled attempt's
+    /// `(reconcile_id, phase)` is returned — `None` if there has never been
+    /// one — so two snapshots taken around a probe can be compared for
+    /// equality.
+    ///
+    /// That comparison is sound because `reconcile_id` is monotonic and never
+    /// reused — `PlanRoom::open_attempt` only ever inserts a fresh row, never
+    /// reopens one — and no write to the host can happen except under a newly
+    /// opened attempt. So `(reconcile_id, phase)` disagreeing between two
+    /// reads is not merely evidence a write may have happened; it is the only
+    /// way one could have.
+    fn write_activity_snapshot(&self) -> Result<Option<(u64, AttemptPhase)>, ForemanError> {
+        let guard = self
+            .try_activity_read_guard()
+            .ok_or(ForemanError::HostBusy(HostBusyReason::LockHeld))?;
+        let latest = self
+            .planroom
+            .latest_attempt()
+            .map_err(|e| ForemanError::WalUnreadable {
+                detail: e.to_string(),
+            })?;
+        if let Some(attempt) = &latest {
+            if !attempt.phase.is_settled() {
+                return Err(ForemanError::HostBusy(HostBusyReason::AttemptUnsettled {
+                    reconcile_id: attempt.reconcile_id,
+                }));
+            }
+        }
+        drop(guard);
+        Ok(latest.map(|a| (a.reconcile_id, a.phase)))
+    }
+
+    /// The host-probing half of `plan_manifest_scoped`'s `JournalAndHost` arm:
+    /// find out whether an apply overlapped the probe, without ever letting
+    /// the probe block one. `observe` shells out roughly `1 + 2N`
+    /// subprocesses with no timeout (`SystemCommandRunner::run`), so holding
+    /// the write lock across it — this method's first version — could wedge
+    /// the whole daemon on a stalled mount or a hung systemd: every later
+    /// `POST /manifest` would block forever inside `write_guard`, `recover()`
+    /// included, and golemctl sets no client timeout to notice with. A read
+    /// must not be able to block a write.
+    ///
+    /// `before` is the [`write_activity_snapshot`](Self::write_activity_snapshot)
+    /// the caller already took — hoisted above every journal read this plan's
+    /// diff is built from, not just above this call, so nothing can settle in
+    /// the gap between an unguarded journal read and the first snapshot
+    /// (finding 4 of the 2026-08-11 snapshot-recheck review). This method
+    /// calls `observe` with no lock held at all, then takes the second
+    /// snapshot itself. Either snapshot alone answering `HostBusy` means
+    /// golem was writing to this host at that instant; the two snapshots
+    /// disagreeing — the reconcile id moved, or its phase changed — means an
+    /// apply started and finished entirely inside the read's window,
+    /// invisible to either snapshot in isolation. Only a probe bracketed by
+    /// two identical, settled snapshots is a trustworthy read.
+    ///
+    /// This also means two concurrent `--against-host` plans never exclude
+    /// each other: neither ever holds a *write* guard across `observe` —
+    /// only a read guard, and only for the instant it takes to read the
+    /// latest attempt — so two probes' snapshots freely interleave instead
+    /// of queuing behind one another.
+    fn observe_against_host(
+        &self,
+        before: Option<(u64, AttemptPhase)>,
+        ops: &[GlyphOp],
+    ) -> Result<Observations, ForemanError> {
+        let observations = self.reconciler.observe(ops);
+        let after = self.write_activity_snapshot()?;
+        if before != after {
+            return Err(ForemanError::HostBusy(HostBusyReason::ActivityMoved));
+        }
+        Ok(observations)
     }
 
     fn select(&self, scrolls: &[AddressedScroll]) -> SelectedScroll {
@@ -1880,15 +2000,74 @@ impl Foreman {
     }
 }
 
+/// Why a host-probing plan (`?against_host=true`) could not be trusted as a
+/// snapshot — the three ways [`write_activity_snapshot`](Foreman::write_activity_snapshot)
+/// and [`observe_against_host`](Foreman::observe_against_host) can refuse a
+/// read, each true of something different and each worded to say only that
+/// (2026-08-11 snapshot-recheck review, finding 5). None of the three proves
+/// a specific apply is running *right now* except `LockHeld`; `message()`
+/// never claims more than each variant actually knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostBusyReason {
+    /// `try_activity_read_guard` found the write lock held by a writer. The
+    /// one case where "golem is writing to this host right now" is literally
+    /// true — a writer holds the lock only for the duration of its own write.
+    LockHeld,
+    /// The lock was free, but the latest attempt in the journal has not
+    /// settled. This is *not* proof a write is in flight: `run_reconcile` can
+    /// return early (an internal failure, a panic outside the reconciler
+    /// port) leaving the attempt terminally `Enacting` with no writer alive
+    /// at all, and `ingest` gates on settlement before it will recover one —
+    /// so this state can persist, reachable and permanent, until the daemon
+    /// restarts. All this variant actually knows is what the journal shows:
+    /// an unfinished write, not a current one.
+    AttemptUnsettled { reconcile_id: u64 },
+    /// Both snapshots individually found the lock free and the attempt
+    /// settled, but the two disagreed — the reconcile id moved, or its phase
+    /// changed — so an apply started and finished entirely inside the read's
+    /// own window, invisible to either snapshot in isolation.
+    ActivityMoved,
+}
+
+impl HostBusyReason {
+    fn message(self) -> String {
+        match self {
+            HostBusyReason::LockHeld => {
+                "golem is writing to this host right now, so the read could not be trusted as a snapshot. A journal-only `golemctl plan` (without `--against-host`) still works.".to_string()
+            }
+            HostBusyReason::AttemptUnsettled { reconcile_id } => {
+                format!("golem's journal shows reconcile {reconcile_id} has not settled, so the read could not be trusted as a snapshot. If nothing is actively enacting it, only restarting golemd on this host will clear it — a journal-only `golemctl plan` (without `--against-host`) still works meanwhile.")
+            }
+            HostBusyReason::ActivityMoved => {
+                "golem wrote to this host while the read was in progress, so the read could not be trusted as a snapshot. A journal-only `golemctl plan` (without `--against-host`) still works.".to_string()
+            }
+        }
+    }
+}
+
 /// A typed write-path failure the HTTP surface maps to a structured
 /// `{ kind, message }` body (ADR 0029 §5). `WalUnreadable` and
 /// `ManifestUndecodable` carry actionable messages instead of leaking a raw
 /// rusqlite/postcard internal; `Internal` wraps anything else.
 #[derive(Debug)]
 pub enum ForemanError {
-    WalUnreadable { detail: String },
-    ManifestUndecodable { detail: String },
-    ReconcileInProgress { reconcile_id: u64 },
+    WalUnreadable {
+        detail: String,
+    },
+    ManifestUndecodable {
+        detail: String,
+    },
+    ReconcileInProgress {
+        reconcile_id: u64,
+    },
+    /// A host-probing plan (`?against_host=true`) could not be trusted as a
+    /// snapshot, for one of [`HostBusyReason`]'s three reasons. Distinct from
+    /// `ReconcileInProgress`, whose advice — poll the running attempt instead
+    /// of re-applying — answers a different question than the one a plan
+    /// asked. Maps to the same `409` (ADR 0058 refined further); `kind()`
+    /// stays `"host-busy"` regardless of which reason fired, so the wire
+    /// contract does not move — only `message()` varies by reason.
+    HostBusy(HostBusyReason),
     Internal(anyhow::Error),
 }
 
@@ -1898,6 +2077,7 @@ impl ForemanError {
             ForemanError::WalUnreadable { .. } => "wal-unreadable",
             ForemanError::ManifestUndecodable { .. } => "manifest-undecodable",
             ForemanError::ReconcileInProgress { .. } => "reconcile-in-progress",
+            ForemanError::HostBusy(_) => "host-busy",
             ForemanError::Internal(_) => "internal",
         }
     }
@@ -1913,6 +2093,7 @@ impl ForemanError {
             ForemanError::ReconcileInProgress { reconcile_id } => {
                 format!("a reconcile ({reconcile_id}) is already running on this host; poll it instead of re-applying")
             }
+            ForemanError::HostBusy(reason) => reason.message(),
             ForemanError::Internal(e) => format!("{e:#}"),
         }
     }
@@ -6447,6 +6628,495 @@ mod tests {
         );
     }
 
+    /// A reconciler whose `apply` parks until released, the same shape as
+    /// `async_apply.rs`'s `GatedOk`: lets a test hold `run_reconcile`'s write
+    /// lock open for exactly as long as it needs to, by blocking inside the
+    /// very call the lock is held around.
+    struct GatedApply {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Reconciler for GatedApply {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            let _ = self.entered.send(());
+            // Ignoring a disconnected `release` (the sender dropped without
+            // sending, e.g. an assertion panicked earlier in the test) is
+            // what lets this thread unpark and unwind instead of hanging the
+            // whole run during a failing test's panic.
+            let _ = self.release.lock().unwrap().recv();
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs `f` on a helper thread and waits at most `timeout` for its result,
+    /// rather than joining directly. A threaded test that calls into code
+    /// which is *supposed* to never take the write lock still has to call it
+    /// somehow — and if a regression makes it take the lock after all, an
+    /// un-timed join would hang the test (and the whole suite) instead of
+    /// failing it, turning a clear red into a CI timeout diagnosed as flaky
+    /// infra. `recv_timeout` on the result channel turns that hang into a
+    /// panic naming exactly what didn't come back in time.
+    ///
+    /// `rx` disconnects for exactly one other reason: `f` panicked before
+    /// reaching `tx.send`, e.g. a failed assertion inside the closure. That
+    /// case is `join`ed and its panic resumed here rather than reported as a
+    /// timeout — otherwise a genuine assertion failure would print "did not
+    /// complete within the timeout" and its real message would be lost.
+    fn run_with_timeout<T: Send + 'static>(
+        timeout: Duration,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        match rx.recv_timeout(timeout) {
+            Ok(value) => value,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("operation did not complete within the timeout — it likely blocked")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
+                Ok(()) => unreachable!(
+                    "the sender only disconnects without a send if the closure panicked first"
+                ),
+                Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+            },
+        }
+    }
+
+    #[test]
+    fn a_journal_only_plan_succeeds_while_an_apply_holds_the_write_lock() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let foreman = Arc::new(foreman(
+            "host",
+            Box::new(GatedApply {
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            }),
+        ));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+        let f = foreman.clone();
+        let apply_bytes = bytes.clone();
+        let handle = std::thread::spawn(move || f.apply_manifest(&apply_bytes));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the gated apply to enter and park, write lock held");
+
+        // The regression guard for the additive-only constraint: an ordinary
+        // `golemctl plan` must never start failing just because an apply is
+        // in flight. `JournalOnly` reads the WAL, not the host, and never
+        // touches the write lock — run through `run_with_timeout` so a
+        // regression that makes it take the lock fails this test outright
+        // instead of hanging behind the still-parked apply below.
+        let f2 = foreman.clone();
+        let plan_bytes = bytes.clone();
+        let report = run_with_timeout(Duration::from_secs(5), move || {
+            f2.plan_manifest_scoped(&plan_bytes, PlanScope::JournalOnly)
+        })
+        .expect("a journal-only plan must succeed even while an apply is running");
+        assert!(report.reality.is_none());
+
+        release_tx.send(()).unwrap();
+        handle.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_host_plan_conflicts_while_an_apply_holds_the_write_lock() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let foreman = Arc::new(foreman(
+            "host",
+            Box::new(GatedApply {
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            }),
+        ));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+        let f = foreman.clone();
+        let apply_bytes = bytes.clone();
+        let handle = std::thread::spawn(move || f.apply_manifest(&apply_bytes));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the gated apply to enter and park, write lock held");
+
+        // This is precisely the test whose purpose is that a host plan never
+        // queues behind an apply: `write_activity_snapshot` must answer
+        // `HostBusy` immediately via `try_activity_read_guard`, never block.
+        // Run through `run_with_timeout` so a regression back to a blocking
+        // acquisition fails this test outright instead of hanging behind the
+        // still-parked apply.
+        let f2 = foreman.clone();
+        let plan_bytes = bytes.clone();
+        let err = run_with_timeout(Duration::from_secs(5), move || {
+            f2.plan_manifest_scoped(&plan_bytes, PlanScope::JournalAndHost)
+        })
+        .expect_err("a host read must never race a live apply's writes");
+        assert_eq!(err.kind(), "host-busy");
+
+        release_tx.send(()).unwrap();
+        handle.join().unwrap().unwrap();
+    }
+
+    /// A reconciler whose `observe` parks until released — but only on its
+    /// *first* call. The observe-path counterpart to `GatedApply`, which
+    /// parks `apply`: this is the tool a snapshot/probe/recheck rework needs
+    /// that a reconciler parking `apply` cannot provide, since it lets a test
+    /// hold a probe open with no write lock held at all, across a real
+    /// concurrent apply. Parking once-only rather than every call also lets
+    /// a *second*, concurrent probe against the same instance run its own
+    /// `observe` straight through rather than queuing behind the first's
+    /// release — the shape `two_concurrent_host_plans_do_not_exclude_each_other`
+    /// needs.
+    struct GatedObserve {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        parked_once: std::sync::atomic::AtomicBool,
+    }
+    impl GatedObserve {
+        fn new() -> (
+            Self,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            (
+                Self {
+                    entered: entered_tx,
+                    release: Mutex::new(Some(release_rx)),
+                    parked_once: std::sync::atomic::AtomicBool::new(false),
+                },
+                entered_rx,
+                release_tx,
+            )
+        }
+    }
+    impl Reconciler for GatedObserve {
+        fn apply(&self, glyph: &Glyph, cid: ContentId) -> EnactResult<Outcome> {
+            Ok(Outcome {
+                op: GlyphOp::Install {
+                    cid,
+                    glyph: glyph.clone(),
+                },
+                cid,
+                inverse: crate::reconciler::inverse_of(glyph),
+                changed: true,
+            })
+        }
+        fn reverse(&self, _outcome: &Outcome) -> EnactResult<()> {
+            Ok(())
+        }
+        fn observe(&self, _ops: &[GlyphOp]) -> Observations {
+            if !self.parked_once.swap(true, Ordering::SeqCst) {
+                let _ = self.entered.send(());
+                if let Some(release_rx) = self.release.lock().unwrap().take() {
+                    let _ = release_rx.recv();
+                }
+            }
+            Observations::default()
+        }
+    }
+
+    #[test]
+    fn a_probes_recheck_catches_an_apply_that_starts_and_finishes_during_the_probe() {
+        let (reconciler, entered_rx, release_tx) = GatedObserve::new();
+        let foreman = Arc::new(foreman("host", Box::new(reconciler)));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+
+        let f = foreman.clone();
+        let probe_bytes = bytes.clone();
+        let probe = std::thread::spawn(move || {
+            f.plan_manifest_scoped(&probe_bytes, PlanScope::JournalAndHost)
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the probe to enter observe and park, holding no lock");
+
+        // The probe holds no lock while parked in `observe`, so an ordinary
+        // apply against the very same foreman runs to completion here,
+        // moving the latest attempt from absent to committed — entirely
+        // inside the probe's window. Run it through `run_with_timeout`
+        // rather than calling it directly on this thread: if the regression
+        // this test exists to catch reappears (the guard held across
+        // `observe` again), this apply's own `write_guard()` would block
+        // forever on that guard — which the probe, still parked waiting for
+        // `release_tx` below, never releases — deadlocking the test instead
+        // of failing it.
+        let f = foreman.clone();
+        let apply_bytes = bytes.clone();
+        run_with_timeout(Duration::from_secs(5), move || {
+            f.apply_manifest(&apply_bytes)
+        })
+        .expect("an apply must be free to run while a probe sits in observe");
+
+        // Release the probe and reap it regardless of whether the apply
+        // above succeeded, so a failure here still leaves no thread parked
+        // forever on `release_rx`.
+        release_tx.send(()).unwrap();
+        let err = run_with_timeout(Duration::from_secs(5), move || probe.join().unwrap())
+            .expect_err("the probe's recheck must catch the apply that overlapped it");
+        assert_eq!(err.kind(), "host-busy");
+    }
+
+    #[test]
+    fn a_probe_does_not_block_a_concurrent_apply() {
+        let (reconciler, entered_rx, release_tx) = GatedObserve::new();
+        let foreman = Arc::new(foreman("host", Box::new(reconciler)));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+
+        let f = foreman.clone();
+        let probe_bytes = bytes.clone();
+        let probe = std::thread::spawn(move || {
+            f.plan_manifest_scoped(&probe_bytes, PlanScope::JournalAndHost)
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the probe to enter observe and park, holding no lock");
+
+        // The whole point of the snapshot/probe/recheck rework: a probe
+        // parked in `observe` must never make an apply wait. Run the apply on
+        // its own thread and demand it complete within a short timeout —
+        // *before* the probe is released — so if `observe_against_host`
+        // regresses back to holding the write lock across `observe`, this
+        // fails with a clear timeout instead of hanging behind the still-
+        // parked probe.
+        let f2 = foreman.clone();
+        let apply_bytes = bytes.clone();
+        run_with_timeout(Duration::from_secs(5), move || {
+            f2.apply_manifest(&apply_bytes)
+        })
+        .expect("an apply must proceed and complete while a probe is still parked in observe");
+
+        release_tx.send(()).unwrap();
+        // The probe now sees the apply it raced moved the attempt, so it
+        // reports `HostBusy` too — asserted by the recheck test above; this
+        // test only needs the probe to finish at all, proving it was never
+        // wedged behind the apply, so its verdict here is deliberately
+        // discarded rather than asserted.
+        let _ = run_with_timeout(Duration::from_secs(5), move || probe.join().unwrap());
+    }
+
+    #[test]
+    fn two_concurrent_host_plans_do_not_exclude_each_other() {
+        let (reconciler, entered_rx, release_tx) = GatedObserve::new();
+        let foreman = Arc::new(foreman("host", Box::new(reconciler)));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+
+        let f = foreman.clone();
+        let first_bytes = bytes.clone();
+        let first = std::thread::spawn(move || {
+            f.plan_manifest_scoped(&first_bytes, PlanScope::JournalAndHost)
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first plan to enter observe and park");
+
+        // A second `--against-host` plan against the same foreman, still
+        // parked behind nothing: `GatedObserve::observe` only blocks its
+        // first caller, so this one passes straight through. If a read could
+        // still exclude a read, this call would hang instead of returning.
+        //
+        // This does NOT exercise finding 3's reader-excludes-reader bug: the
+        // parked probe holds no lock at all while it sits in `observe`, so
+        // its two `write_activity_snapshot` calls bracket the parked window
+        // rather than overlap the second plan's own snapshot. See
+        // `two_concurrent_snapshots_do_not_exclude_each_other` below for a
+        // test that actually contends the snapshots' read guards.
+        let second = run_with_timeout(Duration::from_secs(5), {
+            let f = foreman.clone();
+            let bytes = bytes.clone();
+            move || f.plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+        })
+        .expect("a second concurrent host plan must not be excluded by the first's parked probe");
+        assert!(second.reality.is_some());
+
+        release_tx.send(()).unwrap();
+        run_with_timeout(Duration::from_secs(5), move || first.join().unwrap())
+            .expect("the first plan, with nothing else in flight, must also succeed");
+    }
+
+    /// A `PlanRoom` whose `latest_attempt` parks on the first call after
+    /// [`Self::arm`], after signalling entry — the tool a test needs to hold
+    /// `write_activity_snapshot`'s read guard open for an instant while a
+    /// second, concurrent snapshot's own guard acquisition races it for
+    /// real. `Foreman::new`'s own startup `recover()` makes one unparked
+    /// `latest_attempt` call before a test ever gets a handle back, so
+    /// arming happens explicitly, after construction, rather than the gate
+    /// firing on the literal first call.
+    struct GatedLatestAttempt {
+        inner: MemoryPlanRoom,
+        armed: std::sync::atomic::AtomicBool,
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl GatedLatestAttempt {
+        fn new() -> (
+            Self,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            (
+                Self {
+                    inner: MemoryPlanRoom::new(),
+                    armed: std::sync::atomic::AtomicBool::new(false),
+                    entered: entered_tx,
+                    release: Mutex::new(Some(release_rx)),
+                },
+                entered_rx,
+                release_tx,
+            )
+        }
+        fn arm(&self) {
+            self.armed.store(true, Ordering::SeqCst);
+        }
+    }
+    impl PlanRoom for GatedLatestAttempt {
+        fn applied_state(&self) -> Result<Option<AppliedState>> {
+            self.inner.applied_state()
+        }
+        fn put_applied_state(&self, state: &AppliedState) -> Result<()> {
+            self.inner.put_applied_state(state)
+        }
+        fn revisions(&self) -> Result<Vec<Revision>> {
+            self.inner.revisions()
+        }
+        fn revision(&self, id: u64) -> Result<Option<Revision>> {
+            self.inner.revision(id)
+        }
+        fn latest_revision_id(&self) -> Result<Option<u64>> {
+            self.inner.latest_revision_id()
+        }
+        fn open_attempt(&self, scroll_content_id: Option<ContentId>) -> Result<ReconcileAttempt> {
+            self.inner.open_attempt(scroll_content_id)
+        }
+        fn set_attempt_phase(&self, reconcile_id: u64, phase: AttemptPhase) -> Result<()> {
+            self.inner.set_attempt_phase(reconcile_id, phase)
+        }
+        fn latest_attempt(&self) -> Result<Option<ReconcileAttempt>> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                let _ = self.entered.send(());
+                if let Some(release_rx) = self.release.lock().unwrap().take() {
+                    let _ = release_rx.recv();
+                }
+            }
+            self.inner.latest_attempt()
+        }
+        fn attempts(&self) -> Result<Vec<ReconcileAttempt>> {
+            self.inner.attempts()
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn append_wal_step(
+            &self,
+            reconcile_id: u64,
+            step_ord: u64,
+            glyph_key: &str,
+            action: WalAction,
+            state: WalStepState,
+            op: &GlyphOp,
+            inverse: Option<&Inverse>,
+            changed: Option<bool>,
+            unit_path: &[String],
+        ) -> Result<WalStep> {
+            self.inner.append_wal_step(
+                reconcile_id,
+                step_ord,
+                glyph_key,
+                action,
+                state,
+                op,
+                inverse,
+                changed,
+                unit_path,
+            )
+        }
+        fn wal_steps(&self) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps()
+        }
+        fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps_for(reconcile_id)
+        }
+    }
+
+    #[test]
+    fn two_concurrent_snapshots_do_not_exclude_each_other() {
+        let (planroom, entered_rx, release_tx) = GatedLatestAttempt::new();
+        let planroom = Arc::new(planroom);
+        let foreman = Arc::new(Foreman::new(
+            "host".into(),
+            Box::new(planroom.clone()),
+            Box::new(FakeReconciler::new()),
+        ));
+        planroom.arm();
+
+        let f = foreman.clone();
+        let first = std::thread::spawn(move || f.write_activity_snapshot());
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first snapshot to enter latest_attempt and park, its read guard held");
+
+        // The first snapshot's read guard is genuinely held right now while
+        // this call takes its own. Under the old exclusive `Mutex`, this
+        // `try_lock` would answer `WouldBlock` and this call would return
+        // `HostBusy` immediately — a false conflict between two reads,
+        // neither of which is writing anything (finding 3). Under the
+        // `RwLock`, two readers never exclude each other, so this must
+        // succeed while the first is still parked.
+        let second = foreman.write_activity_snapshot();
+
+        release_tx.send(()).unwrap();
+        let first_result = run_with_timeout(Duration::from_secs(5), move || first.join().unwrap());
+
+        assert!(
+            second.is_ok(),
+            "a second concurrent snapshot must not be excluded by the first snapshot's own \
+             read guard: {second:?}"
+        );
+        assert!(first_result.is_ok());
+    }
+
+    #[test]
+    fn a_host_plan_conflicts_when_an_attempt_is_open_but_the_lock_is_momentarily_free() {
+        // Reproduces the `ingest`/`run_reconcile` window directly, without a
+        // second thread: `ingest` opens the attempt, marks it `Enacting`, and
+        // releases the write lock at its own return — exactly the gap between
+        // its own two write-lock acquisitions the NOTE above `ingest`
+        // documents. The lock is free here; the attempt is not.
+        let foreman = foreman("host", Box::new(ScriptedReconciler::new().ok_default()));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+        let (_reconcile_id, _selected) = foreman.ingest(&bytes).unwrap();
+
+        let err = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .expect_err("an unsettled attempt means the host is mid-rewrite even with a free lock");
+        assert_eq!(err.kind(), "host-busy");
+    }
+
+    #[test]
+    fn a_host_plan_succeeds_and_produces_reality_when_nothing_is_in_flight() {
+        let foreman = foreman("host", Box::new(ScriptedReconciler::new().ok_default()));
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+
+        let report = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .expect("a host plan with nothing in flight succeeds normally");
+
+        assert!(report.reality.is_some());
+    }
+
     /// A planroom that commits one attempt — and so projects one new revision —
     /// the first time the WAL is read after it is armed. It reproduces a reconcile
     /// settling underneath a plan, in the one window `plan_manifest`'s
@@ -6557,6 +7227,119 @@ mod tests {
             "the revision is read before the steps, so the label lags the diff rather than \
              naming state the diff never saw"
         );
+    }
+
+    /// A planroom that opens and commits one attempt — with no WAL steps of
+    /// its own, so it changes no journal-visible applied state — the first
+    /// time `latest_revision_id` is read after being armed. Models an apply
+    /// settling entirely inside the window between an unguarded journal read
+    /// and the snapshot meant to bracket it (finding 4 of the 2026-08-11
+    /// snapshot-recheck review): with the snapshot hoisted above the journal
+    /// reads, the commit lands after the "before" snapshot and is caught by
+    /// the "after" one; taken only right before `observe`, the same commit
+    /// lands before *both* snapshots and vanishes.
+    struct CommitsAnAttemptOnRevisionRead {
+        inner: MemoryPlanRoom,
+        armed: Mutex<bool>,
+    }
+    impl CommitsAnAttemptOnRevisionRead {
+        fn new() -> Self {
+            Self {
+                inner: MemoryPlanRoom::new(),
+                armed: Mutex::new(false),
+            }
+        }
+        fn arm(&self) {
+            *self.armed.lock().unwrap() = true;
+        }
+    }
+    impl PlanRoom for CommitsAnAttemptOnRevisionRead {
+        fn latest_revision_id(&self) -> Result<Option<u64>> {
+            let fire = std::mem::replace(&mut *self.armed.lock().unwrap(), false);
+            if fire {
+                let attempt = self.inner.open_attempt(None)?;
+                self.inner
+                    .set_attempt_phase(attempt.reconcile_id, AttemptPhase::Committed)?;
+            }
+            self.inner.latest_revision_id()
+        }
+        fn applied_state(&self) -> Result<Option<AppliedState>> {
+            self.inner.applied_state()
+        }
+        fn put_applied_state(&self, state: &AppliedState) -> Result<()> {
+            self.inner.put_applied_state(state)
+        }
+        fn revisions(&self) -> Result<Vec<Revision>> {
+            self.inner.revisions()
+        }
+        fn revision(&self, id: u64) -> Result<Option<Revision>> {
+            self.inner.revision(id)
+        }
+        fn open_attempt(&self, scroll_content_id: Option<ContentId>) -> Result<ReconcileAttempt> {
+            self.inner.open_attempt(scroll_content_id)
+        }
+        fn set_attempt_phase(&self, reconcile_id: u64, phase: AttemptPhase) -> Result<()> {
+            self.inner.set_attempt_phase(reconcile_id, phase)
+        }
+        fn latest_attempt(&self) -> Result<Option<ReconcileAttempt>> {
+            self.inner.latest_attempt()
+        }
+        fn attempts(&self) -> Result<Vec<ReconcileAttempt>> {
+            self.inner.attempts()
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn append_wal_step(
+            &self,
+            reconcile_id: u64,
+            step_ord: u64,
+            glyph_key: &str,
+            action: WalAction,
+            state: WalStepState,
+            op: &GlyphOp,
+            inverse: Option<&Inverse>,
+            changed: Option<bool>,
+            unit_path: &[String],
+        ) -> Result<WalStep> {
+            self.inner.append_wal_step(
+                reconcile_id,
+                step_ord,
+                glyph_key,
+                action,
+                state,
+                op,
+                inverse,
+                changed,
+                unit_path,
+            )
+        }
+        fn wal_steps(&self) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps()
+        }
+        fn wal_steps_for(&self, reconcile_id: u64) -> Result<Vec<WalStep>> {
+            self.inner.wal_steps_for(reconcile_id)
+        }
+    }
+
+    #[test]
+    fn a_host_plan_catches_an_attempt_committed_between_the_unguarded_journal_read_and_the_snapshot(
+    ) {
+        let planroom = Arc::new(CommitsAnAttemptOnRevisionRead::new());
+        let foreman = Foreman::new(
+            "host".into(),
+            Box::new(planroom.clone()),
+            Box::new(ScriptedReconciler::new().ok_default()),
+        );
+        let bytes = manifest(vec![scroll("host", vec![apt("nginx")])]);
+
+        planroom.arm();
+        let err = foreman
+            .plan_manifest_scoped(&bytes, PlanScope::JournalAndHost)
+            .expect_err(
+                "an attempt committed while `JournalAndHost` reads the journal must still be \
+                 caught by the bracketing snapshot, not lost because both snapshots were taken \
+                 after it",
+            );
+        assert_eq!(err.kind(), "host-busy");
     }
 
     #[test]

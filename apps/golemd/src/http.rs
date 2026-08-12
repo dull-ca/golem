@@ -278,10 +278,16 @@ struct ApiError {
 }
 
 impl ApiError {
-    /// Maps ingest failures — the reasons a reconcile never started — to their
-    /// synchronous status (ADR 0033 §1). `ReconcileInProgress` is a `409` that
-    /// carries the id of the attempt already running so the caller can poll
-    /// *it* instead of retrying; the rest are `500`-class daemon faults.
+    /// Maps a [`ForemanError`](crate::foreman::ForemanError) to its synchronous
+    /// status — the reasons a reconcile never started (ADR 0033 §1) plus the
+    /// reasons a host-probing plan was refused (ADR 0058 refined further).
+    /// `ReconcileInProgress` is a `409` that carries the id of the attempt
+    /// already running so the caller can poll *it* instead of retrying;
+    /// `HostBusy` is the same `409` for a plan whose host read could not be
+    /// trusted as a snapshot, for whichever of `HostBusyReason`'s three
+    /// reasons applies — its `message()` says which — with no attempt id to
+    /// offer since the caller asked to read, not to poll one; the rest are
+    /// `500`-class daemon faults.
     fn from_foreman(e: crate::foreman::ForemanError) -> Self {
         use crate::foreman::ForemanError::*;
         let reconcile_id = match &e {
@@ -293,6 +299,7 @@ impl ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             ReconcileInProgress { .. } => StatusCode::CONFLICT,
+            HostBusy(_) => StatusCode::CONFLICT,
         };
         ApiError {
             status,
