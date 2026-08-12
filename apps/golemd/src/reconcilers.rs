@@ -215,7 +215,7 @@ impl<R: CommandRunner> HostReconciler<R> {
         let query = self
             .runner
             .run("dpkg-query", &["-W", "-f=${Status}", name])?;
-        Ok(query.succeeded() && query.stdout.contains("install ok installed"))
+        Ok(query.succeeded() && dpkg_status_is_installed(query.stdout.trim()))
     }
 
     /// Enable and start `unit`, reloading first so a just-written unit file is
@@ -546,12 +546,20 @@ impl<R: CommandRunner> HostReconciler<R> {
     /// every `Multi-Arch: same` package with an architecture qualifier —
     /// `libc6:amd64` and several hundred more on a stock trixie box — so an
     /// `aptPackage { name = "libc6" }` glyph would never match the line the
-    /// query actually printed. Reads `output.stdout` unconditionally: real
-    /// `dpkg-query` exits 1 the moment any requested name is unknown to dpkg
-    /// while still printing every name it does know, with the complaint on
-    /// stderr — [`Self::apt_installed`]'s `succeeded()` gate is right for one
-    /// name and wrong for a batch. Verified against a real Debian trixie
+    /// query actually printed. Reads `output.stdout` for exit 0 and exit 1:
+    /// real `dpkg-query` exits 1 the moment any requested name is unknown to
+    /// dpkg while still printing every name it does know, with the complaint
+    /// on stderr — [`Self::apt_installed`]'s `succeeded()` gate is right for
+    /// one name and wrong for a batch. Verified against a real Debian trixie
     /// host, not reasoned about (ADR 0058).
+    ///
+    /// Exit >= 2 is a different animal: `dpkg-query(1)` documents it as a
+    /// fatal, unrecoverable error (a locked or corrupt dpkg database and
+    /// similar), and stdout on that path is empty rather than partial. Those
+    /// carry no signal at all, so this returns `Err(())` — every apt glyph in
+    /// the scroll reads `Unknown(Unreadable)` — rather than the confidently
+    /// wrong `Absent` an unconditional read of the (empty) stdout would
+    /// produce.
     fn observe_apt_batch(&self, ops: &[GlyphOp]) -> Result<std::collections::BTreeSet<String>, ()> {
         let names = apt_glyph_names(ops);
         if names.is_empty() {
@@ -562,8 +570,10 @@ impl<R: CommandRunner> HostReconciler<R> {
             args.push(name.as_str());
         }
         match self.runner.run("dpkg-query", &args) {
-            Ok(output) => Ok(dpkg_installed_names(&output.stdout)),
-            Err(_) => Err(()),
+            Ok(output) if output.status == 0 || output.status == 1 => {
+                Ok(dpkg_installed_names(&output.stdout))
+            }
+            Ok(_) | Err(_) => Err(()),
         }
     }
 
@@ -840,19 +850,31 @@ fn apt_glyph_names(ops: &[GlyphOp]) -> Vec<String> {
     names
 }
 
+/// The one predicate for "does this `${Status}` field mean installed",
+/// shared by [`HostReconciler::apt_installed`] (apply, one name at a time)
+/// and [`dpkg_installed_names`] (observe, one batch) so the two paths cannot
+/// independently drift on what "installed" means — the same fix
+/// [`contains_line`] is for `lineInFile`. An exact, trimmed comparison: a
+/// **substring** match against `"install ok installed"` also matches
+/// `"deinstall ok installed"` (the genuine dpkg state a package reaches when
+/// marked for removal but not yet removed) starting at index 2, which is the
+/// bug this predicate exists to close off for good.
+fn dpkg_status_is_installed(status: &str) -> bool {
+    status.trim() == "install ok installed"
+}
+
 /// Parse a `${Package} ${Status}\n`-formatted `dpkg-query` batch: one line
 /// per name dpkg knows about, present or not, and no line at all for a name
-/// it has never heard of. Exact match on `install ok installed` — a
-/// removed-but-configured package reads `deinstall ok config-files`, which
-/// this excludes on purpose. Pure, and never looks at an exit status: the
-/// batch's exit-code trap is [`HostReconciler::observe_apt_batch`]'s to
-/// avoid, not this parser's.
+/// it has never heard of. A removed-but-configured package reads `deinstall
+/// ok config-files`, which [`dpkg_status_is_installed`] excludes on purpose.
+/// Pure, and never looks at an exit status: the batch's exit-code trap is
+/// [`HostReconciler::observe_apt_batch`]'s to avoid, not this parser's.
 fn dpkg_installed_names(stdout: &str) -> std::collections::BTreeSet<String> {
     stdout
         .lines()
         .filter_map(|line| {
             let (name, status) = line.split_once(' ')?;
-            (status == "install ok installed").then(|| name.to_string())
+            dpkg_status_is_installed(status).then(|| name.to_string())
         })
         .collect()
 }
@@ -2847,6 +2869,14 @@ mod tests {
     }
 
     #[test]
+    fn dpkg_status_is_installed_rejects_a_pending_removal_despite_the_shared_substring() {
+        assert!(dpkg_status_is_installed("install ok installed"));
+        assert!(!dpkg_status_is_installed("deinstall ok installed"));
+        assert!(!dpkg_status_is_installed("deinstall ok config-files"));
+        assert!(!dpkg_status_is_installed("install ok half-configured"));
+    }
+
+    #[test]
     fn dpkg_batch_output_yields_only_the_fully_installed_names() {
         let names = dpkg_installed_names("nginx install ok installed\ncurl install ok installed\n");
         assert!(names.contains("nginx"));
@@ -2869,11 +2899,65 @@ mod tests {
     }
 
     #[test]
-    fn a_nonzero_dpkg_exit_still_yields_the_names_that_were_found() {
-        let names = dpkg_installed_names("nginx install ok installed\ncurl install ok installed\n");
-        assert!(names.contains("nginx"));
-        assert!(names.contains("curl"));
+    fn a_package_marked_for_removal_is_not_counted_as_installed() {
+        // "deinstall ok installed" is a genuine dpkg state — marked for removal
+        // via `apt-mark`/`dpkg --set-selections`, not yet actually removed — and
+        // it must not satisfy a *substring* match on "install ok installed"
+        // (which it does, starting at index 2). This is the state that forked
+        // `apt_installed` and `dpkg_installed_names` apart; see
+        // `both_apt_predicates_agree_on_a_pending_removal` below.
+        let names = dpkg_installed_names("jq deinstall ok installed\n");
         assert!(!names.contains("jq"));
+        assert!(names.is_empty());
+    }
+
+    /// The nonzero-exit robustness [`Self::observe_apt_batch`] promises: real
+    /// `dpkg-query` exits 1 the moment any requested name is unknown, while
+    /// still printing every name it does know on stdout. Exercised through
+    /// `observe`, not the pure parser, so this test can only pass if the whole
+    /// path — status 1, non-empty stdout — stays parseable rather than
+    /// collapsing to `Unknown(Unreadable)` (that collapse belongs to status
+    /// >= 2 only, see `a_fatal_dpkg_exit_marks_every_apt_glyph_unreadable`).
+    #[test]
+    fn a_nonzero_dpkg_exit_still_yields_the_names_that_were_found() {
+        let rec = HostReconciler::with_runner(FakeCommandRunner::with_installed(&["nginx"]));
+        let ops = vec![install_op(&apt("nginx")), install_op(&apt("jq"))];
+
+        let observed = rec.observe(&ops);
+
+        assert_eq!(observed.get(&apt("nginx").key()), Observation::Realized);
+        assert_eq!(observed.get(&apt("jq").key()), Observation::Absent);
+    }
+
+    /// A single-name `dpkg-query -W -f=${Status}` that always answers
+    /// `deinstall ok installed` — the real dpkg state ([`FakeCommandRunner`]
+    /// does not model it) that used to fork `apt_installed` from
+    /// `dpkg_installed_names`: `.contains("install ok installed")` matches it
+    /// starting at index 2.
+    struct DeinstallOnlyDpkgQuery;
+
+    impl CommandRunner for DeinstallOnlyDpkgQuery {
+        fn run(&self, program: &str, _args: &[&str]) -> EnactResult<crate::host::CommandOutput> {
+            assert_eq!(program, "dpkg-query");
+            Ok(crate::host::CommandOutput {
+                status: 0,
+                stdout: "deinstall ok installed".to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn both_apt_predicates_agree_on_a_pending_removal() {
+        // The second fork of a shared predicate on this branch — `contains_line`
+        // was extracted to kill the first one (apply vs. observe on
+        // `lineInFile`); this pins `apt_installed` (apply) and
+        // `dpkg_installed_names` (observe) to the same answer for the dpkg
+        // state that used to split them.
+        let rec = HostReconciler::with_runner(DeinstallOnlyDpkgQuery);
+
+        assert!(!rec.apt_installed("jq").unwrap());
+        assert!(!dpkg_installed_names("jq deinstall ok installed\n").contains("jq"));
     }
 
     #[test]
@@ -3022,6 +3106,70 @@ mod tests {
             Observation::Unknown(Unknowable::Unreadable)
         );
         assert_eq!(observed.get(&file.key()), Observation::Realized);
+        assert_eq!(observed.get(&unit.key()), Observation::Realized);
+    }
+
+    /// A `dpkg-query` that *runs* (unlike [`SpawnFailingDpkgQuery`]) but exits
+    /// 2 — `dpkg-query(1)`'s documented fatal/unrecoverable status, e.g. a
+    /// locked or corrupt dpkg database — with empty stdout, the real shape of
+    /// that failure.
+    struct FatalDpkgQuery {
+        inner: FakeCommandRunner,
+    }
+
+    impl CommandRunner for FatalDpkgQuery {
+        fn run(&self, program: &str, args: &[&str]) -> EnactResult<crate::host::CommandOutput> {
+            if program == "dpkg-query" {
+                return Ok(crate::host::CommandOutput {
+                    status: 2,
+                    stdout: String::new(),
+                    stderr: "dpkg-query: error: dpkg status database is locked".into(),
+                });
+            }
+            self.inner.run(program, args)
+        }
+    }
+
+    #[test]
+    fn a_fatal_dpkg_exit_marks_every_apt_glyph_unreadable_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("present");
+        fs::write(&path, "old\n").unwrap();
+        let path = path.to_str().unwrap();
+        let file = file_glyph(path, "old\n", 0o644);
+        let unit = systemd("app");
+
+        let runner = FatalDpkgQuery {
+            inner: FakeCommandRunner::with_service("app", true, true),
+        };
+        let rec = HostReconciler::with_runner(runner);
+        let ops = vec![
+            install_op(&apt("nginx")),
+            install_op(&apt("curl")),
+            install_op(&file),
+            install_op(&unit),
+        ];
+
+        let observed = rec.observe(&ops);
+
+        assert_eq!(
+            observed.get(&apt("nginx").key()),
+            Observation::Unknown(Unknowable::Unreadable)
+        );
+        assert_eq!(
+            observed.get(&apt("curl").key()),
+            Observation::Unknown(Unknowable::Unreadable)
+        );
+        assert_ne!(
+            observed.get(&apt("nginx").key()),
+            Observation::Absent,
+            "a fatal dpkg-query is 'could not look', never a confident 'not installed'"
+        );
+        assert_eq!(
+            observed.get(&file.key()),
+            Observation::Realized,
+            "the fatal apt exit must not take out unrelated glyphs in the same scroll"
+        );
         assert_eq!(observed.get(&unit.key()), Observation::Realized);
     }
 

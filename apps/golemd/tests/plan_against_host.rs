@@ -91,6 +91,26 @@ async fn a_plan_with_against_host_false_is_journal_only() {
     assert!(body.get("reality").is_none());
 }
 
+/// Pins the actual behaviour of a malformed `against_host` value now that
+/// `?against_host=` goes through an axum `Query<PlanQuery>` extractor rather
+/// than being ignored outright. No known client sends anything but `true`,
+/// `false`, or an absent parameter, so this only records what happens — it
+/// does not assert what *should* happen.
+#[tokio::test]
+async fn a_malformed_against_host_value_is_recorded_not_assumed() {
+    let base = serve(None).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/plan?against_host=banana"))
+        .header("content-type", "application/octet-stream")
+        .body(manifest_bytes())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 400);
+}
+
 #[tokio::test]
 async fn the_auth_gate_still_covers_the_host_plan() {
     let base = serve(Some("secret")).await;

@@ -302,16 +302,18 @@ pub fn render(plan: &PlanResponse, options: &RenderOptions) -> String {
         column_widths(journal_steps.iter())
     };
 
-    let mut blocks = vec![vec![headline(plan, options)]];
+    let mut blocks = vec![vec![headline(plan, options, show_host)]];
     if show_host {
         if !journal_steps.is_empty() {
             let mut block = vec![labelled_block_header("journal", options)];
             block.extend(step_lines(&journal_steps, options, &widths));
             blocks.push(block);
         }
-        let mut block = vec![labelled_block_header("host", options)];
-        block.extend(step_lines(&host_steps, options, &widths));
-        blocks.push(block);
+        if !host_steps.is_empty() {
+            let mut block = vec![labelled_block_header("host", options)];
+            block.extend(step_lines(&host_steps, options, &widths));
+            blocks.push(block);
+        }
     } else if !journal_steps.is_empty() {
         blocks.push(step_lines(&journal_steps, options, &widths));
     }
@@ -336,14 +338,19 @@ fn stacked(blocks: Vec<Vec<String>>, options: &RenderOptions) -> String {
         .join(between)
 }
 
-fn headline(plan: &PlanResponse, options: &RenderOptions) -> String {
+/// `show_host` — not `options.against_host` alone — gates the `· against the
+/// host` clause: it must match [`render`]'s own gate on whether the host
+/// block actually appears, or the headline promises a column that never
+/// renders (an older golemd with no `reality` field, asked for
+/// `--against-host` anyway).
+fn headline(plan: &PlanResponse, options: &RenderOptions, show_host: bool) -> String {
     let against = match plan.against_revision {
         Some(id) => format!("against revision {id}"),
         None => "against no prior revision".to_string(),
     };
     let separator = paint("·", DIM, options.color);
     let manifest = short_cid(&plan.scroll_content_id);
-    let against = if options.against_host {
+    let against = if show_host {
         format!("{against} {separator} against the host")
     } else {
         against
@@ -511,8 +518,14 @@ fn footer_block(plan: &PlanResponse, options: &RenderOptions) -> Vec<String> {
                 ));
             } else if let Some(summary) = host_summary_text(reality) {
                 lines.push(footer_line(&summary, options));
-                for op in unknown_ops(plan) {
+                let unknown = unknown_ops(plan);
+                let visible = unknown.len().min(VISIBLE_MEMBER_CAP);
+                for op in &unknown[..visible] {
                     lines.push(footer_line(&unobservable_reason(op), options));
+                }
+                let hidden = unknown.len() - visible;
+                if hidden > 0 {
+                    lines.push(footer_line(&format!("… and {hidden} more"), options));
                 }
             }
         }
@@ -544,7 +557,10 @@ fn host_summary_text(reality: &Reality) -> Option<String> {
         segments.push(format!("{disagree} disagree"));
     }
     if reality.unknown > 0 {
-        segments.push(format!("{} unreadable", reality.unknown));
+        // "unknown", not "unreadable": `reality.unknown` also counts `Sealed`
+        // and `NotModelled`, and "unreadable" reads as a contradiction next to
+        // the sealed-file footer line right below it.
+        segments.push(format!("{} unknown", reality.unknown));
     }
     if matched > 0 {
         segments.push(format!("{matched} match"));
@@ -2060,7 +2076,7 @@ mod tests {
                 "  = match   3 glyphs",
                 "",
                 "  6 changes · 3 install, 2 replace, 1 remove · 1 unchanged",
-                "  host · 3 disagree, 1 unreadable, 3 match",
+                "  host · 3 disagree, 1 unknown, 3 match",
                 "  /etc/app/creds.conf is sealed and this host has no fleet key",
             ]
             .join("\n")
@@ -2231,6 +2247,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_unknown_reason_footer_caps_and_elides_the_rest() {
+        // A keyless host with thirty sealed files must not print thirty
+        // footer lines — same cap-and-elide `cap_members` already applies to
+        // an overlong member list.
+        let ops: Vec<PlannedOp> = (0..30)
+            .map(|n| {
+                observed_op(
+                    &["web"],
+                    &format!("file:/etc/app/secret-{n:02}.conf"),
+                    Action::Install,
+                    Observed::Unknown,
+                    Some(Unobservable::Sealed),
+                )
+            })
+            .collect();
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops,
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 30,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+            reality: Some(reality(0, 0, 0, 30, 0, 0, false)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        let reason_lines = rendered
+            .lines()
+            .filter(|line| line.contains("is sealed and this host has no fleet key"))
+            .count();
+        assert_eq!(reason_lines, VISIBLE_MEMBER_CAP, "{rendered}");
+        assert!(rendered.contains("… and 22 more"), "{rendered}");
+    }
+
     fn tri_kind_matched_plan() -> PlanResponse {
         PlanResponse {
             host: "web-01".into(),
@@ -2325,6 +2386,60 @@ mod tests {
                 "no prior revision here · --against-host checks what this host already has"
             ),
             "revision 1 is the Init revision: golem has committed nothing here either: {rendered}"
+        );
+    }
+
+    #[test]
+    fn against_host_with_no_reality_field_never_claims_a_host_column() {
+        // An older golemd that has never heard of `--against-host` answers
+        // `POST /plan?against_host=true` with the pre-existing journal-only
+        // body: no `reality` field at all. The headline must not promise a
+        // column [`render`] then declines to draw (`show_host` there is
+        // `options.against_host && plan.reality.is_some()`), or a caller
+        // reads "against the host" and finds nothing under it.
+        let plan = install_only(vec![op(&["web"], "apt:nginx", Action::Install)]);
+        assert!(plan.reality.is_none(), "install_only carries no reality");
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(
+            !rendered.contains("against the host"),
+            "no reality block means no host column was rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_empty_scroll_against_the_host_suppresses_the_bare_host_heading() {
+        // With no ops there are no host steps and no host summary line, so a
+        // lone "host" heading with nothing under it would be pure noise.
+        let plan = PlanResponse {
+            host: "web-01".into(),
+            scroll_content_id: "3f9c1adeadbeef".into(),
+            against_revision: Some(5),
+            ops: vec![],
+            reloads: vec![],
+            summary: PlanSummary {
+                install: 0,
+                replace: 0,
+                remove: 0,
+                noop: 0,
+            },
+            reality: Some(reality(0, 0, 0, 0, 0, 0, false)),
+        };
+        let rendered = render(
+            &plan,
+            &RenderOptions {
+                against_host: true,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(
+            !rendered.lines().any(|line| line == "  host"),
+            "no host steps means no host block at all: {rendered}"
         );
     }
 

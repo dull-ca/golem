@@ -263,12 +263,22 @@ async fn a_host_plan_writes_no_revision() {
 
 #[tokio::test]
 async fn a_single_unknown_glyph_denies_host_already_matches() {
+    // A scroll with *only* the unknown glyph would deny `host_already_matches`
+    // even if `Reality::over` dropped its `unknown == 0` clause entirely —
+    // `realized + already_gone == 0` denies it on its own. Seed a glyph the
+    // host genuinely already holds alongside the sealed one, so this test can
+    // only pass if the unknown glyph is the thing denying the match.
+    let nginx = Glyph::AptPackage {
+        name: "nginx".into(),
+    };
     let sealed = sealed_file_glyph("/etc/app/creds.conf");
-    let fake = FakeReconciler::new().with_keyring(Keyring::without_key());
+    let fake = FakeReconciler::new()
+        .with_keyring(Keyring::without_key())
+        .preexisting(&nginx.key(), scroll_format::content_id_of_glyph(&nginx));
     let addr = serve_sharing_journal("h1", Arc::new(MemoryPlanRoom::new()), fake).await;
     let target = http_target("h1", addr);
     let conn = Conn::open(&target, &AuthSource::None).await.unwrap();
-    let bytes = manifest_of("h1", vec![sealed]);
+    let bytes = manifest_of("h1", vec![nginx, sealed]);
 
     let body = conn.post_plan(bytes, true).await.unwrap();
     let plan: PlanResponse = serde_json::from_str(&body).unwrap();
@@ -276,6 +286,7 @@ async fn a_single_unknown_glyph_denies_host_already_matches() {
         .reality
         .expect("--against-host carries a reality block");
 
+    assert_eq!(reality.realized, 1, "{reality:?}");
     assert_eq!(reality.unknown, 1, "{reality:?}");
     assert!(!reality.host_already_matches, "{reality:?}");
 }
