@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from excalidraw.layout import LabelledBox, callout, connector, labelled_box, slide_header
-from excalidraw.palette import ANSIBLE, GAP, INK_SOFT, NEUTRAL, WHITE, Tone
+from excalidraw.palette import ANSIBLE, GAP, NEUTRAL
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
-from excalidraw.text import MONO
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
 from .. import machines
+from ..ansible_play import IDEMPOTENCE, draw_play
 
 SLUG = "ansible-steps"
 TITLE = "Ansible: a play is an ordered list of steps"
@@ -16,10 +16,6 @@ SUBTITLE = "Each step is a command that changes the host. The order is the progr
 PLAY_X = MARGIN
 PLAY_Y = 200.0
 PLAY_WIDTH = 620.0
-PLAY_HEADER = 58.0
-STEP_HEIGHT = 76.0
-STEP_GAP = 12.0
-STEP_INSET = 18.0
 
 HOST_X = 1010.0
 HOST_Y = 300.0
@@ -35,54 +31,11 @@ STEPS = (
     "systemd: state=restarted",
 )
 
-IDEMPOTENCE = (
-    "Each step has to be written so that running it twice is safe. "
-    "Nothing in Ansible checks that it is."
-)
-
 
 def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(scene, TITLE, SUBTITLE)
-    play_height = (
-        PLAY_HEADER + len(STEPS) * STEP_HEIGHT + (len(STEPS) - 1) * STEP_GAP + STEP_INSET
-    )
-    scene.rectangle(PLAY_X, PLAY_Y, PLAY_WIDTH, play_height, NEUTRAL)
-    scene.text(
-        PLAY_X + STEP_INSET,
-        PLAY_Y + 16.0,
-        "site.yml",
-        font_size=BODY_SIZE,
-        colour=INK_SOFT,
-        font_family=MONO,
-        width=PLAY_WIDTH - 2 * STEP_INSET,
-    )
-    for position, step in enumerate(STEPS):
-        top = PLAY_Y + PLAY_HEADER + position * (STEP_HEIGHT + STEP_GAP)
-        scene.rectangle(
-            PLAY_X + STEP_INSET,
-            top,
-            PLAY_WIDTH - 2 * STEP_INSET,
-            STEP_HEIGHT,
-            Tone(ANSIBLE.stroke, WHITE),
-        )
-        scene.text(
-            PLAY_X + STEP_INSET + 16.0,
-            top + (STEP_HEIGHT - BODY_SIZE * 1.25) / 2.0,
-            str(position + 1),
-            font_size=BODY_SIZE,
-            colour=ANSIBLE.stroke,
-            width=34.0,
-        )
-        scene.text(
-            PLAY_X + STEP_INSET + 60.0,
-            top + (STEP_HEIGHT - BODY_SIZE * 1.25) / 2.0,
-            step,
-            font_size=BODY_SIZE,
-            colour=INK_SOFT,
-            font_family=MONO,
-            width=PLAY_WIDTH - 2 * STEP_INSET - 76.0,
-        )
+    draw_play(scene, PLAY_X, PLAY_Y, PLAY_WIDTH, STEPS, filename="site.yml")
     connector(
         scene,
         [
