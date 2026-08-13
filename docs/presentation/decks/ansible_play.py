@@ -1,3 +1,15 @@
+"""A play as an ordered list of numbered steps, and the rule about running it twice.
+
+Two decks draw it: the orchestration deck quotes four Ansible tasks to show what
+a step is, and the machine-lifecycle deck lists the six things lichess installs
+on a new machine. Those want different geometry — a quoted command needs the
+monospace font and a taller row than a two-word topic does — so the step height
+and the step font are parameters while everything else is the figure.
+
+`IDEMPOTENCE` is here rather than on either slide because it is a claim about
+Ansible, and two decks stating it in two wordings would read as two claims.
+"""
+
 from __future__ import annotations
 
 from typing import Sequence

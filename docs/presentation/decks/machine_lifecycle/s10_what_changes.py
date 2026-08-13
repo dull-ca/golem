@@ -1,3 +1,12 @@
+"""Both halves at one geometry, so the difference is a shape rather than a claim.
+
+Artifact, arrow, machine — twice. On the left the artifact slot is drawn empty,
+in the dotted `INK_GHOST` the decks use everywhere for a thing that is not there
+yet; on the right it holds a source file. A sentence saying "today there is no
+file" would be arguable. An empty slot beside a full one is read before anyone
+has finished the subtitle.
+"""
+
 from __future__ import annotations
 
 from excalidraw import icons

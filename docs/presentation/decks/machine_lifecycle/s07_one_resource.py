@@ -1,3 +1,16 @@
+"""Nine field names, quoted from the Pulumi OVHcloud provider's own reference.
+
+`ovh.Dedicated.Server` covers all three steps: `ovhSubsidiary`, `plans`,
+`planOptions` and `range` order a machine that did not exist, `os` and
+`customizations` install the operating system, and `storages` carries the
+hardware RAID and partitioning blocks. The same fields appear on
+`ovh.Dedicated.ServerReinstallTask` for a server already delivered.
+
+These are the Pulumi spellings, which are the Terraform provider's names
+camel-cased by the bridge — `ovh_subsidiary`, `plan`, `plan_option`, `storage`.
+Slide 08 carries what they do not cover.
+"""
+
 from __future__ import annotations
 
 from excalidraw.layout import badge, note, slide_header

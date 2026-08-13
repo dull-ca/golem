@@ -1,9 +1,10 @@
 # The talks
 
-Two decks. **golem** answers three questions in order — what problem golem
+Three decks. **golem** answers three questions in order — what problem golem
 solves, how it works, how to use it. **orchestration** is a standalone primer on
 what a cluster does, built from icons, landing on the one job golem deliberately
-does not do.
+does not do. **machine-lifecycle** is a short argument about the five steps that
+bring one lichess machine into service, and which tool should take each.
 
 Build and run instructions are in `README.md`; what follows is the argument, what
 each slide has to say, and the format facts the generator depends on.
@@ -967,6 +968,104 @@ its subtitle is only "An Emet program is typed and functional, and evaluates to 
 list of scrolls" — so nothing false is drawn. The question is still open, and
 needs an answer
 before the talk is given if the comparison is going to be made out loud.
+
+---
+
+# The machine-lifecycle deck
+
+## The argument
+
+A lichess machine reaches service through five steps: order it from OVH, install
+Debian, lay out the partition table, let Ansible install the basics, then
+configure the services on it. **Four of those five are done by hand, and the one
+tool covers the one in the middle.** The manual work is the majority of the
+timeline rather than its edges, and drawing that shape honestly is most of what
+the deck has to say.
+
+The proposal is one tool per span: **Pulumi** takes 1 to 3, **Ansible keeps 4**,
+**golem** takes 5. Ansible being kept is as much of the argument as the two
+changes — this is not a rip-and-replace pitch, and golem is not trying to own
+step 1.
+
+**01 and 05 are one figure twice**, at identical geometry, and that is the deck's
+spine. Five step boxes, each with its own mark and a number on a timeline axis
+above it; three spans underneath saying who does each stretch. On 01 the spans
+read *by hand · Ansible · by hand*, the by-hand ones dashed in the fleet frames'
+notation. On 05 they read *Pulumi · Ansible · golem* at the same widths. The
+grouping is the same in both, so the second slide is the first one answered.
+
+**02 to 04 take the three spans of today one at a time.** 02 is the three panel
+steps as icon cards, and states that none of them is in the Ansible repository —
+step 4 is where the repository starts. 03 is the one step a tool owns, so it is
+also where Ansible gets defined: a controller that runs an ordered list of steps
+against a host over ssh, and a machine left with an Ansible border and no units
+on it. 04 fills that machine with dashed cells and gives the inventory's own
+counts.
+
+**06 to 10 are the two tools that would take over.** 06 draws Pulumi as program,
+engine, state and provider, with the arrow back from the provider drawn as well
+as the arrow out. 07 names the resource and its fields. 08 is the slide that
+keeps 07 honest. 09 draws golem only as far as this deck needs it — program,
+manifest, one scroll per host, an agent on each host — because the other two
+decks explain it at length. 10 closes on the artifact: the same three positions
+drawn twice, with the file slot empty on the left.
+
+## The ten slides
+
+| # | Title | Module | Form | Mode |
+|---|---|---|---|---|
+| 01 | How a machine comes to exist today | `s01_today.py` | step band, spans | explanation |
+| 02 | Steps 1 to 3: order, install, partition | `s02_order_install_partition.py` | icon cards | reference |
+| 03 | Step 4: Ansible installs the basics | `s03_the_basics.py` | play, one host | explanation |
+| 04 | Step 5: the services, by hand | `s04_the_services.py` | one machine, units | explanation |
+| 05 | The proposal | `s05_the_proposal.py` | step band, spans | explanation |
+| 06 | What Pulumi is | `s06_what_pulumi_is.py` | flow, state store | explanation |
+| 07 | Steps 1 to 3 are one Pulumi resource | `s07_one_resource.py` | rows of field chips | reference |
+| 08 | What the resource does not remove | `s08_where_a_person_stays.py` | three cards | reference |
+| 09 | What golem is | `s09_what_golem_is.py` | pipeline, scrolls, hosts | explanation |
+| 10 | What changes about steps 1 to 3 | `s10_what_changes.py` | before / after split | explanation |
+
+## What the Pulumi OVHcloud provider actually covers
+
+The weak claim was step 1, and it turned out to be the opposite of weak. Read
+before drawing, from the provider's own reference:
+
+- **Ordering is supported.** `ovh.Dedicated.Server` — Terraform's
+  `ovh_dedicated_server`, which the Pulumi provider bridges — opens with "Use
+  this resource to order and manage a dedicated server" and carries a section
+  titled *Arguments used to order a dedicated server*: `ovhSubsidiary`, `plans`,
+  `planOptions`, `range`. Supplying `serviceName` instead adopts a server that
+  already exists rather than ordering one.
+- **The OS install is on the same resource**, through `os` and `customizations`.
+  `ovh.Dedicated.ServerReinstallTask` does it imperatively for a server already
+  delivered; there is no `ServerInstallTask` any more.
+- **Partitioning is on the same resource too**, under `storages` →
+  `hardwareRaids` and `partitionings` → `layouts`, with `extras.lvs` and
+  `extras.zps` for LVM and ZFS.
+
+Three things bound the claim, and slide 08 says all three out loud:
+
+- The `order_cart` family exists **only as data sources**. Plan codes are read,
+  and a person picks which machine to buy. That is a decision the deck keeps
+  deliberately, the same position it takes on placement.
+- **The order is asynchronous.** The provider waits at most two hours for
+  delivery; past that the apply ends in error while OVHcloud goes on delivering.
+- **This is provider v2 and later.** v2.0.0 removed `ovh_me_installation_template`
+  and its partition-scheme resources, and moved partitioning onto the server
+  resource. Anyone who last looked before that release remembers a different API.
+
+## The band's geometry is not a parameter
+
+`decks/machine_lifecycle/lifecycle.py` holds the steps, their marks and every
+coordinate. Slides 01 and 05 pass spans and nothing else. A step that moved
+between the two frames, or a mark that changed, would make 05 read as a new
+figure instead of as 01 answered — the same reason `lichess_stack.py` and
+`fleet.py` keep their own constants.
+
+Both slides pass the same `id_namespace`, so an unchanged element keeps its id
+across the two documents. That is legal because they are separate documents and
+the merge step renames collisions; it is not a mechanism anything relies on, for
+the reasons under *Excalidraw+ transitions are unverified*.
 
 ## The Excalidraw wire format
 
