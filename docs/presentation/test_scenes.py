@@ -115,6 +115,7 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "orchestration/one-host-many-containers": (48, "the runtime's jobs, one line each"),
     "orchestration/many-hosts-the-cluster": (48, "three cluster parts and the nodes they name"),
     "orchestration/the-five-jobs": (63, "five named jobs, each with its own one-line gloss"),
+    "orchestration/what-lichess-uses": (40, "the five job names, the answer to each, and the legend"),
     "orchestration/placement-the-binding": (42, "three moments of the binding, named"),
     "orchestration/placement-what-it-weighs": (54, "four scheduler inputs, one line each"),
     "orchestration/lifecycle": (48, "five states, their transitions, and two named moves"),
