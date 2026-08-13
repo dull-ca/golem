@@ -1,65 +1,64 @@
 from __future__ import annotations
 
-from excalidraw.layout import note, slide_header, split_compare
-from excalidraw.palette import GAP, GOLEM
+from excalidraw.layout import note, slide_header
+from excalidraw.palette import ANSIBLE, GOLEM, MANUAL, THEIRS, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
-from excalidraw.type_scale import BODY_SIZE
+
+from . import stack
+from ..vocabulary import ORCHESTRATION_PARTS, PLACEMENT, SCALING
 
 SLUG = "where-golem-sits"
 TITLE = "Where golem sits"
 
-PANELS_Y = 200.0
-PANELS_HEIGHT = 420.0
-CLOSING_Y = 680.0
+SUBTITLE = "Nothing in golem chooses a node, and nothing in it moves a replica count."
 
-IS_BODY = (
-    "declarative desired state, and reversible enactment: every edit records its "
-    "inverse, so a change can be taken back exactly"
-)
-
-IS_NOT_BODY = (
-    "a scheduler. Nothing in golem chooses a node. The program names the host, "
-    "the same way a person would"
-)
+GOLEM_BANDS = (5, 6, 7)
+CLOSING_Y = 878.0
 
 
 def build() -> Scene:
     scene = Scene(SLUG)
-    slide_header(
+    slide_header(scene, TITLE, SUBTITLE)
+    stack.draw(
         scene,
-        "Where golem sits",
-        "One of the five jobs is deliberately left out.",
+        band_tones={
+            **{number: THEIRS for number in stack.BOUGHT_BANDS},
+            4: ANSIBLE,
+            **{number: GOLEM for number in GOLEM_BANDS},
+        },
+        column_tone=GOLEM,
+        part_tones={
+            **{part.number: Tone(GOLEM.stroke, WHITE) for part in ORCHESTRATION_PARTS},
+            PLACEMENT: MANUAL,
+            SCALING: MANUAL,
+        },
+        part_stroke_styles={PLACEMENT: "dashed", SCALING: "dashed"},
     )
-    is_panel, is_not_panel = split_compare(
+    stack.gutter_bar(
         scene,
-        MARGIN,
-        PANELS_Y,
-        CONTENT_WIDTH,
-        PANELS_HEIGHT,
-        ("golem is", GOLEM),
-        ("golem is not", GAP),
+        (0, stack.LANES - 1),
+        (min(GOLEM_BANDS), max(GOLEM_BANDS)),
+        "golem",
+        GOLEM,
+        detail="you write the state a host should be in, and every change it makes "
+        "records how to undo itself",
     )
-    note(
-        scene,
-        is_panel.body.x,
-        is_panel.body.y,
-        IS_BODY,
-        width=is_panel.body.width,
-        font_size=BODY_SIZE,
+    stack.gutter_bar(
+        scene, (0, stack.LANES - 1), (4, 4), "Ansible, as before", ANSIBLE
     )
-    note(
+    stack.gutter_bar(
         scene,
-        is_not_panel.body.x,
-        is_not_panel.body.y,
-        IS_NOT_BODY,
-        width=is_not_panel.body.width,
-        font_size=BODY_SIZE,
+        (0, stack.LANES - 1),
+        (min(stack.BOUGHT_BANDS), max(stack.BOUGHT_BANDS)),
+        "Bought",
+        THEIRS,
+        detail="golem replaces none of this",
     )
     note(
         scene,
         MARGIN,
         CLOSING_Y,
-        "Placement stays a decision a person makes, written down and versioned.",
+        "Placement and scaling stay decisions a person makes, written down and versioned.",
         width=CONTENT_WIDTH,
     )
     return scene

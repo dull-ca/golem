@@ -21,5 +21,11 @@ SLIDE_MODULE_NAMES: tuple[str, ...] = (
     "s15_scaling",
     "s16_storage_and_secrets",
     "s17_who_provides_which_piece",
-    "s18_where_golem_sits",
+    "s18_the_stack",
+    "s19_which_product",
+    "s20_ansible_pushes",
+    "s21_ansible_steps",
+    "s22_a_promise",
+    "s23_on_demand",
+    "s24_where_golem_sits",
 )
