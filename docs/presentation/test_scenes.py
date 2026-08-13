@@ -123,7 +123,13 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "orchestration/connectivity-the-service": (50, "three stage cards, each a name and one gloss"),
     "orchestration/storage-and-secrets": (38, "two halves, each a name and one gloss"),
     "orchestration/who-provides-which-piece": (41, "eight row labels and four column headers"),
-    "orchestration/where-golem-sits": (63, "two claims stated as sentences, on purpose"),
+    "orchestration/the-stack": (112, "seven bands, each a name and a line, and the two halves named"),
+    "orchestration/which-product": (120, "the same seven bands, plus six products and what each answers"),
+    "orchestration/ansible-pushes": (70, "thirty real host names, and the controller named"),
+    "orchestration/ansible-steps": (72, "four Ansible tasks quoted, and the idempotence rule stated"),
+    "orchestration/a-promise": (76, "three hosts named twice, and the two properties named"),
+    "orchestration/on-demand": (100, "three moments on a timeline, each with a one-line gloss"),
+    "orchestration/where-golem-sits": (126, "the seven bands and the five jobs, plus who answers each"),
 }
 
 
