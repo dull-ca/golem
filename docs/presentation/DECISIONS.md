@@ -5,7 +5,7 @@ each slide says; this records the decisions behind them, including the ones we g
 wrong first and had to reverse. It exists so a later session — or a later
 conversation with Dr. Dub — starts from the conclusions rather than re-deriving them.
 
-Four rounds of review produced everything below. Where a decision replaced an earlier
+Five rounds of review produced everything below. Where a decision replaced an earlier
 one, both are here; the reversals are the most useful part of the file.
 
 ## What exists
@@ -14,8 +14,11 @@ Two decks, generated from Python, never hand-authored as JSON.
 
 - **`decks/golem/`** — 33 slides. The talk: what problem golem solves, how it works,
   how to use it.
-- **`decks/orchestration/`** — 17 slides. A standalone primer on cloud orchestration
+- **`decks/orchestration/`** — 24 slides. A standalone primer on cloud orchestration
   that stands on its own and lands on where golem sits.
+- **`decks/`** above them — `vocabulary.py` (the five job names), `lichess_fleet.py`
+  (the thirty hosts) and `machines.py` (the machine box and the fleet layout), all
+  shared because both decks draw them.
 - **`excalidraw/`** — the generator. `scene.py` element factories, `layout.py`
   composite forms, `icons.py` a drawn mark vocabulary, `type_scale.py` the font
   floors, `palette.py` semantic tones, `text.py` font-advance estimation, `assets.py`
@@ -218,6 +221,56 @@ Every round must pass, and each is run for real rather than asserted:
    rewritten, dropped, or reordered. This is the only true oracle for the format; the
    Python test is the always-offline check.
 5. nothing outside `docs/presentation/`
+
+## The orchestration deck's audience is the constraint on it
+
+The golem deck can assume interest. This one is for a room that is not sure what
+golem or Emet are, so **a slide that is mostly sentences is wrong for it**. The
+round that rebuilt its ending replaced two panels of prose with seven slides, and
+the rule that produced them is: draw the relationship, do not state it.
+
+Three consequences worth keeping:
+
+- **Answer a list on the slide after you name it.** 07 names the five jobs; 08
+  repeats 07's boxes at 07's geometry with the answer for lichess on each row. The
+  repeated form is the point — the second slide reads as the first one answered.
+- **Steal a form from the other deck rather than inventing one.** The new stack is
+  the golem deck's layered-stack form; the buy-versus-configure tones are the ones
+  its first two slides already use; the by-hand chips are the fleet frames'
+  notation. A newcomer learns one notation, not four.
+- **Where both decks need a figure, it moves up, it does not get copied.** The
+  thirty hosts and the machine box now live in `decks/`, not in `decks/golem/`. The
+  extraction was verified by building the tree before and after and diffing: no
+  slide changed.
+
+## Promise theory is right about golem's shape and wrong about its schedule
+
+The framing invites four sentences that the code does not support, and the fifth
+round's whole accuracy risk was writing one of them onto a slide. What is true:
+
+- **No host acts on another.** golemd has no outbound HTTP client at all.
+- **No central controller decides.** `golemctl` ships manifest bytes; each daemon
+  picks its own scroll and diffs it against its own journal.
+- **golem reverses only what it recorded**, so it never removes something it did
+  not add.
+
+What is false, and is listed with its evidence under *The claims 23 and 24 must
+not make* in `SPEC.md`: continuous convergence, self-healing, eventual
+consistency, and a controller that computes each host's work. golemd has no
+timer, no watcher and no loop; a reconcile happens only when something POSTs
+`/manifest`; and drift is reported by an opt-in host-reading plan and never
+corrected. Peer gossip is ADR 0039's design with no code behind it.
+
+**Declarative-on-demand is still a sharp contrast with Ansible**, and it is the
+one the deck draws: an ordered list of steps run from a controller, against a
+host handed the state it should be in and left to work out its own. Slide 23
+exists to say the schedule out loud, because slide 22 would otherwise be read as
+promising a loop.
+
+The consequence this framing earns: **golem does not sequence a cross-host move**
+because no agent can promise on another's behalf. On the golem deck that fact is a
+caveat under slide 23; here it falls out of the model, and slide 22 draws it that
+way.
 
 ## Open questions
 

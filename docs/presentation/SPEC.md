@@ -91,7 +91,7 @@ difference between two slides, and nothing depends on a transition — see
 *Excalidraw+ transitions are unverified*.
 
 **A person choosing the host was never the defect.** golem keeps that choice — 24
-and 25 here, and 17 of the orchestration deck, all say so — so no slide may frame
+and 25 here, and 24 of the orchestration deck, all say so — so no slide may frame
 manual placement as a deficiency golem outgrew. What December lacked was
 mechanism: no drain, no rollback, no preview, and no way to say *this service now
 runs on host B* as one change. 23 names that last one and only that one.
@@ -269,7 +269,7 @@ The hub is the one box on this canvas that must name the thing, and it once read
 `Layer 6 / one word` — a fragment of the slide's own subtitle, unreadable alone.
 Placement's gloss was "the scheduler — the only part that answers which node",
 which asserted a property before the noun had been defined; the definition is now
-the gloss, and the only-part claim is a closing line on slide 08 of the
+the gloss, and the only-part claim is a closing line on slide 09 of the
 orchestration deck, where it belongs.
 
 Closing line: each of these is done by a platform, a script, or a person. A person
@@ -312,7 +312,7 @@ watched for drift or failure. Closing line: layer 6 had no single owner.
 Four icon-led cards with flow arrows: **OVH vrack** (network link) → **dnsmasq**
 (DNS lookup) → **SRV records** (service) → **Clients** (container). The cards make
 the point end to end, so the closing bar is gone; the same claim, phrased flatly,
-is the closing line of slide 13 of the orchestration deck.
+is the closing line of slide 14 of the orchestration deck.
 
 ### 11 · December: how a service reached a host — `s11_december_placement.py` — *icon cards* — **explanation**
 
@@ -321,7 +321,7 @@ down) → **generated config** (registry) → **systemd quadlets** (container) �
 **lifecycle** (host). Closing bar: a person chose which host ran each service.
 
 That line used to read "A human chose the host. Every time." — the same fact
-delivered as an indictment, and it contradicted slide 17 of the orchestration
+delivered as an indictment, and it contradicted slide 24 of the orchestration
 deck. The fact stays; the verdict goes. Slide 12 names the defect that was real.
 
 ### 12 · December: moving a service — `s12_december_moving_a_service.py` — *numbered steps* — **explanation**
@@ -361,12 +361,21 @@ No subtitle and no closing line: five numbered rows announce that they are five
 problems, and "the cost of writing changes as steps" was a fragment standing in
 for the argument the speaker makes out loud.
 
-## 14 to 23 · The fleet — `decks/golem/fleet.py`, `decks/golem/lichess_fleet.py`
+## 14 to 23 · The fleet — `decks/machines.py`, `decks/lichess_fleet.py`, `decks/golem/fleet.py`
 
-Ten frames over the machines lichess actually has. `lichess_fleet.py` carries the
-thirty hosts named in `lichess-sysadmin/ansible/inventory/hosts.yaml`, and for
-each the number of units on it split by the inventory's own `managed` field. Names
-and counts only: no addresses, keys or tokens go near a projected slide.
+Ten frames over the machines lichess actually has. `decks/lichess_fleet.py`
+carries the thirty hosts named in
+`lichess-sysadmin/ansible/inventory/hosts.yaml`, and for each the number of units
+on it split by the inventory's own `managed` field. Names and counts only: no
+addresses, keys or tokens go near a projected slide.
+
+The data and the machine box sit **above both decks**, in `decks/`, because the
+orchestration deck draws the same thirty machines on its slide 20.
+`decks/machines.py` holds the box, the cell grid, the unit legend, the scroll
+mark and the wide-frame geometry; `decks/golem/fleet.py` holds what only the
+golem deck means by them — the six kinds of work, the tool chips, and the
+per-frame states the sequence steps through. A second copy would drift from the
+inventory the first was read from.
 
 **`managed: false` means Ansible does not touch that unit**, and the field
 defaults to true, so an entry without it is Ansible's. Sixty of the eighty-two
@@ -694,22 +703,55 @@ desired-state store — you name what should run, and the control plane chooses
 where.
 
 **07 names the five jobs**, using the same five names as slide 06 of the golem
-deck, because they are the same five jobs. 08 through 15 then take four of them
-one at a time: placement (08, 09), lifecycle (10), health and reconciliation
-(11), and supporting plumbing spread across connectivity (12, 13), scaling (14)
-and storage and secrets (15).
+deck, because they are the same five jobs. **08 answers them for lichess**, at
+07's geometry so the two read as one slide and its answer: systemd keeps
+lifecycle, health is a mix of by hand, monitoring and systemd, and placement,
+plumbing and scaling are done by hand. The answer chips take the fleet frames'
+notation — red and dashed for by hand, solid for a tool — so both decks say "by
+hand" the same way, and the count sits in the subtitle because a viewer would
+otherwise have to count it.
 
-**08 is the slide the deck exists for.** Placement is the only part that chooses
+09 through 16 then take four of the jobs one at a time: placement (09, 10),
+lifecycle (11), health and reconciliation (12), and supporting plumbing spread
+across connectivity (13, 14), scaling (15) and storage and secrets (16).
+
+**09 is the slide the deck exists for.** Placement is the only part that chooses
 a node, and it is drawn as an act: an unplaced workload, the candidate nodes, and
 the binding that settled it. The definition comes first — a binding is the record
 that this workload runs on that node — and the only-part claim follows it as the
 closing line.
 
-**16 and 17 land it.** 16 is one matrix across Docker, Swarm, Nomad and
-Kubernetes — who provides which piece. 17 says where golem sits: declarative
-desired state plus reversible enactment, and deliberately **not** a scheduler.
+**17 to 24 land it.** 17 is one matrix across Docker, Swarm, Nomad and
+Kubernetes — who provides which piece. Then a sequence that starts on the whole
+stack and ends on golem's band of it.
 
-## The seventeen slides
+**18 and 19 are one figure twice.** 18 draws the seven bands and cuts them where
+a provider stops selling and you start configuring; 19 keeps the geometry, drops
+the colour out of the bands, and lets six answers carry it — OVH, by hand,
+Ansible, Kubernetes, Nomad, Portainer. Several bars cover the same band, two
+bands carry no bar at all, and no bar runs the height of the stack. Portainer is
+a dashed enclosure over Kubernetes and Nomad rather than a bar, because it is a
+web UI over them and not a band of its own.
+
+**20 and 21 are how Ansible works**, and they are two slides because coverage and
+mechanism are two claims. 20 is the thirty real hosts with one box reaching every
+one of them in a single run. 21 is one play: four quoted tasks running top to
+bottom into a host, the host left as whatever they left behind, and the rule that
+each task has to be *written* to be safe to run twice — the model does not check.
+
+**22 and 23 are what golem is**, for a room that has not met it. 22 draws the
+promise: each machine holds the state it should be in, acts on itself, and the
+arrow between two machines is crossed out. Nothing orders one against the next,
+which is why a service moving between hosts can be on both or on neither for a
+moment — the same limitation slide 23 of the golem deck states, arriving here as
+a consequence of the model rather than a caveat bolted on. 23 is the timeline
+that keeps 22 honest: a submit, then drift that nothing responds to, then a
+host-reading plan that reports and changes nothing.
+
+**24 closes on 18's stack** with golem's bands marked and, inside the
+orchestration column, placement and scaling drawn in the by-hand notation.
+
+## The twenty-four slides
 
 | # | Title | Module | Form | Mode |
 |---|---|---|---|---|
@@ -720,16 +762,23 @@ desired state plus reversible enactment, and deliberately **not** a scheduler.
 | 05 | One host, many containers | `s05_one_host_many_containers.py` | host with workloads | explanation |
 | 06 | Many hosts: the cluster | `s06_many_hosts_the_cluster.py` | cluster map | explanation |
 | 07 | The five jobs | `s07_the_five_jobs.py` | numbered stack | reference |
-| 08 | Placement: the binding | `s08_placement_the_binding.py` | binding mark | explanation |
-| 09 | What the scheduler weighs | `s09_placement_what_it_weighs.py` | hub / cards | explanation |
-| 10 | Lifecycle | `s10_lifecycle.py` | state machine | reference |
-| 11 | Health and reconciliation | `s11_health_and_reconciliation.py` | loop | explanation |
-| 12 | Connectivity: addressing | `s12_connectivity_addressing.py` | before / after split | explanation |
-| 13 | Connectivity: the service | `s13_connectivity_the_service.py` | icon cards, flow | explanation |
-| 14 | Scaling | `s14_scaling.py` | replica set | explanation |
-| 15 | Storage and secrets | `s15_storage_and_secrets.py` | split | explanation |
-| 16 | Who provides which piece | `s16_who_provides_which_piece.py` | matrix | reference |
-| 17 | Where golem sits | `s17_where_golem_sits.py` | before / after split | explanation |
+| 08 | What lichess uses for each | `s08_what_lichess_uses.py` | numbered stack, chips | reference |
+| 09 | Placement: the binding | `s09_placement_the_binding.py` | binding mark | explanation |
+| 10 | What the scheduler weighs | `s10_placement_what_it_weighs.py` | hub / cards | explanation |
+| 11 | Lifecycle | `s11_lifecycle.py` | state machine | reference |
+| 12 | Health and reconciliation | `s12_health_and_reconciliation.py` | loop | explanation |
+| 13 | Connectivity: addressing | `s13_connectivity_addressing.py` | before / after split | explanation |
+| 14 | Connectivity: the service | `s14_connectivity_the_service.py` | icon cards, flow | explanation |
+| 15 | Scaling | `s15_scaling.py` | replica set | explanation |
+| 16 | Storage and secrets | `s16_storage_and_secrets.py` | split | explanation |
+| 17 | Who provides which piece | `s17_who_provides_which_piece.py` | matrix | reference |
+| 18 | The stack, and where you take over | `s18_the_stack.py` | layered stack | explanation |
+| 19 | Which product answers which part | `s19_which_product.py` | layered stack, span bars | explanation |
+| 20 | Ansible: one controller, every machine | `s20_ansible_pushes.py` | machine fleet | explanation |
+| 21 | Ansible: a play is an ordered list of steps | `s21_ansible_steps.py` | numbered steps | explanation |
+| 22 | A promise is about your own state | `s22_a_promise.py` | machines, self-loops | explanation |
+| 23 | golem reconciles when it is told to | `s23_on_demand.py` | timeline | explanation |
+| 24 | Where golem sits | `s24_where_golem_sits.py` | layered stack | explanation |
 
 **Each of 01 to 06 and 13 opens on a definition, because each introduces a term.**
 A process is a running program sharing one machine with every other program. A
@@ -742,18 +791,68 @@ for a changing set of instances. Those seven lines are the deck's whole vocabula
 teaching, and each replaced an evocation — "Layered, content-addressed, and never
 edited in place", "Desired against actual, forever", "Two ways to wire it".
 
-Slide 16's shape, and why it is worth drawing: Docker on one host leaves almost
+Slide 17's shape, and why it is worth drawing: Docker on one host leaves almost
 everything to you; Swarm and Kubernetes provide almost all of it; Nomad provides
 most of it but leaves supporting plumbing and secrets to Consul and Vault. That
 asymmetry is the information.
 
-Slide 17 makes exactly two claims, and no more. golem is declarative desired
-state and reversible enactment — every edit records its inverse, so a change can
-be taken back exactly. golem is not a scheduler: nothing in it chooses a node, and
-the program names the host the way a person would. Its closing line — placement
-stays a decision a person makes, written down and versioned — is the deck's
-position on manual placement, and slides 11 and 12 of the golem deck are written
-to agree with it. If the two ever disagree again, this is the one that is right.
+### The shared stack figure — `decks/orchestration/stack.py`
+
+Seven bands, bottom to top: facility and power, bare metal, network, operating
+system, application hosting, tools and runtimes, the applications. Orchestration
+is a column beside the top three rather than a band above them, for the reason
+the golem deck gives its own layer 6 — it acts across those bands. Bands 1 to 4
+run full width; the column stands beside 5, 6 and 7.
+
+`draw()` takes tones, tags and a per-part tone, and **no geometry**. 18, 19 and 24
+are pixel-identical, so flipping between them changes colour and nothing else.
+The right-hand gutter is where a slide says who answers what: `gutter_bar` spans
+the bands one answer covers, and three lanes let two answers to the same band sit
+side by side. `enclose` is the dashed box for something that sits over other
+answers without being one of them.
+
+The buy-versus-configure tones on 18 are `THEIRS` and `YOURS`, the same pair the
+golem deck's first two slides use, because it is the same distinction.
+
+### 23 · golem reconciles when it is told to
+
+The slide that stops the promise-theory framing from overclaiming, and every line
+on it was checked against the code before it was drawn.
+
+golemd has **no timer, no watcher and no loop**. `main` binds a listener and
+serves; the only long-lived call is `axum::serve`, and `packaging/golemd.service`
+has no timer sibling. A reconcile happens if and only if something POSTs
+`/manifest`. Startup runs `recover()`, which settles an interrupted attempt and
+does not re-apply the last scroll — a daemon restarted on a drifted host does
+nothing.
+
+The apply diff **never reads the host**. `plan(prior: &[Outcome], desired:
+&Scroll)` folds the write-ahead log, so a glyph whose content id has not moved is
+a `Noop` that enacts nothing. Re-submitting the same manifest after someone
+`apt remove`s a package fixes nothing.
+
+Drift is **reported, never corrected**. `golemctl plan --against-host` is the
+only thing that looks at the host, it is read-only, and ADR 0058 states that no
+`Observation` reaches `run_reconcile`.
+
+So the slide says *on demand*, and does not say *eventually consistent*. There is
+no anti-entropy mechanism, and the peer gossip that would spread a manifest host
+to host is ADR 0039's design with **no code behind it** — golemd has no HTTP
+client outside its dev-dependencies. See *The claims 23 and 24 must not make*.
+
+### 24 · Where golem sits
+
+golem takes bands 5, 6 and 7. Band 4, the operating system, stays Ansible's — the
+golem deck's slide 24 says golem replaces neither OS installation nor the basics
+of networking and security, and bands 1 to 3 are bought.
+
+Inside the orchestration column, **placement and scaling are drawn in the by-hand
+notation** and the other three in golem's green. Nothing in golem chooses a node,
+and nothing in it carries a replica count: two instances are two glyphs someone
+wrote down. The closing line — placement and scaling stay decisions a person
+makes, written down and versioned — is the deck's position on manual placement,
+and slides 11 and 12 of the golem deck are written to agree with it. If the two
+ever disagree again, this is the one that is right.
 
 **"Answers" is not a verb for a tool.** A platform provides, a person decides, a
 runtime does. Legends across both decks read *provided by the platform* / *you
@@ -761,6 +860,38 @@ provide it*, and the same discipline retires "a playbook reached it" and "the
 image carries it".
 
 ---
+
+## The claims 23 and 24 must not make
+
+Promise theory and eventual consistency are the natural framing for what golem
+does, and four of the sentences they suggest are false. Each was checked against
+the code, and no slide may reinstate one without the code to back it.
+
+**"golemd continuously converges the host."** There is no timer, no interval and
+no background task anywhere in `apps/golemd/`. One bounded pass per submitted
+manifest.
+
+**"golem self-heals" or "corrects drift automatically."** Drift on a glyph whose
+content id has not moved becomes a `Noop` that enacts nothing
+(`apps/golemd/src/foreman.rs`, and the test
+`reapplying_same_scroll_is_noop_but_still_journals`). ADR 0058: nothing in the
+host-reading plan starts a unit or clears a latch.
+
+**"Eventually consistent."** There is no anti-entropy mechanism. ADR 0039 is a
+*proposal* — it would flood raw manifest bytes to a static peer set, it disclaims
+anti-entropy in its own consequences, and it has no code: golemd carries no HTTP
+client outside `[dev-dependencies]`, no `--peer` flag and no `[fleet]` config.
+
+**"A central controller works out what each host should do."** `golemctl` ships
+manifest bytes. Each daemon selects its own scroll by host name and computes its
+own diff against its own journal, and ADR 0058 rejects client-side diffing
+outright.
+
+One qualification on the promise reading itself, which no slide currently draws:
+a manifest that omits a host resolves to the *empty* scroll, which is a removal
+order rather than silence. `golemctl fleet` works around it by skipping hosts the
+manifest does not name, and ADR 0039 lists fixing it in golemd as a precondition
+for gossip.
 
 ## Corrections against the code
 

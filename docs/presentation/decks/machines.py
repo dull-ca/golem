@@ -1,3 +1,22 @@
+"""One machine box, and the thirty of them laid out as a fleet.
+
+A machine box is not a miniature of a layer stack. What sits inside it is its
+units — the services, ingress entries, databases and workloads the Ansible
+inventory records for that host, in `lichess_fleet.py`. Two channels carry who
+keeps what, and they are independent: the **border** says which tool has done
+machine-level work on the host, and each **cell** says who keeps that one unit.
+A frame can therefore show wide coverage and shallow depth at once.
+
+Both decks draw from here. The golem deck runs ten frames over the fleet; the
+orchestration deck shows the same thirty machines under one Ansible controller.
+A second copy of the geometry would drift from this one, and the two decks would
+stop reading as the same fleet.
+
+The wide-frame geometry is constant and is not a parameter — a box that moved
+between frames would read as a different fleet. A slide that needs one machine
+large passes its own width and height to `draw_machine`.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

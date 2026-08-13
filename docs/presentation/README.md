@@ -6,8 +6,10 @@ Two decks, generated as Excalidraw files by a small Python program.
   to use it. Slides 14 to 23 are one sequence over the thirty machines the lichess
   Ansible inventory names, and what changes between frames is which units sit on
   them and who keeps each one.
-- **`orchestration`** — seventeen slides: cloud orchestration from first
-  principles, standing on its own but landing where golem lands.
+- **`orchestration`** — twenty-four slides: cloud orchestration from first
+  principles, standing on its own but landing where golem lands. It closes on a
+  seven-band stack drawn three times — who sells each part, which product answers
+  it, and which part is golem's.
 
 Slides are written as code so that a colour, a label or a whole figure can change
 in one place and every slide that shares it follows.
@@ -31,7 +33,7 @@ that includes the files the `restore()` check reads, so run `build.py` first.
 dist/
   golem/01-what-you-buy.excalidraw … 33-plan-against-host.excalidraw
   golem/golem-deck.excalidraw
-  orchestration/01-a-process-on-a-host.excalidraw … 17-where-golem-sits.excalidraw
+  orchestration/01-a-process-on-a-host.excalidraw … 24-where-golem-sits.excalidraw
   orchestration/orchestration-deck.excalidraw
   icons.excalidraw
 ```
@@ -84,7 +86,7 @@ how a deck starts to read as one slide shown many times.
 | Form | Builder | Reads as |
 | --- | --- | --- |
 | responsibility matrix | `matrix` | who owns each cell of a grid |
-| layered stack | `decks/golem/lichess_stack.draw` | what sits on what |
+| layered stack | `decks/golem/lichess_stack.draw`, `decks/orchestration/stack.draw` | what sits on what |
 | radial hub | `hub_and_satellites` | one thing that is really several |
 | swimlane pipeline | `swimlane`, `pipeline` | stages, in order, with flow |
 | icon-led cards | `icon_card_row` | a sequence you recognise by its marks |
@@ -94,17 +96,23 @@ how a deck starts to read as one slide shown many times.
 | card rhythm | `card_rhythm` | groups of unequal weight, 3 then 2 then 1 |
 | timeline | `timeline` | a spectrum with named positions |
 | coverage bars | `coverage_bars` | how far something reached, row by row |
-| machine fleet | `decks/golem/fleet.draw` | which units sit on which machine, and who keeps each one |
+| machine fleet | `decks/machines.draw_fleet`, `decks/golem/fleet.draw` | which units sit on which machine, and who keeps each one |
 
 Two rations hold in the golem deck: **at most two matrix slides**, and **the
 six-layer lichess figure appears exactly twice** — slide 05 introduces it, slide
 07 recolours it. Both draw it at identical geometry, so flipping between them
 changes colour and nothing else.
 
-Three modules hold a figure that more than one slide draws: `lichess_stack.py`
-(slides 05 and 07), `lichess_ladder.py` (03 and 04) and `fleet.py` (14 to 23).
-Each takes state and no geometry — the constants inside are the figure, and a
-slide that passed its own size would make the same figure jump between slides.
+Five modules hold a figure that more than one slide draws:
+`decks/golem/lichess_stack.py` (slides 05 and 07), `decks/golem/lichess_ladder.py`
+(03 and 04), `decks/golem/fleet.py` (14 to 23), `decks/machines.py` (those frames
+and the orchestration deck's 20 and 22) and `decks/orchestration/stack.py` (18, 19
+and 24). Each takes state and no geometry — the constants inside are the figure,
+and a slide that passed its own size would make the same figure jump between
+slides.
+
+Anything both decks draw lives in `decks/`, not under one of them. A copy would
+drift, and the two decks would stop reading as the same fleet.
 
 ## The icon vocabulary
 
@@ -128,9 +136,10 @@ repeated inside a dashed enclosure, `binding` is `pending_workload` over three
 `host` marks, `replica_set` is `container` repeated. There is one `container`, so
 a container looks the same in both decks.
 
-Two marks the fleet sequence needs live in `decks/golem/fleet.py` rather than
-here: the machine box and the scroll. Both are specific to that sequence, and the
-catalogue is for what both decks share.
+Two marks the fleet frames need live in `decks/machines.py` rather than here: the
+machine box and the scroll. Both carry state that an icon does not — a host name,
+a count of units, who keeps each one — so they take a `Machine` rather than a
+size and a tone.
 
 `binding` is the one to understand. Assignment is an act, not a noun: an unplaced
 workload, the nodes that could have taken it, and the one arrow that settled it.
@@ -183,9 +192,9 @@ Colours come from `excalidraw.palette` by meaning (`YOURS`, `PLATFORM`, `GAP`,
 Strings both decks must agree on — the five names of the orchestration jobs —
 live in `decks/vocabulary.py`. Import them; never retype one.
 
-The fleet's hosts and unit counts live in `decks/golem/lichess_fleet.py`, derived
-from `lichess-sysadmin/ansible/inventory/hosts.yaml` and written out so a reviewer
-can check them against it. Host names and counts only — the inventory is full of
+The fleet's hosts and unit counts live in `decks/lichess_fleet.py`, derived from
+`lichess-sysadmin/ansible/inventory/hosts.yaml` and written out so a reviewer can
+check them against it. Host names and counts only — the inventory is full of
 addresses, MACs and key names, and none of that goes on a slide.
 
 Then rebuild and check.
