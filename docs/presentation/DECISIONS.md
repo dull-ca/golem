@@ -5,7 +5,7 @@ each slide says; this records the decisions behind them, including the ones we g
 wrong first and had to reverse. It exists so a later session — or a later
 conversation with Dr. Dub — starts from the conclusions rather than re-deriving them.
 
-Six rounds of review produced everything below. Where a decision replaced an earlier
+Seven rounds of review produced everything below. Where a decision replaced an earlier
 one, both are here; the reversals are the most useful part of the file.
 
 ## What exists
@@ -14,7 +14,7 @@ Three decks, generated from Python, never hand-authored as JSON.
 
 - **`decks/golem/`** — 33 slides. The talk: what problem golem solves, how it works,
   how to use it.
-- **`decks/orchestration/`** — 24 slides. A standalone primer on cloud orchestration
+- **`decks/orchestration/`** — 26 slides. A standalone primer on cloud orchestration
   that stands on its own and lands on where golem sits.
 - **`decks/machine_lifecycle/`** — 10 slides. How a lichess machine comes to exist,
   and which tool should take each of the five steps.
@@ -234,9 +234,10 @@ the rule that produced them is: draw the relationship, do not state it.
 
 Three consequences worth keeping:
 
-- **Answer a list on the slide after you name it.** 07 names the five jobs; 08
-  repeats 07's boxes at 07's geometry with the answer for lichess on each row. The
-  repeated form is the point — the second slide reads as the first one answered.
+- **Answer a list on the slide after you name it.** 07 names the five jobs; 08,
+  09 and 10 repeat 07's boxes at 07's geometry with an answer on each row. The
+  repeated form is the point — the second slide reads as the first one answered,
+  and the third and fourth read as the same slide at a later date.
 - **Steal a form from the other deck rather than inventing one.** The new stack is
   the golem deck's layered-stack form; the buy-versus-configure tones are the ones
   its first two slides already use; the by-hand chips are the fleet frames'
@@ -245,6 +246,65 @@ Three consequences worth keeping:
   thirty hosts and the machine box now live in `decks/`, not in `decks/golem/`. The
   extraction was verified by building the tree before and after and diffing: no
   slide changed.
+
+## One list answered three times, and what the notation had to carry
+
+Slide 08 is now the first of three states — today, the plan lichess drew up in
+December, and with golem. The three share `decks/orchestration/job_answers.py`,
+which takes the answers and no geometry, so the only thing that moves between
+them is the right-hand column.
+
+### A tool that enacts a placement is not a tool that chooses one
+
+This is the round's whole accuracy risk, and it is a repeat of one already
+recorded above: **manual placement is a choice, not a defect**, and golem is
+deliberately not a scheduler. Slide 26 draws placement in the by-hand notation,
+so a slide 10 that handed the placement row to golem would contradict the deck
+sixteen slides later, and would restate the error an earlier golem deck was
+rewritten to remove.
+
+A single chip cannot say *a person decided this and the tool carried it out*, so
+the notation grew a second relation. Chips separated by a gap are a mix — health
+is by hand, monitoring and systemd, and means all three. Chips joined by an arrow
+are a decision and its enactment, and **each chip carries the half it does**:
+`by hand / chooses the host` → `golem / installs it there`. The by-hand mark is
+on placement in all three states; only the enactor changes. The two small labels
+are what make the pair unmisreadable by someone who sees slide 10 and no other,
+and they are the reason the arrow needs no legend entry.
+
+### Check what golem does at runtime before drawing it beside systemd
+
+Lifecycle on 10 is **golem and systemd, as the same pair**, because
+`apply_systemd` shells out — `systemctl daemon-reload`, then `systemctl enable
+--now`, with a `systemctl start` fallback for generated units
+(`apps/golemd/src/reconcilers.rs`). golem sets a unit's state through systemd;
+systemd is what runs it and what restarts it. Drawing golem in systemd's place
+would have been false, and the honest answer was two chips rather than one.
+
+Health is the same question answered the other way: golem gets **no chip** on the
+reconciliation row, on 10 or anywhere, because drift is reported and never
+corrected. A green chip there is *The claims 25 and 26 must not make* in another
+form.
+
+### The row that never changes hands
+
+All three states carry a configuration-management row, and Ansible holds it in
+every one. It is not one of the five jobs, so it is drawn outside them — below a
+rule, unnumbered, unboxed, its label in the recessive tone, its chip still in the
+answer column so it stays comparable. Four signals and no caption, because a
+caption saying "this one is different" is the thing a drawing should not need.
+
+That row is also the sequence's quiet argument: the part nobody proposes to
+replace is the part that never moves.
+
+### The bottom of the canvas was already full
+
+The five boxes are slide 07's geometry and cannot move without breaking the
+07 → 08 flip, which left 92px between the last box and the bottom margin — a rule
+and one row, or a row and the legend, but not both. The legend moved into the
+header, right-aligned beside the title, on all three. Worth knowing before anyone
+tries to add a seventh row: there is no room, and taking it from the five boxes
+breaks the one thing that makes 07 through 10 read as one slide.
 
 ## Promise theory is right about golem's shape and wrong about its schedule
 
@@ -257,7 +317,7 @@ round's whole accuracy risk was writing one of them onto a slide. What is true:
 - **golem reverses only what it recorded**, so it never removes something it did
   not add.
 
-What is false, and is listed with its evidence under *The claims 23 and 24 must
+What is false, and is listed with its evidence under *The claims 25 and 26 must
 not make* in `SPEC.md`: continuous convergence, self-healing, eventual
 consistency, and a controller that computes each host's work. golemd has no
 timer, no watcher and no loop; a reconcile happens only when something POSTs
@@ -266,13 +326,13 @@ corrected. Peer gossip is ADR 0039's design with no code behind it.
 
 **Declarative-on-demand is still a sharp contrast with Ansible**, and it is the
 one the deck draws: an ordered list of steps run from a controller, against a
-host handed the state it should be in and left to work out its own. Slide 23
-exists to say the schedule out loud, because slide 22 would otherwise be read as
+host handed the state it should be in and left to work out its own. Slide 25
+exists to say the schedule out loud, because slide 24 would otherwise be read as
 promising a loop.
 
 The consequence this framing earns: **golem does not sequence a cross-host move**
 because no agent can promise on another's behalf. On the golem deck that fact is a
-caveat under slide 23; here it falls out of the model, and slide 22 draws it that
+caveat under slide 23; here it falls out of the model, and slide 24 draws it that
 way.
 
 ## The machine-lifecycle deck: a shape carries the argument
@@ -356,10 +416,18 @@ without seeing this, which is the argument for the assertion over the eye.
   comparison needs an answer before it is made out loud.
 - **Whether the inventory-derived numbers above are right.** They come from a
   hand-written indent parser, since `yaml` is not in the golem devenv.
-- **Four things verified only by reasoning:** Excalidraw's real dotted stroke (the
+- **Five things verified only by reasoning:** Excalidraw's real dotted stroke (the
   check renderer approximates it with a dash array), roughness (the editor draws
   sketchier strokes than the check renders), the embedded emblem (never rasterised),
-  and projector legibility (judged from 1600px renders, not a projector).
+  projector legibility (judged from 1600px renders, not a projector), and the
+  handover arrow's head (the local renderer draws no arrowheads, so a 46px arrow
+  beside a 46px chip has been checked as an element and not as a picture).
+- **What December's plan actually said.** Placement by Ansible, and plumbing by
+  Ansible with dnsmasq and SRV records, come from Dr. Dub's own table for slide 09
+  and were not read out of any lichess source. The golem deck's slides 10 to 12
+  describe December as it *ran* — `hosts.py`, generated config, quadlets — so the
+  two are only consistent if the plan is a thing distinct from what was running.
+  Slide 09's title says "planned" for that reason.
 - **Whether lichess would keep `site.yml` as the play's name** on the lifecycle
   deck's slide 03. The six basics are the brief's own list; the filename is the
   orchestration deck's placeholder carried over.
