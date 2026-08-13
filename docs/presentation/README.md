@@ -6,10 +6,11 @@ Three decks, generated as Excalidraw files by a small Python program.
   to use it. Slides 14 to 23 are one sequence over the thirty machines the lichess
   Ansible inventory names, and what changes between frames is which units sit on
   them and who keeps each one.
-- **`orchestration`** — twenty-four slides: cloud orchestration from first
-  principles, standing on its own but landing where golem lands. It closes on a
-  seven-band stack drawn three times — who sells each part, which product answers
-  it, and which part is golem's.
+- **`orchestration`** — twenty-six slides: cloud orchestration from first
+  principles, standing on its own but landing where golem lands. Slides 08 to 10
+  answer the five jobs three times over — today, December's plan, with golem —
+  and it closes on a seven-band stack drawn three times: who sells each part,
+  which product answers it, and which part is golem's.
 - **`machine-lifecycle`** — ten slides: the five steps that bring one lichess
   machine into service, four of which are done by hand today, and one tool per
   span instead. Slides 01 and 05 are the same five-step band at the same
@@ -37,7 +38,7 @@ that includes the files the `restore()` check reads, so run `build.py` first.
 dist/
   golem/01-what-you-buy.excalidraw … 33-plan-against-host.excalidraw
   golem/golem-deck.excalidraw
-  orchestration/01-a-process-on-a-host.excalidraw … 24-where-golem-sits.excalidraw
+  orchestration/01-a-process-on-a-host.excalidraw … 26-where-golem-sits.excalidraw
   orchestration/orchestration-deck.excalidraw
   machine-lifecycle/01-today.excalidraw … 10-what-changes.excalidraw
   machine-lifecycle/machine-lifecycle-deck.excalidraw
@@ -103,6 +104,7 @@ how a deck starts to read as one slide shown many times.
 | timeline | `timeline` | a spectrum with named positions |
 | coverage bars | `coverage_bars` | how far something reached, row by row |
 | machine fleet | `decks/machines.draw_fleet`, `decks/golem/fleet.draw` | which units sit on which machine, and who keeps each one |
+| answered list | `decks/orchestration/job_answers.draw` | a named list of jobs, and who answers each row |
 | step band | `decks/machine_lifecycle/lifecycle.draw` | ordered steps, and who covers each stretch of them |
 | ordered play | `decks/ansible_play.draw_play` | numbered steps run top to bottom |
 
@@ -111,12 +113,13 @@ six-layer lichess figure appears exactly twice** — slide 05 introduces it, sli
 07 recolours it. Both draw it at identical geometry, so flipping between them
 changes colour and nothing else.
 
-Seven modules hold a figure that more than one slide draws:
+Eight modules hold a figure that more than one slide draws:
 `decks/golem/lichess_stack.py` (slides 05 and 07), `decks/golem/lichess_ladder.py`
 (03 and 04), `decks/golem/fleet.py` (14 to 23), `decks/machines.py` (those frames,
-the orchestration deck's 20 and 22, and the lifecycle deck's 03, 04 and 09),
-`decks/orchestration/stack.py` (18, 19 and 24), `decks/ansible_play.py` (the
-orchestration deck's 21 and the lifecycle deck's 03) and
+the orchestration deck's 22 and 24, and the lifecycle deck's 03, 04 and 09),
+`decks/orchestration/stack.py` (20, 21 and 26),
+`decks/orchestration/job_answers.py` (08, 09 and 10), `decks/ansible_play.py` (the
+orchestration deck's 23 and the lifecycle deck's 03) and
 `decks/machine_lifecycle/lifecycle.py` (01 and 05). Each takes state and no geometry — the constants inside are the figure,
 and a slide that passed its own size would make the same figure jump between
 slides.
