@@ -166,6 +166,33 @@ def extent(element: dict) -> tuple[float, float, float, float]:
     )
 
 
+# A text element's declared width is the box it may wrap inside, not the ink. A
+# title given the full content width leaves most of that box empty, so testing the
+# declared box for collisions would forbid drawing anything to the right of a short
+# title. This narrows the box to the widest line actually set, placed by textAlign.
+def inked_extent(element: dict) -> tuple[float, float, float, float]:
+    font_family = element.get("fontFamily", 1)
+    drawn = min(
+        element["width"],
+        measured_width(element["text"], element["fontSize"], font_family),
+    )
+    slack = element["width"] - drawn
+    offset = {"left": 0.0, "center": slack / 2.0, "right": slack}[element["textAlign"]]
+    left = element["x"] + offset
+    return left, element["y"], left + drawn, element["y"] + element["height"]
+
+
+def overlaps(
+    first: tuple[float, float, float, float], second: tuple[float, float, float, float]
+) -> bool:
+    return (
+        first[0] < second[2]
+        and second[0] < first[2]
+        and first[1] < second[3]
+        and second[1] < first[3]
+    )
+
+
 def monospace_line_advance(line: str, font_size: float) -> float:
     return len(line) * TRUE_MONOSPACE_ADVANCE * font_size
 
@@ -408,6 +435,24 @@ class GeneratedScenes(unittest.TestCase):
                     self.assertGreaterEqual(top, MARGIN_TOP)
                     self.assertLessEqual(right, MARGIN_RIGHT)
                     self.assertLessEqual(bottom, MARGIN_BOTTOM)
+
+    def test_no_image_sits_on_drawn_text(self) -> None:
+        for name, payload in slide_documents(self.documents).items():
+            images = [
+                element for element in payload["elements"] if element["type"] == "image"
+            ]
+            if not images:
+                continue
+            for image in images:
+                for element in payload["elements"]:
+                    if element["type"] != "text" or element.get("containerId"):
+                        continue
+                    with self.subTest(
+                        name=name, image=image["id"], text=element["text"][:32]
+                    ):
+                        self.assertFalse(
+                            overlaps(extent(image), inked_extent(element))
+                        )
 
     def test_bound_labels_fit_inside_their_container(self) -> None:
         for name, payload in self.documents.items():
