@@ -17,10 +17,10 @@ ICON_SHEET_FILENAME = "icons.excalidraw"
 ICON_SHEET_KEY = "icon-sheet"
 
 COLUMNS = 5
-GRID_Y = 200.0
-CELL_HEIGHT = 178.0
-ICON_SIZE = 84.0
-LABEL_GAP = 12.0
+GRID_Y = 190.0
+CELL_HEIGHT = 148.0
+ICON_SIZE = 72.0
+LABEL_GAP = 10.0
 
 
 def build_icon_sheet() -> Scene:

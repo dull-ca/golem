@@ -587,6 +587,101 @@ def rollback(
     return _captured(scene, first, x, y, ROLLBACK_ASPECT * size, size)
 
 
+SOURCE_FILE_ASPECT = 0.78
+
+
+def source_file(
+    scene: Scene, x: float, y: float, size: float, *, tone: Tone = CONTROL
+) -> Mark:
+    first = len(scene.elements)
+    width = SOURCE_FILE_ASPECT * size
+    fold = 0.24 * size
+    scene.rectangle(x, y, width, size, tone, radius=False)
+    scene.line(
+        [(x + width - fold, y), (x + width - fold, y + fold), (x + width, y + fold)],
+        stroke=tone.stroke,
+        stroke_width=1,
+    )
+    scene.line(
+        [(x + width - fold, y), (x + width, y + fold)],
+        stroke=tone.stroke,
+        stroke_width=1,
+    )
+    for row, indent in ((0.44, 0.14), (0.60, 0.26), (0.76, 0.14)):
+        scene.line(
+            [
+                (x + indent * width, y + row * size),
+                (x + 0.86 * width, y + row * size),
+            ],
+            stroke=tone.stroke,
+            stroke_width=1,
+        )
+    return _captured(scene, first, x, y, width, size)
+
+
+OS_INSTALL_HOST_FRACTION = 0.52
+OS_INSTALL_ASPECT = HOST_ASPECT * OS_INSTALL_HOST_FRACTION
+
+
+def os_install(
+    scene: Scene,
+    x: float,
+    y: float,
+    size: float,
+    *,
+    tone: Tone = NODE,
+    payload_tone: Tone | None = None,
+) -> Mark:
+    first = len(scene.elements)
+    payload = payload_tone if payload_tone is not None else tone
+    width = OS_INSTALL_ASPECT * size
+    slab_height = 0.12 * size
+    for row in (0.0, 0.15):
+        scene.rectangle(
+            x + 0.26 * width,
+            y + row * size,
+            0.48 * width,
+            slab_height,
+            payload,
+            radius=False,
+        )
+    scene.arrow(
+        [(x + width / 2.0, y + 0.31 * size), (x + width / 2.0, y + 0.45 * size)],
+        stroke=payload.stroke,
+        stroke_width=2,
+    )
+    host(scene, x, y + (1.0 - OS_INSTALL_HOST_FRACTION) * size, OS_INSTALL_HOST_FRACTION * size, tone=tone)
+    return _captured(scene, first, x, y, width, size)
+
+
+DISK_LAYOUT_ASPECT = 1.90
+DISK_LAYOUT_PARTITIONS = (0.34, 0.18, 0.30, 0.18)
+
+
+def disk_layout(
+    scene: Scene, x: float, y: float, size: float, *, tone: Tone = STORE
+) -> Mark:
+    first = len(scene.elements)
+    width = DISK_LAYOUT_ASPECT * size
+    for top, shares in (
+        (0.0, DISK_LAYOUT_PARTITIONS),
+        (0.58, tuple(reversed(DISK_LAYOUT_PARTITIONS))),
+    ):
+        cursor = x
+        for share in shares:
+            scene.rectangle(
+                cursor,
+                y + top * size,
+                share * width,
+                0.42 * size,
+                tone,
+                radius=False,
+                stroke_width=1,
+            )
+            cursor += share * width
+    return _captured(scene, first, x, y, width, size)
+
+
 IconDrawer = Callable[..., Mark]
 
 
@@ -616,6 +711,9 @@ CATALOGUE: tuple[IconSpec, ...] = (
     IconSpec("replica set", replica_set, REPLICA_SET_ASPECT),
     IconSpec("drain", drain, DRAIN_ASPECT),
     IconSpec("rollback", rollback, ROLLBACK_ASPECT),
+    IconSpec("source file", source_file, SOURCE_FILE_ASPECT),
+    IconSpec("operating system install", os_install, OS_INSTALL_ASPECT),
+    IconSpec("disk layout", disk_layout, DISK_LAYOUT_ASPECT),
 )
 
 
