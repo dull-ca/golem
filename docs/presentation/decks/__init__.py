@@ -18,7 +18,7 @@ from typing import Callable, NamedTuple
 
 from excalidraw.scene import Scene
 
-DECK_PACKAGE_NAMES: tuple[str, ...] = ("golem", "orchestration")
+DECK_PACKAGE_NAMES: tuple[str, ...] = ("golem", "orchestration", "machine_lifecycle")
 
 
 class Slide(NamedTuple):
