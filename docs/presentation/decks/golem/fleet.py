@@ -1,19 +1,14 @@
-"""Thirty named machines, each holding the units that actually run on it.
+"""What the golem deck adds to the shared fleet: the six kinds of work.
 
-A machine box is not a miniature of the six-layer figure. The six layers are
-kinds of *work* — configuring the core OS, running the applications — so they
-ride on the tools and the arrows, never inside a host. What sits inside a host
-is its units: the services, ingress entries, databases and workloads the Ansible
-inventory records for it, in `lichess_fleet.py`.
+The machine box and the fleet layout are in `decks/machines.py`, which both
+decks draw from. What is here is the vocabulary only this deck speaks — the six
+layers as *kinds of work* rather than strata inside a machine, the tool chips
+that name who does which of them, and the per-frame machine states the sequence
+steps through.
 
-Two channels, and they are independent on purpose. The **border** says which
-tool has done machine-level work on that host. The **cells** say who keeps each
-unit — a tool, or a person. A frame can therefore show wide coverage and shallow
-depth at once, which is the shape lichess is actually in.
-
-Geometry is constant across the wide frames and is not a parameter: they are
-read as one figure changing, and a box that moved between them would read as a
-different fleet.
+A layer is an activity a tool performs on a machine, so the layer tones ride on
+the chips and the arrows and never inside a host. That is what lets one frame
+say Ansible touches all thirty machines and keeps the units on eight.
 """
 
 from __future__ import annotations

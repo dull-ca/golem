@@ -1,3 +1,20 @@
+"""Seven bands from the power to the applications, drawn once by three slides.
+
+Orchestration is a column beside the top three bands rather than a band above
+them, for the reason the golem deck gives its own layer 6: it acts across those
+bands rather than sitting on them.
+
+`draw()` takes tones and tags but no geometry. Slide 18 colours the bands by who
+buys and who configures, 19 neutralises them so the product bars carry the
+colour, and 24 marks golem's. The three have to be pixel-identical so that
+flipping between them changes colour and nothing else.
+
+The gutter to the right of the figure is where a slide says who answers what: a
+`gutter_bar` spans the bands one answer covers, and `enclose` draws a dashed box
+around bars for a thing that sits over them without being a band of its own.
+Lanes exist so two answers to the same band can sit side by side.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
