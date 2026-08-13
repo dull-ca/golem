@@ -32,6 +32,7 @@ from ..machines import (
     Fleet,
     Machine,
     bare_machines,
+    baseline_machines,
     cell_area,
     cell_rect,
     draw_fleet,
@@ -39,6 +40,7 @@ from ..machines import (
     index_of,
     machine_centre_x,
     machine_origin,
+    scroll_mark,
     unit_legend,
 )
 from .lichess_stack import BAND_LAYERS, DESCRIPTIVE_LAYER_TONES, ORCHESTRATION_LAYER
@@ -96,10 +98,6 @@ class Tool(NamedTuple):
     holds: str
     tone: Tone
     work: tuple[int, ...] = ()
-
-
-def baseline_machines(keeper: Tone) -> tuple[Machine, ...]:
-    return tuple(Machine(host.name, keeper=keeper) for host in HOSTS)
 
 
 def units_all_by_hand(keeper: Tone) -> tuple[Machine, ...]:
@@ -237,36 +235,6 @@ def on_one_machine(scene: Scene, chips: int) -> None:
         colour=INK_SOFT,
         width=TOOL_WIDTH,
     )
-
-
-def scroll_mark(
-    scene: Scene,
-    x: float,
-    y: float,
-    width: float,
-    height: float,
-    label: str,
-    tone: Tone,
-    *,
-    font_size: float = CAPTION_SIZE,
-) -> dict:
-    roll = height * 0.16
-    body = scene.rectangle(
-        x, y + roll, width, height - 2 * roll, Tone(tone.stroke, WHITE), stroke_width=2
-    )
-    for top in (y, y + height - roll):
-        scene.rectangle(x, top, width, roll, tone, stroke_width=2)
-    scene.text(
-        x,
-        y + (height - font_size * 1.25) / 2.0,
-        label,
-        font_size=font_size,
-        colour=tone.stroke,
-        align="center",
-        font_family=MONO,
-        width=width,
-    )
-    return body
 
 
 def reaches_the_fleet(scene: Scene, middle_y: float, stroke: str) -> None:

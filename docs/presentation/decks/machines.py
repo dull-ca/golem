@@ -79,6 +79,10 @@ def bare_machines() -> tuple[Machine, ...]:
     return tuple(Machine(host.name) for host in HOSTS)
 
 
+def baseline_machines(keeper: Tone) -> tuple[Machine, ...]:
+    return tuple(Machine(host.name, keeper=keeper) for host in HOSTS)
+
+
 def name_band(font_size: float) -> float:
     return font_size * 1.25 + 6.0
 
@@ -244,6 +248,36 @@ def unit_legend(scene: Scene, x: float = FLEET_X, y: float = LEGEND_Y) -> None:
         colour=INK_SOFT,
         width=measured_width("nobody has it written down", CAPTION_SIZE) + 8,
     )
+
+
+def scroll_mark(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    label: str,
+    tone: Tone,
+    *,
+    font_size: float = CAPTION_SIZE,
+) -> dict:
+    roll = height * 0.16
+    body = scene.rectangle(
+        x, y + roll, width, height - 2 * roll, Tone(tone.stroke, WHITE), stroke_width=2
+    )
+    for top in (y, y + height - roll):
+        scene.rectangle(x, top, width, roll, tone, stroke_width=2)
+    scene.text(
+        x,
+        y + (height - font_size * 1.25) / 2.0,
+        label,
+        font_size=font_size,
+        colour=tone.stroke,
+        align="center",
+        font_family=MONO,
+        width=width,
+    )
+    return body
 
 
 def draw_fleet(scene: Scene, machines: Sequence[Machine]) -> Fleet:
