@@ -7,7 +7,7 @@ from excalidraw.text import MONO
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
 from . import fleet
-from .lichess_fleet import TOOL_KEPT_HOSTS
+from ..lichess_fleet import TOOL_KEPT_HOSTS
 
 SLUG = "golem-scrolls-compiled"
 TITLE = "golem: emetc compiles one scroll per host"

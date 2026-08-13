@@ -7,7 +7,7 @@ from excalidraw.text import MONO
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
 from . import fleet
-from .lichess_fleet import HOSTS
+from ..lichess_fleet import HOSTS
 
 SLUG = "golem-scrolls-dispatched"
 TITLE = "golem: each scroll goes to the machine it names"
