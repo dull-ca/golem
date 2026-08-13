@@ -130,6 +130,16 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "orchestration/a-promise": (76, "three hosts named twice, and the two properties named"),
     "orchestration/on-demand": (100, "three moments on a timeline, each with a one-line gloss"),
     "orchestration/where-golem-sits": (126, "the seven bands and the five jobs, plus who answers each"),
+    "machine-lifecycle/today": (74, "five steps, each named and glossed, plus who does each of them"),
+    "machine-lifecycle/order-install-partition": (60, "three steps, each a name and what is chosen in it"),
+    "machine-lifecycle/the-basics": (78, "six tasks of the play, and the idempotence rule stated"),
+    "machine-lifecycle/the-services": (78, "four kinds of unit, the legend, and the inventory's counts"),
+    "machine-lifecycle/the-proposal": (74, "the same five steps as 01, answered by three tools"),
+    "machine-lifecycle/what-pulumi-is": (70, "four parts of the engine named, and what it compares"),
+    "machine-lifecycle/one-resource": (58, "three steps and the nine resource fields, quoted verbatim"),
+    "machine-lifecycle/where-a-person-stays": (92, "three limits of the resource, each needing a precise sentence"),
+    "machine-lifecycle/what-golem-is": (80, "three hosts named twice, the pipeline, and the reversal stated"),
+    "machine-lifecycle/what-changes": (84, "two halves of a comparison, each with its own three labels"),
 }
 
 
