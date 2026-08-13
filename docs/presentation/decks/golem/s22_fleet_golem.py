@@ -22,12 +22,12 @@ TITLE = "The fleet: what golem keeps"
 
 SUBTITLE = "The same 8 machines, five kinds of work instead of three. 22 are still by hand."
 
-SYMBOL_X = 1180.0
+SYMBOL_X = 1440.0
 SYMBOL_Y = 826.0
 SYMBOL_HEIGHT = 96.0
-CREDIT_X = 1300.0
-CREDIT_Y = 852.0
-CREDIT_WIDTH = 236.0
+CREDIT_X = 1016.0
+CREDIT_Y = 874.0
+CREDIT_WIDTH = 404.0
 
 TOOLS = (
     fleet.Tool("Ansible", "the core OS, network and security", ANSIBLE, work=(1,)),
