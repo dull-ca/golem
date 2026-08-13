@@ -12,6 +12,8 @@ SLIDE_MODULE_NAMES: tuple[str, ...] = (
     "s06_many_hosts_the_cluster",
     "s07_the_five_jobs",
     "s08_what_lichess_uses",
+    "s09_the_december_plan",
+    "s10_with_golem",
     "s11_placement_the_binding",
     "s12_placement_what_it_weighs",
     "s13_lifecycle",
