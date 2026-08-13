@@ -8,21 +8,31 @@ from . import job_answers
 from .job_answers import (
     ANSIBLE,
     BY_HAND,
+    DNSMASQ,
+    GOLEM,
     MONITORING,
+    SRV_RECORDS,
     SYSTEMD,
+    decided_then_enacted,
     mixture,
 )
 
-SLUG = "what-lichess-uses"
-TITLE = "What lichess uses for each"
+SLUG = "with-golem"
+TITLE = "What lichess would use with golem"
 
-SUBTITLE = "Four of the five are done by hand."
+SUBTITLE = "A person still chooses the host; golem installs the service there."
 
 ANSWERS = {
-    PLACEMENT: mixture(BY_HAND),
-    LIFECYCLE: mixture(SYSTEMD),
+    PLACEMENT: decided_then_enacted(
+        BY_HAND.captioned("chooses the host"),
+        GOLEM.captioned("installs it there"),
+    ),
+    LIFECYCLE: decided_then_enacted(
+        GOLEM.captioned("enables and starts it"),
+        SYSTEMD.captioned("keeps it running"),
+    ),
     HEALTH: mixture(BY_HAND, MONITORING, SYSTEMD),
-    PLUMBING: mixture(BY_HAND),
+    PLUMBING: mixture(ANSIBLE, DNSMASQ, SRV_RECORDS),
     SCALING: mixture(BY_HAND),
 }
 
