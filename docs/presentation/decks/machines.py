@@ -225,34 +225,44 @@ def golem_mark(scene: Scene, x: float, y: float, size: float, tone: Tone | None)
     )
 
 
-def unit_legend(scene: Scene, x: float = FLEET_X, y: float = LEGEND_Y) -> None:
-    entries = (
-        (Tone(INK_SOFT, INK_GHOST), "solid", "a unit a tool keeps"),
-        (BY_HAND, "dashed", "a unit kept by hand"),
+def _swatch_entry(
+    scene: Scene, x: float, y: float, tone: Tone, stroke_style: str, caption: str
+) -> float:
+    scene.rectangle(
+        x,
+        y,
+        LEGEND_SWATCH * 1.4,
+        LEGEND_SWATCH,
+        tone,
+        radius=False,
+        stroke_width=2,
+        stroke_style=stroke_style,
     )
-    cursor = x
-    for tone, stroke_style, caption in entries:
-        scene.rectangle(
-            cursor,
-            y,
-            LEGEND_SWATCH * 1.4,
-            LEGEND_SWATCH,
-            tone,
-            radius=False,
-            stroke_width=2,
-            stroke_style=stroke_style,
-        )
-        scene.text(
-            cursor + LEGEND_SWATCH * 1.4 + 12,
-            y + (LEGEND_SWATCH - CAPTION_SIZE * 1.25) / 2.0,
-            caption,
-            font_size=CAPTION_SIZE,
-            colour=INK_SOFT,
-            width=measured_width(caption, CAPTION_SIZE) + 8,
-        )
-        cursor += LEGEND_SWATCH * 1.4 + 12 + measured_width(caption, CAPTION_SIZE) + LEGEND_GAP
     scene.text(
-        cursor,
+        x + LEGEND_SWATCH * 1.4 + 12,
+        y + (LEGEND_SWATCH - CAPTION_SIZE * 1.25) / 2.0,
+        caption,
+        font_size=CAPTION_SIZE,
+        colour=INK_SOFT,
+        width=measured_width(caption, CAPTION_SIZE) + 8,
+    )
+    return x + LEGEND_SWATCH * 1.4 + 12 + measured_width(caption, CAPTION_SIZE) + LEGEND_GAP
+
+
+def tool_unit_entry(scene: Scene, x: float, y: float) -> float:
+    return _swatch_entry(
+        scene, x, y, Tone(INK_SOFT, INK_GHOST), "solid", "a unit a tool keeps"
+    )
+
+
+def hand_unit_entry(scene: Scene, x: float, y: float) -> float:
+    return _swatch_entry(scene, x, y, BY_HAND, "dashed", "a unit kept by hand")
+
+
+def unknown_entry(scene: Scene, x: float, y: float) -> float:
+    caption = "nobody has it written down"
+    scene.text(
+        x,
         y + (LEGEND_SWATCH - UNKNOWN_SIZE * 1.25) / 2.0,
         "?",
         font_size=UNKNOWN_SIZE,
@@ -260,13 +270,20 @@ def unit_legend(scene: Scene, x: float = FLEET_X, y: float = LEGEND_Y) -> None:
         width=24,
     )
     scene.text(
-        cursor + 30,
+        x + 30,
         y + (LEGEND_SWATCH - CAPTION_SIZE * 1.25) / 2.0,
-        "nobody has it written down",
+        caption,
         font_size=CAPTION_SIZE,
         colour=INK_SOFT,
-        width=measured_width("nobody has it written down", CAPTION_SIZE) + 8,
+        width=measured_width(caption, CAPTION_SIZE) + 8,
     )
+    return x + 30 + measured_width(caption, CAPTION_SIZE) + LEGEND_GAP
+
+
+def unit_legend(scene: Scene, x: float = FLEET_X, y: float = LEGEND_Y) -> None:
+    cursor = tool_unit_entry(scene, x, y)
+    cursor = hand_unit_entry(scene, cursor, y)
+    unknown_entry(scene, cursor, y)
 
 
 def scroll_mark(
