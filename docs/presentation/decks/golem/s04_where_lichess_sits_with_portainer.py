@@ -6,7 +6,7 @@ from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.type_scale import CAPTION_SIZE
 
 from . import lichess_ladder
-from .lichess_fleet import HOST_COUNT
+from ..lichess_fleet import HOST_COUNT
 from .lichess_stack import DESCRIPTIVE_LAYER_TONES
 
 SLUG = "where-lichess-sits-with-portainer"
