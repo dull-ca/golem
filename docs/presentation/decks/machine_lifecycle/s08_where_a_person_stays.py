@@ -19,7 +19,7 @@ from __future__ import annotations
 from excalidraw.layout import LabelledBox, badge, box_row, slide_header
 from excalidraw.palette import GAP, NEUTRAL, WHITE, YOURS, Tone
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
-from excalidraw.type_scale import CAPTION_SIZE
+from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE, HEADING_SIZE
 
 SLUG = "where-a-person-stays"
 TITLE = "What the resource does not remove"
@@ -27,7 +27,7 @@ TITLE = "What the resource does not remove"
 SUBTITLE = "One decision that stays with a person, one failure mode, and one version fact."
 
 CARDS_Y = 268.0
-CARD_HEIGHT = 396.0
+CARD_HEIGHT = 340.0
 CARD_GAP = 34.0
 CARD_WIDTH = (CONTENT_WIDTH - 2 * CARD_GAP) / 3.0
 TAG_Y = CARDS_Y + CARD_HEIGHT + 20.0
@@ -75,6 +75,8 @@ def build() -> Scene:
         box_height=CARD_HEIGHT,
         gap=CARD_GAP,
         align="left",
+        title_font_size=HEADING_SIZE,
+        detail_font_size=BODY_SIZE,
     )
     for position, (card, tag) in enumerate(CARDS):
         badge(
