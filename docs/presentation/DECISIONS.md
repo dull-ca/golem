@@ -1,24 +1,27 @@
 # Presentation — what we decided, and why
 
-A design log for the two decks under `docs/presentation/`. `SPEC.md` records what
+A design log for the decks under `docs/presentation/`. `SPEC.md` records what
 each slide says; this records the decisions behind them, including the ones we got
 wrong first and had to reverse. It exists so a later session — or a later
 conversation with Dr. Dub — starts from the conclusions rather than re-deriving them.
 
-Five rounds of review produced everything below. Where a decision replaced an earlier
+Six rounds of review produced everything below. Where a decision replaced an earlier
 one, both are here; the reversals are the most useful part of the file.
 
 ## What exists
 
-Two decks, generated from Python, never hand-authored as JSON.
+Three decks, generated from Python, never hand-authored as JSON.
 
 - **`decks/golem/`** — 33 slides. The talk: what problem golem solves, how it works,
   how to use it.
 - **`decks/orchestration/`** — 24 slides. A standalone primer on cloud orchestration
   that stands on its own and lands on where golem sits.
+- **`decks/machine_lifecycle/`** — 10 slides. How a lichess machine comes to exist,
+  and which tool should take each of the five steps.
 - **`decks/`** above them — `vocabulary.py` (the five job names), `lichess_fleet.py`
-  (the thirty hosts) and `machines.py` (the machine box and the fleet layout), all
-  shared because both decks draw them.
+  (the thirty hosts), `machines.py` (the machine box and the fleet layout) and
+  `ansible_play.py` (the play as an ordered list), all shared because more than one
+  deck draws them.
 - **`excalidraw/`** — the generator. `scene.py` element factories, `layout.py`
   composite forms, `icons.py` a drawn mark vocabulary, `type_scale.py` the font
   floors, `palette.py` semantic tones, `text.py` font-advance estimation, `assets.py`
@@ -155,7 +158,7 @@ question; nothing depends on the answer.
 
 ### Icons are drawn from primitives; the golem emblem is the one import
 
-Twenty marks in `icons.py`, no external assets. The exception is golem's own emblem —
+Twenty-two marks in `icons.py`, no external assets. The exception is golem's own emblem —
 **robot-golem by Lorc, game-icons.net, CC BY 3.0**, vendored under `assets/`, embedded
 as a data URL so the build stays offline, credited in four places.
 
@@ -272,6 +275,79 @@ because no agent can promise on another's behalf. On the golem deck that fact is
 caveat under slide 23; here it falls out of the model, and slide 22 draws it that
 way.
 
+## The machine-lifecycle deck: a shape carries the argument
+
+### Draw the figure twice and change only one channel
+
+The claim is that four of five steps are done by hand and the tool covers the one
+in the middle. That is a **shape**, and a shape is read faster than it is argued.
+Slides 01 and 05 draw the same five steps, the same marks and the same geometry,
+and differ in the three spans underneath: *by hand · Ansible · by hand* becomes
+*Pulumi · Ansible · golem*. The spans keep their widths, so the eye reads which
+stretches changed and which did not.
+
+This is the orchestration deck's "answer a list on the slide after you name it"
+applied to a figure rather than a list, and it is why every coordinate lives in
+`lifecycle.py` and neither slide passes geometry.
+
+### Verify the tooling claim before drawing it, and expect the verdict to move
+
+The brief flagged step 1 — ordering a machine — as the weak claim, on the belief
+that OVHcloud's order-cart API was not cleanly wrapped. Reading the provider's own
+reference reversed that: **`ovh.Dedicated.Server` orders bare metal**, and its
+docs open with "Use this resource to order and manage a dedicated server". All
+three of steps 1 to 3 are that one resource.
+
+The caveats worth saying out loud turned out to be different ones, and slide 08
+is where they go: the `order_cart` family exists only as **data sources**, so a
+person still picks the plan; the order is **asynchronous**, and the provider gives
+up waiting after two hours while OVHcloud goes on delivering; and partitioning
+moved onto the server resource in **provider v2.0.0**, which removed the
+installation-template resources anyone with older knowledge will reach for.
+
+The general lesson is the one the earlier rounds kept learning about golem's own
+code: **the checkable claim is the one to check, and checking it usually changes
+what the slide should say** — here in the direction of a stronger claim with
+sharper limits, rather than a weaker one.
+
+### A tool gets explained where it appears, not in a block of explanations
+
+The obvious structure was a block of three slides — what Pulumi is, what Ansible
+is, what golem is. Ansible's would have repeated slide 03, which already has to
+draw a play and a host because step 4 is the one step a tool owns today. So
+Ansible's definition sits on 03, where it is simultaneously the truth about today
+and the introduction, and the block has two slides in it. **A slide that would be
+a second telling is a slide that should not exist.**
+
+### An absent artifact is drawn absent, not described as missing
+
+Slide 10 draws artifact, arrow, machine twice. On the left the artifact slot is
+empty — dotted `INK_GHOST`, the notation the fleet frames already use for a thing
+that is not there yet. A sentence saying there is no file today would be arguable
+in the room; an empty box beside a full one is not.
+
+### A mark takes one tone
+
+`icon_card_row` passes a card's `icon_tone` and nothing else, so a composite mark
+whose second tone is a hard-coded default cannot be recoloured by the slide that
+draws it. The first version of `os_install` drew violet slabs on a red card, and
+`disk_layout` distinguished allocated from free space by a fill, which vanishes
+under any tone whose fill is white. Both now say what they mean with one tone —
+`disk_layout` divides by unequal widths, `os_install` defaults its payload to the
+tone it was given.
+
+### An image may not sit on drawn text, and a test says so
+
+The golem emblem on slide 22 was drawn at x 1180 while the legend's last caption
+runs to x 1291, so the robot stood on "nobody has it written down" in every
+render. The emblem moved to the bottom-right corner and the credit to the strip
+under the legend.
+
+The check that now guards it measures a text element by its **widest set line**,
+not by its declared box: a title given the full content width would otherwise
+forbid drawing anything to the right of it. Two rounds looked at that slide
+without seeing this, which is the argument for the assertion over the eye.
+
 ## Open questions
 
 - **What language Emet actually resembles.** The original description, "inspired by
@@ -284,6 +360,13 @@ way.
   check renderer approximates it with a dash array), roughness (the editor draws
   sketchier strokes than the check renders), the embedded emblem (never rasterised),
   and projector legibility (judged from 1600px renders, not a projector).
+- **Whether lichess would keep `site.yml` as the play's name** on the lifecycle
+  deck's slide 03. The six basics are the brief's own list; the filename is the
+  orchestration deck's placeholder carried over.
+- **Whether the Pulumi provider's ordering path has been exercised against
+  OVHcloud.** The resource, its fields and the two-hour wait are documented; that
+  the deck's claim is *the documentation says so* is a weaker claim than *we have
+  ordered a machine this way*, and the difference is worth stating out loud.
 - **Whether "workloads, quadlets and ingress are Emet libraries that compile down to
   the four glyphs"** holds. It is asserted in `CLAUDE.md` and was not confirmed against
   Emet source.

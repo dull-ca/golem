@@ -1,3 +1,17 @@
+"""The five steps, and the spans that say who does each of them.
+
+Slides 01 and 05 draw this figure. The steps, their marks and every coordinate
+are fixed here and are not parameters, because the whole argument is that the
+two slides differ in one thing: the spans. A step that moved or a mark that
+changed between them would make the second slide read as a new figure rather
+than as the first one answered.
+
+A span's tone reaches the step boxes and the numbers above them through
+`draw`, so a step is coloured by whoever the caller said covers it and no slide
+states a colour twice. `by_hand` dashes the span, which is the notation the
+fleet frames already use for work no tool keeps.
+"""
+
 from __future__ import annotations
 
 from typing import Callable, NamedTuple, Sequence

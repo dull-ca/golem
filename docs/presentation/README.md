@@ -1,6 +1,6 @@
 # Talk diagrams
 
-Two decks, generated as Excalidraw files by a small Python program.
+Three decks, generated as Excalidraw files by a small Python program.
 
 - **`golem`** — thirty-three slides: what problem golem solves, how it works, how
   to use it. Slides 14 to 23 are one sequence over the thirty machines the lichess
@@ -10,6 +10,10 @@ Two decks, generated as Excalidraw files by a small Python program.
   principles, standing on its own but landing where golem lands. It closes on a
   seven-band stack drawn three times — who sells each part, which product answers
   it, and which part is golem's.
+- **`machine-lifecycle`** — ten slides: the five steps that bring one lichess
+  machine into service, four of which are done by hand today, and one tool per
+  span instead. Slides 01 and 05 are the same five-step band at the same
+  geometry, differing only in who covers what.
 
 Slides are written as code so that a colour, a label or a whole figure can change
 in one place and every slide that shares it follows.
@@ -35,6 +39,8 @@ dist/
   golem/golem-deck.excalidraw
   orchestration/01-a-process-on-a-host.excalidraw … 24-where-golem-sits.excalidraw
   orchestration/orchestration-deck.excalidraw
+  machine-lifecycle/01-today.excalidraw … 10-what-changes.excalidraw
+  machine-lifecycle/machine-lifecycle-deck.excalidraw
   icons.excalidraw
 ```
 
@@ -97,26 +103,30 @@ how a deck starts to read as one slide shown many times.
 | timeline | `timeline` | a spectrum with named positions |
 | coverage bars | `coverage_bars` | how far something reached, row by row |
 | machine fleet | `decks/machines.draw_fleet`, `decks/golem/fleet.draw` | which units sit on which machine, and who keeps each one |
+| step band | `decks/machine_lifecycle/lifecycle.draw` | ordered steps, and who covers each stretch of them |
+| ordered play | `decks/ansible_play.draw_play` | numbered steps run top to bottom |
 
 Two rations hold in the golem deck: **at most two matrix slides**, and **the
 six-layer lichess figure appears exactly twice** — slide 05 introduces it, slide
 07 recolours it. Both draw it at identical geometry, so flipping between them
 changes colour and nothing else.
 
-Five modules hold a figure that more than one slide draws:
+Seven modules hold a figure that more than one slide draws:
 `decks/golem/lichess_stack.py` (slides 05 and 07), `decks/golem/lichess_ladder.py`
-(03 and 04), `decks/golem/fleet.py` (14 to 23), `decks/machines.py` (those frames
-and the orchestration deck's 20 and 22) and `decks/orchestration/stack.py` (18, 19
-and 24). Each takes state and no geometry — the constants inside are the figure,
+(03 and 04), `decks/golem/fleet.py` (14 to 23), `decks/machines.py` (those frames,
+the orchestration deck's 20 and 22, and the lifecycle deck's 03, 04 and 09),
+`decks/orchestration/stack.py` (18, 19 and 24), `decks/ansible_play.py` (the
+orchestration deck's 21 and the lifecycle deck's 03) and
+`decks/machine_lifecycle/lifecycle.py` (01 and 05). Each takes state and no geometry — the constants inside are the figure,
 and a slide that passed its own size would make the same figure jump between
 slides.
 
-Anything both decks draw lives in `decks/`, not under one of them. A copy would
-drift, and the two decks would stop reading as the same fleet.
+Anything more than one deck draws lives in `decks/`, not under one of them. A
+copy would drift, and the decks would stop reading as the same fleet.
 
 ## The icon vocabulary
 
-Nineteen marks in `excalidraw/icons.py`, drawn from rectangles, ellipses and
+Twenty-two marks in `excalidraw/icons.py`, drawn from rectangles, ellipses and
 lines. No emoji, and one image file: golem's own symbol, in `assets/`.
 
 ```
@@ -124,6 +134,7 @@ container   container image   registry   host   cluster
 scheduler   pending workload  binding    health probe   drift
 network link   service   DNS / SRV lookup   load balancer
 volume   secret   replica set   drain   rollback
+source file   operating system install   disk layout
 ```
 
 Each is a function `(scene, x, y, size, *, tone=…) -> Mark`. `size` is the mark's
@@ -134,7 +145,7 @@ elements drawn and the box declared.
 The marks compose, and that is what keeps them consistent: `cluster` is `host`
 repeated inside a dashed enclosure, `binding` is `pending_workload` over three
 `host` marks, `replica_set` is `container` repeated. There is one `container`, so
-a container looks the same in both decks.
+a container looks the same in every deck.
 
 Two marks the fleet frames need live in `decks/machines.py` rather than here: the
 machine box and the scroll. Both carry state that an icon does not — a host name,
@@ -144,6 +155,11 @@ size and a tone.
 `binding` is the one to understand. Assignment is an act, not a noun: an unplaced
 workload, the nodes that could have taken it, and the one arrow that settled it.
 The rejected candidates stay on the mark, faint and dashed.
+
+A mark takes one tone and uses it for everything it draws, so a card row can
+recolour a mark without reaching past the first keyword argument. The composites
+that carry a second tone — `drift`, `binding`, `drain` — default it, and
+`os_install` defaults it to the tone it was given.
 
 No icon draws text, so none can breach the type floor at any scale.
 `build.py` writes them all to `dist/icons.excalidraw` — which is also how the
@@ -178,7 +194,8 @@ def build() -> Scene: ...  # draw into a Scene and return it
 ```
 
 Write `decks/<deck>/sNN_your_slide.py`, then append its module name to
-`SLIDE_MODULE_NAMES` in `decks/<deck>/__init__.py`. That tuple is the running
+`SLIDE_MODULE_NAMES` in `decks/<deck>/__init__.py`, whose package name is in
+`DECK_PACKAGE_NAMES` in `decks/__init__.py`. That tuple is the running
 order and the only place it is written down — the slide number, the
 `NN-slug.excalidraw` filename and the `NN · Title` frame name all derive from
 position. Reordering the tuple renumbers the talk.
@@ -187,7 +204,7 @@ Inside `build()`, reach for `excalidraw.layout` and `excalidraw.icons` first, an
 drop to the `Scene` primitives — `rectangle`, `text`, `arrow` — only for what no
 builder covers. Font sizes come from `excalidraw.type_scale`, never a raw number.
 Colours come from `excalidraw.palette` by meaning (`YOURS`, `PLATFORM`, `GAP`,
-`WORKLOAD`, `NODE`), never by hex.
+`WORKLOAD`, `NODE`) or by tool (`ANSIBLE`, `PULUMI`, `GOLEM`), never by hex.
 
 Strings both decks must agree on — the five names of the orchestration jobs —
 live in `decks/vocabulary.py`. Import them; never retype one.
@@ -223,7 +240,7 @@ python docs/presentation/build.py
 cd docs/presentation/tools && bun install && bun run check
 ```
 
-Loads every file in `dist/` — both decks and the icon sheet — through the real
+Loads every file in `dist/` — all three decks and the icon sheet — through the real
 `@excalidraw/excalidraw` `restore()`, the same call an editor makes on open, and
 fails if any element comes back rewritten, dropped or `isDeleted`, or if the
 z-order it derives is not strictly increasing. This is the only true oracle for

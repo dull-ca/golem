@@ -1,3 +1,19 @@
+"""The three facts that stop slide 07 from overstating what Pulumi covers.
+
+Everything on this slide comes from the provider's own documentation, and each
+line is checkable in the room:
+
+- the order-cart resources exist only as data sources, so a plan code is read
+  and a person chooses which one
+- the two-hour delivery wait, and the error the apply ends in past it, are
+  stated in `docs/resources/dedicated_server.md`
+- provider v2.0.0 removed `ovh_me_installation_template` and its partition
+  scheme resources and moved partitioning onto the server resource
+
+Card one is not a defect. That a person decides which machine to buy is the same
+position the decks take on placement: a choice golem deliberately does not make.
+"""
+
 from __future__ import annotations
 
 from excalidraw.layout import LabelledBox, badge, box_row, slide_header
