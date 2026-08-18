@@ -81,7 +81,7 @@ def machines_after(steps_taken: int) -> tuple[Machine, ...]:
         Machine(
             host.name,
             tool_units=placed[host.name],
-            keeper=ANSIBLE if host.name in placed else None,
+            keeper=ANSIBLE,
             unit_tone=ANSIBLE,
         )
         for host in HOSTS
