@@ -435,9 +435,16 @@ reason.
 a per-cell mark.** A unit cell is about 35 × 23px at this geometry, which is too
 small for a legible icon on a projector, so every cell these frames add is one
 tone — `ANSIBLE`, because Ansible keeps it — and the play says what kind of change
-it was. Cell tone still means *who keeps this unit* and the machine border still
-means *which tool did machine-level work here*; neither channel takes a second
-meaning on these frames.
+it was. Cell tone still means *who keeps this unit*, and the machine border still
+means *which tool did machine-level work here*, so all thirty machines carry the
+Ansible border on these frames exactly as they do on 08.
+
+What does change is how narrowly a cell is glossed. Slides 04 to 08 label a cell
+*a unit a tool keeps*; 11 to 14 label it *a file, line or workload this play put
+here*, because the fleet starts empty and every cell on these frames arrived
+from this play; slide 15's subtitle widens the wording again to *a file, a
+package, a line or a workload*. Each of those frames states its own wording
+beside the grid, so no frame depends on another frame's legend.
 
 `decks/ansible_play.draw_play` grew a `step_states` keyword for this: a step is
 **current** (filled `ANSIBLE`), **taken** (`ANSIBLE` stroke on white) or **not
@@ -557,9 +564,18 @@ claim is still caught.
 
 ### 16 · What I wanted — `s16_the_goals.py` — *numbered list* — **explanation**
 
-Five numbered statements at `HEADING_SIZE`, numbers in `INK_SOFT` and statements
-in `INK`, the block centred between y=190 and the bottom margin. Nothing else is
-drawn: no figure, no subtitle, no closing line.
+Five numbered statements at `GOAL_SIZE` (`HEADING_SIZE + 10`, 40pt — the same
+size s38 sets its four questions), numbers in `INK_SOFT` and statements in
+`INK`, the block centred between y=190 and the bottom margin. Nothing else is
+drawn: no figure, no subtitle, no closing line. The longest statement, goal 3,
+ends at x=1032 and the five-line block at y=804; rewording a goal means
+re-measuring rather than assuming it still fits.
+
+Two reviews pulled this size in opposite directions. At `TITLE_SIZE` (46) the
+statements are the same size as the header, and "What I wanted" stops reading
+as a title. At `HEADING_SIZE` (30) the slide that opens the goals section
+reads too small, and no longer matches 38, which sets four statements of the
+same shape at 40. 40 is where both objections are answered at once.
 
 1. Every step undoable.
 2. Static analysis and verification possible.
@@ -687,8 +703,16 @@ cid, inverse, changed }` — apply captures the prior state as an `Inverse`, car
 on the `Outcome`. Then `Revision { id, created_at, kind, scroll_content_id,
 outcomes }` with `kind: RevisionKind = Init | Reconcile`, the append-only journal
 of what golem applied. Then `Reconciler::reverse(&Outcome) -> EnactResult<()>`,
-which replays that `Outcome` to restore the prior state exactly. Closing bar:
-golem reverses only the edits it recorded.
+which replays the `Inverse` that apply recorded. Closing bar: golem reverses only
+the edits it recorded.
+
+The gloss says what `reverse` reads, not how completely the host comes back. An
+earlier wording — *restores the prior state exactly* — was contradicted by two
+later slides: 35 draws a broken symlink replaced by a file whose inverse deletes
+the file and never restores the link, and 36 grades *Every step undoable*
+qualified because `lineInFile` does not round-trip. The limits belong on 35 and
+36, where the evidence for them is drawn; this slide states the mechanism and
+stops.
 
 Both signatures are fallible and were drawn as though they were not
 (`apps/golemd/src/reconciler.rs:46-47`). `scroll_content_id` is an
@@ -807,12 +831,13 @@ would remove the argument rather than restate it.
 kind, and the filled slot needs a subject for the empty slot beside it to read as
 *nobody* rather than as *nothing drawn yet*.
 
-### 33 · Where golem is today — `s33_current_status.py` — *fact boxes, panel* — **reference**
+### 33 · Where golem is today — `s33_current_status.py` — *recap strip, panel* — **reference**
 
-Two terse boxes — *Outcome-based*, *No real review of the code* — then a panel
-headed **The site that serves golem's documentation**, with a `golem.yyc.dev` mono
-chip, one line of mechanism (an Emet program describes the site; golemd reconciles
-it on the host), four Emet literals quoted verbatim, and two correcting lines:
+One neutral strip across the content width — *Outcome-based, and no review of
+the code* — then a panel headed **The site that serves golem's documentation**,
+with a `golem.yyc.dev` mono chip, one line of mechanism (an Emet program
+describes the site; golemd reconciles it on the host), four Emet literals quoted
+verbatim, and two correcting lines:
 
 ```
 scroll { name = "dull-01" }
@@ -831,14 +856,21 @@ container unit, the service and the route on `dull-01`, not the whole machine.
 `examples/website/website.emet` in golem's own repository is a different site — it
 provisions `remora` for the self-hosted-CI loop — and must not be cited here.
 
-### 34 · Longer-term goals — `s34_longer_term_goals.py` — *two panels* — **explanation**
+The strip is a recap and is sized as one. Both of its facts are slide 32's whole
+subject and slide 32's whole argument, the second of them drawn there as an empty
+box rather than written out, so drawing them here at the same weight as the panel
+would tell 32 a second time. The panel is the only thing this slide says that 32
+did not, and it gets the canvas. The wording matches 32's caption — *no review of
+the code* — so the two slides state one claim at one strength.
 
-Subtitle: better templating, and configuration shapes as first-class types. The
-left panel, solid green, is **What a program can say today**: the four glyph
-spellings as mono chips — `aptPackage`, `systemdService`, `file` / `directory` /
-`symlink`, `lineInFile` — under the line *Routes, port exposure and quadlet units
-are already Emet types.* The right panel, dotted, is **What the language does not
-do yet**, three dotted boxes:
+### 34 · The Emet language today, and its limits — `s34_longer_term_goals.py` — *two panels* — **explanation**
+
+Subtitle: I want better templating, and configuration shapes as first-class
+types. The left panel, solid green, is **What a program can say today**: the
+four glyph spellings as mono chips — `aptPackage`, `systemdService`, `file` /
+`directory` / `symlink`, `lineInFile` — under the line *Routes, port exposure
+and quadlet units are already Emet types.* The right panel, dotted, is **What
+the language does not do yet**, three dotted boxes:
 
 - **A multi-line string literal** — a config file is written as one-line strings
   joined with a newline. A raw newline before a closing quote is an "unterminated
@@ -861,6 +893,14 @@ The right panel's heading reads *What the language does not do yet* rather than
 *What it cannot say yet*, because a program can express multi-line contents —
 awkwardly, through `String.join` — and the stronger heading would have been false
 of its own first box.
+
+The title used to read *Longer-term goals*, two slides before **Grading the
+goals: 1 to 3** and **Grading the goals: 4 and 5**, which grade slide 16's five
+statements. A room that had just seen a slide titled *goals* would read *the
+goals* as this slide's three boxes. The module filename and the slug still say
+`longer-term-goals`. The slug names the built file, so changing it renames
+`34-longer-term-goals.excalidraw` — a separate change from the title the room
+reads.
 
 ### 35 · When things fail — `s35_adversarial_conditions.py` — *three panels* — **explanation**
 
