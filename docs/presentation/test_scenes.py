@@ -119,7 +119,7 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/requirement-and-property": (88, "seven requirement and property pairs"),
     "golem/the-pipeline": (62, "five stage names, plus the manifest quoted verbatim"),
     "golem/the-diff": (60, "quoted Rust signatures and the four operation names"),
-    "golem/apply-and-undo": (59, "quoted Rust signatures, one gloss each"),
+    "golem/apply-and-undo": (56, "quoted Rust signatures, one gloss each"),
     "golem/the-scroll-tree": (77, "the tree labels, two callouts, and the language Emet resembles"),
     "golem/the-four-glyphs": (98, "the whole glyph contract, quoted verbatim"),
     "golem/golemctl-verbs": (61, "quoted command lines, flags and a handshake"),
