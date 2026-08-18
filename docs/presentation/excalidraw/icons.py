@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Callable, NamedTuple, Sequence
 
 from .palette import (
+    ACHIEVED,
     CONTROL,
     GAP,
     HEALTHY,
@@ -28,7 +29,9 @@ from .palette import (
     INK_FAINT,
     INK_SOFT,
     NODE,
+    NOT_ACHIEVED,
     PENDING,
+    QUALIFIED,
     RED,
     STORE,
     TRANSPARENT,
@@ -610,6 +613,71 @@ def not_applicable(scene: Scene, x: float, y: float, size: float, *, tone: Tone 
     return _captured(scene, first, x, y, NOT_APPLICABLE_ASPECT * size, size)
 
 
+GOAL_MARK_ASPECT = 1.0
+GOAL_MARK_STROKE_FRACTION = 0.11
+
+
+# NOTE: circle, diamond, square -- a distinct silhouette per state, not
+# colour alone. Green and red both read as the same grey at the back of a
+# room, so the shapes carry the distinction and the tone is redundant.
+def _solid(tone: Tone) -> Tone:
+    return Tone(tone.stroke, tone.stroke, WHITE)
+
+
+def achieved(
+    scene: Scene, x: float, y: float, size: float, *, tone: Tone = ACHIEVED
+) -> Mark:
+    first = len(scene.elements)
+    scene.ellipse(x, y, size, size, _solid(tone))
+    stroke_width = GOAL_MARK_STROKE_FRACTION * size
+    scene.line(
+        [(x + 0.26 * size, y + 0.52 * size), (x + 0.44 * size, y + 0.71 * size)],
+        stroke=WHITE,
+        stroke_width=stroke_width,
+    )
+    scene.line(
+        [(x + 0.44 * size, y + 0.71 * size), (x + 0.76 * size, y + 0.31 * size)],
+        stroke=WHITE,
+        stroke_width=stroke_width,
+    )
+    return _captured(scene, first, x, y, GOAL_MARK_ASPECT * size, size)
+
+
+def qualified(
+    scene: Scene, x: float, y: float, size: float, *, tone: Tone = QUALIFIED
+) -> Mark:
+    first = len(scene.elements)
+    scene.diamond(x, y, size, size, _solid(tone))
+    stroke_width = GOAL_MARK_STROKE_FRACTION * size
+    scene.line(
+        [(x + 0.50 * size, y + 0.28 * size), (x + 0.50 * size, y + 0.54 * size)],
+        stroke=WHITE,
+        stroke_width=stroke_width,
+    )
+    scene.line(
+        [(x + 0.50 * size, y + 0.68 * size), (x + 0.50 * size, y + 0.73 * size)],
+        stroke=WHITE,
+        stroke_width=stroke_width,
+    )
+    return _captured(scene, first, x, y, GOAL_MARK_ASPECT * size, size)
+
+
+# NOTE: not the same claim as not_applicable (the red X above). That mark
+# means the claim does not apply; this one means the claim was graded and
+# failed. The two are never interchangeable on a scorecard.
+def not_achieved(
+    scene: Scene, x: float, y: float, size: float, *, tone: Tone = NOT_ACHIEVED
+) -> Mark:
+    first = len(scene.elements)
+    scene.rectangle(x, y, size, size, _solid(tone), radius=False)
+    scene.line(
+        [(x + 0.24 * size, y + 0.50 * size), (x + 0.76 * size, y + 0.50 * size)],
+        stroke=WHITE,
+        stroke_width=GOAL_MARK_STROKE_FRACTION * size,
+    )
+    return _captured(scene, first, x, y, GOAL_MARK_ASPECT * size, size)
+
+
 SOURCE_FILE_ASPECT = 0.78
 
 
@@ -738,6 +806,9 @@ CATALOGUE: tuple[IconSpec, ...] = (
     IconSpec("operating system install", os_install, OS_INSTALL_ASPECT),
     IconSpec("disk layout", disk_layout, DISK_LAYOUT_ASPECT),
     IconSpec("not applicable", not_applicable, NOT_APPLICABLE_ASPECT),
+    IconSpec("goal achieved", achieved, GOAL_MARK_ASPECT),
+    IconSpec("goal qualified", qualified, GOAL_MARK_ASPECT),
+    IconSpec("goal not achieved", not_achieved, GOAL_MARK_ASPECT),
 )
 
 

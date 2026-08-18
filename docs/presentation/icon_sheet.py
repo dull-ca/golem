@@ -16,7 +16,7 @@ from excalidraw.type_scale import CAPTION_SIZE
 ICON_SHEET_FILENAME = "icons.excalidraw"
 ICON_SHEET_KEY = "icon-sheet"
 
-COLUMNS = 5
+COLUMNS = 6
 GRID_Y = 190.0
 CELL_HEIGHT = 148.0
 ICON_SIZE = 72.0

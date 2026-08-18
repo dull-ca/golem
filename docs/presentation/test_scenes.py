@@ -29,6 +29,12 @@ if str(PRESENTATION_ROOT) not in sys.path:
 
 from build import build_all
 from decks import DECKS
+from decks.golem import goals, scorecard
+from decks.golem import (
+    s16_the_goals,
+    s36_grading_goals_one_to_three,
+    s37_grading_goals_four_and_five,
+)
 from excalidraw import icons
 from excalidraw.scene import (
     BASE_KEYS,
@@ -65,6 +71,12 @@ MARGIN_BOTTOM = CANVAS_HEIGHT - MARGIN
 TRUE_MONOSPACE_ADVANCE = 0.62
 BOUND_TEXT_PADDING = 5
 MINIMUM_LABEL_SLACK = 8
+
+GOLEM_DECK_NAME = "golem"
+SCORECARD_SLUGS = (
+    s36_grading_goals_one_to_three.SLUG,
+    s37_grading_goals_four_and_five.SLUG,
+)
 
 ICON_PROBE_ORIGIN = (400.0, 300.0)
 ICON_PROBE_SIZE = 96.0
@@ -113,6 +125,8 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/golemctl-verbs": (61, "quoted command lines, flags and a handshake"),
     "golem/golemd-routes": (87, "eight routes, each with a one-line gloss"),
     "golem/plan-against-host": (77, "quoted routes, types and Observation variants"),
+    "golem/grading-goals-1-to-3": (107, "four graded claims, each with its goal number, its verdict word and the evidence behind it"),
+    "golem/grading-goals-4-and-5": (77, "three graded claims, each with its goal number, its verdict word and the evidence behind it"),
     "orchestration/a-process-on-a-host": (48, "two lists of what a process gets and shares"),
     "orchestration/what-a-container-adds": (47, "three additions, each a name and one gloss"),
     "orchestration/the-image": (42, "three properties of an image, one line each"),
@@ -234,6 +248,21 @@ def slide_documents(documents: dict[str, dict]) -> dict[str, dict]:
     return {
         name: payload for name, payload in documents.items() if name not in combined
     }
+
+
+def collapsed(body: str) -> str:
+    return " ".join(body.split())
+
+
+def drawn_text(documents: dict[str, dict], deck_name: str, slug: str) -> list[str]:
+    deck = next(deck for deck in DECKS if deck.name == deck_name)
+    slide = next(slide for slide in deck.slides if slide.slug == slug)
+    payload = documents[f"{deck.directory}/{slide.filename}"]
+    return [
+        collapsed(element["text"])
+        for element in payload["elements"]
+        if element["type"] == "text"
+    ]
 
 
 class GeneratedScenes(unittest.TestCase):
@@ -418,6 +447,34 @@ class GeneratedScenes(unittest.TestCase):
                 )
                 with self.subTest(slide=key, reason=reason):
                     self.assertLessEqual(body_word_count(payload["elements"]), budget)
+
+    def test_the_goals_slide_states_every_goal(self) -> None:
+        stated = drawn_text(self.documents, GOLEM_DECK_NAME, s16_the_goals.SLUG)
+        for goal in goals.GOALS:
+            with self.subTest(goal=goal.number):
+                self.assertIn(collapsed(goal.statement), stated)
+
+    def test_the_scorecard_marks_every_graded_claim_exactly_once(self) -> None:
+        marked = [
+            body
+            for slug in SCORECARD_SLUGS
+            for body in drawn_text(self.documents, GOLEM_DECK_NAME, slug)
+        ]
+        for claim in goals.GRADED_CLAIMS:
+            with self.subTest(claim=claim):
+                self.assertEqual(marked.count(collapsed(claim)), 1)
+
+    def test_the_scorecard_rows_and_the_graded_claims_are_the_same_list(self) -> None:
+        self.assertEqual(
+            [row.claim for row in scorecard.ROWS], list(goals.GRADED_CLAIMS)
+        )
+
+    def test_every_scorecard_row_reaches_exactly_one_slide(self) -> None:
+        shown = (
+            s36_grading_goals_one_to_three.ROWS
+            + s37_grading_goals_four_and_five.ROWS
+        )
+        self.assertEqual(shown, scorecard.ROWS)
 
     def test_word_budget_ceilings_name_a_real_slide(self) -> None:
         known = {
