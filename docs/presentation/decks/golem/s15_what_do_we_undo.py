@@ -5,7 +5,6 @@ from excalidraw.palette import ANSIBLE, INK_FAINT, INK_SOFT, Tone
 from excalidraw.scene import MARGIN, Scene, bottom_edge
 from excalidraw.type_scale import BODY_SIZE
 
-from .. import machines
 from ..lichess_fleet import HOST_COUNT, HOSTS
 from . import fleet, playbook
 
@@ -36,13 +35,13 @@ COUNTED = (
 )
 UNRECORDED = (
     "A playbook records what the next run will ask for, not what an earlier "
-    "run put on a host. After an edit, it no longer matches the playbook "
-    "that ran."
+    "run put on a host. After an edit, the host no longer matches the "
+    "playbook that ran."
 )
 
 
-def _machines_under_prior_state() -> tuple[machines.Machine, ...]:
-    return tuple(machines.Machine(host.name, keeper=ANSIBLE) for host in HOSTS)
+def _machines_under_prior_state() -> tuple[fleet.Machine, ...]:
+    return tuple(fleet.Machine(host.name, keeper=ANSIBLE) for host in HOSTS)
 
 
 def _marks_drawn_on(host_name: str) -> int:
@@ -82,9 +81,9 @@ def _prior_state_marks(scene: Scene) -> None:
     # A later edit that "helpfully" marked the ones the play added would make
     # this slide argue the opposite of what it says.
     for index, host in enumerate(HOSTS):
-        x, y = machines.machine_origin(index)
+        x, y = fleet.machine_origin(index)
         area = _lattice_area(
-            machines.cell_area(x, y, machines.MACHINE_WIDTH, machines.MACHINE_HEIGHT)
+            fleet.cell_area(x, y, fleet.MACHINE_WIDTH, fleet.MACHINE_HEIGHT)
         )
         for slot in range(_marks_drawn_on(host.name)):
             left, top, mark_width, mark_height = _mark_rect(area, slot)
@@ -102,7 +101,7 @@ def _prior_state_marks(scene: Scene) -> None:
 def build() -> Scene:
     scene = Scene(SLUG, id_namespace=fleet.ID_NAMESPACE)
     slide_header(scene, TITLE, SUBTITLE)
-    machines.draw_fleet(scene, _machines_under_prior_state())
+    fleet.draw_fleet(scene, _machines_under_prior_state())
     _prior_state_marks(scene)
     counted = note(scene, NOTE_X, NOTE_Y, COUNTED, width=NOTE_WIDTH, font_size=BODY_SIZE)
     note(
