@@ -130,7 +130,7 @@ copy would drift, and the decks would stop reading as the same fleet.
 
 ## The icon vocabulary
 
-Twenty-two marks in `excalidraw/icons.py`, drawn from rectangles, ellipses and
+Twenty-three marks in `excalidraw/icons.py`, drawn from rectangles, ellipses and
 lines. No emoji, and one image file: golem's own symbol, in `assets/`.
 
 ```
@@ -138,7 +138,7 @@ container   container image   registry   host   cluster
 scheduler   pending workload  binding    health probe   drift
 network link   service   DNS / SRV lookup   load balancer
 volume   secret   replica set   drain   rollback
-source file   operating system install   disk layout
+source file   operating system install   disk layout   not applicable
 ```
 
 Each is a function `(scene, x, y, size, *, tone=…) -> Mark`. `size` is the mark's
