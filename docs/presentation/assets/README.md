@@ -7,7 +7,8 @@ builds stay byte-identical.
 
 ## `robot-golem.svg`
 
-golem's mark, used once on the slide where golem enters the fleet sequence.
+golem's mark, used on the golem deck's title slide and on the slide where golem
+has converged the fleet.
 
 - **Author:** Lorc
 - **Source:** <https://game-icons.net/1x1/lorc/robot-golem.html>
@@ -18,5 +19,6 @@ golem's mark, used once on the slide where golem enters the fleet sequence.
 
 CC BY 3.0 requires attribution wherever the mark appears. It is credited in three
 places, and all three have to stay: this file, `SPEC.md`/`README.md`, and a line
-on the slide itself (`decks/golem/golem_symbol.py` holds the wording, so there is
-one string to change).
+on each slide that draws it (`decks/golem/golem_symbol.py` holds the wording, so
+there is one string to change). A slide that adds the mark adds the credit with
+it.

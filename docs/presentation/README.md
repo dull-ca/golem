@@ -2,10 +2,11 @@
 
 Three decks, generated as Excalidraw files by a small Python program.
 
-- **`golem`** — thirty-three slides: what problem golem solves, how it works, how
-  to use it. Slides 14 to 23 are one sequence over the thirty machines the lichess
-  Ansible inventory names, and what changes between frames is which units sit on
-  them and who keeps each one.
+- **`golem`** — thirty-four slides: a title slide, then what problem golem solves,
+  how it works, how to use it. Slides 04 to 15 are one sequence over the thirty
+  machines the lichess Ansible inventory names, and what changes between frames is
+  which units sit on them and who keeps each one. Slides 26 to 34 are an appendix,
+  kept in the deck for the speaker to cut live.
 - **`orchestration`** — twenty-six slides: cloud orchestration from first
   principles, standing on its own but landing where golem lands. Slides 08 to 10
   answer the five jobs three times over — today, December's plan, with golem —
@@ -36,7 +37,7 @@ that includes the files the `restore()` check reads, so run `build.py` first.
 
 ```
 dist/
-  golem/01-what-you-buy.excalidraw … 33-plan-against-host.excalidraw
+  golem/01-title.excalidraw … 34-where-it-broke.excalidraw
   golem/golem-deck.excalidraw
   orchestration/01-a-process-on-a-host.excalidraw … 26-where-golem-sits.excalidraw
   orchestration/orchestration-deck.excalidraw
@@ -109,20 +110,20 @@ how a deck starts to read as one slide shown many times.
 | ordered play | `decks/ansible_play.draw_play` | numbered steps run top to bottom |
 
 Two rations hold in the golem deck: **at most two matrix slides**, and **the
-six-layer lichess figure appears exactly twice** — slide 05 introduces it, slide
-07 recolours it. Both draw it at identical geometry, so flipping between them
+six-layer lichess figure appears exactly twice** — slide 28 introduces it, slide
+30 recolours it. Both draw it at identical geometry, so flipping between them
 changes colour and nothing else.
 
 Eight modules hold a figure that more than one slide draws:
-`decks/golem/lichess_stack.py` (slides 05 and 07), `decks/golem/lichess_ladder.py`
-(03 and 04), `decks/golem/fleet.py` (14 to 23), `decks/machines.py` (those frames,
-the orchestration deck's 22 and 24, and the lifecycle deck's 03, 04 and 09),
-`decks/orchestration/stack.py` (20, 21 and 26),
+`decks/golem/lichess_stack.py` (slides 28 and 30), `decks/golem/lichess_ladder.py`
+(26 and 27), `decks/golem/fleet.py` (04 to 08 and 11 to 15), `decks/machines.py`
+(those frames, the orchestration deck's 22 and 24, and the lifecycle deck's 03, 04
+and 09), `decks/orchestration/stack.py` (20, 21 and 26),
 `decks/orchestration/job_answers.py` (08, 09 and 10), `decks/ansible_play.py` (the
 orchestration deck's 23 and the lifecycle deck's 03) and
-`decks/machine_lifecycle/lifecycle.py` (01 and 05). Each takes state and no geometry — the constants inside are the figure,
-and a slide that passed its own size would make the same figure jump between
-slides.
+`decks/machine_lifecycle/lifecycle.py` (01 and 05). Each takes state and no
+geometry — the constants inside are the figure, and a slide that passed its own
+size would make the same figure jump between slides.
 
 Anything more than one deck draws lives in `decks/`, not under one of them. A
 copy would drift, and the decks would stop reading as the same fleet.
@@ -171,9 +172,9 @@ No icon draws text, so none can breach the type floor at any scale.
 ## The one imported mark
 
 `assets/robot-golem.svg` — **by Lorc, from game-icons.net, under CC BY 3.0** —
-is golem's symbol, embedded as an Excalidraw image element on slide 22.
-Attribution is required by the licence and is carried in `assets/README.md`,
-`SPEC.md`, here, and on the slide itself.
+is golem's symbol, embedded as an Excalidraw image element on slides 01 and 14.
+Attribution is required by the licence wherever the mark appears, and is carried
+in `assets/README.md`, `SPEC.md`, here, and on both slides.
 
 Committed, never fetched: `build.py` reads it from disk and base64-encodes it into
 the document's `files` map, with `created` and `lastRetrieved` set to the

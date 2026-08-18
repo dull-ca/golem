@@ -12,8 +12,8 @@ one, both are here; the reversals are the most useful part of the file.
 
 Three decks, generated from Python, never hand-authored as JSON.
 
-- **`decks/golem/`** — 33 slides. The talk: what problem golem solves, how it works,
-  how to use it.
+- **`decks/golem/`** — 34 slides. A title slide, the talk — what problem golem
+  solves, how it works, how to use it — and a nine-slide appendix.
 - **`decks/orchestration/`** — 26 slides. A standalone primer on cloud orchestration
   that stands on its own and lands on where golem sits.
 - **`decks/machine_lifecycle/`** — 10 slides. How a lichess machine comes to exist,
@@ -49,8 +49,9 @@ diffing two independent `--out` builds, not against a tracked tree.
 
 Title 46, section heading 30, body 24, caption 18. Nothing below 18. Roughly 35 words
 of body per slide. **Split, never shrink** — this is why the golem deck went 13 → 22 →
-29 → 33 slides. Tests assert the floor and the budget, so violating it fails the
-build rather than being a matter of taste.
+29 → 33 slides. The thirty-fourth is the title slide, which is not a split. Tests
+assert the floor and the budget, so violating it fails the build rather than being a
+matter of taste.
 
 ### Prose is explanation, in plain language, defining things by what they are
 
@@ -82,7 +83,7 @@ The speaker says the sentences. The slide holds the nouns.
 
 ### The six layers are the deck's colour vocabulary
 
-Slide 05's numbering and tones are the spine: 1 core OS/network/security (slate),
+Slide 28's numbering and tones are the spine: 1 core OS/network/security (slate),
 2 application hosting (teal), 3 connective infrastructure (blue), 4 tools,
 dependencies, runtimes (violet), 5 the applications (green), 6 lifecycle/schedule/
 scaling (orange). Everything downstream imports those constants rather than matching
@@ -91,7 +92,7 @@ by eye.
 ### Layers are categories of work, not strata inside a machine
 
 The correction that made the fleet sequence work. The first version drew each machine
-as a miniature of slide 05, with the six layers stacked inside the box. That asserts a
+as a miniature of slide 28, with the six layers stacked inside the box. That asserts a
 structure which does not exist. **A layer is an activity a tool performs on a
 machine.** Layer 1 is the work of configuring the core OS, network and security;
 layer 5 is the work of running the applications.
@@ -162,9 +163,47 @@ Twenty-two marks in `icons.py`, no external assets. The exception is golem's own
 **robot-golem by Lorc, game-icons.net, CC BY 3.0**, vendored under `assets/`, embedded
 as a data URL so the build stays offline, credited in four places.
 
-It is used **once and large**, as an identity mark. The per-machine golems are drawn
-diamonds instead: a dense filled silhouette among nineteen open line marks reads as a
-different medium, and blobs below about 40px.
+It is used **twice and large**, as an identity mark: slide 01 at 280px and slide 14
+at 96px. The licence requires attribution wherever the mark appears, so every slide
+that draws it carries the credit line. The per-machine golems
+are drawn diamonds instead: a dense filled silhouette among nineteen open line marks
+reads as a different medium, and blobs below about 40px.
+
+### The running order is Dr. Dub's, and the last nine slides are an appendix
+
+Dr. Dub set the order the golem deck runs in. The fleet sequence and golem's own
+mechanism run first, at 04 to 25, with the two December close-ups that survive in
+the main run at 09 and 10. The ladder, the six-layer stack, what orchestration
+means, what buying it would cover, Ansible's coverage, December's owners, the move
+that took four hand-ordered steps and *Where it broke* run last, at 26 to 34.
+
+**Nothing was cut to produce that tail.** Those nine stay in the deck as an
+appendix the speaker drops live, so a slide that does not fit the clock is skipped
+rather than deleted. `SPEC.md` records the order slide by slide, and
+`SLIDE_MODULE_NAMES` in `decks/golem/__init__.py` is where it is actually written
+down.
+
+### The deck opens on a title slide, and the title slide carries three things
+
+01 is the golem emblem, the deck title and the emblem's credit line. No subtitle,
+no agenda, no thesis sentence, no date and no venue — the rule that a slide gets a
+subtitle only when it says something the title does not leaves an opening slide
+with nothing else to carry.
+
+The headline is `TITLE` imported from `decks/golem/__init__.py`, so the deck title
+and the slide's headline are one string and the combined-deck frame reads `01 ·
+golem — one program, written down as state`. The credit line is on the slide
+because the mark is, as the licence requires.
+
+### The grey on *What you configure* means bought, not merely unreachable
+
+The third legend swatch on slide 03 reads *purchased, and can't configure*, where
+it used to read *not yours to configure*. The wording is Dr. Dub's, one word
+shorter than he gave it: the slide sits exactly on its 50-word ceiling in
+`WORD_BUDGET_CEILINGS`, so the longer phrasing would have failed the budget test.
+
+Slide 02's grey entry, *the provider operates it*, is deliberately unchanged. The
+two slides ask different questions and do not share a legend.
 
 ## Corrections that changed the argument, not the wording
 
@@ -240,7 +279,7 @@ Three consequences worth keeping:
   and the third and fourth read as the same slide at a later date.
 - **Steal a form from the other deck rather than inventing one.** The new stack is
   the golem deck's layered-stack form; the buy-versus-configure tones are the ones
-  its first two slides already use; the by-hand chips are the fleet frames'
+  its two matrices already use; the by-hand chips are the fleet frames'
   notation. A newcomer learns one notation, not four.
 - **Where both decks need a figure, it moves up, it does not get copied.** The
   thirty hosts and the machine box now live in `decks/`, not in `decks/golem/`. The
@@ -332,7 +371,7 @@ promising a loop.
 
 The consequence this framing earns: **golem does not sequence a cross-host move**
 because no agent can promise on another's behalf. On the golem deck that fact is a
-caveat under slide 23; here it falls out of the model, and slide 24 draws it that
+caveat under slide 15; here it falls out of the model, and slide 24 draws it that
 way.
 
 ## The machine-lifecycle deck: a shape carries the argument
@@ -398,7 +437,7 @@ tone it was given.
 
 ### An image may not sit on drawn text, and a test says so
 
-The golem emblem on slide 22 was drawn at x 1180 while the legend's last caption
+The golem emblem on slide 14 was drawn at x 1180 while the legend's last caption
 runs to x 1291, so the robot stood on "nobody has it written down" in every
 render. The emblem moved to the bottom-right corner and the credit to the strip
 under the legend.
@@ -410,6 +449,12 @@ without seeing this, which is the argument for the assertion over the eye.
 
 ## Open questions
 
+- **What the grey means on two cells of slide 03.** The legend now reads
+  *purchased, and can't configure*, and every grey cell was checked against it.
+  `Cluster membership` under *Bare metal + config mgmt* and under *Docker (one
+  host)* is grey because there is no cluster in either model, not because anything
+  was bought. `CELL_TONES` in `decks/golem/s03_what_you_configure.py` was left as
+  it is.
 - **What language Emet actually resembles.** The original description, "inspired by
   (nearly identical to) emet", is self-referential. Nothing false is drawn — the slide
   says only that a typed, functional program evaluates to one Scroll per host — but the
@@ -424,9 +469,9 @@ without seeing this, which is the argument for the assertion over the eye.
   beside a 46px chip has been checked as an element and not as a picture).
 - **What December's plan actually said.** Placement by Ansible, and plumbing by
   Ansible with dnsmasq and SRV records, come from Dr. Dub's own table for slide 09
-  and were not read out of any lichess source. The golem deck's slides 10 to 12
-  describe December as it *ran* — `hosts.py`, generated config, quadlets — so the
-  two are only consistent if the plan is a thing distinct from what was running.
+  and were not read out of any lichess source. The golem deck's slides 09, 10 and
+  33 describe December as it *ran* — `hosts.py`, generated config, quadlets — so
+  the two are only consistent if the plan is a thing distinct from what was running.
   Slide 09's title says "planned" for that reason.
 - **Whether lichess would keep `site.yml` as the play's name** on the lifecycle
   deck's slide 03. The six basics are the brief's own list; the filename is the
