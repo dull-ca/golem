@@ -32,8 +32,8 @@ from decks import DECKS
 from decks.golem import goals, scorecard
 from decks.golem import (
     s16_the_goals,
-    s36_grading_goals_one_to_three,
-    s37_grading_goals_four_and_five,
+    s34_grading_goals_one_to_three,
+    s35_grading_goals_four_and_five,
 )
 from excalidraw import icons
 from excalidraw.scene import (
@@ -74,8 +74,8 @@ MINIMUM_LABEL_SLACK = 8
 
 GOLEM_DECK_NAME = "golem"
 SCORECARD_SLUGS = (
-    s36_grading_goals_one_to_three.SLUG,
-    s37_grading_goals_four_and_five.SLUG,
+    s34_grading_goals_one_to_three.SLUG,
+    s35_grading_goals_four_and_five.SLUG,
 )
 
 ICON_PROBE_ORIGIN = (400.0, 300.0)
@@ -474,8 +474,8 @@ class GeneratedScenes(unittest.TestCase):
 
     def test_every_scorecard_row_reaches_exactly_one_slide(self) -> None:
         shown = (
-            s36_grading_goals_one_to_three.ROWS
-            + s37_grading_goals_four_and_five.ROWS
+            s34_grading_goals_one_to_three.ROWS
+            + s35_grading_goals_four_and_five.ROWS
         )
         self.assertEqual(shown, scorecard.ROWS)
 
