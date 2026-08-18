@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from excalidraw import icons
 from excalidraw.layout import badge, legend, matrix, slide_header
 from excalidraw.palette import PLATFORM, THEIRS, YOURS
 from excalidraw.scene import MARGIN, Scene
@@ -15,6 +16,7 @@ ROW_HEIGHT = 72.0
 HEADER_HEIGHT = 88.0
 ROW_LABEL_WIDTH = 380.0
 LICHESS_COLUMN = 0
+NOT_APPLICABLE_MARK_SIZE = 48.0
 
 ROW_LABELS = (
     "App config & secrets",
@@ -51,6 +53,16 @@ CELL_TONES = (
     (T, T, T, T, T, T),
 )
 
+# NOTE: single-host models have no cluster for a host to be a member of, so
+# the row doesn't apply — a different claim from "purchased, can't configure"
+# (Managed Kubernetes stays grey and unmarked: a provider-run control plane
+# makes that claim true there).
+CLUSTER_MEMBERSHIP_ROW = ROW_LABELS.index("Cluster membership")
+NO_CLUSTER_COLUMNS = (
+    COLUMN_LABELS.index("Bare metal + config mgmt"),
+    COLUMN_LABELS.index("Docker (one host)"),
+)
+
 
 def build() -> Scene:
     scene = Scene(SLUG)
@@ -77,6 +89,14 @@ def build() -> Scene:
         anchor="center",
         height=MARKER_HEIGHT,
     )
+    for column in NO_CLUSTER_COLUMNS:
+        area = grid.cell(CLUSTER_MEMBERSHIP_ROW, column)
+        icons.not_applicable(
+            scene,
+            area.x + (area.width - NOT_APPLICABLE_MARK_SIZE) / 2.0,
+            area.y + (area.height - NOT_APPLICABLE_MARK_SIZE) / 2.0,
+            NOT_APPLICABLE_MARK_SIZE,
+        )
     legend(
         scene,
         MARGIN,
@@ -85,6 +105,8 @@ def build() -> Scene:
             (YOURS, "you configure it"),
             (PLATFORM, "the platform provides it"),
             (THEIRS, "you purchased, and can't configure"),
+            (THEIRS, "this model has no cluster"),
         ),
+        marks=(None, None, None, icons.not_applicable),
     )
     return scene

@@ -159,7 +159,7 @@ question; nothing depends on the answer.
 
 ### Icons are drawn from primitives; the golem emblem is the one import
 
-Twenty-two marks in `icons.py`, no external assets. The exception is golem's own emblem —
+Twenty-three marks in `icons.py`, no external assets. The exception is golem's own emblem —
 **robot-golem by Lorc, game-icons.net, CC BY 3.0**, vendored under `assets/`, embedded
 as a data URL so the build stays offline, credited in four places.
 

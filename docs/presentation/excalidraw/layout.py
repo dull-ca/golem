@@ -324,12 +324,16 @@ def legend(
     swatch: float = 26,
     gap: float = 36,
     vertical: bool = False,
+    marks: Sequence[icons.IconDrawer | None] | None = None,
 ) -> float:
     cursor_x = x
     cursor_y = y
     bottom = y
-    for tone, caption in entries:
+    for index, (tone, caption) in enumerate(entries):
         scene.rectangle(cursor_x, cursor_y, swatch, swatch, tone)
+        mark = marks[index] if marks is not None else None
+        if mark is not None:
+            mark(scene, cursor_x, cursor_y, swatch)
         scene.text(
             cursor_x + swatch + 12,
             cursor_y + (swatch - font_size * LINE_HEIGHT) / 2.0,

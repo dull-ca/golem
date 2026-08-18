@@ -587,6 +587,29 @@ def rollback(
     return _captured(scene, first, x, y, ROLLBACK_ASPECT * size, size)
 
 
+NOT_APPLICABLE_ASPECT = 1.0
+
+
+# NOTE: an X, not a dashed outline — the service-move slide already uses a red
+# dashed cell border to mark a losing move, and a mark sharing that shape would
+# read as the same claim. Same red, different geometry, so the two stay apart.
+def not_applicable(scene: Scene, x: float, y: float, size: float, *, tone: Tone = GAP) -> Mark:
+    first = len(scene.elements)
+    inset = 0.16 * size
+    stroke_width = 0.12 * size
+    scene.line(
+        [(x + inset, y + inset), (x + size - inset, y + size - inset)],
+        stroke=tone.stroke,
+        stroke_width=stroke_width,
+    )
+    scene.line(
+        [(x + size - inset, y + inset), (x + inset, y + size - inset)],
+        stroke=tone.stroke,
+        stroke_width=stroke_width,
+    )
+    return _captured(scene, first, x, y, NOT_APPLICABLE_ASPECT * size, size)
+
+
 SOURCE_FILE_ASPECT = 0.78
 
 
@@ -714,6 +737,7 @@ CATALOGUE: tuple[IconSpec, ...] = (
     IconSpec("source file", source_file, SOURCE_FILE_ASPECT),
     IconSpec("operating system install", os_install, OS_INSTALL_ASPECT),
     IconSpec("disk layout", disk_layout, DISK_LAYOUT_ASPECT),
+    IconSpec("not applicable", not_applicable, NOT_APPLICABLE_ASPECT),
 )
 
 
