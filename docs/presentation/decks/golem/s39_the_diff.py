@@ -139,7 +139,7 @@ def build() -> Scene:
         MARGIN,
         CLOSING_Y,
         CONTENT_WIDTH,
-        "Every difference becomes one of these four operations.",
+        "Every glyph golemd compares becomes one of these four operations.",
         tone=GOLEM,
         height=CLOSING_HEIGHT,
     )
