@@ -15,12 +15,21 @@ from excalidraw.palette import ANSIBLE, GOLEM, INK_FAINT
 from excalidraw.scene import Scene
 from excalidraw.type_scale import CAPTION_SIZE
 
+from ..lichess_fleet import HAND_KEPT_HOST_COUNT, HOST_COUNT, TOOL_KEPT_HOSTS
 from . import fleet, golem_symbol
 
 SLUG = "fleet-golem"
-TITLE = "The fleet: what golem keeps"
 
-SUBTITLE = "The same 8 machines, five kinds of work instead of three. 22 are still by hand."
+MACHINES_KEPT = len(TOOL_KEPT_HOSTS)
+# NOTE: the count stays in the title. Without one the title implies all thirty,
+# which is what s27 draws as the fleet we want, and the two frames carry the same
+# geometry -- they must not be confusable.
+TITLE = f"The fleet: golem keeps units on {MACHINES_KEPT} of {HOST_COUNT} machines"
+
+SUBTITLE = (
+    f"The same {MACHINES_KEPT} machines, five kinds of work instead of three. "
+    f"{HAND_KEPT_HOST_COUNT} are still by hand."
+)
 
 SYMBOL_X = 1440.0
 SYMBOL_Y = 826.0
@@ -38,7 +47,7 @@ TOOLS = (
 
 def build() -> Scene:
     scene = Scene(SLUG, id_namespace=fleet.ID_NAMESPACE)
-    slide_header(scene, TITLE, SUBTITLE)
+    fleet.check_header(slide_header(scene, TITLE, SUBTITLE))
     fleet.draw(scene, fleet.units_split(ANSIBLE, GOLEM, agents=True))
     fleet.tool_column(scene, TOOLS)
     scene.image(SYMBOL_X, SYMBOL_Y, SYMBOL_HEIGHT, golem_symbol.mark())
