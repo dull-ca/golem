@@ -11,7 +11,7 @@ from . import goals
 SLUG = "the-goals"
 TITLE = "What I wanted"
 
-GOAL_SIZE = HEADING_SIZE
+GOAL_SIZE = HEADING_SIZE + 10.0
 GOAL_RHYTHM = 108.0
 
 NUMBER_X = MARGIN + 16.0
