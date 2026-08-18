@@ -64,7 +64,7 @@ CARDS: tuple[tuple[Sequence[TextLine], Tone], ...] = (
     (
         (
             literal("Reconciler::reverse(&Outcome) -> EnactResult<()>"),
-            gloss("replays that Outcome to restore the prior state exactly"),
+            gloss("replays the Inverse that apply recorded"),
         ),
         REVERSE_TONE,
     ),
