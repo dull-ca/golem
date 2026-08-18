@@ -84,7 +84,7 @@ def build() -> Scene:
         (
             (YOURS, "you configure it"),
             (PLATFORM, "the platform provides it"),
-            (THEIRS, "purchased, and can't configure"),
+            (THEIRS, "you purchased, and can't configure"),
         ),
     )
     return scene
