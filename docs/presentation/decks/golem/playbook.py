@@ -5,8 +5,8 @@ it, so the task list and the fleet page forward together.
 
 The three step bodies are Ansible's own task shapes -- a file, a line in a
 file, a container unit -- which are also three of golem's four glyphs
-(s28_the_four_glyphs). No slide says so: the glyphs aren't named formally
-until s28, so leaving the correspondence uncaptioned here lets that slide
+(s42_the_four_glyphs). No slide says so: the glyphs aren't named formally
+until s42, so leaving the correspondence uncaptioned here lets that slide
 land as recognition instead of new information.
 
 Each step's hosts are a real Ansible pattern: a named group, not the whole
