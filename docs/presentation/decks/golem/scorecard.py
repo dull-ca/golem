@@ -40,12 +40,17 @@ QUALIFIED_STATE = MarkState("qualified", QUALIFIED, icons.qualified)
 NOT_ACHIEVED_STATE = MarkState("not achieved", NOT_ACHIEVED, icons.not_achieved)
 
 
+class Chip(NamedTuple):
+    label: str
+    state: MarkState | None = None
+
+
 class ScoreRow(NamedTuple):
     goal_number: int
     claim: str
     state: MarkState
     evidence: str
-    token: str = ""
+    chips: tuple[Chip, ...] = ()
 
 
 (EVERY_STEP_UNDOABLE,) = goals.goal(goals.UNDOABLE).graded_claims
@@ -69,7 +74,7 @@ ROWS: tuple[ScoreRow, ...] = (
         QUALIFIED_STATE,
         "All four glyph kinds reverse. lineInFile does not round-trip, and a "
         "failed reverse is logged rather than retried.",
-        "lineInFile",
+        (Chip("lineInFile"),),
     ),
     # NOTE: the asterisk is on fleet-level analysis, not the type checker.
     # `analyze` implements one rule (per-leaf duplicate glyph key) and misses
@@ -111,7 +116,7 @@ ROWS: tuple[ScoreRow, ...] = (
         "Rollback is the default when retries are exhausted. It reverses the "
         "failing leaf unit, the failure-isolation boundary. A scroll can opt "
         "out; the one serving golem's documentation does.",
-        "policy = keep",
+        (Chip("policy = keep"),),
     ),
     ScoreRow(
         goals.ROLLBACK,
@@ -156,12 +161,40 @@ WRAP_WIDTH = TEXT_WIDTH * LABEL_HEADROOM
 
 CHIP_GAP = 18.0
 CHIP_HEIGHT = CAPTION_SIZE * LINE_HEIGHT + 14
+CHIP_MARK_SIZE = 28.0
+CHIP_MARK_GAP = 10.0
+CHIP_STACK_GAP = 10.0
+
+
+def _chip_mark_span(chip: Chip) -> float:
+    return 0.0 if chip.state is None else CHIP_MARK_SIZE + CHIP_MARK_GAP
+
+
+def _chip_state(row: ScoreRow, chip: Chip) -> MarkState:
+    return row.state if chip.state is None else chip.state
+
+
+def _chip_column_width(row: ScoreRow) -> float:
+    return max(
+        (
+            _chip_mark_span(chip)
+            + fit_width(chip.label, CAPTION_SIZE, font_family=MONO)
+            for chip in row.chips
+        ),
+        default=0.0,
+    )
+
+
+def _chip_column_height(row: ScoreRow) -> float:
+    if not row.chips:
+        return 0.0
+    return len(row.chips) * CHIP_HEIGHT + (len(row.chips) - 1) * CHIP_STACK_GAP
 
 
 def _evidence_width(row: ScoreRow) -> float:
-    if not row.token:
+    if not row.chips:
         return TEXT_WIDTH
-    return TEXT_WIDTH - fit_width(row.token, CAPTION_SIZE, font_family=MONO) - CHIP_GAP
+    return TEXT_WIDTH - _chip_column_width(row) - CHIP_GAP
 
 
 def _laid_out(row: ScoreRow) -> tuple[str, str]:
@@ -193,8 +226,40 @@ def _row_height(row: ScoreRow) -> float:
         2 * ROW_PADDING
         + measured_height(claim, CLAIM_SIZE)
         + CLAIM_GAP
-        + measured_height(evidence, EVIDENCE_SIZE)
+        + max(
+            measured_height(evidence, EVIDENCE_SIZE),
+            _chip_column_height(row),
+        )
     )
+
+
+def _draw_chips(
+    scene: Scene, row: ScoreRow, evidence_top: float, evidence_height: float
+) -> None:
+    column_width = _chip_column_width(row)
+    column_left = CARD_X + TEXT_X_OFFSET + TEXT_WIDTH - column_width
+    top = evidence_top + (evidence_height - _chip_column_height(row)) / 2.0
+    for chip in row.chips:
+        mark_span = _chip_mark_span(chip)
+        if chip.state is not None:
+            chip.state.mark(
+                scene,
+                column_left,
+                top + (CHIP_HEIGHT - CHIP_MARK_SIZE) / 2.0,
+                CHIP_MARK_SIZE,
+            )
+        tone = _chip_state(row, chip).tone
+        scene.rectangle(
+            column_left + mark_span,
+            top,
+            column_width - mark_span,
+            CHIP_HEIGHT,
+            Tone(tone.stroke, WHITE, tone.stroke),
+            label=chip.label,
+            label_font_size=CAPTION_SIZE,
+            label_font_family=MONO,
+        )
+        top += CHIP_HEIGHT + CHIP_STACK_GAP
 
 
 def _draw_row(scene: Scene, top: float, row: ScoreRow, label: str) -> None:
@@ -231,18 +296,7 @@ def _draw_row(scene: Scene, top: float, row: ScoreRow, label: str) -> None:
     )
     evidence_top = top + ROW_PADDING + measured_height(claim, CLAIM_SIZE) + CLAIM_GAP
     evidence_width = _evidence_width(row)
-    if row.token:
-        evidence_height = measured_height(evidence, EVIDENCE_SIZE)
-        scene.rectangle(
-            CARD_X + TEXT_X_OFFSET + evidence_width + CHIP_GAP,
-            evidence_top + (evidence_height - CHIP_HEIGHT) / 2.0,
-            TEXT_WIDTH - evidence_width - CHIP_GAP,
-            CHIP_HEIGHT,
-            Tone(row.state.tone.stroke, WHITE, row.state.tone.stroke),
-            label=row.token,
-            label_font_size=CAPTION_SIZE,
-            label_font_family=MONO,
-        )
+    _draw_chips(scene, row, evidence_top, measured_height(evidence, EVIDENCE_SIZE))
     scene.text(
         CARD_X + TEXT_X_OFFSET,
         evidence_top,
