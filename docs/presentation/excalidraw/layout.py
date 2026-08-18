@@ -1261,6 +1261,8 @@ def timeline(
     end_caption: str = "",
     label_font_size: float = BODY_SIZE,
     caption_font_size: float = CAPTION_SIZE,
+    label_font_family: int = HAND,
+    caption_font_family: int = HAND,
     tick_height: float = 26,
     marker_height: float = 56,
 ) -> list[float]:
@@ -1278,7 +1280,12 @@ def timeline(
             stroke=tick.tone.stroke,
             stroke_width=3,
         )
-        laid_out = wrapped(tick.label, (step - 18) * LABEL_HEADROOM, label_font_size)
+        laid_out = wrapped(
+            tick.label,
+            (step - 18) * LABEL_HEADROOM,
+            label_font_size,
+            label_font_family,
+        )
         scene.text(
             centre_x - (step - 18) / 2.0,
             axis_y + tick_height / 2.0 + 14,
@@ -1287,10 +1294,14 @@ def timeline(
             colour=INK,
             align="center",
             width=step - 18,
+            font_family=label_font_family,
         )
         if tick.caption:
             caption = wrapped(
-                tick.caption, (step - 18) * LABEL_HEADROOM, caption_font_size
+                tick.caption,
+                (step - 18) * LABEL_HEADROOM,
+                caption_font_size,
+                caption_font_family,
             )
             scene.text(
                 centre_x - (step - 18) / 2.0,
@@ -1304,6 +1315,7 @@ def timeline(
                 colour=INK_FAINT,
                 align="center",
                 width=step - 18,
+                font_family=caption_font_family,
             )
     if start_caption:
         scene.text(
