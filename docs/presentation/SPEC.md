@@ -34,8 +34,9 @@ gone.
 
 **A short label is read cold, alone, out of order.** It has to be a noun phrase
 that names what the box is, never a clause that leans on a sentence elsewhere on
-the canvas. The hub of slide 29 of the golem deck once read `Layer 6 / one word` — a fragment
-snapped off that slide's own subtitle — where it had to read **Orchestration**.
+the canvas. The hub of slide 29 of the golem deck once read `Layer 6 / one word` —
+a fragment snapped off that slide's own subtitle — where it had to read
+**Orchestration**.
 
 The first time a term appears it gets one flat sentence saying what it is: an
 image is read-only filesystem layers plus a config, named by the digest of its
@@ -933,7 +934,7 @@ only thing that looks at the host, it is read-only, and ADR 0058 states that no
 So the slide says *on demand*, and does not say *eventually consistent*. There is
 no anti-entropy mechanism, and the peer gossip that would spread a manifest host
 to host is ADR 0039's design with **no code behind it** — golemd has no HTTP
-client outside its dev-dependencies. See *The claims 23 and 24 must not make*.
+client outside its dev-dependencies. See *The claims 25 and 26 must not make*.
 
 ### 26 · Where golem sits
 
@@ -1283,12 +1284,11 @@ arrived over the network at build time would make the output depend on a server.
 
 It is used twice: on frame 01 at 280px and on frame 14 at 96px, each carrying the
 credit line, because the licence requires attribution wherever the mark appears.
-Against nineteen open line-drawn marks a dense filled
-silhouette reads as a different medium, which is fine for an identity mark and
-wrong for a vocabulary item. Everywhere a mark has to be small or repeated — the
-per-machine agents on frames 12 to 15 — the drawn vocabulary wins, because the
-imported one turns to a blob under about 40px and competes with the tones around
-it.
+Against nineteen open line-drawn marks a dense filled silhouette reads as a
+different medium, which is fine for an identity mark and wrong for a vocabulary
+item. Everywhere a mark has to be small or repeated — the per-machine agents on
+frames 12 to 15 — the drawn vocabulary wins, because the imported one turns to a
+blob under about 40px and competes with the tones around it.
 
 ## Measuring text without a font
 

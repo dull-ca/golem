@@ -77,7 +77,7 @@ GEOMETRY_TOLERANCE = 0.5
 # _slide keeps this table from outliving the slides it excuses.
 WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/what-you-buy": (60, "a matrix of fourteen labels, plus what the OS row means"),
-    "golem/what-you-configure": (50, "eight row labels, six column headers and a marker"),
+    "golem/what-you-configure": (51, "eight row labels, six column headers, a marker, and the grey legend entry's restored subject"),
     "golem/where-lichess-sits": (44, "six rungs of a ladder, and the marker on one"),
     "golem/where-lichess-sits-with-portainer": (44, "the ladder, plus Portainer stated at its real scale"),
     "golem/lichess-stack": (73, "the figure enumerates six layers and five parts"),

@@ -197,10 +197,12 @@ because the mark is, as the licence requires.
 
 ### The grey on *What you configure* means bought, not merely unreachable
 
-The third legend swatch on slide 03 reads *purchased, and can't configure*, where
-it used to read *not yours to configure*. The wording is Dr. Dub's, one word
-shorter than he gave it: the slide sits exactly on its 50-word ceiling in
-`WORD_BUDGET_CEILINGS`, so the longer phrasing would have failed the budget test.
+The third legend swatch on slide 03 reads *you purchased, and can't configure*,
+where it used to read *not yours to configure*. The wording is Dr. Dub's; an
+earlier pass dropped the subject to fit the slide's 50-word ceiling in
+`WORD_BUDGET_CEILINGS`, leaving a subjectless clause beside two sibling entries
+that both lead with one. The ceiling is now 51 words, and the entry carries the
+subject Dr. Dub gave it.
 
 Slide 02's grey entry, *the provider operates it*, is deliberately unchanged. The
 two slides ask different questions and do not share a legend.
@@ -449,8 +451,8 @@ without seeing this, which is the argument for the assertion over the eye.
 
 ## Open questions
 
-- **What the grey means on two cells of slide 03.** The legend now reads
-  *purchased, and can't configure*, and every grey cell was checked against it.
+- **What the grey means on two cells of slide 03.** The legend now reads *you
+  purchased, and can't configure*, and every grey cell was checked against it.
   `Cluster membership` under *Bare metal + config mgmt* and under *Docker (one
   host)* is grey because there is no cluster in either model, not because anything
   was bought. `CELL_TONES` in `decks/golem/s03_what_you_configure.py` was left as
@@ -468,10 +470,11 @@ without seeing this, which is the argument for the assertion over the eye.
   handover arrow's head (the local renderer draws no arrowheads, so a 46px arrow
   beside a 46px chip has been checked as an element and not as a picture).
 - **What December's plan actually said.** Placement by Ansible, and plumbing by
-  Ansible with dnsmasq and SRV records, come from Dr. Dub's own table for slide 09
-  and were not read out of any lichess source. The golem deck's slides 09, 10 and
-  33 describe December as it *ran* — `hosts.py`, generated config, quadlets — so
-  the two are only consistent if the plan is a thing distinct from what was running.
+  Ansible with dnsmasq and SRV records, come from Dr. Dub's own table for the
+  orchestration deck's slide 09 and were not read out of any lichess source. The
+  golem deck's slides 09, 10 and 33 describe December as it *ran* — `hosts.py`,
+  generated config, quadlets — so the two are only consistent if the plan is a
+  thing distinct from what was running.
   Slide 09's title says "planned" for that reason.
 - **Whether lichess would keep `site.yml` as the play's name** on the lifecycle
   deck's slide 03. The six basics are the brief's own list; the filename is the
