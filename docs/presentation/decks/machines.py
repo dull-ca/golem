@@ -71,9 +71,6 @@ class Machine(NamedTuple):
 class Fleet:
     bodies: tuple[dict, ...]
 
-    def machine(self, index: int) -> dict:
-        return self.bodies[index]
-
     @property
     def bottom(self) -> float:
         return FLEET_BOTTOM
@@ -84,14 +81,6 @@ def machine_origin(index: int) -> tuple[float, float]:
         FLEET_X + (index % COLUMNS) * (MACHINE_WIDTH + MACHINE_GAP_X),
         FLEET_Y + (index // COLUMNS) * (MACHINE_HEIGHT + MACHINE_GAP_Y),
     )
-
-
-def machine_centre_x(index: int) -> float:
-    return machine_origin(index)[0] + MACHINE_WIDTH / 2.0
-
-
-def index_of(name: str) -> int:
-    return next(position for position, host in enumerate(HOSTS) if host.name == name)
 
 
 def bare_machines() -> tuple[Machine, ...]:

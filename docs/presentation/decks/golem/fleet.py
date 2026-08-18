@@ -24,6 +24,8 @@ from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 from ..lichess_fleet import HOSTS
 from ..machines import (
     FLEET_X,
+    MACHINE_HEIGHT,
+    MACHINE_WIDTH,
     Fleet,
     Machine,
     bare_machines,
@@ -32,8 +34,6 @@ from ..machines import (
     cell_rect,
     draw_fleet,
     draw_machine,
-    index_of,
-    machine_centre_x,
     machine_origin,
     scroll_mark,
     unit_legend,
@@ -42,6 +42,8 @@ from .lichess_stack import BAND_LAYERS, DESCRIPTIVE_LAYER_TONES, ORCHESTRATION_L
 
 __all__ = [
     "ID_NAMESPACE",
+    "MACHINE_HEIGHT",
+    "MACHINE_WIDTH",
     "Fleet",
     "Machine",
     "Tool",
@@ -50,9 +52,8 @@ __all__ = [
     "cell_area",
     "cell_rect",
     "draw",
+    "draw_fleet",
     "draw_machine",
-    "index_of",
-    "machine_centre_x",
     "machine_origin",
     "on_one_machine",
     "reaches_the_fleet",
