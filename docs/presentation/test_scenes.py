@@ -32,13 +32,13 @@ from decks import DECKS
 from decks.golem import enactment, glyph_ops, goals, scorecard
 from decks.golem import (
     s16_the_goals,
-    s19_plan_the_first_apply,
-    s20_after_the_first_apply,
-    s21_plan_one_host_changes,
-    s22_emptying_a_host,
-    s34_grading_goals_one_to_three,
-    s35_grading_goals_four_and_five,
-    s39_the_diff,
+    s28_plan_a_change,
+    s29_the_change_applied,
+    s30_plan_one_host_changes,
+    s31_emptying_a_host,
+    s40_grading_goals_one_to_three,
+    s41_grading_goals_four_and_five,
+    s45_the_diff,
 )
 from excalidraw import icons
 from excalidraw.scene import (
@@ -79,18 +79,18 @@ MINIMUM_LABEL_SLACK = 8
 
 GOLEM_DECK_NAME = "golem"
 SCORECARD_SLUGS = (
-    s34_grading_goals_one_to_three.SLUG,
-    s35_grading_goals_four_and_five.SLUG,
+    s40_grading_goals_one_to_three.SLUG,
+    s41_grading_goals_four_and_five.SLUG,
 )
 
 ENACTMENT_MODULES = (
-    s19_plan_the_first_apply,
-    s20_after_the_first_apply,
-    s21_plan_one_host_changes,
-    s22_emptying_a_host,
+    s28_plan_a_change,
+    s29_the_change_applied,
+    s30_plan_one_host_changes,
+    s31_emptying_a_host,
 )
 ENACTMENT_SLUGS = tuple(module.SLUG for module in ENACTMENT_MODULES)
-PLANNED_THEN_APPLIED = (s19_plan_the_first_apply, s20_after_the_first_apply)
+PLANNED_THEN_APPLIED = (s28_plan_a_change, s29_the_change_applied)
 
 ICON_PROBE_ORIGIN = (400.0, 300.0)
 ICON_PROBE_SIZE = 96.0
@@ -492,8 +492,8 @@ class GeneratedScenes(unittest.TestCase):
 
     def test_every_scorecard_row_reaches_exactly_one_slide(self) -> None:
         shown = (
-            s34_grading_goals_one_to_three.ROWS
-            + s35_grading_goals_four_and_five.ROWS
+            s40_grading_goals_one_to_three.ROWS
+            + s41_grading_goals_four_and_five.ROWS
         )
         self.assertEqual(shown, scorecard.ROWS)
 
@@ -543,7 +543,7 @@ class GeneratedScenes(unittest.TestCase):
                 )
 
     def test_the_diff_slide_names_every_glyph_op(self) -> None:
-        stated = drawn_text(self.documents, GOLEM_DECK_NAME, s39_the_diff.SLUG)
+        stated = drawn_text(self.documents, GOLEM_DECK_NAME, s45_the_diff.SLUG)
         for name in glyph_ops.OP_NAMES:
             with self.subTest(op=name):
                 self.assertIn(name, stated)
@@ -593,8 +593,8 @@ class GeneratedScenes(unittest.TestCase):
         )
 
     def test_a_plan_frame_leaves_every_journal_where_it_found_it(self) -> None:
-        applied = s20_after_the_first_apply.panels()
-        planned = s21_plan_one_host_changes.panels()
+        applied = s29_the_change_applied.panels()
+        planned = s30_plan_one_host_changes.panels()
         self.assertEqual(
             [panel.revisions for panel in applied],
             [panel.revisions for panel in planned],

@@ -1,7 +1,7 @@
 """The five goals the deck's author had for golem before he built it.
 
 `s16_the_goals` draws `Goal.statement` verbatim, his own line. The grading
-slides (`s34_grading_goals_one_to_three`, `s35_grading_goals_four_and_five`)
+slides (`s40_grading_goals_one_to_three`, `s41_grading_goals_four_and_five`)
 grade `Goal.graded_claims` instead: goal 3 packs two claims into one
 sentence ("easier to plan" and "being certain a change will work"), graded
 separately, so a goal and its claim count are not always the same.

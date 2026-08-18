@@ -1,8 +1,8 @@
 """The three mark states a scorecard row can carry, and the row shape itself.
 
 `ROWS` grades all seven of `goals.GRADED_CLAIMS`; they do not fit one canvas
-at the type floor, so `s34_grading_goals_one_to_three` and
-`s35_grading_goals_four_and_five` each draw a slice through
+at the type floor, so `s40_grading_goals_one_to_three` and
+`s41_grading_goals_four_and_five` each draw a slice through
 `rows_for_goals`. The cut sits on a goal boundary rather than splitting the
 seven rows down the middle, so a goal that states two claims -- goal 3, goal
 4 -- keeps both on the same slide.
