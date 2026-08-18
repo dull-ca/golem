@@ -29,11 +29,16 @@ if str(PRESENTATION_ROOT) not in sys.path:
 
 from build import build_all
 from decks import DECKS
-from decks.golem import goals, scorecard
+from decks.golem import enactment, glyph_ops, goals, scorecard
 from decks.golem import (
     s16_the_goals,
+    s19_plan_the_first_apply,
+    s20_after_the_first_apply,
+    s21_plan_one_host_changes,
+    s22_emptying_a_host,
     s34_grading_goals_one_to_three,
     s35_grading_goals_four_and_five,
+    s39_the_diff,
 )
 from excalidraw import icons
 from excalidraw.scene import (
@@ -78,6 +83,14 @@ SCORECARD_SLUGS = (
     s35_grading_goals_four_and_five.SLUG,
 )
 
+ENACTMENT_SLUGS = (
+    s19_plan_the_first_apply.SLUG,
+    s20_after_the_first_apply.SLUG,
+    s21_plan_one_host_changes.SLUG,
+    s22_emptying_a_host.SLUG,
+)
+MOST_REVISIONS_DRAWN = 3
+
 ICON_PROBE_ORIGIN = (400.0, 300.0)
 ICON_PROBE_SIZE = 96.0
 GEOMETRY_TOLERANCE = 0.5
@@ -111,6 +124,10 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/what-do-we-undo": (92, "thirty host names, what a mark is here, the count the play added, and what a playbook does not record"),
     "golem/golem-scrolls-compiled": (51, "a source tree quoted, and eight scrolls named"),
     "golem/golem-scrolls-dispatched": (50, "four hosts named twice, and what golemd does with a scroll"),
+    "golem/plan-the-first-apply": (73, "three hosts named twice, one plan row each, three journals, and a legend of four operations and two cell states"),
+    "golem/after-the-first-apply": (75, "the same figure, plus the sentence that says what a journal holds"),
+    "golem/plan-one-host-changes": (83, "the same figure, plus the two extra plan rows on the host that changes"),
+    "golem/emptying-a-host": (101, "the same figure with three revisions in every journal, plus the two sentences that keep 'empty again' honest"),
     "golem/fleet-assembling": (121, "thirty host names, the legend, and three tools named"),
     "golem/fleet-golem": (136, "thirty host names, the legend, three tools and the icon credit"),
     "golem/moving-a-service": (62, "two hosts named three times each, and the limitation stated"),
@@ -478,6 +495,44 @@ class GeneratedScenes(unittest.TestCase):
             + s35_grading_goals_four_and_five.ROWS
         )
         self.assertEqual(shown, scorecard.ROWS)
+
+    def test_the_diff_slide_names_every_glyph_op(self) -> None:
+        stated = drawn_text(self.documents, GOLEM_DECK_NAME, s39_the_diff.SLUG)
+        for name in glyph_ops.OP_NAMES:
+            with self.subTest(op=name):
+                self.assertIn(name, stated)
+
+    def test_every_enactment_frame_keys_all_four_glyph_ops(self) -> None:
+        for slug in ENACTMENT_SLUGS:
+            drawn = drawn_text(self.documents, GOLEM_DECK_NAME, slug)
+            for op in glyph_ops.OPS:
+                with self.subTest(slide=slug, op=op.name):
+                    self.assertIn(op.verb, drawn)
+
+    def test_the_enactment_frames_draw_the_same_hosts(self) -> None:
+        for slug in ENACTMENT_SLUGS:
+            drawn = drawn_text(self.documents, GOLEM_DECK_NAME, slug)
+            for host in enactment.SHOWN_HOSTS:
+                with self.subTest(slide=slug, host=host):
+                    self.assertIn(host, drawn)
+
+    def test_the_journal_only_grows_across_the_enactment_frames(self) -> None:
+        known = {
+            collapsed(row)
+            for row in enactment.revision_rows(MOST_REVISIONS_DRAWN)
+        }
+        drawn = [
+            {
+                body
+                for body in drawn_text(self.documents, GOLEM_DECK_NAME, slug)
+                if body in known
+            }
+            for slug in ENACTMENT_SLUGS
+        ]
+        self.assertEqual(drawn[-1], known)
+        for position, (earlier, later) in enumerate(zip(drawn, drawn[1:])):
+            with self.subTest(after=ENACTMENT_SLUGS[position + 1]):
+                self.assertTrue(earlier.issubset(later))
 
     def test_word_budget_ceilings_name_a_real_slide(self) -> None:
         known = {
