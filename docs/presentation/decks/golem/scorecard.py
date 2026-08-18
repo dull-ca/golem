@@ -66,10 +66,10 @@ ROWS: tuple[ScoreRow, ...] = (
         goals.UNDOABLE,
         EVERY_STEP_UNDOABLE,
         ACHIEVED_STATE,
-        "All four glyph kinds reverse. lineInFile leaves an empty file where it "
-        "created one, and a newline it added; only the directory glyph records "
-        "the parent directories golem makes. A failed reverse is logged and "
-        "still marks the step reversed.",
+        "All four glyph kinds reverse. lineInFile leaves an empty file it "
+        "created, and a newline it added; only the directory glyph records the "
+        "parent directories golem makes. A failed reverse still marks the step "
+        "reversed.",
         (
             Chip("lineInFile", QUALIFIED_STATE),
             Chip("parent dirs", QUALIFIED_STATE),
