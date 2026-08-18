@@ -9,27 +9,32 @@ from excalidraw.layout import (
     text_card,
 )
 from excalidraw.palette import (
-    BLUE,
-    BLUE_FILL,
     GOLEM,
+    INK,
     INK_SOFT,
     NEUTRAL,
     SLATE,
     SLATE_FILL,
     TEAL,
     TEAL_FILL,
+    WHITE,
     Tone,
 )
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 from excalidraw.text import HAND, MONO
 from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 
+from .glyph_ops import OPS
+
 SLUG = "the-diff"
 TITLE = "Inside golemd: the diff"
 
 PRIOR_TONE = Tone(SLATE, SLATE_FILL)
 DESIRED_TONE = Tone(TEAL, TEAL_FILL)
-OP_TONE = Tone(BLUE, BLUE_FILL)
+
+OP_MARK = 44.0
+OP_MARK_Y = 18.0
+OP_NAME_GAP = 12.0
 
 PANELS_Y = 190.0
 PANELS_HEIGHT = 200.0
@@ -42,8 +47,6 @@ OPS_WIDTH = (CONTENT_WIDTH - 3 * OPS_GAP) / 4.0
 CLOSING_Y = 740.0
 CLOSING_HEIGHT = 58.0
 NOTE_Y = 826.0
-
-OPS = ("Install", "Remove", "Replace", "Noop")
 
 # `plan` does not take two scrolls. `prior` is the outcome list golemd journalled
 # for the last revision; only `desired` is a scroll — apps/golemd/src/reconcile.rs.
@@ -106,15 +109,30 @@ def build() -> Scene:
         align="center",
     )
     for position, operation in enumerate(OPS):
-        text_card(
-            scene,
-            MARGIN + position * (OPS_WIDTH + OPS_GAP),
+        left = MARGIN + position * (OPS_WIDTH + OPS_GAP)
+        scene.rectangle(
+            left,
             OPS_Y,
             OPS_WIDTH,
-            (literal(operation),),
-            OP_TONE,
-            height=OPS_HEIGHT,
+            OPS_HEIGHT,
+            Tone(operation.tone.stroke, WHITE),
+        )
+        operation.mark(
+            scene,
+            left + (OPS_WIDTH - OP_MARK) / 2.0,
+            OPS_Y + OP_MARK_Y,
+            OP_MARK,
+            operation.tone,
+        )
+        scene.text(
+            left,
+            OPS_Y + OP_MARK_Y + OP_MARK + OP_NAME_GAP,
+            operation.name,
+            font_size=BODY_SIZE,
+            colour=INK,
+            font_family=MONO,
             align="center",
+            width=OPS_WIDTH,
         )
     span_bar(
         scene,
