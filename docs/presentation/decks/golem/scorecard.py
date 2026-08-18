@@ -202,6 +202,11 @@ def _evidence_width(row: ScoreRow) -> float:
     return TEXT_WIDTH - _chip_column_width(row) - CHIP_GAP
 
 
+def _evidence_block_height(row: ScoreRow) -> float:
+    _, evidence = _laid_out(row)
+    return max(measured_height(evidence, EVIDENCE_SIZE), _chip_column_height(row))
+
+
 def _laid_out(row: ScoreRow) -> tuple[str, str]:
     return (
         wrapped(row.claim, WRAP_WIDTH, CLAIM_SIZE),
@@ -226,24 +231,19 @@ def _row_labels(rows: tuple[ScoreRow, ...]) -> tuple[str, ...]:
 
 
 def _row_height(row: ScoreRow) -> float:
-    claim, evidence = _laid_out(row)
+    claim, _ = _laid_out(row)
     return (
         2 * ROW_PADDING
         + measured_height(claim, CLAIM_SIZE)
         + CLAIM_GAP
-        + max(
-            measured_height(evidence, EVIDENCE_SIZE),
-            _chip_column_height(row),
-        )
+        + _evidence_block_height(row)
     )
 
 
-def _draw_chips(
-    scene: Scene, row: ScoreRow, evidence_top: float, evidence_height: float
-) -> None:
+def _draw_chips(scene: Scene, row: ScoreRow, evidence_top: float) -> None:
     column_width = _chip_column_width(row)
     column_left = CARD_X + TEXT_X_OFFSET + TEXT_WIDTH - column_width
-    top = evidence_top + (evidence_height - _chip_column_height(row)) / 2.0
+    top = evidence_top + (_evidence_block_height(row) - _chip_column_height(row)) / 2.0
     for chip in row.chips:
         mark_span = _chip_mark_span(chip)
         if chip.state is not None:
@@ -301,7 +301,7 @@ def _draw_row(scene: Scene, top: float, row: ScoreRow, label: str) -> None:
     )
     evidence_top = top + ROW_PADDING + measured_height(claim, CLAIM_SIZE) + CLAIM_GAP
     evidence_width = _evidence_width(row)
-    _draw_chips(scene, row, evidence_top, measured_height(evidence, EVIDENCE_SIZE))
+    _draw_chips(scene, row, evidence_top)
     scene.text(
         CARD_X + TEXT_X_OFFSET,
         evidence_top,
