@@ -745,6 +745,19 @@ def os_install(
     return _captured(scene, first, x, y, width, size)
 
 
+PERSON_ASPECT = 0.72
+PERSON_HEAD_FRACTION = 0.42
+
+
+def person(scene: Scene, x: float, y: float, size: float, *, tone: Tone = NODE) -> Mark:
+    first = len(scene.elements)
+    width = PERSON_ASPECT * size
+    head = PERSON_HEAD_FRACTION * size
+    scene.ellipse(x + (width - head) / 2.0, y, head, head, tone)
+    scene.rectangle(x, y + 0.52 * size, width, 0.48 * size, tone)
+    return _captured(scene, first, x, y, width, size)
+
+
 DISK_LAYOUT_ASPECT = 1.90
 DISK_LAYOUT_PARTITIONS = (0.34, 0.18, 0.30, 0.18)
 
@@ -805,6 +818,7 @@ CATALOGUE: tuple[IconSpec, ...] = (
     IconSpec("source file", source_file, SOURCE_FILE_ASPECT),
     IconSpec("operating system install", os_install, OS_INSTALL_ASPECT),
     IconSpec("disk layout", disk_layout, DISK_LAYOUT_ASPECT),
+    IconSpec("person", person, PERSON_ASPECT),
     IconSpec("not applicable", not_applicable, NOT_APPLICABLE_ASPECT),
     IconSpec("goal achieved", achieved, GOAL_MARK_ASPECT),
     IconSpec("goal qualified", qualified, GOAL_MARK_ASPECT),

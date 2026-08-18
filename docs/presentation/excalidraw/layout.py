@@ -53,6 +53,10 @@ HEADING_FONT_SIZE = HEADING_SIZE
 BOX_TITLE_FONT_SIZE = BODY_SIZE
 BOX_DETAIL_FONT_SIZE = CAPTION_SIZE
 TAG_FONT_SIZE = CAPTION_SIZE
+PANEL_PADDING = 22.0
+PANEL_HEADING_GAP = 16.0
+BOX_PADDING = 16.0
+BOX_TITLE_GAP = 8.0
 TEXT_CARD_PADDING = 18.0
 TEXT_CARD_SPACING = 8.0
 TRANSITION_LABEL_CLEARANCE = 14.0
@@ -360,7 +364,7 @@ def labelled_box(
     title_font_size: float = BOX_TITLE_FONT_SIZE,
     detail_font_size: float = BOX_DETAIL_FONT_SIZE,
     tag_font_size: float = TAG_FONT_SIZE,
-    padding: float = 16,
+    padding: float = BOX_PADDING,
     index_gutter: float = 46,
     align: str = "left",
     radius: bool = True,
@@ -399,7 +403,7 @@ def labelled_box(
         else ""
     )
     detail_height = measured_height(detail, detail_font_size) if detail else 0.0
-    spacing = 8 if detail else 0
+    spacing = BOX_TITLE_GAP if detail else 0
     block_height = title_height + spacing + detail_height
     top = y + max(padding, (height - block_height) / 2.0)
     scene.text(
@@ -432,6 +436,36 @@ def labelled_box(
             width=index_gutter - 10,
         )
     return rect
+
+
+def labelled_box_height_for(
+    box: LabelledBox,
+    width: float,
+    *,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
+    tag_font_size: float = TAG_FONT_SIZE,
+    padding: float = BOX_PADDING,
+    index_gutter: float = 46,
+    align: str = "left",
+) -> float:
+    raw_text_width = width - 2 * padding
+    if box.index_label:
+        raw_text_width -= index_gutter
+    if box.tag:
+        inset = fit_width(box.tag, tag_font_size) + 14
+        raw_text_width -= inset
+        if align == "center":
+            raw_text_width -= inset
+    text_width = raw_text_width * LABEL_HEADROOM
+    block = measured_height(
+        wrapped(box.title, text_width, title_font_size), title_font_size
+    )
+    if box.detail:
+        block += BOX_TITLE_GAP + measured_height(
+            wrapped(box.detail, text_width, detail_font_size), detail_font_size
+        )
+    return block + 2 * padding
 
 
 def box_stack(
@@ -630,7 +664,7 @@ def panel(
     *,
     tone: Tone = NEUTRAL,
     heading_font_size: float = HEADING_FONT_SIZE,
-    padding: float = 22,
+    padding: float = PANEL_PADDING,
     fill: str = TRANSPARENT,
     stroke_style: str = "solid",
 ) -> PanelArea:
@@ -653,11 +687,28 @@ def panel(
             width=width - 2 * padding,
             wrap_width=width - 2 * padding,
         )
-        cursor = bottom_edge(title) + 16
+        cursor = bottom_edge(title) + PANEL_HEADING_GAP
     return PanelArea(
         rect,
         Area(x + padding, cursor, width - 2 * padding, y + height - padding - cursor),
     )
+
+
+def panel_height_for(
+    heading: str,
+    width: float,
+    body_height: float,
+    *,
+    heading_font_size: float = HEADING_FONT_SIZE,
+    padding: float = PANEL_PADDING,
+) -> float:
+    above_body = padding
+    if heading:
+        laid_out = wrapped(
+            heading, (width - 2 * padding) * LABEL_HEADROOM, heading_font_size
+        )
+        above_body += measured_height(laid_out, heading_font_size) + PANEL_HEADING_GAP
+    return above_body + body_height + padding
 
 
 def matrix(
