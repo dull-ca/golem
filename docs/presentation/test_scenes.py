@@ -497,6 +497,51 @@ class GeneratedScenes(unittest.TestCase):
         )
         self.assertEqual(shown, scorecard.ROWS)
 
+    def test_a_chip_stack_taller_than_its_evidence_stays_inside_its_row(self) -> None:
+        row = scorecard.ScoreRow(
+            goals.UNDOABLE,
+            "A claim",
+            scorecard.ACHIEVED_STATE,
+            "One short line.",
+            tuple(
+                scorecard.Chip(label, scorecard.QUALIFIED_STATE)
+                for label in ("first", "second", "third")
+            ),
+        )
+        scene = Scene("chip-stack-probe")
+        scorecard.draw(scene, (row,))
+
+        (card,) = [
+            element
+            for element in scene.elements
+            if element["type"] == "rectangle"
+            and element["width"] == scorecard.CARD_WIDTH
+        ]
+        (claim,) = [
+            element
+            for element in scene.elements
+            if element["type"] == "text"
+            and element["fontSize"] == scorecard.CLAIM_SIZE
+        ]
+        evidence_top = claim["y"] + claim["height"] + scorecard.CLAIM_GAP
+        containers = {
+            element["containerId"]
+            for element in scene.elements
+            if element["type"] == "text" and element["fontFamily"] == MONO
+        }
+        chips = [
+            element for element in scene.elements if element["id"] in containers
+        ]
+
+        self.assertEqual(len(chips), len(row.chips))
+        for chip in chips:
+            with self.subTest(chip=chip["id"]):
+                self.assertGreaterEqual(chip["y"], evidence_top)
+                self.assertLessEqual(
+                    chip["y"] + chip["height"],
+                    card["y"] + card["height"] - scorecard.ROW_PADDING,
+                )
+
     def test_the_diff_slide_names_every_glyph_op(self) -> None:
         stated = drawn_text(self.documents, GOLEM_DECK_NAME, s39_the_diff.SLUG)
         for name in glyph_ops.OP_NAMES:
