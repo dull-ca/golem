@@ -225,7 +225,7 @@ def golem_mark(scene: Scene, x: float, y: float, size: float, tone: Tone | None)
     )
 
 
-def _swatch_entry(
+def swatch_entry(
     scene: Scene, x: float, y: float, tone: Tone, stroke_style: str, caption: str
 ) -> float:
     scene.rectangle(
@@ -250,13 +250,13 @@ def _swatch_entry(
 
 
 def tool_unit_entry(scene: Scene, x: float, y: float) -> float:
-    return _swatch_entry(
+    return swatch_entry(
         scene, x, y, Tone(INK_SOFT, INK_GHOST), "solid", "a unit a tool keeps"
     )
 
 
 def hand_unit_entry(scene: Scene, x: float, y: float) -> float:
-    return _swatch_entry(scene, x, y, BY_HAND, "dashed", "a unit kept by hand")
+    return swatch_entry(scene, x, y, BY_HAND, "dashed", "a unit kept by hand")
 
 
 def unknown_entry(scene: Scene, x: float, y: float) -> float:
