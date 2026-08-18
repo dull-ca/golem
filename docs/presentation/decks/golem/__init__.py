@@ -49,6 +49,7 @@ SLIDE_MODULE_NAMES: tuple[str, ...] = (
     "s40_grading_goals_one_to_three",
     "s41_grading_goals_four_and_five",
     "s42_looking_for_feedback",
+    "s43_appendix",
     "s44_the_pipeline",
     "s45_the_diff",
     "s46_apply_and_undo",
