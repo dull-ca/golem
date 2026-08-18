@@ -126,7 +126,7 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/golemd-routes": (87, "eight routes, each with a one-line gloss"),
     "golem/plan-against-host": (77, "quoted routes, types and Observation variants"),
     "golem/current-status": (75, "three status facts, plus the host scroll and the site's three glyphs quoted verbatim, and the two lines that keep the claim from reaching past what the code does"),
-    "golem/longer-term-goals": (93, "the four glyph spellings, what golem's libraries already type on top of them, and three limits the language has today, each stated against the code"),
+    "golem/longer-term-goals": (95, "the four glyph spellings, what golem's libraries already type on top of them, and three limits the language has today, each stated against the code"),
     "golem/adversarial-conditions": (138, "ten failure cases from the reconcilers, split three ways, each group with its result variant and what golem does with it"),
     "golem/grading-goals-1-to-3": (107, "four graded claims, each with its goal number, its verdict word and the evidence behind it"),
     "golem/grading-goals-4-and-5": (77, "three graded claims, each with its goal number, its verdict word and the evidence behind it"),

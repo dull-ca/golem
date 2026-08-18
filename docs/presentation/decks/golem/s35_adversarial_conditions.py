@@ -26,7 +26,7 @@ from excalidraw.layout import (
 from excalidraw.palette import GAP, INK_SOFT, OUTLINE, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, LABEL_HEADROOM, MARGIN, Scene, bottom_edge
 from excalidraw.text import MONO, measured_height, wrapped
-from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
+from excalidraw.type_scale import BODY_SIZE
 
 SLUG = "adversarial-conditions"
 TITLE = "When things fail"
@@ -40,10 +40,10 @@ PANELS_Y = 210.0
 PANEL_GAP = 40.0
 PANEL_WIDTH = (CONTENT_WIDTH - 2 * PANEL_GAP) / 3.0
 
-CHIP_HEIGHT = CAPTION_SIZE * 1.25 + 12.0
+CHIP_HEIGHT = BODY_SIZE * 1.25 + 12.0
 CHIP_GAP = 14.0
 GLOSS_GAP = 16.0
-ITEM_GAP = 16.0
+ITEM_GAP = 28.0
 
 
 class Group(NamedTuple):
@@ -122,7 +122,7 @@ def stacked_height(bodies: Sequence[str], font_size: float, gap: float) -> float
 
 def cases_offset() -> float:
     tallest_gloss = max(
-        stacked_height([group.gloss], CAPTION_SIZE, 0.0) for group in GROUPS
+        stacked_height([group.gloss], BODY_SIZE, 0.0) for group in GROUPS
     )
     return CHIP_HEIGHT + CHIP_GAP + tallest_gloss + GLOSS_GAP
 
@@ -146,7 +146,7 @@ def draw_heading(scene: Scene, x: float, height: float, group: Group) -> Area:
         area.y,
         group.result_variant,
         tone=Tone(group.tone.stroke, WHITE, group.tone.stroke),
-        font_size=CAPTION_SIZE,
+        font_size=BODY_SIZE,
         height=CHIP_HEIGHT,
         font_family=MONO,
     )
@@ -156,7 +156,7 @@ def draw_heading(scene: Scene, x: float, height: float, group: Group) -> Area:
         area.y + CHIP_HEIGHT + CHIP_GAP,
         group.gloss,
         width=area.width,
-        font_size=CAPTION_SIZE,
+        font_size=BODY_SIZE,
         colour=INK_SOFT,
     )
     return Area(area.x, bottom_edge(gloss), area.width, area.height)

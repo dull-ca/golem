@@ -392,11 +392,12 @@ or neither. The slide says so.
 
 ### A caveat slide once proposed a fifth glyph kind
 
-An early draft of *Longer-term goals* drew networking primitives as glyphs of
-their own. That is the one extension the architecture rules out — there are four
-reconciler-owned glyph kinds and richer shapes are Emet libraries that compile
-down to them — and it was false as an absence besides: `Routing.Route`,
-`Traefik.Ingress` and `Quadlet.Expose` are Emet types today.
+An early draft of *The Emet language today, and its limits* drew networking
+primitives as glyphs of their own. That is the one extension the architecture
+rules out — there are four reconciler-owned glyph kinds and richer shapes are
+Emet libraries that compile down to them — and it was false as an absence
+besides: `Routing.Route`, `Traefik.Ingress` and `Quadlet.Expose` are Emet
+types today.
 
 The box that replaced it names a gap that sits **inside** the four-glyph model:
 nothing type-checks the text a networking library renders, because every glyph

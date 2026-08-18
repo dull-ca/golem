@@ -27,20 +27,21 @@ from excalidraw.layout import (
 from excalidraw.palette import GOLEM, INK_GHOST, INK_SOFT, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, LABEL_HEADROOM, MARGIN, Scene, right_edge
 from excalidraw.text import MONO, measured_height, wrapped
-from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE, HEADING_SIZE
+from excalidraw.type_scale import BODY_SIZE, HEADING_SIZE
 
 SLUG = "longer-term-goals"
-TITLE = "Longer-term goals"
-SUBTITLE = "Better templating, and configuration shapes as first-class types."
+TITLE = "The Emet language today, and its limits"
+SUBTITLE = "I want better templating, and configuration shapes as first-class types."
 
 PANELS_Y = 230.0
 PANEL_GUTTER = 76.0
 PANEL_WIDTH = (CONTENT_WIDTH - PANEL_GUTTER) / 2.0
 BODY_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING
 
-CHIP_RHYTHM = 70.0
+CHIP_FONT_SIZE = HEADING_SIZE
+CHIP_RHYTHM = 92.0
 CHIP_GAP = 14.0
-CHIP_HEIGHT = BODY_SIZE * 1.25 + 16.0
+CHIP_HEIGHT = CHIP_FONT_SIZE * 1.25 + 16.0
 WANTED_GAP = 30.0
 
 ABSENT = Tone(INK_GHOST, WHITE, INK_SOFT)
@@ -79,7 +80,9 @@ WANTED = (
 
 
 WANTED_HEIGHTS = tuple(
-    labelled_box_height_for(box, BODY_WIDTH, title_font_size=HEADING_SIZE)
+    labelled_box_height_for(
+        box, BODY_WIDTH, title_font_size=HEADING_SIZE, detail_font_size=BODY_SIZE
+    )
     for box in WANTED
 )
 
@@ -111,7 +114,7 @@ def draw_spellings(scene: Scene, area: Area) -> None:
                 area.y + position * CHIP_RHYTHM,
                 spelling,
                 tone=Tone(GOLEM.stroke, WHITE, GOLEM.stroke),
-                font_size=BODY_SIZE,
+                font_size=CHIP_FONT_SIZE,
                 height=CHIP_HEIGHT,
                 font_family=MONO,
             )
@@ -137,7 +140,7 @@ def draw_wanted(scene: Scene, area: Area) -> None:
             height,
             box,
             title_font_size=HEADING_SIZE,
-            detail_font_size=CAPTION_SIZE,
+            detail_font_size=BODY_SIZE,
             stroke_style="dotted",
         )
         cursor += height + WANTED_GAP
