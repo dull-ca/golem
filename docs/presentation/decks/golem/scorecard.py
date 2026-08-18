@@ -71,10 +71,15 @@ ROWS: tuple[ScoreRow, ...] = (
     ScoreRow(
         goals.UNDOABLE,
         EVERY_STEP_UNDOABLE,
-        QUALIFIED_STATE,
-        "All four glyph kinds reverse. lineInFile does not round-trip, and a "
-        "failed reverse is logged rather than retried.",
-        (Chip("lineInFile"),),
+        ACHIEVED_STATE,
+        "All four glyph kinds reverse. lineInFile leaves an empty file where it "
+        "created one; only the directory glyph records the parent directories "
+        "golem makes. A failed reverse is logged, and the step is marked "
+        "reversed anyway.",
+        (
+            Chip("lineInFile", QUALIFIED_STATE),
+            Chip("create_dir_all", QUALIFIED_STATE),
+        ),
     ),
     # NOTE: the asterisk is on fleet-level analysis, not the type checker.
     # `analyze` implements one rule (per-leaf duplicate glyph key) and misses
