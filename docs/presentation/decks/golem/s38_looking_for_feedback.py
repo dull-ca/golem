@@ -12,9 +12,10 @@ TITLE = "Looking for feedback"
 # NOTE: this is the slide that stays on screen while the room talks, so
 # nothing on it may need explaining: no figure, no legend, no subtitle.
 
-# NOTE: 40pt (HEADING_SIZE + 10) is the largest size that keeps question 3
-# on one line; one size larger wraps it. Rewording question 3 means
-# re-measuring this ceiling, not assuming it still holds.
+# NOTE: question 3 is the longest, and it caps this size: at 44pt it runs past
+# the right canvas margin and at TITLE_SIZE it is far past. See SPEC.md,
+# "38 · Looking for feedback", for the measurements. Rewording question 3
+# means re-measuring rather than assuming 40 still fits.
 QUESTION_SIZE = HEADING_SIZE + 10.0
 QUESTION_RHYTHM = 132.0
 
