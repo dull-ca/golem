@@ -4,6 +4,7 @@ NAME = "golem"
 TITLE = "golem — one program, written down as state"
 
 SLIDE_MODULE_NAMES: tuple[str, ...] = (
+    "s01_title",
     "s02_what_you_buy",
     "s03_what_you_configure",
     "s04_fleet_machines",
