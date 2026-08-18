@@ -24,6 +24,7 @@ from excalidraw.type_scale import BODY_SIZE, CAPTION_SIZE
 from ..lichess_fleet import HOSTS
 from ..machines import (
     FLEET_X,
+    FLEET_Y,
     MACHINE_HEIGHT,
     MACHINE_WIDTH,
     Fleet,
@@ -51,6 +52,7 @@ __all__ = [
     "baseline_machines",
     "cell_area",
     "cell_rect",
+    "check_header",
     "draw",
     "draw_fleet",
     "draw_machine",
@@ -60,11 +62,15 @@ __all__ = [
     "scroll_mark",
     "tool_column",
     "units_all_by_hand",
+    "units_all_tool_kept",
     "units_arriving",
     "units_split",
+    "work_key",
 ]
 
 ID_NAMESPACE = "golem-fleet"
+
+HEADER_CLEARANCE = 12.0
 
 WORK_KEY_X = MARGIN
 WORK_KEY_Y = 176.0
@@ -96,6 +102,14 @@ class Tool(NamedTuple):
     work: tuple[int, ...] = ()
 
 
+def check_header(header_bottom: float) -> None:
+    if header_bottom > FLEET_Y - HEADER_CLEARANCE:
+        raise ValueError(
+            f"the header runs to y={header_bottom:.0f} and the fleet starts at "
+            f"y={FLEET_Y:.0f}: shorten the title or the subtitle"
+        )
+
+
 def units_all_by_hand(keeper: Tone) -> tuple[Machine, ...]:
     return tuple(
         Machine(
@@ -103,6 +117,28 @@ def units_all_by_hand(keeper: Tone) -> tuple[Machine, ...]:
             hand_units=host.units,
             unknown=host.unknown,
             keeper=keeper,
+        )
+        for host in HOSTS
+    )
+
+
+def units_all_tool_kept(unit_tone: Tone) -> tuple[Machine, ...]:
+    # NOTE: `unknown` is dropped here, unlike in every other state around it. A
+    # `?` mark says nobody has written down what a machine carries, and this
+    # state exists to draw the fleet with that remainder gone; carrying the
+    # marks over would put the by-hand fleet back inside the boxes.
+    #
+    # A host with no recorded unit gets no keeper and no agent mark, so it
+    # recedes into the dotted empty state rather than drawing as covered. The
+    # inventory cannot back "golem keeps every unit here" on a host whose units
+    # nobody wrote down, and full coverage must not be claimed by inventing one.
+    return tuple(
+        Machine(
+            host.name,
+            tool_units=host.units,
+            keeper=unit_tone if host.units else None,
+            unit_tone=unit_tone,
+            agent=bool(host.units),
         )
         for host in HOSTS
     )
@@ -151,7 +187,7 @@ def _numbered_swatch(scene: Scene, x: float, y: float, size: float, layer: int) 
     )
 
 
-def _draw_work_key(scene: Scene) -> None:
+def work_key(scene: Scene) -> None:
     for position, layer in enumerate(sorted(LAYER_NAMES)):
         top = WORK_KEY_Y + position * WORK_PITCH
         _numbered_swatch(scene, WORK_KEY_X, top, WORK_SWATCH, layer)
@@ -167,7 +203,7 @@ def _draw_work_key(scene: Scene) -> None:
 
 
 def draw(scene: Scene, machines: Sequence[Machine]) -> Fleet:
-    _draw_work_key(scene)
+    work_key(scene)
     fleet = draw_fleet(scene, machines)
     unit_legend(scene)
     return fleet

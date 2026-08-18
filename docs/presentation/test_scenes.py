@@ -31,6 +31,7 @@ from build import build_all
 from decks import DECKS, machines
 from decks.golem import (
     enactment,
+    fleet,
     exemplar,
     glyph_kinds,
     glyph_ops,
@@ -46,6 +47,7 @@ from decks.golem import (
     s20_what_a_scroll_holds,
     s21_the_first_apply,
     s22_the_undos_golem_recorded,
+    s27_fleet_we_want,
     s28_plan_a_change,
     s29_the_change_applied,
     s30_plan_one_host_changes,
@@ -165,6 +167,7 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/emptying-a-host": (110, "the same figure with four revisions in every journal, the pointer from the record to the cells, and the two sentences that keep 'empty again' honest"),
     "golem/fleet-assembling": (121, "thirty host names, the legend, and three tools named"),
     "golem/fleet-golem": (136, "thirty host names, the legend, three tools and the icon credit"),
+    "golem/fleet-we-want": (122, "thirty host names, the work key, three tools, the cell key beside the title, and the two coverage rows that hold the drawing against the fleet today"),
     "golem/moving-a-service": (62, "two hosts named three times each, and the limitation stated"),
     "golem/where-it-broke": (88, "five numbered problems, each a heading and one line"),
     "golem/what-golem-is": (53, "two claims stated as sentences, on purpose"),
@@ -717,6 +720,24 @@ class GeneratedScenes(unittest.TestCase):
         with self.assertRaises(ValueError):
             one_host.check_header(one_host.CONTENT_TOP - one_host.HEADER_CLEARANCE + 1)
         one_host.check_header(one_host.CONTENT_TOP - one_host.HEADER_CLEARANCE)
+
+    def test_the_fleet_frames_raise_when_the_header_reaches_the_machines(self) -> None:
+        with self.assertRaises(ValueError):
+            fleet.check_header(machines.FLEET_Y - fleet.HEADER_CLEARANCE + 1)
+        fleet.check_header(machines.FLEET_Y - fleet.HEADER_CLEARANCE)
+
+    def test_the_aspiration_frame_draws_both_halves_of_its_coverage(self) -> None:
+        drawn = drawn_text(self.documents, GOLEM_DECK_NAME, s27_fleet_we_want.SLUG)
+        tags = [
+            tag
+            for row in s27_fleet_we_want.COVERAGE
+            for tag in (row.covered_tag, row.remainder_tag)
+            if tag
+        ]
+        self.assertEqual(len(tags), 3)
+        for tag in tags:
+            with self.subTest(tag=tag):
+                self.assertIn(tag, drawn)
 
     def test_word_budget_ceilings_name_a_real_slide(self) -> None:
         known = {

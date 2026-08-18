@@ -33,6 +33,7 @@ SLIDE_MODULE_NAMES: tuple[str, ...] = (
     "s24_scrolls_dispatched",
     "s25_fleet_assembling",
     "s26_fleet_golem",
+    "s27_fleet_we_want",
     "s28_plan_a_change",
     "s29_the_change_applied",
     "s30_plan_one_host_changes",
