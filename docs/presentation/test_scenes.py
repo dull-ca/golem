@@ -157,7 +157,7 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/what-a-scroll-holds": (69, "six Emet spellings across four kinds, a gloss on each, the ellipsis caption and the Emet-libraries callout"),
     "golem/the-first-apply": (41, "four outcomes, each naming its glyph, its target and the inverse recorded for it"),
     "golem/the-undos-golem-recorded": (48, "the same four outcomes, plus the revision-2 entry and the limit on what reverse restores"),
-    "golem/golem-scrolls-compiled": (51, "a source tree quoted, and eight scrolls named"),
+    "golem/golem-scrolls-compiled": (48, "a source tree quoted, and eight scrolls named"),
     "golem/golem-scrolls-dispatched": (50, "four hosts named twice, and what golemd does with a scroll"),
     "golem/plan-a-change": (84, "three hosts named twice, two operation rows each, three journals, and a legend of four operations and two cell states"),
     "golem/the-change-applied": (87, "the same figure with the plan enacted, and a third revision in every journal"),
