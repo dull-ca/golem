@@ -1,4 +1,4 @@
-"""The two terse facts recap slide 32; the panel is what earns this slide.
+"""The recap strip restates slide 32; the panel is what earns this slide.
 
 The panel heading is deliberately narrow. golem's own repository builds and
 publishes the site's container image; it does not deploy that image anywhere.
@@ -14,37 +14,30 @@ from __future__ import annotations
 from typing import Sequence
 
 from excalidraw.layout import (
-    LabelledBox,
     badge,
-    labelled_box,
     PANEL_PADDING,
     panel,
     panel_height_for,
     slide_header,
+    span_bar,
 )
 from excalidraw.palette import GOLEM, INK, INK_SOFT, NEUTRAL, WHITE, Tone
 from excalidraw.scene import CONTENT_WIDTH, LABEL_HEADROOM, MARGIN, Scene
 from excalidraw.text import HAND, LINE_HEIGHT, MONO, measured_height, wrapped
-from excalidraw.type_scale import BODY_SIZE, HEADING_SIZE
+from excalidraw.type_scale import BODY_SIZE
 
 SLUG = "current-status"
 TITLE = "Where golem is today"
 
-FACTS_Y = 210.0
-FACTS_HEIGHT = 92.0
-FACTS_GAP = 40.0
-FACT_WIDTH = (CONTENT_WIDTH - FACTS_GAP) / 2.0
+RECAP_Y = 200.0
+RECAP_HEIGHT = 64.0
+HOW_IT_WAS_BUILT = "Outcome-based, and no review of the code."
 
-PANEL_Y = 360.0
+PANEL_Y = 300.0
 PANEL_HEADING = "The site that serves golem's documentation"
 DOMAIN_CHIP = "golem.yyc.dev"
-LINE_GAP = 14.0
+LINE_GAP = 32.0
 LITERAL_INDENT = 28.0
-
-TERSE_FACTS = (
-    LabelledBox("Outcome-based", "", NEUTRAL),
-    LabelledBox("No real review of the code", "", NEUTRAL),
-)
 
 EvidenceLine = tuple[str, float, int]
 
@@ -116,17 +109,15 @@ def draw_evidence(
 def build() -> Scene:
     scene = Scene(SLUG)
     slide_header(scene, TITLE)
-    for position, fact in enumerate(TERSE_FACTS):
-        labelled_box(
-            scene,
-            MARGIN + position * (FACT_WIDTH + FACTS_GAP),
-            FACTS_Y,
-            FACT_WIDTH,
-            FACTS_HEIGHT,
-            fact,
-            title_font_size=HEADING_SIZE,
-            align="center",
-        )
+    span_bar(
+        scene,
+        MARGIN,
+        RECAP_Y,
+        CONTENT_WIDTH,
+        HOW_IT_WAS_BUILT,
+        tone=NEUTRAL,
+        height=RECAP_HEIGHT,
+    )
     body_width = CONTENT_WIDTH - 2 * PANEL_PADDING
     area = panel(
         scene,
