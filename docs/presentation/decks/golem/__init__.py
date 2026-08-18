@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 NAME = "golem"
-TITLE = "golem — one program, written down as state"
+# NOTE: TITLE is both the title slide's headline and the combined deck's
+# Excalidraw frame name, and a full sentence is unreadable in a frame list.
+# Import it rather than retyping it so the two stay one literal.
+TITLE = "golem"
 
 SLIDE_MODULE_NAMES: tuple[str, ...] = (
     "s01_title",
