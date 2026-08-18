@@ -63,10 +63,16 @@ def gloss(body: str, size: float = BODY_SIZE) -> TextLine:
 
 def build() -> Scene:
     scene = Scene(SLUG)
+    # NOTE: the one slide that characterises the language rather than naming
+    # a file or a binary, so the one place the Elm comparison earns its word.
+    # States only the hedged headline, no specific similarity (fixity table,
+    # constrained type variables, module system) — each of those needs its
+    # own defence. Don't repeat or extend the comparison on another slide.
     slide_header(
         scene,
         TITLE,
-        "An Emet program is typed and functional, and evaluates to a list of scrolls.",
+        "Emet is an Elm-like language: a program is typed and functional, "
+        "and evaluates to a list of scrolls.",
     )
     text_card(
         scene,
