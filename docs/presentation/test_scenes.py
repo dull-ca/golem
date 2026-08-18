@@ -83,13 +83,14 @@ SCORECARD_SLUGS = (
     s35_grading_goals_four_and_five.SLUG,
 )
 
-ENACTMENT_SLUGS = (
-    s19_plan_the_first_apply.SLUG,
-    s20_after_the_first_apply.SLUG,
-    s21_plan_one_host_changes.SLUG,
-    s22_emptying_a_host.SLUG,
+ENACTMENT_MODULES = (
+    s19_plan_the_first_apply,
+    s20_after_the_first_apply,
+    s21_plan_one_host_changes,
+    s22_emptying_a_host,
 )
-MOST_REVISIONS_DRAWN = 3
+ENACTMENT_SLUGS = tuple(module.SLUG for module in ENACTMENT_MODULES)
+PLANNED_THEN_APPLIED = (s19_plan_the_first_apply, s20_after_the_first_apply)
 
 ICON_PROBE_ORIGIN = (400.0, 300.0)
 ICON_PROBE_SIZE = 96.0
@@ -124,10 +125,10 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/what-do-we-undo": (92, "thirty host names, what a mark is here, the count the play added, and what a playbook does not record"),
     "golem/golem-scrolls-compiled": (51, "a source tree quoted, and eight scrolls named"),
     "golem/golem-scrolls-dispatched": (50, "four hosts named twice, and what golemd does with a scroll"),
-    "golem/plan-the-first-apply": (73, "three hosts named twice, one plan row each, three journals, and a legend of four operations and two cell states"),
-    "golem/after-the-first-apply": (75, "the same figure, plus the sentence that says what a journal holds"),
-    "golem/plan-one-host-changes": (83, "the same figure, plus the two extra plan rows on the host that changes"),
-    "golem/emptying-a-host": (101, "the same figure with three revisions in every journal, plus the two sentences that keep 'empty again' honest"),
+    "golem/plan-a-change": (84, "three hosts named twice, two operation rows each, three journals, and a legend of four operations and two cell states"),
+    "golem/the-change-applied": (87, "the same figure with the plan enacted, and a third revision in every journal"),
+    "golem/plan-one-host-changes": (93, "the same figure, plus the extra operation row on the host that changes and the sentence saying the plan was not applied"),
+    "golem/emptying-a-host": (110, "the same figure with four revisions in every journal, the pointer from the record to the cells, and the two sentences that keep 'empty again' honest"),
     "golem/fleet-assembling": (121, "thirty host names, the legend, and three tools named"),
     "golem/fleet-golem": (136, "thirty host names, the legend, three tools and the icon credit"),
     "golem/moving-a-service": (62, "two hosts named three times each, and the limitation stated"),
@@ -516,23 +517,52 @@ class GeneratedScenes(unittest.TestCase):
                 with self.subTest(slide=slug, host=host):
                     self.assertIn(host, drawn)
 
-    def test_the_journal_only_grows_across_the_enactment_frames(self) -> None:
-        known = {
-            collapsed(row)
-            for row in enactment.revision_rows(MOST_REVISIONS_DRAWN)
-        }
-        drawn = [
-            {
-                body
-                for body in drawn_text(self.documents, GOLEM_DECK_NAME, slug)
-                if body in known
-            }
-            for slug in ENACTMENT_SLUGS
-        ]
-        self.assertEqual(drawn[-1], known)
-        for position, (earlier, later) in enumerate(zip(drawn, drawn[1:])):
-            with self.subTest(after=ENACTMENT_SLUGS[position + 1]):
-                self.assertTrue(earlier.issubset(later))
+    def test_every_enactment_frame_panels_its_hosts_in_one_order(self) -> None:
+        for module in ENACTMENT_MODULES:
+            with self.subTest(slide=module.SLUG):
+                self.assertEqual(
+                    tuple(panel.name for panel in module.panels()),
+                    enactment.SHOWN_HOSTS,
+                )
+
+    def test_each_host_journal_only_grows_across_the_enactment_frames(self) -> None:
+        for position, host in enumerate(enactment.SHOWN_HOSTS):
+            counts = [module.panels()[position].revisions for module in ENACTMENT_MODULES]
+            for index, (earlier, later) in enumerate(zip(counts, counts[1:])):
+                with self.subTest(host=host, after=ENACTMENT_SLUGS[index + 1]):
+                    self.assertLessEqual(earlier, later)
+
+    def test_every_enactment_frame_draws_the_revisions_its_panels_claim(self) -> None:
+        for module in ENACTMENT_MODULES:
+            drawn = drawn_text(self.documents, GOLEM_DECK_NAME, module.SLUG)
+            for panel in module.panels():
+                for row in enactment.revision_rows(panel.revisions):
+                    with self.subTest(slide=module.SLUG, revision=row):
+                        self.assertIn(collapsed(row), drawn)
+
+    def test_the_record_frame_enacts_the_plan_frame_before_it(self) -> None:
+        planned, applied = PLANNED_THEN_APPLIED
+        self.assertEqual(
+            [(panel.name, panel.rows) for panel in planned.panels()],
+            [(panel.name, panel.rows) for panel in applied.panels()],
+        )
+
+    def test_a_plan_frame_leaves_every_journal_where_it_found_it(self) -> None:
+        applied = s20_after_the_first_apply.panels()
+        planned = s21_plan_one_host_changes.panels()
+        self.assertEqual(
+            [panel.revisions for panel in applied],
+            [panel.revisions for panel in planned],
+        )
+
+    def test_a_plan_frame_points_at_a_cell_for_every_op_that_changes_one(self) -> None:
+        for module in ENACTMENT_MODULES:
+            for panel in module.panels():
+                for row in panel.rows:
+                    with self.subTest(slide=module.SLUG, host=panel.name, op=row.op.name):
+                        self.assertEqual(bool(row.slots), row.op.changes_cells)
+                        for slot in row.slots:
+                            self.assertEqual(panel.cells[slot].op, row.op)
 
     def test_word_budget_ceilings_name_a_real_slide(self) -> None:
         known = {

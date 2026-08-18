@@ -4,40 +4,63 @@ from excalidraw.layout import note, slide_header
 from excalidraw.scene import CONTENT_WIDTH, MARGIN, Scene
 
 from . import enactment
-from .glyph_ops import INSTALL
+from .glyph_ops import INSTALL, NOOP, REMOVE, REPLACE
 
-SLUG = "after-the-first-apply"
-TITLE = "After the first apply: on the hosts, and in the journal"
+SLUG = "the-change-applied"
+TITLE = "The change applied"
 
-SUBTITLE = "Each host now carries what its scroll named, and has written down what it did."
-
-BAND_HEADING = "applied"
-
-CLOSING = (
-    "Each host keeps one append-only journal: every operation golem applied, "
-    "and the inverse that undoes it."
+SUBTITLE = (
+    "The same three hosts, with the plan enacted and one revision added to "
+    "each journal."
 )
+
+CLOSING = "Each host wrote its own revision. Nothing recorded it centrally."
+
+REVISION = 3
+
+REMOVED_SLOT = enactment.CELL_COLUMNS - 1
 
 
 def panels() -> tuple[enactment.HostPanel, ...]:
-    return tuple(
+    cobar = enactment.units_on("cobar")
+    dingo = enactment.units_on("dingo")
+    achoo = enactment.units_on("achoo")
+    return (
         enactment.HostPanel(
-            name,
-            enactment.all_cells(name, INSTALL, present=True),
+            "cobar",
+            enactment.present(REMOVED_SLOT, NOOP)
+            + enactment.absent(1, REMOVE)
+            + enactment.present(cobar - REMOVED_SLOT - 1, NOOP),
             (
-                enactment.PlanRow(
-                    INSTALL, enactment.units_on(name), enactment.every_slot(name)
-                ),
+                enactment.OpRow(REMOVE, 1, (REMOVED_SLOT,)),
+                enactment.OpRow(NOOP, cobar - 1),
             ),
-            revisions=2,
-        )
-        for name in enactment.SHOWN_HOSTS
+            revisions=REVISION,
+        ),
+        enactment.HostPanel(
+            "dingo",
+            enactment.present(dingo, NOOP) + enactment.present(1, INSTALL),
+            (
+                enactment.OpRow(INSTALL, 1, (dingo,)),
+                enactment.OpRow(NOOP, dingo),
+            ),
+            revisions=REVISION,
+        ),
+        enactment.HostPanel(
+            "achoo",
+            enactment.present(achoo - 1, NOOP) + enactment.present(1, REPLACE),
+            (
+                enactment.OpRow(REPLACE, 1, (achoo - 1,)),
+                enactment.OpRow(NOOP, achoo - 1),
+            ),
+            revisions=REVISION,
+        ),
     )
 
 
 def build() -> Scene:
     scene = Scene(SLUG)
     header_bottom = slide_header(scene, TITLE, SUBTITLE)
-    enactment.draw(scene, panels(), BAND_HEADING, header_bottom)
+    enactment.draw(scene, panels(), enactment.record(REVISION), header_bottom)
     note(scene, MARGIN, enactment.NOTE_Y, CLOSING, width=CONTENT_WIDTH)
     return scene

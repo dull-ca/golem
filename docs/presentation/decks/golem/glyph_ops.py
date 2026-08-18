@@ -58,7 +58,7 @@ def replace_mark(scene: Scene, x: float, y: float, size: float, tone: Tone) -> N
 
 
 def noop_mark(scene: Scene, x: float, y: float, size: float, tone: Tone) -> None:
-    diameter = 0.30 * size
+    diameter = 0.45 * size
     scene.ellipse(
         x + (size - diameter) / 2.0,
         y + (size - diameter) / 2.0,
@@ -74,15 +74,24 @@ class Op(NamedTuple):
     verb: str
     tone: Tone
     mark: MarkDrawer
+    changes_cells: bool
 
     def units(self, count: int) -> str:
         return f"{self.verb:<9}{count} {'unit' if count == 1 else 'units'}"
 
 
-INSTALL = Op("Install", "install", GOLEM, install_mark)
-REMOVE = Op("Remove", "remove", Tone(RED, RED_FILL), remove_mark)
-REPLACE = Op("Replace", "replace", Tone(YELLOW, YELLOW_FILL), replace_mark)
-NOOP = Op("Noop", "noop", Tone(INK_FAINT, WHITE, INK_FAINT), noop_mark)
+INSTALL = Op("Install", "install", GOLEM, install_mark, changes_cells=True)
+REMOVE = Op("Remove", "remove", Tone(RED, RED_FILL), remove_mark, changes_cells=True)
+REPLACE = Op(
+    "Replace", "replace", Tone(YELLOW, YELLOW_FILL), replace_mark, changes_cells=True
+)
+NOOP = Op(
+    "Noop",
+    "noop",
+    Tone(INK_FAINT, WHITE, INK_FAINT),
+    noop_mark,
+    changes_cells=False,
+)
 
 OPS: tuple[Op, ...] = (INSTALL, REMOVE, REPLACE, NOOP)
 
