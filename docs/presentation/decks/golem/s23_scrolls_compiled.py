@@ -117,7 +117,7 @@ def build() -> Scene:
         scene,
         MANIFEST_X,
         NOTE_Y,
-        "One program, one manifest, one scroll addressed to each host by name.",
+        "One compile for the whole fleet. Nothing is compiled per host.",
         width=MANIFEST_WIDTH,
     )
     return scene
