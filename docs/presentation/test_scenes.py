@@ -28,10 +28,24 @@ if str(PRESENTATION_ROOT) not in sys.path:
     sys.path.insert(0, str(PRESENTATION_ROOT))
 
 from build import build_all
-from decks import DECKS
-from decks.golem import enactment, glyph_ops, goals, scorecard
+from decks import DECKS, machines
+from decks.golem import (
+    enactment,
+    exemplar,
+    glyph_kinds,
+    glyph_ops,
+    goals,
+    one_host,
+    scorecard,
+)
 from decks.golem import (
     s16_the_goals,
+    s17_one_machine,
+    s18_golemd_on_the_host,
+    s19_a_program_and_its_scroll,
+    s20_what_a_scroll_holds,
+    s21_the_first_apply,
+    s22_the_undos_golem_recorded,
     s28_plan_a_change,
     s29_the_change_applied,
     s30_plan_one_host_changes,
@@ -92,6 +106,22 @@ ENACTMENT_MODULES = (
 ENACTMENT_SLUGS = tuple(module.SLUG for module in ENACTMENT_MODULES)
 PLANNED_THEN_APPLIED = (s28_plan_a_change, s29_the_change_applied)
 
+ONE_HOST_MODULES = (
+    s17_one_machine,
+    s18_golemd_on_the_host,
+    s19_a_program_and_its_scroll,
+    s20_what_a_scroll_holds,
+    s21_the_first_apply,
+    s22_the_undos_golem_recorded,
+)
+GLYPH_FRAME_MODULES = (
+    s20_what_a_scroll_holds,
+    s21_the_first_apply,
+    s22_the_undos_golem_recorded,
+)
+RECORD_MODULES = (s21_the_first_apply, s22_the_undos_golem_recorded)
+FILESYSTEM_ONLY_SPELLINGS = ("directory", "symlink")
+
 ICON_PROBE_ORIGIN = (400.0, 300.0)
 ICON_PROBE_SIZE = 96.0
 GEOMETRY_TOLERANCE = 0.5
@@ -123,6 +153,10 @@ WORD_BUDGET_CEILINGS: dict[str, tuple[int, str]] = {
     "golem/playbook-more-files": (72, "thirty host names, what a cell means here, why the fleet is drawn bare, and four play steps"),
     "golem/playbook-a-workload": (81, "thirty host names, what a cell means here, why the fleet is drawn bare, four play steps and the two repeated hosts"),
     "golem/what-do-we-undo": (92, "thirty host names, what a mark is here, the count the play added, and what a playbook does not record"),
+    "golem/a-program-and-its-scroll": (81, "the whole exemplar program quoted verbatim, twelve lines of it"),
+    "golem/what-a-scroll-holds": (69, "six Emet spellings across four kinds, a gloss on each, the ellipsis caption and the Emet-libraries callout"),
+    "golem/the-first-apply": (41, "four outcomes, each naming its glyph, its target and the inverse recorded for it"),
+    "golem/the-undos-golem-recorded": (48, "the same four outcomes, plus the revision-2 entry and the limit on what reverse restores"),
     "golem/golem-scrolls-compiled": (51, "a source tree quoted, and eight scrolls named"),
     "golem/golem-scrolls-dispatched": (50, "four hosts named twice, and what golemd does with a scroll"),
     "golem/plan-a-change": (84, "three hosts named twice, two operation rows each, three journals, and a legend of four operations and two cell states"),
@@ -608,6 +642,81 @@ class GeneratedScenes(unittest.TestCase):
                         self.assertEqual(bool(row.slots), row.op.changes_cells)
                         for slot in row.slots:
                             self.assertEqual(panel.cells[slot].op, row.op)
+
+    def test_every_exemplar_glyph_reaches_the_three_frames_that_show_it(self) -> None:
+        for module in GLYPH_FRAME_MODULES:
+            words = {
+                word
+                for body in drawn_text(self.documents, GOLEM_DECK_NAME, module.SLUG)
+                for word in body.split()
+            }
+            for entry in exemplar.GLYPHS:
+                with self.subTest(slide=module.SLUG, glyph=entry.spelling):
+                    self.assertIn(entry.spelling, words)
+
+    def test_the_record_frames_name_every_target_and_every_inverse(self) -> None:
+        for module in RECORD_MODULES:
+            words = {
+                word
+                for body in drawn_text(self.documents, GOLEM_DECK_NAME, module.SLUG)
+                for word in body.split()
+            }
+            for entry in exemplar.GLYPHS:
+                with self.subTest(slide=module.SLUG, glyph=entry.spelling):
+                    self.assertIn(entry.target, words)
+                    self.assertIn(entry.inverse, words)
+
+    def test_the_fan_forks_once_per_glyph_kind_and_ghosts_the_rest(self) -> None:
+        scene = Scene("fan-probe")
+        fan = glyph_kinds.draw_fan(scene, 800.0, 300.0, 80.0, 420.0)
+        self.assertEqual(len(fan.legs), len(glyph_kinds.KINDS))
+        self.assertEqual(len(fan.tiles), len(glyph_kinds.KINDS))
+        self.assertEqual(len(glyph_kinds.KINDS), 4)
+        for leg in fan.legs:
+            self.assertEqual(leg["strokeStyle"], "solid")
+        self.assertEqual(fan.ghost_leg["strokeStyle"], "dotted")
+
+    def test_directory_and_symlink_sit_only_on_the_filesystem_leg(self) -> None:
+        for spelling in FILESYSTEM_ONLY_SPELLINGS:
+            carriers = [
+                kind for kind in glyph_kinds.KINDS if spelling in kind.spellings
+            ]
+            with self.subTest(spelling=spelling):
+                self.assertEqual(carriers, [glyph_kinds.FILESYSTEM])
+            drawn = drawn_text(
+                self.documents, GOLEM_DECK_NAME, s20_what_a_scroll_holds.SLUG
+            )
+            carrying = [body for body in drawn if spelling in body.split()]
+            with self.subTest(spelling=spelling, slide=s20_what_a_scroll_holds.SLUG):
+                self.assertEqual(len(carrying), 1)
+                self.assertEqual(
+                    carrying[0], collapsed(glyph_kinds.FILESYSTEM.spelling_block)
+                )
+
+    def test_every_outcome_on_the_record_carries_an_inverse_card(self) -> None:
+        scene = Scene("record-probe")
+        record = one_host.draw_record(scene, glyph_ops.INSTALL, revision="revision 1")
+        self.assertEqual(len(record.cards), len(exemplar.GLYPHS))
+        self.assertEqual(len(record.ticks), len(exemplar.GLYPHS))
+        for tick, card in zip(record.ticks, record.cards):
+            with self.subTest(tick=tick):
+                self.assertAlmostEqual(
+                    card["x"] + card["width"] / 2.0, tick, delta=GEOMETRY_TOLERANCE
+                )
+
+    def test_the_two_sequences_keep_their_own_notation(self) -> None:
+        for module in ONE_HOST_MODULES + (one_host,):
+            with self.subTest(module=module.__name__):
+                self.assertNotIn(enactment, vars(module).values())
+                self.assertNotIn(machines.cell_rect, vars(module).values())
+        for module in ENACTMENT_MODULES + (enactment,):
+            with self.subTest(module=module.__name__):
+                self.assertNotIn(glyph_kinds, vars(module).values())
+
+    def test_the_one_host_series_raises_when_the_header_reaches_the_figure(self) -> None:
+        with self.assertRaises(ValueError):
+            one_host.check_header(one_host.CONTENT_TOP - one_host.HEADER_CLEARANCE + 1)
+        one_host.check_header(one_host.CONTENT_TOP - one_host.HEADER_CLEARANCE)
 
     def test_word_budget_ceilings_name_a_real_slide(self) -> None:
         known = {
