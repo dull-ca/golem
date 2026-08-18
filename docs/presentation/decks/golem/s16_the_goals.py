@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from excalidraw.layout import slide_header
-from excalidraw.palette import INK, INK_FAINT
+from excalidraw.palette import INK, INK_SOFT
 from excalidraw.scene import CANVAS_HEIGHT, MARGIN, Scene
 from excalidraw.text import LINE_HEIGHT, measured_width
 from excalidraw.type_scale import HEADING_SIZE
@@ -33,7 +33,7 @@ def build() -> Scene:
             cursor,
             f"{goal.number}.",
             font_size=GOAL_SIZE,
-            colour=INK_FAINT,
+            colour=INK_SOFT,
             width=NUMBER_WIDTH,
         )
         scene.text(
