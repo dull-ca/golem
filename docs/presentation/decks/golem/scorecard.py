@@ -62,23 +62,17 @@ ROLLBACK_ON_ONE_HOST, ROLLBACK_ACROSS_THE_FLEET = goals.goal(
 (NO_YAML,) = goals.goal(goals.NO_YAML).graded_claims
 
 ROWS: tuple[ScoreRow, ...] = (
-    # NOTE: qualified, not achieved as the brief first assumed. lineInFile
-    # does not round-trip (an empty file survives a reverse where none
-    # existed before, and an added trailing newline is never removed), the
-    # parent directories golem creates on apply are not recorded in the
-    # inverse, and a failed reverse is logged and left rather than retried
-    # (apps/golemd/src/reconcilers.rs, apps/golemd/src/foreman.rs:1747-1749).
     ScoreRow(
         goals.UNDOABLE,
         EVERY_STEP_UNDOABLE,
         ACHIEVED_STATE,
         "All four glyph kinds reverse. lineInFile leaves an empty file where it "
-        "created one; only the directory glyph records the parent directories "
-        "golem makes. A failed reverse is logged, and the step is marked "
-        "reversed anyway.",
+        "created one, and a newline it added; only the directory glyph records "
+        "the parent directories golem makes. A failed reverse is logged and "
+        "still marks the step reversed.",
         (
             Chip("lineInFile", QUALIFIED_STATE),
-            Chip("create_dir_all", QUALIFIED_STATE),
+            Chip("parent dirs", QUALIFIED_STATE),
         ),
     ),
     # NOTE: the asterisk is on fleet-level analysis, not the type checker.
