@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "bun run restore_check.mjs ../dist/*.excalidraw"
+    "check": "bun run restore_check.mjs ../dist/*.excalidraw ../dist/*/*.excalidraw"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
