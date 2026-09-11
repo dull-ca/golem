@@ -10,7 +10,7 @@ export default defineConfig({
     starlight({
       title: "Golem",
       description:
-        "Small-fleet declarative orchestrator for bare-metal Debian boxes.",
+        "Configuration management for bare-metal Debian servers — the job Ansible, Chef, and Puppet do, typed and reversible.",
       // This is already Starlight's default path; naming it keeps the icon from
       // looking like it works by accident, since the only other thing wiring it
       // up is the filename under `public/`.
