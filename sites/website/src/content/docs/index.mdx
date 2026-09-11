@@ -1,18 +1,21 @@
 ---
 title: Golem
-description: Author a fleet in Emet, evaluate it on your own machine into a content-addressed manifest, and let a per-host agent bring each box to the state it describes — reversibly.
+description: Configuration management for bare-metal Debian servers — the job Ansible, Chef, and Puppet do. Author a fleet in Emet, evaluate it on your own machine into a content-addressed manifest, and let a per-host agent bring each box to the state it describes — reversibly.
 template: splash
 hero:
   # NOTE: Starlight renders `tagline` with `set:html` (Hero.astro) — raw HTML,
   # never markdown. A `[text](href)` link here would ship as literal brackets,
   # so links in this field must be written as anchors.
   tagline: |
-    Write your fleet in <a href="/getting-started/the-config/">Emet</a>, a
-    typed functional language. It compiles on your machine to one
+    Golem configures bare-metal servers — the job Ansible, Chef, and Puppet
+    do. It is not a cluster scheduler. systemd orchestrates each host; golem
+    puts the packages, the units, and the files there. You write the fleet in
+    <a href="/getting-started/the-config/">Emet</a>, a typed functional
+    language that compiles on your machine to one
     <a href="/reference/bundle-format/">scroll</a> per host — a tree of
     <a href="/reference/primitives/">glyphs</a>, where a glyph is one OS
-    resource: a package, a service, a file, a line in a file. A small agent
-    reads the scroll, brings the box to it, and can undo exactly what it did.
+    resource. A small agent reads the scroll, brings the box to it, and can
+    undo exactly what it did.
   actions:
     - text: Get started
       link: /getting-started/install/
@@ -27,9 +30,19 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## What it is
 
-Golem keeps a small fleet of Debian machines in the state you describe.
+Golem configures bare-metal servers. It does the job Ansible, Chef, and
+Puppet do: packages, services, files, and lines in files, on machines you own
+and keep.
 
-You write that description in **[Emet](/getting-started/the-config/)**, a
+Golem is not a cluster scheduler, and it does not replace Kubernetes. On a
+traditional server, systemd is already the orchestrator — it starts units,
+orders them, restarts them, and supervises containers through
+[Quadlet](/reference/workloads/). Golem puts those units on the box, with the
+packages and the files they need, and keeps them at the state you wrote. The
+two together run a Debian trixie fleet well, with no control plane to
+operate.
+
+You write the fleet in **[Emet](/getting-started/the-config/)**, a
 typed functional language with generics, records, pattern matching, and
 exhaustiveness checking. `emetc` runs your program to completion on your own
 machine and emits a **[manifest](/reference/bundle-format/)** — the finished

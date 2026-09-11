@@ -1,8 +1,16 @@
 # golem
 
-Golem keeps a small fleet of Debian machines in the state you describe.
+Golem configures bare-metal servers. It does the job Ansible, Chef, and Puppet
+do: packages, services, files, and lines in files, on machines you own and keep.
 
-You write that description in **Emet**, a typed functional language: generics,
+Golem is not a cluster scheduler, and it does not replace Kubernetes. On a
+traditional server, systemd is already the orchestrator — it starts units,
+orders them, restarts them, and supervises containers through Quadlet. Golem
+puts those units on the box, with the packages and the files they need, and
+keeps them at the state you wrote. The two together run a Debian trixie fleet
+well, with no control plane to operate.
+
+You write the fleet in **Emet**, a typed functional language: generics,
 records, pattern matching, exhaustiveness checking. `emetc` runs your program to
 completion on your own machine and writes the result as a **manifest**. Every
 function has been applied and every value computed by the time it leaves your
