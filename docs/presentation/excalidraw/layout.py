@@ -1,18 +1,37 @@
-"""Composite figures built from `Scene` primitives.
+"""Composite figures built from `Scene` primitives — the deck's vocabulary of forms.
 
-A slide should ask for a header, a matrix, a pipeline or a legend — not place
-rectangles and text one at a time. Each builder here takes a `Scene`, draws into
-it, and returns the geometry a caller needs to keep going: the y a header ended
-at, the `Grid` a matrix laid out on, the rectangles a row produced. Sizes come
-from the estimates in text.py, so a builder can measure its own content and grow.
+A slide asks for a form, not for rectangles: `matrix`, `layered stack` (in
+`decks/golem/lichess_stack.py`), `hub_and_satellites`, `swimlane`,
+`state_machine`, `split_compare`, `cluster_map`, `card_rhythm`, `timeline`,
+`coverage_bars`, `icon_card_row`. Having ten forms rather than one is the point:
+the same shape four slides running reads as one slide shown four times.
+
+Each builder takes a `Scene`, draws into it, and returns the geometry a caller
+needs to keep going — the y a header ended at, the `Grid` a matrix laid out on,
+the rectangles a row produced. Sizes come from the estimates in text.py, so a
+builder can measure its own content and grow.
+
+Font sizes default to `excalidraw.type_scale`. A caller may move a size up the
+scale, and should never move one below `CAPTION_SIZE`.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import NamedTuple, Sequence
+from typing import Callable, Mapping, NamedTuple, Sequence
 
-from .palette import INK, INK_FAINT, INK_SOFT, NEUTRAL, TRANSPARENT, WHITE, Tone
+from . import icons
+from .palette import (
+    GAP,
+    INK,
+    INK_FAINT,
+    INK_SOFT,
+    NEUTRAL,
+    TRANSPARENT,
+    WHITE,
+    Tone,
+)
 from .scene import (
     CONTAINER_PADDING,
     CONTENT_WIDTH,
@@ -20,20 +39,27 @@ from .scene import (
     MARGIN,
     Scene,
     bottom_edge,
+    centre,
     fit_width,
     right_edge,
 )
 from .text import HAND, LINE_HEIGHT, MONO, measured_height, measured_width, wrapped
+from .type_scale import BODY_SIZE, CAPTION_SIZE, HEADING_SIZE, TITLE_SIZE
 
-TITLE_FONT_SIZE = 34
-SUBTITLE_FONT_SIZE = 18
-NOTE_FONT_SIZE = 16
-HEADING_FONT_SIZE = 22
-BOX_TITLE_FONT_SIZE = 20
-BOX_DETAIL_FONT_SIZE = 14
-TAG_FONT_SIZE = 12
-TEXT_CARD_PADDING = 14.0
-TEXT_CARD_SPACING = 6.0
+TITLE_FONT_SIZE = TITLE_SIZE
+SUBTITLE_FONT_SIZE = BODY_SIZE
+NOTE_FONT_SIZE = BODY_SIZE
+HEADING_FONT_SIZE = HEADING_SIZE
+BOX_TITLE_FONT_SIZE = BODY_SIZE
+BOX_DETAIL_FONT_SIZE = CAPTION_SIZE
+TAG_FONT_SIZE = CAPTION_SIZE
+PANEL_PADDING = 22.0
+PANEL_HEADING_GAP = 16.0
+BOX_PADDING = 16.0
+BOX_TITLE_GAP = 8.0
+TEXT_CARD_PADDING = 18.0
+TEXT_CARD_SPACING = 8.0
+TRANSITION_LABEL_CLEARANCE = 14.0
 
 TextLine = tuple[str, float, int]
 
@@ -130,7 +156,7 @@ def slide_header(
     if subtitle:
         strapline = scene.text(
             x,
-            cursor + 10,
+            cursor + 8,
             subtitle,
             font_size=subtitle_font_size,
             colour=INK_SOFT,
@@ -173,7 +199,7 @@ def badge(
     body: str,
     *,
     tone: Tone,
-    font_size: float = 14,
+    font_size: float = CAPTION_SIZE,
     anchor: str = "left",
     height: float | None = None,
     min_width: float = 0.0,
@@ -181,7 +207,7 @@ def badge(
     font_family: int = HAND,
 ) -> dict:
     width = max(fit_width(body, font_size, font_family=font_family), min_width)
-    box_height = height if height is not None else font_size * LINE_HEIGHT + 12
+    box_height = height if height is not None else font_size * LINE_HEIGHT + 16
     if anchor == "right":
         x -= width
     elif anchor == "center":
@@ -207,8 +233,8 @@ def span_bar(
     body: str,
     *,
     tone: Tone,
-    height: float = 40,
-    font_size: float = 15,
+    height: float = 58,
+    font_size: float = BODY_SIZE,
     stroke_style: str = "solid",
 ) -> dict:
     return scene.rectangle(
@@ -231,9 +257,9 @@ def callout(
     body: str,
     *,
     tone: Tone = NEUTRAL,
-    font_size: float = 15,
+    font_size: float = BODY_SIZE,
     dashed: bool = True,
-    padding: float = 14,
+    padding: float = 18,
 ) -> dict:
     laid_out = wrapped(body, (width - 2 * CONTAINER_PADDING) * LABEL_HEADROOM, font_size)
     height = measured_height(laid_out, font_size) + 2 * padding
@@ -298,18 +324,22 @@ def legend(
     y: float,
     entries: Sequence[tuple[Tone, str]],
     *,
-    font_size: float = 15,
-    swatch: float = 22,
-    gap: float = 30,
+    font_size: float = CAPTION_SIZE,
+    swatch: float = 26,
+    gap: float = 36,
     vertical: bool = False,
+    marks: Sequence[icons.IconDrawer | None] | None = None,
 ) -> float:
     cursor_x = x
     cursor_y = y
     bottom = y
-    for tone, caption in entries:
+    for index, (tone, caption) in enumerate(entries):
         scene.rectangle(cursor_x, cursor_y, swatch, swatch, tone)
+        mark = marks[index] if marks is not None else None
+        if mark is not None:
+            mark(scene, cursor_x, cursor_y, swatch)
         scene.text(
-            cursor_x + swatch + 10,
+            cursor_x + swatch + 12,
             cursor_y + (swatch - font_size * LINE_HEIGHT) / 2.0,
             caption,
             font_size=font_size,
@@ -317,9 +347,9 @@ def legend(
         )
         bottom = cursor_y + swatch
         if vertical:
-            cursor_y += swatch + 12
+            cursor_y += swatch + 14
         else:
-            cursor_x += swatch + 10 + measured_width(caption, font_size) + gap
+            cursor_x += swatch + 12 + measured_width(caption, font_size) + gap
     return bottom
 
 
@@ -334,8 +364,8 @@ def labelled_box(
     title_font_size: float = BOX_TITLE_FONT_SIZE,
     detail_font_size: float = BOX_DETAIL_FONT_SIZE,
     tag_font_size: float = TAG_FONT_SIZE,
-    padding: float = 14,
-    index_gutter: float = 38,
+    padding: float = BOX_PADDING,
+    index_gutter: float = 46,
     align: str = "left",
     radius: bool = True,
     stroke_style: str = "solid",
@@ -358,9 +388,9 @@ def labelled_box(
             tone=Tone(box.tone.stroke, WHITE, box.tone.stroke),
             font_size=tag_font_size,
             anchor="right",
-            height=tag_font_size * LINE_HEIGHT + 8,
+            height=tag_font_size * LINE_HEIGHT + 10,
         )
-        inset = tag["width"] + 12
+        inset = tag["width"] + 14
         text_width -= inset
         if align == "center":
             text_x += inset
@@ -373,7 +403,7 @@ def labelled_box(
         else ""
     )
     detail_height = measured_height(detail, detail_font_size) if detail else 0.0
-    spacing = 6 if detail else 0
+    spacing = BOX_TITLE_GAP if detail else 0
     block_height = title_height + spacing + detail_height
     top = y + max(padding, (height - block_height) / 2.0)
     scene.text(
@@ -403,9 +433,39 @@ def labelled_box(
             font_size=title_font_size,
             colour=box.tone.stroke,
             align="left",
-            width=index_gutter - 8,
+            width=index_gutter - 10,
         )
     return rect
+
+
+def labelled_box_height_for(
+    box: LabelledBox,
+    width: float,
+    *,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
+    tag_font_size: float = TAG_FONT_SIZE,
+    padding: float = BOX_PADDING,
+    index_gutter: float = 46,
+    align: str = "left",
+) -> float:
+    raw_text_width = width - 2 * padding
+    if box.index_label:
+        raw_text_width -= index_gutter
+    if box.tag:
+        inset = fit_width(box.tag, tag_font_size) + 14
+        raw_text_width -= inset
+        if align == "center":
+            raw_text_width -= inset
+    text_width = raw_text_width * LABEL_HEADROOM
+    block = measured_height(
+        wrapped(box.title, text_width, title_font_size), title_font_size
+    )
+    if box.detail:
+        block += BOX_TITLE_GAP + measured_height(
+            wrapped(box.detail, text_width, detail_font_size), detail_font_size
+        )
+    return block + 2 * padding
 
 
 def box_stack(
@@ -416,31 +476,29 @@ def box_stack(
     boxes: Sequence[LabelledBox],
     *,
     box_height: float,
-    gap: float = 12,
+    gap: float = 14,
     title_font_size: float = BOX_TITLE_FONT_SIZE,
     detail_font_size: float = BOX_DETAIL_FONT_SIZE,
     tag_font_size: float = TAG_FONT_SIZE,
-    padding: float = 14,
+    padding: float = 16,
     align: str = "left",
 ) -> list[dict]:
-    drawn: list[dict] = []
-    for position, box in enumerate(boxes):
-        drawn.append(
-            labelled_box(
-                scene,
-                x,
-                y + position * (box_height + gap),
-                width,
-                box_height,
-                box,
-                title_font_size=title_font_size,
-                detail_font_size=detail_font_size,
-                tag_font_size=tag_font_size,
-                padding=padding,
-                align=align,
-            )
+    return [
+        labelled_box(
+            scene,
+            x,
+            y + position * (box_height + gap),
+            width,
+            box_height,
+            box,
+            title_font_size=title_font_size,
+            detail_font_size=detail_font_size,
+            tag_font_size=tag_font_size,
+            padding=padding,
+            align=align,
         )
-    return drawn
+        for position, box in enumerate(boxes)
+    ]
 
 
 def box_column(
@@ -451,11 +509,11 @@ def box_column(
     boxes: Sequence[LabelledBox],
     *,
     box_height: float,
-    gap: float = 14,
-    title_font_size: float = 18,
-    detail_font_size: float = 14,
+    gap: float = 16,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
     tag_font_size: float = TAG_FONT_SIZE,
-    padding: float = 14,
+    padding: float = 16,
 ) -> list[dict]:
     return box_stack(
         scene,
@@ -480,31 +538,29 @@ def box_row(
     *,
     box_width: float,
     box_height: float,
-    gap: float = 24,
-    title_font_size: float = 18,
-    detail_font_size: float = 13,
+    gap: float = 28,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
     tag_font_size: float = TAG_FONT_SIZE,
-    padding: float = 14,
+    padding: float = 16,
     align: str = "center",
 ) -> list[dict]:
-    drawn: list[dict] = []
-    for position, box in enumerate(boxes):
-        drawn.append(
-            labelled_box(
-                scene,
-                x + position * (box_width + gap),
-                y,
-                box_width,
-                box_height,
-                box,
-                title_font_size=title_font_size,
-                detail_font_size=detail_font_size,
-                tag_font_size=tag_font_size,
-                padding=padding,
-                align=align,
-            )
+    return [
+        labelled_box(
+            scene,
+            x + position * (box_width + gap),
+            y,
+            box_width,
+            box_height,
+            box,
+            title_font_size=title_font_size,
+            detail_font_size=detail_font_size,
+            tag_font_size=tag_font_size,
+            padding=padding,
+            align=align,
         )
-    return drawn
+        for position, box in enumerate(boxes)
+    ]
 
 
 def pipeline(
@@ -515,11 +571,11 @@ def pipeline(
     *,
     box_width: float,
     box_height: float,
-    gap: float = 52,
+    gap: float = 56,
     arrow_labels: Sequence[str] = (),
     arrow_colour: str = INK_SOFT,
-    title_font_size: float = 17,
-    detail_font_size: float = 12,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
     tag_font_size: float = TAG_FONT_SIZE,
     align: str = "center",
 ) -> list[dict]:
@@ -545,9 +601,9 @@ def pipeline(
             caption = arrow_labels[position]
             scene.text(
                 start,
-                middle - 12 - 12 * LINE_HEIGHT,
+                middle - 14 - CAPTION_SIZE * LINE_HEIGHT,
                 caption,
-                font_size=12,
+                font_size=CAPTION_SIZE,
                 colour=INK_FAINT,
                 align="center",
                 width=end - start,
@@ -565,8 +621,8 @@ def connector(
     arrowhead: bool = True,
     start_arrowhead: str | None = None,
     label: str = "",
-    font_size: float = 13,
-    label_offset: float = 8,
+    font_size: float = CAPTION_SIZE,
+    label_offset: float = 10,
 ) -> dict:
     element = scene.arrow(
         points,
@@ -608,7 +664,7 @@ def panel(
     *,
     tone: Tone = NEUTRAL,
     heading_font_size: float = HEADING_FONT_SIZE,
-    padding: float = 20,
+    padding: float = PANEL_PADDING,
     fill: str = TRANSPARENT,
     stroke_style: str = "solid",
 ) -> PanelArea:
@@ -631,11 +687,28 @@ def panel(
             width=width - 2 * padding,
             wrap_width=width - 2 * padding,
         )
-        cursor = bottom_edge(title) + 14
+        cursor = bottom_edge(title) + PANEL_HEADING_GAP
     return PanelArea(
         rect,
         Area(x + padding, cursor, width - 2 * padding, y + height - padding - cursor),
     )
+
+
+def panel_height_for(
+    heading: str,
+    width: float,
+    body_height: float,
+    *,
+    heading_font_size: float = HEADING_FONT_SIZE,
+    padding: float = PANEL_PADDING,
+) -> float:
+    above_body = padding
+    if heading:
+        laid_out = wrapped(
+            heading, (width - 2 * padding) * LABEL_HEADROOM, heading_font_size
+        )
+        above_body += measured_height(laid_out, heading_font_size) + PANEL_HEADING_GAP
+    return above_body + body_height + padding
 
 
 def matrix(
@@ -648,13 +721,13 @@ def matrix(
     tones: Sequence[Sequence[Tone]],
     cell_labels: Sequence[Sequence[str]] | None = None,
     total_width: float = CONTENT_WIDTH,
-    row_label_width: float = 260,
-    header_height: float = 66,
-    row_height: float = 60,
+    row_label_width: float = 340,
+    header_height: float = 92,
+    row_height: float = 72,
     gap: float = 8,
-    header_font_size: float = 15,
-    row_font_size: float = 15,
-    cell_font_size: float = 13,
+    header_font_size: float = CAPTION_SIZE,
+    row_font_size: float = BODY_SIZE,
+    cell_font_size: float = CAPTION_SIZE,
 ) -> Grid:
     column_width = (total_width - row_label_width) / len(column_labels)
     grid = Grid(
@@ -669,7 +742,9 @@ def matrix(
         gap=gap,
     )
     for column, caption in enumerate(column_labels):
-        laid_out = wrapped(caption, (column_width - 16) * LABEL_HEADROOM, header_font_size)
+        laid_out = wrapped(
+            caption, (column_width - 16) * LABEL_HEADROOM, header_font_size
+        )
         height = measured_height(laid_out, header_font_size)
         scene.text(
             grid.column_x(column) + gap / 2.0,
@@ -682,7 +757,7 @@ def matrix(
         )
     for row, caption in enumerate(row_labels):
         laid_out = wrapped(
-            caption, (row_label_width - 20) * LABEL_HEADROOM, row_font_size
+            caption, (row_label_width - 24) * LABEL_HEADROOM, row_font_size
         )
         height = measured_height(laid_out, row_font_size)
         scene.text(
@@ -692,7 +767,7 @@ def matrix(
             font_size=row_font_size,
             colour=INK,
             align="right",
-            width=row_label_width - 16,
+            width=row_label_width - 20,
         )
     for row in range(grid.rows):
         for column in range(grid.columns):
@@ -712,3 +787,621 @@ def matrix(
                 label_font_size=cell_font_size,
             )
     return grid
+
+
+def hub_and_satellites(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    hub: LabelledBox,
+    satellites: Sequence[LabelledBox],
+    *,
+    satellite_height: float,
+    hub_width: float = 380,
+    gutter: float = 92,
+    gap: float = 14,
+    hub_title_font_size: float = HEADING_FONT_SIZE,
+    satellite_title_font_size: float = BOX_TITLE_FONT_SIZE,
+    satellite_detail_font_size: float = BOX_DETAIL_FONT_SIZE,
+) -> tuple[dict, list[dict]]:
+    span = len(satellites) * satellite_height + (len(satellites) - 1) * gap
+    satellite_x = x + hub_width + gutter
+    satellite_width = width - hub_width - gutter
+    hub_height = min(span, 260.0)
+    hub_rect = labelled_box(
+        scene,
+        x,
+        y + (span - hub_height) / 2.0,
+        hub_width,
+        hub_height,
+        hub,
+        title_font_size=hub_title_font_size,
+        detail_font_size=BOX_DETAIL_FONT_SIZE,
+        align="center",
+    )
+    drawn: list[dict] = []
+    for position, satellite in enumerate(satellites):
+        top = y + position * (satellite_height + gap)
+        drawn.append(
+            labelled_box(
+                scene,
+                satellite_x,
+                top,
+                satellite_width,
+                satellite_height,
+                satellite,
+                title_font_size=satellite_title_font_size,
+                detail_font_size=satellite_detail_font_size,
+            )
+        )
+        connector(
+            scene,
+            [
+                (right_edge(hub_rect) + 6, centre(hub_rect)[1]),
+                (satellite_x - 6, top + satellite_height / 2.0),
+            ],
+            stroke=INK_FAINT,
+        )
+    return hub_rect, drawn
+
+
+class Lane(NamedTuple):
+    title: str
+    stages: Sequence[LabelledBox]
+    tone: Tone = NEUTRAL
+
+
+def swimlane(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    lanes: Sequence[Lane],
+    *,
+    lane_height: float,
+    lane_gap: float = 28,
+    stage_gap: float = 56,
+    lane_label_width: float = 250,
+    lane_title_font_size: float = HEADING_FONT_SIZE,
+    stage_title_font_size: float = BOX_TITLE_FONT_SIZE,
+    stage_detail_font_size: float = BOX_DETAIL_FONT_SIZE,
+) -> list[list[dict]]:
+    drawn: list[list[dict]] = []
+    for index, lane in enumerate(lanes):
+        top = y + index * (lane_height + lane_gap)
+        laid_out = wrapped(
+            lane.title, (lane_label_width - 24) * LABEL_HEADROOM, lane_title_font_size
+        )
+        scene.text(
+            x,
+            top + (lane_height - measured_height(laid_out, lane_title_font_size)) / 2.0,
+            laid_out,
+            font_size=lane_title_font_size,
+            colour=lane.tone.stroke,
+            width=lane_label_width - 24,
+        )
+        stage_area_x = x + lane_label_width
+        stage_area_width = width - lane_label_width
+        stage_width = (
+            stage_area_width - stage_gap * (len(lane.stages) - 1)
+        ) / len(lane.stages)
+        drawn.append(
+            pipeline(
+                scene,
+                stage_area_x,
+                top,
+                lane.stages,
+                box_width=stage_width,
+                box_height=lane_height,
+                gap=stage_gap,
+                title_font_size=stage_title_font_size,
+                detail_font_size=stage_detail_font_size,
+            )
+        )
+    return drawn
+
+
+class StateNode(NamedTuple):
+    key: str
+    label: str
+    x: float
+    y: float
+    tone: Tone = NEUTRAL
+    width: float = 250.0
+    height: float = 90.0
+    detail: str = ""
+
+
+class Transition(NamedTuple):
+    source: str
+    target: str
+    label: str = ""
+    bow: float = 0.0
+    dashed: bool = False
+    stroke: str = INK_SOFT
+
+
+# NOTE: an arrow between two state boxes has to stop at the box edge, not at its
+# centre, or the arrowhead disappears under the fill. Scale the centre-to-centre
+# vector until it meets the nearer of the two half-extents.
+def _edge_point(rect: dict, towards: tuple[float, float]) -> tuple[float, float]:
+    hub_x, hub_y = centre(rect)
+    delta_x = towards[0] - hub_x
+    delta_y = towards[1] - hub_y
+    if delta_x == 0 and delta_y == 0:
+        return hub_x, hub_y
+    half_width = rect["width"] / 2.0
+    half_height = rect["height"] / 2.0
+    horizontal = half_width / abs(delta_x) if delta_x else math.inf
+    vertical = half_height / abs(delta_y) if delta_y else math.inf
+    reach = min(horizontal, vertical)
+    return hub_x + delta_x * reach, hub_y + delta_y * reach
+
+
+def state_machine(
+    scene: Scene,
+    nodes: Sequence[StateNode],
+    transitions: Sequence[Transition],
+    *,
+    label_font_size: float = CAPTION_SIZE,
+    node_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = CAPTION_SIZE,
+) -> Mapping[str, dict]:
+    drawn: dict[str, dict] = {}
+    for node in nodes:
+        drawn[node.key] = labelled_box(
+            scene,
+            node.x,
+            node.y,
+            node.width,
+            node.height,
+            LabelledBox(node.label, node.detail, node.tone),
+            title_font_size=node_font_size,
+            detail_font_size=detail_font_size,
+            align="center",
+        )
+    for transition in transitions:
+        source = drawn[transition.source]
+        target = drawn[transition.target]
+        source_centre = centre(source)
+        target_centre = centre(target)
+        mid_x = (source_centre[0] + target_centre[0]) / 2.0
+        mid_y = (source_centre[1] + target_centre[1]) / 2.0
+        span_x = target_centre[0] - source_centre[0]
+        span_y = target_centre[1] - source_centre[1]
+        length = math.hypot(span_x, span_y) or 1.0
+        perpendicular_x = -span_y / length
+        perpendicular_y = span_x / length
+        bow_x = mid_x + perpendicular_x * transition.bow
+        bow_y = mid_y + perpendicular_y * transition.bow
+        start = _edge_point(source, (bow_x, bow_y))
+        end = _edge_point(target, (bow_x, bow_y))
+        points = (
+            [start, (bow_x, bow_y), end] if transition.bow else [start, end]
+        )
+        scene.arrow(
+            points,
+            stroke=transition.stroke,
+            stroke_style="dashed" if transition.dashed else "solid",
+        )
+        if transition.label:
+            # NOTE: the label clears the arrow along the same perpendicular the bow
+            # was measured on, never along -y. Both segments radiate from the bow
+            # vertex, so a purely vertical offset only clears them while the arrow is
+            # locally horizontal: on a vertical transition the arrow was drawn
+            # straight through the glyphs. And the sign of `bow` alone does not say
+            # which side is outside the arc, because the perpendicular flips with the
+            # transition's direction — two arrows between the same pair of boxes, one
+            # each way, with the same bow, landed on opposite sides.
+            #
+            # `reach` is the label box's own extent in the perpendicular direction —
+            # its half-width when the transition is vertical, its half-height when
+            # horizontal. Offsetting the label's centre by the clearance alone left
+            # a vertical transition's arrow crossing the far end of the caption.
+            caption_width = measured_width(transition.label, label_font_size)
+            caption_height = label_font_size * LINE_HEIGHT
+            outward = 1.0 if transition.bow >= 0 else -1.0
+            reach = (
+                abs(perpendicular_x) * caption_width / 2.0
+                + abs(perpendicular_y) * caption_height / 2.0
+            )
+            clearance = TRANSITION_LABEL_CLEARANCE + reach
+            label_x = bow_x + perpendicular_x * outward * clearance
+            label_y = bow_y + perpendicular_y * outward * clearance
+            scene.text(
+                label_x - caption_width / 2.0,
+                label_y - caption_height / 2.0,
+                transition.label,
+                font_size=label_font_size,
+                colour=transition.stroke,
+                align="center",
+                width=caption_width,
+            )
+    return drawn
+
+
+def split_compare(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    left: tuple[str, Tone],
+    right: tuple[str, Tone],
+    *,
+    gutter: float = 76,
+    heading_font_size: float = HEADING_FONT_SIZE,
+) -> tuple[PanelArea, PanelArea]:
+    half = (width - gutter) / 2.0
+    left_panel = panel(
+        scene, x, y, half, height, left[0], tone=left[1],
+        heading_font_size=heading_font_size,
+    )
+    right_panel = panel(
+        scene, x + half + gutter, y, half, height, right[0], tone=right[1],
+        heading_font_size=heading_font_size,
+    )
+    divider_x = x + half + gutter / 2.0
+    scene.line(
+        [(divider_x, y), (divider_x, y + height)],
+        stroke=INK_FAINT,
+        stroke_style="dashed",
+    )
+    return left_panel, right_panel
+
+
+class ClusterNode(NamedTuple):
+    title: str
+    workloads: int = 0
+    tone: Tone = NEUTRAL
+    tag: str = ""
+    workload_tone: Tone | None = None
+
+
+def cluster_map(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    nodes: Sequence[ClusterNode],
+    *,
+    node_height: float,
+    gap: float = 32,
+    workload_size: float = 44,
+    workload_gap: float = 14,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    tag_font_size: float = TAG_FONT_SIZE,
+) -> list[dict]:
+    node_width = (width - gap * (len(nodes) - 1)) / len(nodes)
+    drawn: list[dict] = []
+    for position, node in enumerate(nodes):
+        node_x = x + position * (node_width + gap)
+        rect = labelled_box(
+            scene,
+            node_x,
+            y,
+            node_width,
+            node_height,
+            LabelledBox(node.title, "", node.tone, node.tag),
+            title_font_size=title_font_size,
+            tag_font_size=tag_font_size,
+            align="center",
+        )
+        drawn.append(rect)
+        if node.workloads:
+            mark_width = icons.CONTAINER_ASPECT * workload_size
+            span = (
+                node.workloads * mark_width + (node.workloads - 1) * workload_gap
+            )
+            first_x = node_x + (node_width - span) / 2.0
+            for index in range(node.workloads):
+                icons.container(
+                    scene,
+                    first_x + index * (mark_width + workload_gap),
+                    y + node_height - workload_size - 20,
+                    workload_size,
+                    tone=node.workload_tone
+                    if node.workload_tone is not None
+                    else NEUTRAL,
+                )
+    return drawn
+
+
+class RhythmCard(NamedTuple):
+    weight: float
+    box: LabelledBox
+
+
+def card_rhythm(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    rows: Sequence[Sequence[RhythmCard]],
+    *,
+    row_height: float,
+    row_gap: float = 22,
+    card_gap: float = 24,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
+) -> list[list[dict]]:
+    drawn: list[list[dict]] = []
+    for row_index, row in enumerate(rows):
+        top = y + row_index * (row_height + row_gap)
+        available = width - card_gap * (len(row) - 1)
+        total_weight = sum(card.weight for card in row)
+        cursor = x
+        placed: list[dict] = []
+        for card in row:
+            card_width = available * card.weight / total_weight
+            placed.append(
+                labelled_box(
+                    scene,
+                    cursor,
+                    top,
+                    card_width,
+                    row_height,
+                    card.box,
+                    title_font_size=title_font_size,
+                    detail_font_size=detail_font_size,
+                )
+            )
+            cursor += card_width + card_gap
+        drawn.append(placed)
+    return drawn
+
+
+IconDrawer = Callable[..., icons.Mark]
+
+
+class IconCard(NamedTuple):
+    draw: IconDrawer
+    aspect: float
+    title: str
+    detail: str = ""
+    tone: Tone = NEUTRAL
+    icon_tone: Tone | None = None
+
+
+def icon_card_row(
+    scene: Scene,
+    x: float,
+    y: float,
+    cards: Sequence[IconCard],
+    *,
+    card_height: float,
+    icon_size: float,
+    card_width: float | None = None,
+    gap: float = 34,
+    flow: bool = False,
+    padding: float = 20,
+    title_font_size: float = BOX_TITLE_FONT_SIZE,
+    detail_font_size: float = BOX_DETAIL_FONT_SIZE,
+    total_width: float = CONTENT_WIDTH,
+) -> list[dict]:
+    width = (
+        card_width
+        if card_width is not None
+        else (total_width - gap * (len(cards) - 1)) / len(cards)
+    )
+    drawn: list[dict] = []
+    for position, card in enumerate(cards):
+        card_x = x + position * (width + gap)
+        rect = scene.rectangle(card_x, y, width, card_height, card.tone)
+        drawn.append(rect)
+        mark_width = card.aspect * icon_size
+        card.draw(
+            scene,
+            card_x + (width - mark_width) / 2.0,
+            y + padding,
+            icon_size,
+            **({"tone": card.icon_tone} if card.icon_tone is not None else {}),
+        )
+        text_width = width - 2 * padding
+        title = wrapped(card.title, text_width * LABEL_HEADROOM, title_font_size)
+        title_height = measured_height(title, title_font_size)
+        detail = (
+            wrapped(card.detail, text_width * LABEL_HEADROOM, detail_font_size)
+            if card.detail
+            else ""
+        )
+        detail_height = measured_height(detail, detail_font_size) if detail else 0.0
+        block = title_height + (10 + detail_height if detail else 0.0)
+        top = max(
+            y + padding + icon_size + 18,
+            y + card_height - padding - block,
+        )
+        scene.text(
+            card_x + padding,
+            top,
+            title,
+            font_size=title_font_size,
+            colour=card.tone.text,
+            align="center",
+            width=text_width,
+        )
+        if detail:
+            scene.text(
+                card_x + padding,
+                top + title_height + 10,
+                detail,
+                font_size=detail_font_size,
+                colour=INK_SOFT,
+                align="center",
+                width=text_width,
+            )
+    if flow:
+        middle = y + card_height / 2.0
+        for position in range(len(drawn) - 1):
+            scene.arrow(
+                [
+                    (right_edge(drawn[position]) + 8, middle),
+                    (drawn[position + 1]["x"] - 8, middle),
+                ],
+                stroke=INK_SOFT,
+            )
+    return drawn
+
+
+class Tick(NamedTuple):
+    label: str
+    caption: str = ""
+    tone: Tone = NEUTRAL
+
+
+def timeline(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    ticks: Sequence[Tick],
+    *,
+    start_caption: str = "",
+    end_caption: str = "",
+    label_font_size: float = BODY_SIZE,
+    caption_font_size: float = CAPTION_SIZE,
+    label_font_family: int = HAND,
+    caption_font_family: int = HAND,
+    tick_height: float = 26,
+    marker_height: float = 56,
+) -> list[float]:
+    axis_y = y + marker_height
+    scene.arrow(
+        [(x, axis_y), (x + width, axis_y)], stroke=INK_SOFT, stroke_width=3
+    )
+    step = width / len(ticks)
+    positions: list[float] = []
+    for index, tick in enumerate(ticks):
+        centre_x = x + step * (index + 0.5)
+        positions.append(centre_x)
+        scene.line(
+            [(centre_x, axis_y - tick_height / 2.0), (centre_x, axis_y + tick_height / 2.0)],
+            stroke=tick.tone.stroke,
+            stroke_width=3,
+        )
+        laid_out = wrapped(
+            tick.label,
+            (step - 18) * LABEL_HEADROOM,
+            label_font_size,
+            label_font_family,
+        )
+        scene.text(
+            centre_x - (step - 18) / 2.0,
+            axis_y + tick_height / 2.0 + 14,
+            laid_out,
+            font_size=label_font_size,
+            colour=INK,
+            align="center",
+            width=step - 18,
+            font_family=label_font_family,
+        )
+        if tick.caption:
+            caption = wrapped(
+                tick.caption,
+                (step - 18) * LABEL_HEADROOM,
+                caption_font_size,
+                caption_font_family,
+            )
+            scene.text(
+                centre_x - (step - 18) / 2.0,
+                axis_y
+                + tick_height / 2.0
+                + 14
+                + measured_height(laid_out, label_font_size)
+                + 8,
+                caption,
+                font_size=caption_font_size,
+                colour=INK_FAINT,
+                align="center",
+                width=step - 18,
+                font_family=caption_font_family,
+            )
+    if start_caption:
+        scene.text(
+            x,
+            axis_y - marker_height,
+            start_caption,
+            font_size=caption_font_size,
+            colour=INK_FAINT,
+            width=width / 2.0,
+        )
+    if end_caption:
+        scene.text(
+            x + width / 2.0,
+            axis_y - marker_height,
+            end_caption,
+            font_size=caption_font_size,
+            colour=INK_FAINT,
+            align="right",
+            width=width / 2.0,
+        )
+    return positions
+
+
+class CoverageRow(NamedTuple):
+    label: str
+    covered: float
+    covered_tone: Tone
+    remainder_tone: Tone = GAP
+    covered_tag: str = ""
+    remainder_tag: str = ""
+
+
+def coverage_bars(
+    scene: Scene,
+    x: float,
+    y: float,
+    width: float,
+    rows: Sequence[CoverageRow],
+    *,
+    bar_height: float,
+    gap: float = 14,
+    label_width: float = 420,
+    label_font_size: float = BODY_SIZE,
+    tag_font_size: float = CAPTION_SIZE,
+) -> list[tuple[dict, dict | None]]:
+    track_x = x + label_width
+    track_width = width - label_width
+    drawn: list[tuple[dict | None, dict | None]] = []
+    for index, row in enumerate(rows):
+        top = y + index * (bar_height + gap)
+        laid_out = wrapped(
+            row.label, (label_width - 24) * LABEL_HEADROOM, label_font_size
+        )
+        scene.text(
+            x,
+            top + (bar_height - measured_height(laid_out, label_font_size)) / 2.0,
+            laid_out,
+            font_size=label_font_size,
+            colour=INK,
+            align="right",
+            width=label_width - 20,
+        )
+        covered_width = track_width * max(0.0, min(1.0, row.covered))
+        covered: dict | None = None
+        if covered_width > 1:
+            covered = scene.rectangle(
+                track_x,
+                top,
+                covered_width,
+                bar_height,
+                row.covered_tone,
+                label=row.covered_tag if covered_width > 160 else "",
+                label_font_size=tag_font_size,
+            )
+        remainder: dict | None = None
+        if covered_width < track_width - 1:
+            remainder = scene.rectangle(
+                track_x + covered_width,
+                top,
+                track_width - covered_width,
+                bar_height,
+                row.remainder_tone,
+                label=row.remainder_tag
+                if track_width - covered_width > 160
+                else "",
+                label_font_size=tag_font_size,
+            )
+        drawn.append((covered, remainder))
+    return drawn

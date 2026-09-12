@@ -21,7 +21,7 @@ if (paths.length === 0) {
 
 let failures = 0;
 
-const compared = ["type", "x", "y", "width", "height", "angle", "strokeColor", "backgroundColor", "fillStyle", "strokeWidth", "strokeStyle", "roughness", "opacity", "frameId", "containerId", "text", "originalText", "fontSize", "fontFamily", "textAlign", "verticalAlign", "name"];
+const compared = ["type", "x", "y", "width", "height", "angle", "strokeColor", "backgroundColor", "fillStyle", "strokeWidth", "strokeStyle", "roughness", "opacity", "frameId", "containerId", "text", "originalText", "fontSize", "fontFamily", "textAlign", "verticalAlign", "name", "fileId", "status", "scale", "crop"];
 
 for (const path of paths) {
   const label = basename(path);
@@ -58,6 +58,21 @@ for (const path of paths) {
         problems.push(`element ${original.id} (${original.type}): restore() rewrote points`);
       }
     }
+  }
+
+  // An image element without a matching files entry loads as a blank rectangle, and
+  // nothing above catches it: `fileId` round-trips whether or not the binary exists.
+  // restore() hands `files` straight back, so comparing it to the input would only
+  // prove the object was passed through — the reachability is what has to be checked.
+  // Determinism of `created` is test_scenes.py's job, where there is a constant to
+  // check it against.
+  for (const original of before) {
+    if (original.type !== "image") continue;
+    const survivor = byId.get(original.id);
+    if (survivor && !survivor.fileId) problems.push(`image ${original.id}: restore() left it with no fileId`);
+    const entry = restored.files?.[original.fileId];
+    if (!entry) { problems.push(`image ${original.id}: no files entry for ${original.fileId}`); continue; }
+    if (typeof entry.dataURL !== "string" || !entry.dataURL.startsWith("data:")) problems.push(`image ${original.id}: file ${original.fileId} carries no data URL`);
   }
 
   // The generator omits `index` deliberately; this proves restore() supplies one and
