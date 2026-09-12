@@ -9,6 +9,20 @@ v0.1.0 and v0.2.0 have no section of their own. Both tags name a commit that was
 never on `main`, so there is no range for git-cliff to walk between them and the
 work they were meant to mark is folded into v0.3.0.
 
+## v0.5.0 — 2026-09-12
+
+### Features
+
+- plan live host diff ([#23](https://github.com/dull-ca/golem/pull/23)) ([41bf030](https://github.com/dull-ca/golem/commit/41bf030895d790aae44b81c701761979b4167673))
+
+### Documentation
+
+- position golem against ansible, chef, and puppet ([#25](https://github.com/dull-ca/golem/pull/25)) ([d178738](https://github.com/dull-ca/golem/commit/d1787389596d4e7e1ff2eac9ac21281970ebcec1))
+
+### Tooling
+
+- presentation visual redesign ([#24](https://github.com/dull-ca/golem/pull/24)) ([150283b](https://github.com/dull-ca/golem/commit/150283b9ec3871358d64f63e21262445786a2ed2))
+
 ## v0.4.1 — 2026-08-11
 
 ### Fixes
